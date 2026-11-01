@@ -6,6 +6,10 @@ C# / WinForms / .NET 8, eine einzige EXE, keine Installation nötig.
 > **Status: Beta.** Hobbyprojekt, bisher nur auf wenigen Rechnern getestet. Besonders die Scroll-Aufnahme
 > kann bei komplexen Seiten Fehler machen. Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 
+## Screenshots
+
+![Editor mit Werkzeugleiste und Aktionsleiste rechts](docs/editor.png)
+
 ## Start
 
 Die aktuelle `ShotKit.exe` unter *Releases* herunterladen und starten. Das Programm läuft im Infobereich der Taskleiste
