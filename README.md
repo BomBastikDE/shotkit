@@ -1,13 +1,14 @@
 # ShotKit
 
-Eigenes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11, nach dem Vorbild von Snagit.
+Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
 C# / WinForms / .NET 8, eine einzige EXE, keine Installation nötig.
 
-Zentrale Doku im Vault: `Projekte/ShotKit/ShotKit_Dokumentation_und_Quellcode.md` (Projektübersicht: `Projekte/ShotKit/_ShotKit.md`).
+> **Status: Beta.** Hobbyprojekt, bisher nur auf wenigen Rechnern getestet. Besonders die Scroll-Aufnahme
+> kann bei komplexen Seiten Fehler machen. Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 
 ## Start
 
-`dist/ShotKit.exe` auf den Windows-PC kopieren und starten. Das Programm läuft im Infobereich der Taskleiste
+Die aktuelle `ShotKit.exe` unter *Releases* herunterladen und starten. Das Programm läuft im Infobereich der Taskleiste
 (Klick aufs Symbol = Bereichsaufnahme, Rechtsklick = Menü). Unter „Einstellungen → Mit Windows starten“ lässt sich der Autostart aktivieren.
 
 Beim ersten Start kann Windows SmartScreen warnen (unsignierte EXE): „Weitere Informationen → Trotzdem ausführen“.
@@ -68,6 +69,10 @@ Unter Windows alternativ: `dotnet publish src -c Release -o dist`.
 
 `tools/make_icon.py` erzeugt `src/shotkit.ico` neu (reines Python, keine Abhängigkeiten).
 
-## Nicht enthalten (gegenüber Snagit)
+## Nicht enthalten
 
 Videoaufnahme, Texterkennung (OCR), Bibliothek mit Tags, Cloud-Teilen.
+
+## Lizenz
+
+MIT, siehe [LICENSE](LICENSE).
