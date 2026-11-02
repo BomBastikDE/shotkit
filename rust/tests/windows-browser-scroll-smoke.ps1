@@ -173,8 +173,10 @@ function Wait-ForCondition {
         [System.Diagnostics.Process] $OwnedProcess, [string[]] $AllowedDialogTitles = @())
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ($OwnedProcess.HasExited) { throw "Owned process '$($OwnedProcess.ProcessName)' exited before $Description (exit $($OwnedProcess.ExitCode))." }
-        Assert-NoUnexpectedDialog $OwnedProcess $AllowedDialogTitles
+        if ($null -ne $OwnedProcess) {
+            if ($OwnedProcess.HasExited) { throw "Owned process '$($OwnedProcess.ProcessName)' exited before $Description (exit $($OwnedProcess.ExitCode))." }
+            Assert-NoUnexpectedDialog $OwnedProcess $AllowedDialogTitles
+        }
         $value = & $Condition
         if ($null -ne $value -and $value) { return $value }
         Start-Sleep -Milliseconds 100
@@ -266,7 +268,7 @@ try {
     ) -join ' '
     $edge = Start-Process -FilePath $edgePath -ArgumentList $edgeArgs -WorkingDirectory $testRoot -PassThru
 
-    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'owned Edge local scroll surface' -OwnedProcess $edge -Condition {
+    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'owned Edge local scroll surface' -OwnedProcess $null -Condition {
         $owned = Get-ProfileEdgeProcesses
         foreach ($process in $owned) {
             [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$process.ProcessId) |
@@ -283,13 +285,16 @@ try {
     $clientWidth = $client[2] - $client[0]
     $clientHeight = $client[3] - $client[1]
     if ($clientWidth -lt 720 -or $clientHeight -lt 450) { throw "EDGE_CLIENT_TOO_SMALL: ${clientWidth}x${clientHeight}." }
-    if ($browserWindow.Title -notmatch 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') { throw "EDGE_PAGE_NOT_READY: unexpected title '$($browserWindow.Title)'." }
-    $innerWidth = [int]$Matches[1]
-    $innerHeight = [int]$Matches[2]
-    $scrollHeight = [int]$Matches[3]
-    $deviceScale = [double]$Matches[4]
-    $initialScrollX = [int]$Matches[5]
-    $initialScrollY = [int]$Matches[6]
+    if ($browserWindow.Title -match 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') {
+        $innerWidth = [int]$Matches[1]
+        $innerHeight = [int]$Matches[2]
+        $scrollHeight = [int]$Matches[3]
+        $deviceScale = [double]$Matches[4]
+        $initialScrollX = [int]$Matches[5]
+        $initialScrollY = [int]$Matches[6]
+    } else {
+        throw "EDGE_PAGE_NOT_READY: unexpected title '$($browserWindow.Title)'."
+    }
     if ($innerWidth -ne $clientWidth -or $innerHeight -ne $clientHeight -or $scrollHeight -ne $pageHeight) {
         throw "EDGE_GEOMETRY_MISMATCH: client=${clientWidth}x${clientHeight}, page=${innerWidth}x${innerHeight}, scrollHeight=$scrollHeight."
     }
