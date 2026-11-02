@@ -1,5 +1,9 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: h und sein Zustand bleiben während Menü und Folgeaktionen gültig.
+// Warum erfüllt bzw. offen: Einstellungen und Ziel sind eigene Werte; Handle-Lebensdauer bei Reentranz bleibt zu prüfen.
+// Nachrichten: TrackPopupMenu und Folgeaktionen können Nachrichten verarbeiten.
 pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
     let menu = CreatePopupMenu();
     if menu.is_null() {
@@ -147,6 +151,10 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
 }
 
 
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle.
+// Warum erfüllt bzw. offen: run übergibt das neu erzeugte Fenster und GetModuleHandleW; lokale Notify-Daten leben während des Aufrufs.
+// Nachrichten: Shell-Aufruf und Fehlerdialog können Nachrichten auslösen.
 pub(super) unsafe fn install(h: H, inst: H) -> bool {
     let mut n: Notify = zeroed();
         n.size = size_of::<Notify>() as u32;
@@ -169,6 +177,10 @@ pub(super) unsafe fn install(h: H, inst: H) -> bool {
     true
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h und ID bezeichnen das zuvor registrierte Symbol.
+// Warum erfüllt bzw. offen: Der Aufruf erfolgt beim WM_DESTROY des Primärfensters mit derselben ID.
+// Nachrichten: Shell-Aufruf; keine pauschale Reentranzfreiheit angenommen.
 pub(super) unsafe fn remove(h: H) {
     let mut n: Notify = zeroed();
     n.size = size_of::<Notify>() as u32;

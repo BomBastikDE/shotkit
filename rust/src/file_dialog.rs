@@ -127,6 +127,10 @@ mod win32 {
     static EXT_BMP: [u16; 4] = [b'b' as u16, b'm' as u16, b'p' as u16, 0];
     static EXT_GIF: [u16; 4] = [b'g' as u16, b'i' as u16, b'f' as u16, 0];
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: WM_NOTIFY enthält einen gültigen ausgerichteten OFNOTIFY-Zeiger mit beschreibbarem OFN.
+    // Warum erfüllt bzw. offen: Windows ruft den registrierten Hook auf; Nullprüfungen allein beweisen Layout und Lebensdauer nicht.
+    // Nachrichten: Der Hook wird synchron vom Dialog aufgerufen.
     unsafe extern "system" fn save_hook(
         _hwnd: Hwnd,
         message: u32,
@@ -238,6 +242,10 @@ mod win32 {
 /// `owner` may be null for an unowned dialog. The caller must pass a valid HWND
 /// or null and must satisfy the usual Win32 thread-affinity requirements.
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges Fenster auf dem passenden UI-Thread.
+// Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten haben getrennte Implementierungen.
+// Nachrichten: Der Windows-Dateidialog verarbeitet Nachrichten; die andere Variante nicht.
 pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
     win32::dialog(owner, None, false)
 }
@@ -249,6 +257,10 @@ pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 /// existing files trigger the standard overwrite confirmation for that final
 /// path. Returns `Ok(None)` on cancel and `Err` on Win32 error.
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges Fenster auf dem passenden UI-Thread; Hook-Vertrag gilt.
+// Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten sind getrennt.
+// Nachrichten: Der Windows-Dateidialog und Hook verarbeiten Nachrichten; die andere Variante nicht.
 pub unsafe fn save(
     owner: *mut c_void,
     initial_name: Option<&Path>,
@@ -259,11 +271,19 @@ pub unsafe fn save(
 // Keep the module importable by host-side tools while making its platform
 // limitation explicit through the only result channel in the requested API.
 #[cfg(not(windows))]
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges Fenster auf dem passenden UI-Thread.
+// Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten haben getrennte Implementierungen.
+// Nachrichten: Der Windows-Dateidialog verarbeitet Nachrichten; die andere Variante nicht.
 pub unsafe fn open(_owner: *mut c_void) -> Result<Option<PathBuf>, String> {
     Err("Windows file dialogs are only available on Windows".into())
 }
 
 #[cfg(not(windows))]
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges Fenster auf dem passenden UI-Thread; Hook-Vertrag gilt.
+// Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten sind getrennt.
+// Nachrichten: Der Windows-Dateidialog und Hook verarbeiten Nachrichten; die andere Variante nicht.
 pub unsafe fn save(
     _owner: *mut c_void,
     _initial_name: Option<&Path>,

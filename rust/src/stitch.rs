@@ -11,19 +11,21 @@ pub struct Image {
 }
 impl Image {
     pub fn new(width: usize, height: usize, pixels: Vec<u8>) -> Result<Self, &'static str> {
-        let len = width
-            .checked_mul(height)
+        let image = Self { width, height, pixels };
+        image.validate()?;
+        Ok(image)
+    }
+    /// Check public fields before using an image in an unsafe native buffer copy.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let len = self.width.checked_mul(self.height)
             .and_then(|n| n.checked_mul(4))
             .ok_or("Bildgröße überläuft")?;
-        if width == 0 || height == 0 || len != pixels.len() || len > MAX_BYTES {
+        if self.width == 0 || self.height == 0 || len != self.pixels.len() || len > MAX_BYTES {
             return Err("Ungültige Bildgröße");
         }
-        Ok(Self {
-            width,
-            height,
-            pixels,
-        })
+        Ok(())
     }
+
     /// Rotate clockwise by 90 degrees, as in the original rightward capture.
     pub fn clockwise(&self) -> Self {
         self.rotate(true)
@@ -132,6 +134,15 @@ impl Stitcher {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validates_public_image_fields_before_native_copy() {
+        let image = super::Image { width: 2, height: 2, pixels: vec![0; 15] };
+        assert!(image.validate().is_err());
+        let overflow = super::Image { width: usize::MAX, height: 2, pixels: vec![] };
+        assert!(overflow.validate().is_err());
+        assert!(super::Image::new(2, 2, vec![0; 16]).unwrap().validate().is_ok());
+    }
+
     use super::*;
     fn image(w: usize, rows: &[u8]) -> Image {
         let mut p = Vec::new();

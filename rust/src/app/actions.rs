@@ -1,5 +1,9 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Der Fehler wird als eigener Wert vor dem Dialog entnommen; der Zustandsvertrag bleibt Aufruferpflicht.
+// Nachrichten: MessageBoxW kann Nachrichten verarbeiten.
 pub(super) unsafe fn report_editor_error(h: H) {
     if let Some(error) = editor(h).take_error() {
         MessageBoxW(
@@ -13,6 +17,10 @@ pub(super) unsafe fn report_editor_error(h: H) {
         );
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h und die temporäre Bitmap bleiben während der Clipboard-Ausgabe gültig.
+// Warum erfüllt bzw. offen: Die Bitmap wird nach copy_bitmap freigegeben; der Fensterzustandsvertrag bleibt zu beachten.
+// Nachrichten: Clipboard und Fehlerdialog können Nachrichten auslösen.
 pub(super) unsafe fn copy_current(h: H) {
     if window_state(h).bitmap.is_null() {
         return;
@@ -42,6 +50,10 @@ pub(super) struct ChooseColor {
 extern "system" {
     fn ChooseColorW(cc: *mut ChooseColor) -> i32;
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h bleibt als Dialogbesitzer gültig.
+// Warum erfüllt bzw. offen: Farbe und Farbarray sind eigene Werte, die bis zur Rückkehr leben.
+// Nachrichten: ChooseColorW verarbeitet Nachrichten.
 pub(super) unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes::Color> {
     let current = editor(h).current_style().color;
     let mut custom = [0u32; 16];
@@ -66,6 +78,10 @@ pub(super) unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes
         255,
     ))
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h bleibt gültig und values lebt bis zur Rückkehr.
+// Warum erfüllt bzw. offen: Das lokale Menü wird zerstört und der Ergebnisindex mit get geprüft.
+// Nachrichten: TrackPopupMenu verarbeitet Nachrichten.
 pub(super) unsafe fn choose_number(h: H, values: &[u32]) -> Option<f32> {
     let menu = CreatePopupMenu();
     if menu.is_null() {
@@ -86,6 +102,10 @@ pub(super) unsafe fn choose_number(h: H, values: &[u32]) -> Option<f32> {
         .map(|v| *v as f32)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h bleibt als Menübesitzer gültig.
+// Warum erfüllt bzw. offen: Das Menü ist lokal und das Ergebnis wird auf gültige IDs begrenzt.
+// Nachrichten: SetForegroundWindow und TrackPopupMenu können Nachrichten auslösen.
 pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
     let menu = CreatePopupMenu();
     if menu.is_null() {
@@ -109,6 +129,10 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
     (1..=3).contains(&selected).then_some(selected)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h und der Editor erfüllen den Zustandsvertrag auch nach Dialogen.
+// Warum erfüllt bzw. offen: Dialogwerte und Bild-Arc sind eigenständig; Bitmapfehler werden behandelt.
+// Nachrichten: Dialoge und ReleaseCapture können Nachrichten auslösen.
 pub(super) unsafe fn apply_frame(h: H, action: u32) {
     let width = if action == 2 {
         0
@@ -176,6 +200,10 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h und der Editor erfüllen den Zustandsvertrag über die Auswahl hinweg.
+// Warum erfüllt bzw. offen: Der Stil wird vor dem Dialog geklont und danach neu auf den Editor zugegriffen.
+// Nachrichten: Dialoge und Toolbaraufrufe können Nachrichten auslösen.
 pub(super) unsafe fn edit_style(h: H, id: usize) {
     let selected = editor(h).selection().map(|s| s.style.clone());
     let mut replacement = selected.unwrap_or_else(|| editor(h).current_style().clone());
@@ -223,6 +251,10 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h und der Editor erfüllen den Zustandsvertrag für delegierte Aktionen.
+// Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
+// Nachrichten: Fenster-, Dialog- und Aufnahmeaktionen können Nachrichten auslösen.
 pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),

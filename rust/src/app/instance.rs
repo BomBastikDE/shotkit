@@ -32,6 +32,10 @@ impl Drop for InstanceHandle {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Das zurückgegebene Handle wird genau einmal geschlossen.
+// Warum erfüllt bzw. offen: Der UTF-16-Name lebt bis zur Rückkehr; der RAII-Guard übernimmt ein geprüftes Handle.
+// Nachrichten: Kein expliziter synchroner Fensternachrichtenversand.
 pub(super) unsafe fn create_instance_mutex() -> Result<(InstanceHandle, bool), String> {
     let name = wide(INSTANCE_MUTEX_NAME);
     SetLastError(0);
@@ -47,6 +51,10 @@ pub(super) fn absolute_argument_path(path: PathBuf) -> PathBuf {
     if path.is_absolute() { path } else { std::env::current_dir().unwrap_or_default().join(path) }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Das gefundene Fensterhandle wird als Momentaufnahme behandelt.
+// Warum erfüllt bzw. offen: Der Klassenname ist ein lokaler UTF-16-Puffer; zukünftige Gültigkeit und Identität sind gesondert zu prüfen.
+// Nachrichten: Kein expliziter synchroner Fensternachrichtenversand im geprüften Pfad.
 pub(super) unsafe fn find_primary_window(timeout_ms: u32) -> H {
     let class = wide(INSTANCE_CLASS_NAME);
     let mut waited = 0;
@@ -59,6 +67,10 @@ pub(super) unsafe fn find_primary_window(timeout_ms: u32) -> H {
     null_mut()
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Ohne Pfad ist message für Nullparameter gültig; mit Pfad gilt WM_COPYDATA.
+// Warum erfüllt bzw. offen: Aufrufer verwenden Aktivierung beziehungsweise WM_COPYDATA; Puffer leben bis zur synchronen Rückkehr.
+// Nachrichten: SendMessageTimeoutW kann synchron Nachrichten verarbeiten.
 pub(super) unsafe fn send_to_primary(message: u32, path: Option<&Path>) -> Result<(), String> {
     let window = find_primary_window(5_000);
     if window.is_null() {
@@ -107,6 +119,10 @@ pub(super) unsafe fn send_to_primary(message: u32, path: Option<&Path>) -> Resul
     Ok(())
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Die Verträge von send_to_primary gelten.
+// Warum erfüllt bzw. offen: Es werden nur Aktivierung ohne Pfad und WM_COPYDATA mit besessenem Pfad gesendet.
+// Nachrichten: SendMessageTimeoutW kann synchron Nachrichten verarbeiten.
 pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     if paths.is_empty() {
@@ -118,9 +134,12 @@ pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
     Ok(())
 }
 
-// SAFETY CONTRACT: called only for a synchronous WM_COPYDATA message. Windows
-// supplies a valid COPYDATASTRUCT and payload for the duration of this call;
-// their contents are copied into an owned PathBuf before the modal dialog.
+// SAFETY CONTRACT:
+// Voraussetzung: l zeigt auf eine lesbare, ausgerichtete WM_COPYDATA-Struktur
+// mit lesbarem, für u16 ausgerichtetem Inhalt; h erfüllt den Fensterzustandsvertrag.
+// Warum erfüllt bzw. offen: Windows liefert die Daten synchron; Länge und Null
+// und Payload-Ausrichtung werden geprüft; Lesbarkeit und alle Aufrufer bleiben offen.
+// Nachrichten: Bestätigungs- und Fehlerdialoge verarbeiten Nachrichten.
 pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
     if l == 0 { return 0; }
     let packet = &*(l as *const CopyData);
@@ -129,6 +148,7 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
         || packet.bytes as usize > MAX_IPC_PATH_UNITS * 2
         || packet.bytes % 2 != 0
         || packet.data.is_null()
+        || (packet.data as usize) % std::mem::align_of::<u16>() != 0
     {
         return 0;
     }

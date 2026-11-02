@@ -301,6 +301,10 @@ fn unpack(l: L) -> (i32, i32) {
 /// run off the UI thread.
 ///
 /// The returned rectangle is `(left, top, width, height)` in screen pixels.
+// SAFETY CONTRACT:
+// Voraussetzung: Fenstererzeugung und Nachrichtenverarbeitung erfolgen auf demselben Thread; kein rekursiver Aufruf.
+// Warum erfüllt bzw. offen: SELECTION_LOCK serialisiert Auswahlen; rekursiver Aufruf und Panik über Callback-ABI bleiben auszuschließen.
+// Nachrichten: Fensteranlage, Anzeige, Fokus, Nachrichtenpumpen und Zerstörung können reentrieren.
 pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
     let _guard = SELECTION_LOCK
         .lock()

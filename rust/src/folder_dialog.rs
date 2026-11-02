@@ -92,6 +92,10 @@ mod win32 {
 
     struct ComPtr(*mut c_void);
     impl ComPtr {
+        // SAFETY CONTRACT:
+        // Voraussetzung: raw ist eine übertragene COM-Interface-Referenz im richtigen Apartment.
+        // Warum erfüllt bzw. offen: Null wird geprüft und der RAII-Guard übernimmt die spätere einmalige Freigabe; COM-Herkunft bleibt Aufruferpflicht.
+        // Nachrichten: Kein expliziter Versand hier; späteres COM-Release kann reentrieren.
         unsafe fn from_raw(raw: *mut c_void, description: &str) -> Result<Self, String> {
             if raw.is_null() {
                 Err(format!("{description} returned a null interface"))
@@ -150,6 +154,10 @@ mod win32 {
         format!("{operation} failed (HRESULT 0x{:08X})", code as u32)
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: object ist ein lebendes COM-Objekt mit einem zu T passenden VTable-Layout.
+    // Warum erfüllt bzw. offen: Die Aufrufer beziehen Interfacepointer aus COM; Typ- und Lebensdauervertrag ist nicht dynamisch beweisbar.
+    // Nachrichten: Dieser Zugriff sendet keine Nachrichten; spätere COM-Methoden können reentrieren.
     unsafe fn vtable<T>(object: *mut c_void) -> *const T {
         *(object as *mut *const T)
     }

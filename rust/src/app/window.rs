@@ -1,8 +1,11 @@
 use super::*;
 
-// SAFETY CONTRACT: Windows invokes this procedure on the window's owning
-// thread. WM_NCCREATE installs the boxed state; WM_NCDESTROY clears and drops it.
-// Callback code must not unwind across this ABI boundary.
+// SAFETY CONTRACT:
+// Voraussetzung: Windows ruft mit gültigen Nachrichtenparametern auf dem
+// Besitzerthread auf; Userdata ist null oder zeigt exklusiv auf WindowState.
+// Warum erfüllt bzw. offen: WM_NCCREATE installiert den Zustand, WM_NCDESTROY
+// entfernt ihn vor Freigabe; Panikfreiheit über die ABI-Grenze ist nicht belegt.
+// Nachrichten: Dispatch und DefWindowProcW können synchron Nachrichten auslösen.
 pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     if m == 0x0081 { // WM_NCCREATE
         let state = Box::into_raw(Box::new(WindowState::new()));
@@ -44,6 +47,10 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 { refresh_title(h); }
     result
 }
+// SAFETY CONTRACT:
+// Voraussetzung: proc hat den Fensterzustand geprüft und die Nachrichtenparameter stammen von Windows.
+// Warum erfüllt bzw. offen: proc ist der einzige Aufrufer; Nachricht-spezifische Verträge und Reentranz bleiben gesondert zu prüfen.
+// Nachrichten: Fenster-, Dialog- und Standardprozeduraufrufe können Nachrichten verarbeiten.
 unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
     match m {
         WM_FINISH_QUIT if h == PRIMARY => { DestroyWindow(h); 0 }

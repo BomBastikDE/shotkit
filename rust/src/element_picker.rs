@@ -282,6 +282,10 @@ mod windows {
 
     struct DpiContext(Hwnd);
     impl DpiContext {
+        // SAFETY CONTRACT:
+        // Voraussetzung: Der Guard wird auf demselben Thread und in passender Reihenfolge beendet.
+        // Warum erfüllt bzw. offen: suggest_at hält ihn lokal; der alte DPI-Kontext stammt von Windows.
+        // Nachrichten: Kein expliziter Fensternachrichtenversand.
         unsafe fn enter() -> Option<Self> {
             let previous =
                 SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 as Hwnd);
@@ -319,6 +323,10 @@ mod windows {
         (rect.left, rect.top, rect.right, rect.bottom)
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: hwnd wird als opakes Handle behandelt; Ausgabepuffer sind gültig.
+    // Warum erfüllt bzw. offen: Ein lokales Rect und dessen korrekte Größe werden übergeben; dauerhafte Handle-Identität ist offen.
+    // Nachrichten: Keine allgemeine Reentranzfreiheit bei DWM-Abfragen belegt.
     unsafe fn window_rect(hwnd: Hwnd, extended: bool) -> Option<Rect> {
         let mut rect = Rect {
             left: 0,
@@ -345,6 +353,10 @@ mod windows {
         Some(rect)
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: hwnd ist ein opaker Handlewert und der Ausgabepuffer ist gültig.
+    // Warum erfüllt bzw. offen: DWM erhält einen lokalen u32 mit passender Größe; Fehler belegen keinen unverhüllten Zustand.
+    // Nachrichten: Kein expliziter Nachrichtenversand; Reentranzfreiheit nicht belegt.
     unsafe fn is_cloaked(hwnd: Hwnd) -> bool {
         let mut cloaked: u32 = 0;
         DwmGetWindowAttribute(
@@ -356,6 +368,10 @@ mod windows {
             && cloaked != 0
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: hwnd und exstyle beziehen sich für die Aussage auf dasselbe Fenster.
+    // Warum erfüllt bzw. offen: Ausgabewerte liegen lokal; Fenster und Stil können sich zwischen Abfragen ändern.
+    // Nachrichten: Kein expliziter Nachrichtenversand; Reentranzfreiheit nicht belegt.
     unsafe fn is_hit_test_transparent(hwnd: Hwnd, exstyle: isize) -> bool {
         if exstyle & WS_EX_LAYERED != 0 {
             // WS_EX_TRANSPARENT makes a layered window pass mouse hit tests
@@ -377,6 +393,10 @@ mod windows {
         false
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: hwnd wird als opaker Handlewert behandelt.
+    // Warum erfüllt bzw. offen: Ein lokaler u32 wird beschrieben und das API-Ergebnis geprüft; die Zuordnung kann später veralten.
+    // Nachrichten: Kein expliziter Nachrichtenversand; Reentranzfreiheit nicht belegt.
     unsafe fn process_id(hwnd: Hwnd) -> Option<u32> {
         let mut pid = 0;
         if GetWindowThreadProcessId(hwnd, &mut pid) == 0 || pid == 0 {
@@ -386,6 +406,10 @@ mod windows {
         }
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: param zeigt exklusiv auf eine lebende, ausgerichtete RootSearch; kein Unwind über die Callback-ABI.
+    // Warum erfüllt bzw. offen: EnumWindows erhält einen lokalen Zustand und speichert den Pointer nicht; Panikfreiheit bleibt offen.
+    // Nachrichten: EnumWindows ruft diesen Callback synchron auf; API-Abfragen sind nicht pauschal reentranzfrei.
     unsafe extern "system" fn find_root(hwnd: Hwnd, param: isize) -> i32 {
         let search = &mut *(param as *mut RootSearch);
         if hwnd.is_null()
@@ -411,6 +435,10 @@ mod windows {
         1
     }
 
+    // SAFETY CONTRACT:
+    // Voraussetzung: search bleibt exklusiv geliehen und HWNDs sind opake Handles.
+    // Warum erfüllt bzw. offen: Lokaler Suchzustand wird rekursiv neu geborrowt; Grenzen verhindern endlose Suche, nicht veraltete Fensterdaten.
+    // Nachrichten: Kein expliziter Nachrichtenversand; allgemeine Reentranzfreiheit nicht belegt.
     unsafe fn collect_topmost_child(
         parent: Hwnd,
         parent_rect: Rect,

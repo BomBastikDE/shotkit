@@ -2,6 +2,10 @@
 
 Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.9` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
 
+## Nach der Beta
+
+- Den globalen `static mut STATE` des Auswahl-Overlays durch fenstergebundenen Zustand (`GWLP_USERDATA`) oder thread-lokalen Zustand ersetzen. Das soll Zuständigkeit und Lebensdauer des Zustands klarer machen und die Prüfung verschachtelter Windows-Nachrichten erleichtern; die konkrete Lösung wird nach der Beta festgelegt.
+
 ## Bestehende ShotKit-Funktionen für die Portierung
 
 - Tray-Menü, Einzelinstanz, globale Tastenkürzel und verzögerte Aufnahme.

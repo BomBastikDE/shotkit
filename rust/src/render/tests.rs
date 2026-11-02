@@ -19,6 +19,10 @@
 
     #[cfg(windows)]
     impl DibCanvas {
+        // SAFETY CONTRACT:
+        // Voraussetzung: Maße sind positiv, passen in i32 und width*height*4 überläuft nicht; GDI-Arbeit ist synchronisiert.
+        // Warum erfüllt bzw. offen: Aktuelle Tests nutzen feste kleine Maße; der Konstruktor selbst prüft diese Grenzen nicht vollständig.
+        // Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
         unsafe fn new(width: usize, height: usize, bgra: [u8; 4]) -> Self {
             let dc = CreateCompatibleDC(null_mut());
             assert!(!dc.is_null(), "CreateCompatibleDC failed");

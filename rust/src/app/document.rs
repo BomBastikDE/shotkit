@@ -37,6 +37,10 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     result
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebender Editor auf dem UI-Thread.
+// Warum erfüllt: Die Aktion wird aus der Fensterbehandlung für das eigene Fenster aufgerufen; Reentranz wird noch geprüft.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     let _modal = ModalGuard::new(h);
     cancel_gesture(h);
@@ -80,6 +84,10 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
         }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein gültiger Besitzer für synchrone Dialoge.
+// Warum zu prüfen: Neben dem Tray-Ablauf gibt es WM_CLOSE; deren Reentranzschutz ist noch nicht vollständig belegt.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn resolve_recovery(h: H) -> bool {
     loop {
         if RECOVERY
@@ -133,6 +141,10 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
         }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h und sein Editorzustand leben während der synchronen Bestätigung.
+// Warum erfüllt: Aufruf für eigene Fenster im guarded Nachrichtenhandler; Reentranz muss insgesamt geprüft bleiben.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn confirm_replace(h: H) -> bool {
     let _modal = ModalGuard::new(h);
     cancel_gesture(h);
@@ -150,6 +162,10 @@ pub(super) unsafe fn confirm_replace(h: H) -> bool {
         _ => false,
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster auf dem UI-Thread.
+// Warum erfüllt: Aufruf aus der eigenen Ereignisbehandlung; Clipboard-Ressourcen werden im Clipboard-Modul verwaltet.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn paste_image(h: H) {
     match clipboard::read_image(h) {
         Ok(Some(image)) => {
@@ -170,6 +186,10 @@ pub(super) unsafe fn paste_image(h: H) {
         }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebender Besitzer für den Dateidialog.
+// Warum erfüllt: Aufruf aus dem eigenen Fensterhandler, der den modalen Ablauf schützt.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn open_image(h: H) {
     let path = match file_dialog::open(h) {
         Ok(Some(p)) => p,
@@ -183,6 +203,10 @@ pub(super) unsafe fn open_image(h: H) {
         MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster auf dem UI-Thread.
+// Warum erfüllt: Aufrufer sind Einzelinstanz- und Editorabläufe; path ist ein besitzender Wert.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
     let result = (|| -> Result<Image, String> {
         let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -205,6 +229,10 @@ pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> 
         Err(e) => Err(e),
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: Die Fensterklasse ist auf dem aktuellen UI-Thread registriert.
+// Warum erfüllt: run registriert die Klasse vor dem Erzeugen; Fehler aus CreateWindow und Toolbar werden geprüft.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn create_editor_window() -> Result<H, String> {
     let class = wide("ShotKitRustEditor");
     let h = CreateWindowExW(0, class.as_ptr(), wide("ShotKit Rust").as_ptr(),
@@ -220,6 +248,10 @@ pub(super) unsafe fn create_editor_window() -> Result<H, String> {
     drop(previous);
     Ok(h)
 }
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf erfolgt auf dem UI-Thread nach Klassenregistrierung.
+// Warum erfüllt: Der Editorablauf verwaltet Fensteranlage und übergibt den Bildpuffer als eigenen Wert.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn display_image(_owner: H, image: Image) -> Result<H, String> {
     if QUITTING.load(Ordering::SeqCst) {
         RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).push(image);
@@ -243,6 +275,10 @@ pub(super) unsafe fn display_image(_owner: H, image: Image) -> Result<H, String>
         Err(error) => { DestroyWindow(h); Err(error) }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein neu erzeugtes eigenes Editorfenster.
+// Warum erfüllt: create_editor_window installiert den Zustand, bevor der Aufrufer diese Funktion ausführt.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> {
     let bmp = match create_bitmap(&image) {
         Ok(bmp) => bmp,
@@ -283,6 +319,10 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
     InvalidateRect(h, std::ptr::null(), 1);
     Ok(())
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h besitzt einen lebenden Editorzustand auf dem UI-Thread.
+// Warum erfüllt: Aufruf aus dem Mausereignis des eigenen Fensters; die Bildlogik prüft die Grenzen.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
     let x = a.0.min(b.0);
     let y = a.1.min(b.1);
@@ -338,6 +378,10 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         );
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h besitzt einen lebenden Editorzustand auf dem UI-Thread.
+// Warum erfüllt: Aufruf aus der Nachrichtenbehandlung des eigenen Fensters; Bitmap-Fehler werden behandelt.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 pub(super) unsafe fn history(h: H, redo: bool) {
     cancel_gesture(h);
     let before = editor(h).image_arc();

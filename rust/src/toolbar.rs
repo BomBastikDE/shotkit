@@ -205,6 +205,10 @@ fn layout(width: i32) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
     shotkit_rust_prototype::toolbar_layout::layout(width, ACTIONS.len())
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Windows liefert gültiges HWND und nachrichtenspezifisch gültige, ausgerichtete Strukturen; kein Unwind über die ABI.
+// Warum erfüllt bzw. offen: Registrierung verwendet diesen Callback; fremd zugestellte Pointer und Panikfreiheit sind nicht vollständig beweisbar.
+// Nachrichten: SendMessageW und DefWindowProcW können synchron reentrieren.
 unsafe extern "system" fn toolbar_proc(
     hwnd: Hwnd,
     message: u32,
@@ -283,6 +287,10 @@ unsafe extern "system" fn toolbar_proc(
     DefWindowProcW(hwnd, message, wparam, lparam)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: instance ist ein gültiges Modulhandle; Callback bleibt während der Klassenlebensdauer gültig.
+// Warum erfüllt bzw. offen: create prüft GetModuleHandleW; Identität einer bereits existierenden Klasse bleibt offen.
+// Nachrichten: Kein expliziter Nachrichtenversand; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn register_class(instance: Hinstance) -> bool {
     let class_name = wide(CLASS_NAME);
     let class = WndClassW {
@@ -314,6 +322,10 @@ pub struct Toolbar {
 
 /// Update the highlighted tool to match a tool change made by the editor,
 /// including keyboard shortcuts and automatic transitions back to selection.
+// SAFETY CONTRACT:
+// Voraussetzung: parent und zugehörige Toolbar-Handles sind auf dem UI-Thread gültig und nicht wiederverwendet.
+// Warum erfüllt bzw. offen: Einträge entstehen in create und werden bei WM_NCDESTROY entfernt; vollständige Handlelebensdauer bleibt offen.
+// Nachrichten: User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub unsafe fn set_active(parent: *mut c_void, id: usize) {
     if !ACTIONS.iter().any(|a| a.id == id && a.tool) { return; }
     if let Ok(mut active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
@@ -325,6 +337,10 @@ pub unsafe fn set_active(parent: *mut c_void, id: usize) {
 }
 
 /// Update the color swatch from the editor's current RGB drawing color.
+// SAFETY CONTRACT:
+// Voraussetzung: parent und zugehörige Toolbar-Handles sind auf dem UI-Thread gültig und nicht wiederverwendet.
+// Warum erfüllt bzw. offen: Einträge entstehen in create und werden bei WM_NCDESTROY entfernt; vollständige Handlelebensdauer bleibt offen.
+// Nachrichten: User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub unsafe fn set_color(parent: *mut c_void, red: u8, green: u8, blue: u8) {
     let colorref = (red as u32) | ((green as u32) << 8) | ((blue as u32) << 16);
     if let Ok(mut colors) = CURRENT_COLORS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
@@ -341,6 +357,10 @@ pub unsafe fn set_color(parent: *mut c_void, red: u8, green: u8, blue: u8) {
 impl Toolbar {
     /// Reflow buttons into as many columns as fit while keeping multiple rows
     /// when the parent is narrow. The toolbar window's height is updated too.
+    // SAFETY CONTRACT:
+    // Voraussetzung: self und native Toolbar-/Buttonfenster leben über alle verschachtelten Nachrichten.
+    // Warum erfüllt bzw. offen: Der Fensterhandler klont Rc vor dem Aufruf; die Lebensdauer nativer HWNDs bei Parentabbau bleibt offen.
+    // Nachrichten: SetWindowPos kann synchron Nachrichten auslösen.
     pub unsafe fn resize(&self, width: i32) {
         let width = width.max(1);
         let (_, height, positions) = layout(width);
@@ -385,6 +405,10 @@ impl Drop for Toolbar {
 ///
 /// `WM_COMMAND.wParam` contains the ID in its low word and `BN_CLICKED` in its
 /// high word; `lParam` is the clicked button HWND.
+// SAFETY CONTRACT:
+// Voraussetzung: parent ist ein lebendes eigenes Fenster auf dem UI-Thread und zustandsseitig callbackbereit.
+// Warum erfüllt bzw. offen: Der Aufrufer erstellt das Fenster zuerst; Tooltiptexte bleiben in Toolbar gespeichert, Handlelebensdauer bei Reentranz bleibt offen.
+// Nachrichten: CreateWindowExW, SendMessageW und DestroyWindow können synchron reentrieren.
 pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
     if parent.is_null() || IsWindow(parent) == 0 {
         return Err("Ungültiges Editor-Fenster".into());

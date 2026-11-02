@@ -1,3 +1,7 @@
+mod region;
+use region::*;
+mod config;
+use config::*;
 mod instance;
 use instance::*;
 mod capture;
@@ -319,24 +323,37 @@ impl WindowState {
 static mut PRIMARY: H = null_mut();
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
 static QUITTING: AtomicBool = AtomicBool::new(false);
-// SAFETY CONTRACT: h must be an owned, live window whose WM_NCCREATE installed
-// WindowState. Access is limited to its UI thread; callers must not retain a
-// mutable reference across another borrow, a reentrant Win32 call, or destruction.
-// The 'static return type does not enforce these rules; callers require audit.
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster mit initialisiertem Zustand;
+// Zugriff nur auf dem UI-Thread, ohne überlappenden Borrow oder Reentranz.
+// Warum noch nicht belegt: Der Rückgabetyp &'static mut erzwingt diese Regeln nicht;
+// alle Aufrufer und verschachtelten Nachrichten müssen daraufhin geprüft werden.
+// Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn window_state(h: H) -> &'static mut WindowState {
     &mut *(GetWindowLongPtrW(h, -21) as *mut WindowState)
 }
-// SAFETY CONTRACT: the same window lifetime, thread and exclusive-borrow rules
-// as window_state apply to the returned controller.
+// SAFETY CONTRACT:
+// Voraussetzung: Dieselben Lebensdauer-, Thread- und Exklusivitätsregeln wie
+// bei window_state gelten für den zurückgegebenen Editor.
+// Warum noch nicht belegt: Reentranz und alle Aufrufer sind nicht vollständig geprüft.
+// Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn editor(h: H) -> &'static mut EditorController {
     window_state(h).editor.get_or_insert_with(EditorController::new)
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h besitzt einen lebenden WindowState auf dem UI-Thread.
+// Warum erfüllt: Aufruf aus der Bearbeitung eines eigenen Fensters; Borrow bleibt kurz.
+// Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn toolbar_height(h: H) -> i32 {
     window_state(h).toolbar.as_ref().map_or(0, |bar| bar.height())
 }
 // Do not retain a Rust borrow across a Win32 dialog/message pump.
 struct ModalGuard(H);
 impl ModalGuard {
+    // SAFETY CONTRACT:
+    // Voraussetzung: h bleibt bis zum Ende des Guards auf dem UI-Thread am Leben.
+    // Warum erfüllt: der Nachrichtenhandler schützt den modalen Vorgang vor Schließen.
+    // Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
     unsafe fn new(h: H) -> Self {
         window_state(h).modal_depth += 1;
         Self(h)
@@ -347,9 +364,17 @@ impl Drop for ModalGuard {
         unsafe { window_state(self.0).modal_depth -= 1; }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: EDITOR_WINDOWS wird nur auf dem UI-Thread verändert.
+// Warum erfüllt: Fenstereinrichtung und -zerstörung erfolgen im Nachrichtenhandler.
+// Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn editor_windows() -> Vec<H> {
     (&*std::ptr::addr_of!(EDITOR_WINDOWS)).clone()
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
+// Warum erfüllt: Aufruf für eigene Editorfenster; der Titel besitzt seine Daten vor dem Win32-Aufruf.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 unsafe fn refresh_title(h: H) {
     let state = window_state(h);
     let name = state.current_path.as_ref().map(|p| p.display().to_string())
@@ -358,6 +383,10 @@ unsafe fn refresh_title(h: H) {
     let title = format!("{}{} – ShotKit Rust{} · Strg+S speichern", if state.dirty { "* " } else { "" }, name, tool);
     SetWindowTextW(h, wide(&title).as_ptr());
 }
+// SAFETY CONTRACT:
+// Voraussetzung: Fensterliste und PRIMARY gehören zum aktiven UI-Thread.
+// Warum erfüllt: der Aufruf erfolgt aus der Nachrichtenbehandlung der Anwendung.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 unsafe fn show_editors() {
     if QUITTING.load(Ordering::SeqCst) { return; }
     let mut windows = editor_windows();
@@ -377,6 +406,10 @@ unsafe fn show_editors() {
     for h in &windows { ShowWindow(*h, 9); } // SW_RESTORE also restores minimized editors
     if let Some(h) = windows.last() { SetForegroundWindow(*h); }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h und alle gelisteten Fenster gehören zum UI-Thread.
+// Warum erfüllt: die Liste enthält ausschließlich von der Anwendung erzeugte Fenster.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
 unsafe fn quit_application(h: H) {
     if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
         MessageBoxW(h, wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
@@ -394,113 +427,6 @@ unsafe fn quit_application(h: H) {
         PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0);
     } else {
         QUITTING.store(false, Ordering::SeqCst);
-    }
-}
-fn active_settings() -> Settings {
-    SETTINGS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
-        .unwrap_or_default()
-}
-unsafe fn load_settings(h: H) {
-    let result = settings::settings_path().and_then(settings::load_or_default);
-    match result {
-        Ok(value) => {
-            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
-            SETTINGS_WRITABLE.store(true, Ordering::SeqCst);
-        }
-        Err(e) => {
-            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
-            SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
-            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
-        }
-    }
-}
-unsafe fn save_settings(h: H, new: Settings) -> bool {
-    if !SETTINGS_WRITABLE.load(Ordering::SeqCst) {
-        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die vorhandene Datei nicht lesbar ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
-        return false;
-    }
-    let result = settings::settings_path().and_then(|path| settings::save_atomic(path, &new));
-    match result {
-        Ok(()) => {
-            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
-            true
-        }
-        Err(e) => {
-            MessageBoxW(
-                h,
-                wide(&format!(
-                    "Einstellungen konnten nicht gespeichert werden: {e}"
-                ))
-                .as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
-                0x10,
-            );
-            false
-        }
-    }
-}
-unsafe fn cancel_gesture(h: H) {
-    let had_capture = window_state(h).drawing;
-    window_state(h).drawing = false;
-    window_state(h).crop_start = None;
-    window_state(h).crop_end = None;
-    if let Some(state) = (&mut window_state(h).editor).as_mut() {
-        state.cancel_drag();
-    }
-    if had_capture {
-        ReleaseCapture();
-    }
-}
-unsafe fn open_storage_folder(h: H) {
-    let Some(folder) = active_settings().save_folder else {
-        MessageBoxW(
-            h,
-            wide("Es ist kein Speicherordner eingestellt. Wählen Sie zuerst unter Einstellungen einen Speicherordner.").as_ptr(),
-            wide("Speicherordner öffnen").as_ptr(),
-            0x30,
-        );
-        return;
-    };
-    match std::fs::metadata(&folder) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            MessageBoxW(
-                h,
-                wide(&format!("Der eingestellte Speicherpfad ist kein Ordner:\n{}", folder.display())).as_ptr(),
-                wide("Speicherordner öffnen").as_ptr(),
-                0x10,
-            );
-            return;
-        }
-        Err(error) => {
-            MessageBoxW(
-                h,
-                wide(&format!("Der eingestellte Speicherordner ist nicht verfügbar:\n{}\n\n{error}", folder.display())).as_ptr(),
-                wide("Speicherordner öffnen").as_ptr(),
-                0x10,
-            );
-            return;
-        }
-    }
-    let path: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
-    let result = ShellExecuteW(
-        h,
-        wide("open").as_ptr(),
-        path.as_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        5,
-    );
-    if result as usize <= 32 {
-        MessageBoxW(
-            h,
-            wide(&format!("Windows konnte den Speicherordner nicht öffnen:\n{}\n\nShellExecuteW meldete Fehlercode {}.", folder.display(), result as usize)).as_ptr(),
-            wide("Speicherordner öffnen").as_ptr(),
-            0x10,
-        );
     }
 }
 pub(crate) fn run() {

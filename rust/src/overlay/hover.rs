@@ -21,10 +21,18 @@ pub(super) fn cursor_screen(l: L, origin: (i32, i32)) -> Point {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: GetKeyState wird mit einem gültigen Tastencode aufgerufen.
+// Warum erfüllt bzw. offen: VK_CONTROL ist eine Konstante; keine fremden Pointer werden übergeben.
+// Nachrichten: Kein expliziter Nachrichtenversand.
 pub(super) unsafe fn is_control_down() -> bool {
     (GetKeyState(VK_CONTROL) as u16 & 0x8000) != 0
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: GetKeyState wird mit einem gültigen Tastencode aufgerufen.
+// Warum erfüllt bzw. offen: VK_SHIFT ist eine Konstante; keine fremden Pointer werden übergeben.
+// Nachrichten: Kein expliziter Nachrichtenversand.
 pub(super) unsafe fn is_shift_down() -> bool {
     (GetKeyState(VK_SHIFT) as u16 & 0x8000) != 0
 }
@@ -42,6 +50,10 @@ pub(super) fn root_candidate(s: &State) -> Option<(i32, i32, i32, i32)> {
     s.candidates.iter().find(|c| c.is_top_level).map(|c| c.rect)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig, initialisiert und für die Dauer exklusiv auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Der Aufrufer verwendet den serialisierten Overlay-Zustand; submit übergibt Werte an den Worker.
+// Nachrichten: Kein geprüfter synchroner Fensteraufruf im Borrow.
 pub(super) unsafe fn update_hover(state: *mut State, point: Point) {
     let s = &mut *state;
     s.current = point;
@@ -68,6 +80,10 @@ pub(super) unsafe fn update_hover(state: *mut State, point: Point) {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und alle Änderungen erfolgen exklusiv auf dem Overlay-Thread.
+// Warum erfüllt bzw. offen: Workerantworten sind eigene Werte; Borrows enden vor weiteren Zustandsaktionen.
+// Nachrichten: Kein expliziter synchroner Fensteraufruf im geprüften Pfad.
 pub(super) unsafe fn poll_window(state: *mut State) -> Option<H> {
     let scan = {
         let s = &*state;
@@ -149,6 +165,10 @@ pub(super) unsafe fn poll_window(state: *mut State) -> Option<H> {
     Some(null_mut())
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und exklusiv auf dem Overlay-Thread.
+// Warum erfüllt bzw. offen: Nur kopierte Rechtecke und Zustandsfelder werden verwendet; GetKeyState erfolgt vorher.
+// Nachrichten: Kein expliziter synchroner Fensteraufruf im geprüften Pfad.
 pub(super) unsafe fn choose_hover(state: *mut State) {
     let control_down = is_control_down();
     let s = &mut *state;
@@ -180,6 +200,10 @@ pub(super) unsafe fn choose_hover(state: *mut State) {
     ));
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und exklusiv auf dem Overlay-Thread.
+// Warum erfüllt bzw. offen: Der Worker liefert eigene Werte; der letzte Borrow endet vor choose_hover.
+// Nachrichten: Kein expliziter synchroner Fensteraufruf im geprüften Pfad.
 pub(super) unsafe fn poll_uia(state: *mut State) -> bool {
     let response = {
         let s = &*state;
@@ -213,6 +237,10 @@ pub(super) unsafe fn poll_uia(state: *mut State) -> bool {
     true
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und exklusiv auf dem Overlay-Thread.
+// Warum erfüllt bzw. offen: Der Zustand wird geändert und nur ein kopiertes Handle zurückgegeben.
+// Nachrichten: Kein Fensteraufruf im Funktionskörper.
 pub(super) unsafe fn mark_finished(state: *mut State, result: Option<(i32, i32, i32, i32)>) -> H {
     let s = &mut *state;
     s.result = result.filter(|rect| valid_rect(*rect));

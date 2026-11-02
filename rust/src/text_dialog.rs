@@ -160,6 +160,10 @@ impl Drop for OwnerGuard {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: hwnd ist ein gültiges Edit-Fenster; der Ausgabepuffer fasst die angefragten UTF-16-Zeichen.
+// Warum erfüllt bzw. offen: Die Größe wird geprüft und der Puffer lokal für die Dauer des Aufrufs gehalten.
+// Nachrichten: GetWindowText kann synchron Kontrollnachrichten auslösen.
 unsafe fn read_text(hwnd: Hwnd) -> Option<String> {
     let length = GetWindowTextLengthW(hwnd);
     if length < 0 {
@@ -175,15 +179,31 @@ unsafe fn read_text(hwnd: Hwnd) -> Option<String> {
     Some(String::from_utf16_lossy(&text))
 }
 
-unsafe fn complete(hwnd: Hwnd, state: &mut DialogState, accepted: bool) {
-    if accepted {
-        state.result = read_text(state.edit);
-        state.accepted = state.result.is_some();
+// SAFETY CONTRACT:
+// Voraussetzung: state zeigt auf lebenden DialogState und hwnd gehört zu diesem Dialog.
+// Warum erfüllt bzw. offen: Das Edit-Handle wird vor read_text kopiert; der State-Borrow endet vor DestroyWindow.
+// Nachrichten: Textabfrage und Zerstörung können synchron Nachrichten auslösen.
+unsafe fn complete(hwnd: Hwnd, state: *mut DialogState, accepted: bool) {
+    // Copy the handle first: read_text sends messages which can reenter this
+    // procedure, so no DialogState reference may be alive during that call.
+    let edit = (*state).edit;
+    let result = if accepted { read_text(edit) } else { None };
+    {
+        let state = &mut *state;
+        if accepted {
+            state.accepted = result.is_some();
+            state.result = result;
+        }
+        state.done = true;
     }
-    state.done = true;
+    // The state borrow ends before synchronous destruction can reenter.
     DestroyWindow(hwnd);
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Windows liefert gültige Callbackparameter; Userdata zeigt auf lebenden DialogState.
+// Warum erfüllt bzw. offen: prompt hält den State während der modalen Schleife; Panikfreiheit über die ABI ist nicht belegt.
+// Nachrichten: Erzeugung, Kontrollnachrichten und Zerstörung können synchron reentrieren.
 unsafe extern "system" fn dialog_proc(
     hwnd: Hwnd,
     message: u32,
@@ -223,7 +243,6 @@ unsafe extern "system" fn dialog_proc(
             if ptr.is_null() {
                 return -1;
             }
-            let state = &mut *ptr;
             let edit_class = wide("EDIT");
             let button_class = wide("BUTTON");
             let edit = CreateWindowExW(
@@ -243,7 +262,7 @@ unsafe extern "system" fn dialog_proc(
             if edit.is_null() {
                 return -1;
             }
-            state.edit = edit;
+            (*ptr).edit = edit;
             let ok = wide("OK");
             let cancel = wide("Abbrechen");
             let ok_hwnd = CreateWindowExW(
@@ -281,37 +300,42 @@ unsafe extern "system" fn dialog_proc(
             SendMessageW(edit, WM_SETFONT, font as usize, 1);
             SendMessageW(ok_hwnd, WM_SETFONT, font as usize, 1);
             SendMessageW(cancel_hwnd, WM_SETFONT, font as usize, 1);
-            let initial = wide(&state.result.take().unwrap_or_default());
+            // SetWindowTextW may notify the parent synchronously. Do not
+            // retain a DialogState borrow while that notification runs.
+            let initial = wide(&(*ptr).result.take().unwrap_or_default());
             SetWindowTextW(edit, initial.as_ptr());
-            state.result = None;
+            (*ptr).result = None;
             SetFocus(edit);
             0
         }
         WM_COMMAND if !ptr.is_null() => {
             let id = wparam & 0xffff;
-            let state = &mut *ptr;
             if id == ID_OK {
-                complete(hwnd, state, true);
+                complete(hwnd, ptr, true);
                 return 0;
             }
             if id == ID_CANCEL {
-                complete(hwnd, state, false);
+                complete(hwnd, ptr, false);
                 return 0;
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_KEYDOWN if wparam == 0x1b && !ptr.is_null() => {
-            complete(hwnd, &mut *ptr, false);
+            complete(hwnd, ptr, false);
             0
         }
         WM_CLOSE if !ptr.is_null() => {
-            complete(hwnd, &mut *ptr, false);
+            complete(hwnd, ptr, false);
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: instance ist ein gültiges Modulhandle; eine bestehende Klasse entspricht diesem Callback.
+// Warum erfüllt bzw. offen: Der Aufrufer nutzt GetModuleHandleW; Identität einer bereits vorhandenen Klasse bleibt zu prüfen.
+// Nachrichten: Kein expliziter Nachrichtenversand im Funktionskörper.
 unsafe fn ensure_class(instance: Hinstance) -> bool {
     let name = wide("ShotKitRustTextEntryDialog");
     let class = WndClassW {
@@ -334,6 +358,10 @@ unsafe fn ensure_class(instance: Hinstance) -> bool {
 
 /// Show a modal Unicode text-entry window. `None` means cancel or a Win32 error;
 /// `Some("")` is a valid accepted empty string. Call on the owner's UI thread.
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges eigenes Fenster; modale Reentranz ist zulässig.
+// Warum erfüllt bzw. offen: Der State lebt bis zum Ende der Nachrichtenschleife; vollständige Threadzugehörigkeit ist nicht geprüft.
+// Nachrichten: Fensteranlage, Aktivierung, Schleife und Zerstörung können Nachrichten auslösen.
 pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
     if !owner.is_null() && IsWindow(owner) == 0 {
         return None;

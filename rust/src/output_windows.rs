@@ -435,6 +435,10 @@ pub fn copy_image_to_clipboard(owner: *mut c_void, image: &Image) -> Result<(), 
 /// Transfers an existing 32-bit BGRA DIB section without creating an Image
 /// copy. The source is only read; ownership remains with the caller.
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: pixels zeigt auf ausreichend viele initialisierte, unveränderte BGRA-Bytes mit passendem Stride und Orientierung.
+// Warum erfüllt bzw. offen: Maße und Stride werden geprüft; Allokationslebensdauer und GDI-Synchronisation sind Aufruferpflicht.
+// Nachrichten: Clipboard-APIs können synchron Nachrichten auslösen; Quellpixel werden zuvor kopiert.
 pub unsafe fn copy_dib_section_to_clipboard(
     owner: *mut c_void,
     pixels: *const u8,
@@ -447,6 +451,10 @@ pub unsafe fn copy_dib_section_to_clipboard(
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: Der Quellpuffer erfüllt den BGRA- und Lebensdauervertrag; owner ist für Clipboard-Veröffentlichung geeignet.
+// Warum erfüllt bzw. offen: Rohpixel werden vor Clipboard-Aufrufen kopiert; HGLOBAL-Ownership wird nach Übergabe beachtet.
+// Nachrichten: Clipboard-APIs können synchron Nachrichten auslösen.
 unsafe fn copy_bgra_clipboard(
     owner: *mut c_void,
     pixels: *const u8,

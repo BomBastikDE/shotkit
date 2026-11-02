@@ -1,8 +1,11 @@
 use super::*;
 
-// SAFETY CONTRACT: Windows supplies the HWND and message parameters on the
-// overlay's UI thread while select owns the serialized overlay state.
-// Callback code must not unwind across the system ABI.
+// SAFETY CONTRACT:
+// Voraussetzung: Windows ruft auf dem Besitzerthread mit gültigen Parametern auf;
+// der initialisierte Overlayzustand lebt bis zum Ende des Callbacks.
+// Warum erfüllt bzw. offen: select verwaltet Fenster und Zustand; Panikfreiheit
+// über die Callback-ABI ist noch nicht vollständig belegt.
+// Nachrichten: Capture, Zerstörung und DefWindowProcW können reentrieren.
 pub(super) unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
     let state = std::ptr::addr_of_mut!(STATE);
     match msg {

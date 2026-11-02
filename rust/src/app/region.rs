@@ -1,0 +1,313 @@
+use super::*;
+
+// SAFETY CONTRACT:
+// Voraussetzung: h bleibt über Auswahl und modal verschachtelte Nachrichten gültig.
+// Warum erfüllt bzw. offen: Die Funktion wird vom Fensterhandler aufgerufen; vollständiger Reentranznachweis steht noch aus.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+pub(super) unsafe fn capture_region(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let _busy = BusyGuard(true);
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    let Some((x, y, w, height)) = overlay::select() else {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        return;
+    };
+    let Some(rect) = last_region::Rect::from_origin_size(x, y, w, height) else {
+        if was_visible { ShowWindow(h, 5); }
+        MessageBoxW(h, wide("Die Auswahl hat ungültige Bildschirmgrenzen.").as_ptr(), wide("Bereichsaufnahme").as_ptr(), 0x10);
+        return;
+    };
+    capture_region_rect(h, rect, true, was_visible);
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h und rect bleiben während der Auswahl-/Ausgabeoperation gültig.
+// Warum erfüllt bzw. offen: rect ist ein besitzender Wert; die Lebensdauer von h bei Reentranz ist noch zu belegen.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+pub(super) unsafe fn capture_region_rect(
+    h: H,
+    rect: last_region::Rect,
+    remember_on_success: bool,
+    was_visible: bool,
+) {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    if !remember_on_success {
+        let monitors = match current_monitor_rects() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                if was_visible {
+                    ShowWindow(h, 5);
+                }
+                MessageBoxW(
+                    h,
+                    wide(&error).as_ptr(),
+                    wide("Bereich erneut aufnehmen").as_ptr(),
+                    0x10,
+                );
+                return;
+            }
+        };
+        if !last_region::fully_covered_by_monitors(rect, &monitors) {
+            if was_visible {
+                ShowWindow(h, 5);
+            }
+            MessageBoxW(
+                h,
+                wide("Der gespeicherte Bereich liegt nicht mehr vollständig auf den aktuell angeschlossenen Bildschirmen. Wähle den Bereich erneut aus.").as_ptr(),
+                wide("Bereich erneut aufnehmen").as_ptr(),
+                0x30,
+            );
+            return;
+        }
+    }
+    let image = scroll_windows::WindowsScrollIo::new(
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        0,
+    )
+    .and_then(|mut io| io.capture());
+    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        Ok(()) => {
+            if remember_on_success {
+                *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);
+            }
+        }
+        Err(e) => {
+            if was_visible {
+                ShowWindow(h, 5);
+            }
+            MessageBoxW(
+                h,
+                wide(&e).as_ptr(),
+                wide("Bereichsaufnahme").as_ptr(),
+                0x10,
+            );
+        }
+    }
+}
+
+pub(super) struct MonitorList {
+    rects: Vec<last_region::Rect>,
+    failed: bool,
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: data zeigt exklusiv auf eine lebende MonitorList.
+// Warum erfüllt: current_monitor_rects übergibt die lokale Liste an den synchronen
+// EnumDisplayMonitors-Aufruf; der Callback speichert den Zeiger nicht.
+// Nachrichten: EnumDisplayMonitors ruft diesen Callback synchron auf.
+pub(super) unsafe extern "system" fn collect_monitor(
+    monitor: H,
+    _dc: H,
+    _rect: *mut Rect,
+    data: L,
+) -> i32 {
+    let list = &mut *(data as *mut MonitorList);
+    let mut info: MonitorInfo = zeroed();
+    info.size = size_of::<MonitorInfo>() as u32;
+    if GetMonitorInfoW(monitor, &mut info) == 0 {
+        list.failed = true;
+        return 0;
+    }
+    list.rects.push(last_region::Rect {
+        left: info.monitor.left,
+        top: info.monitor.top,
+        right: info.monitor.right,
+        bottom: info.monitor.bottom,
+    });
+    1
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: Der Callback-Pointer ist während EnumDisplayMonitors gültig und exklusiv.
+// Warum erfüllt: Die lokale Liste lebt bis zum synchronen Rücksprung und wird nicht gespeichert.
+// Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
+pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, String> {
+    let mut list = MonitorList {
+        rects: Vec::new(),
+        failed: false,
+    };
+    let enumerated = EnumDisplayMonitors(
+        null_mut(),
+        std::ptr::null(),
+        Some(collect_monitor),
+        &mut list as *mut _ as L,
+    );
+    if enumerated == 0 || list.failed || list.rects.is_empty() {
+        return Err("Die aktuellen Monitorgrenzen konnten nicht zuverlässig gelesen werden.".into());
+    }
+    Ok(list.rects)
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster; gespeicherte Koordinaten sind gültig.
+// Warum erfüllt bzw. offen: Der Handler übergibt h; Monitorgrenzen werden vor Wiederholung geprüft.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+pub(super) unsafe fn repeat_last_region(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let _busy = BusyGuard(true);
+    let Some(rect) = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) else {
+        MessageBoxW(
+            h,
+            wide("Es wurde in dieser Sitzung noch kein Aufnahmebereich erfolgreich aufgenommen.").as_ptr(),
+            wide("Bereich erneut aufnehmen").as_ptr(),
+            0x30,
+        );
+        return;
+    };
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    capture_region_rect(h, rect, false, was_visible);
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h lebt während der modalen Auswahl und des Starts des Workers.
+// Warum erfüllt bzw. offen: BusyGuard serialisiert die Aufnahme; die übrigen Reentranzpfade müssen noch geprüft werden.
+// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+pub(super) unsafe fn start_scroll(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let mut busy = BusyGuard(true);
+    let previous_direction = active_settings().scroll_direction;
+    let previous_label = match previous_direction {
+        settings::ScrollDirection::Down => "nach unten",
+        settings::ScrollDirection::Right => "nach rechts",
+        settings::ScrollDirection::Left => "nach links",
+    };
+    let first_default = if previous_direction == settings::ScrollDirection::Down {
+        0
+    } else {
+        0x0100 // MB_DEFBUTTON2: horizontal choice
+    };
+    let prompt = wide(&format!(
+        "Scroll-Aufnahme (experimentell):\nJa = nach unten, Nein = nach rechts oder links, Abbrechen = schließen.\nZuletzt verwendet: {previous_label}.\nDanach den Inhaltsbereich mit der Maus aufziehen; Esc bricht ab."
+    ));
+    let choice = MessageBoxW(
+        h,
+        prompt.as_ptr(),
+        wide("Scroll-Richtung").as_ptr(),
+        0x23 | first_default,
+    );
+    let direction = match choice {
+        6 => Direction::Down,
+        7 => {
+            let second_default = match previous_direction {
+                settings::ScrollDirection::Left => 0x0100, // MB_DEFBUTTON2: left choice
+                settings::ScrollDirection::Down | settings::ScrollDirection::Right => 0,
+            };
+            match MessageBoxW(
+                h,
+                wide("Ja = nach rechts, Nein = nach links, Abbrechen = schließen.").as_ptr(),
+                wide("Scroll-Richtung").as_ptr(),
+                0x23 | second_default,
+            ) {
+                6 => Direction::Right,
+                7 => Direction::Left,
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    let mut prefs = active_settings();
+    prefs.scroll_direction = match direction {
+        Direction::Down => settings::ScrollDirection::Down,
+        Direction::Right => settings::ScrollDirection::Right,
+        Direction::Left => settings::ScrollDirection::Left,
+    };
+    // save_settings refuses to replace unreadable or unsupported settings
+    // files; a persistence error must not prevent the requested capture.
+    let _ = save_settings(h, prefs);
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    let Some((x, y, width, height)) = overlay::select() else {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        return;
+    };
+    if width < 100
+        || height < 100
+        || match direction {
+            Direction::Down => height < 200,
+            _ => width < 200,
+        }
+    {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(h, wide("Der Bereich muss mindestens 100 × 100 Pixel groß und in Scrollrichtung mindestens 200 Pixel lang sein.").as_ptr(), wide("Scroll-Aufnahme").as_ptr(), 0x30);
+        return;
+    }
+    let target = WindowFromPoint(Point {
+        x: x + width / 2,
+        y: y + height / 2,
+    });
+    let root = if target.is_null() {
+        null_mut()
+    } else {
+        GetAncestor(target, 2)
+    };
+    if root.is_null() {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Zielfenster konnte nicht ermittelt werden.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x30,
+        );
+        return;
+    }
+    SetForegroundWindow(root);
+    if GetForegroundWindow() != root {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Zielfenster konnte nicht aktiviert werden. Bitte erneut versuchen.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x30,
+        );
+        return;
+    }
+    RESTORE_EDITOR.store(was_visible, Ordering::SeqCst);
+    busy.0 = false;
+    let hwnd = h as usize;
+    let target_window = root as usize;
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Outcome, String> {
+            let mut io = scroll_windows::WindowsScrollIo::new(x, y, width, height, target_window)?;
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            scroll_capture::run(&mut io, direction)
+        })();
+        *SCROLL_RESULT.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+        if PostMessageW(hwnd as H, SCROLL_DONE, 0, 0) == 0 {
+            SCROLL_RESULT
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            SCROLL_BUSY.store(false, Ordering::SeqCst);
+        }
+    });
+}

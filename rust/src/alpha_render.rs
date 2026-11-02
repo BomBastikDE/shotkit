@@ -109,6 +109,10 @@ struct GdiResource {
 }
 #[cfg(windows)]
 impl GdiResource {
+    // SAFETY CONTRACT:
+    // Voraussetzung: raw ist null oder eine exklusiv übertragene lebende GDI+-Ressource des zu dispose passenden Typs.
+    // Warum erfüllt bzw. offen: Aktuelle Aufrufer prüfen Create-Status und verwenden passende Freigaben; Funktion prüft selbst nur null.
+    // Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
     unsafe fn new(raw: *mut c_void, dispose: GdiDisposer) -> Result<Self, RenderError> {
         if raw.is_null() {
             Err(RenderError::GdiPlusStatus(2))
@@ -282,6 +286,10 @@ fn render_gdiplus(
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: GDI+ bleibt aktiv und pixels umfasst exklusiv width*height*4 gültige Bytes bis zum Bitmap-Drop.
+// Warum erfüllt bzw. offen: Aufrufer prüft Maße und Obergrenze; lokale Guards enden vor der Session.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn render_started(
     width: usize,
     height: usize,
@@ -312,6 +320,10 @@ unsafe fn render_started(
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: g ist ein gültiges exklusiv verwendetes GDI+-Graphics einer aktiven Session.
+// Warum erfüllt bzw. offen: render_started besitzt Graphics und Zielbild während des Aufrufs; lokale Daten leben über die FFI-Aufrufe.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
     use crate::shapes::ShapeKind;
     let width = shape.style.width.max(1.0).min(256.0);
@@ -431,6 +443,10 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: Die aktive GDI+-Session überlebt den zurückgegebenen Brush und seinen Drop.
+// Warum erfüllt bzw. offen: Status wird geprüft und der passende Disposer gespeichert; Aufrufe erfolgen innerhalb der Session.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn create_brush(color: u32) -> Result<GdiResource, RenderError> {
     let mut raw = ptr::null_mut();
     status(GdipCreateSolidFill(color, &mut raw))?;
@@ -470,6 +486,10 @@ fn step_font_size(radius: f32, digits: usize) -> f32 {
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: Die aktive GDI+-Session überlebt den Pen; width ist für GDI+ gültig.
+// Warum erfüllt bzw. offen: Status und Disposer werden gebunden; Aufrufe erfolgen innerhalb der Session.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn create_pen(color: u32, width: f32) -> Result<GdiResource, RenderError> {
     let mut raw = ptr::null_mut();
     status(GdipCreatePen1(color, width, UNIT_PIXEL, &mut raw))?;
@@ -477,6 +497,10 @@ unsafe fn create_pen(color: u32, width: f32) -> Result<GdiResource, RenderError>
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: g ist gültig, die GDI+-Session lebt und die UTF-16-Länge passt in i32.
+// Warum erfüllt bzw. offen: Aktuell wird eine kurze Schrittnummer gezeichnet; Text und Ressourcen leben bis zur FFI-Rückkehr.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn draw_centered_text(
     g: *mut c_void,
     center: crate::shapes::Point,
@@ -527,6 +551,10 @@ unsafe fn draw_centered_text(
     ))
 }
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: g ist gültig und die GDI+-Session lebt während der Zeichnung.
+// Warum erfüllt bzw. offen: Textlänge ist begrenzt und alle Pointer zeigen auf lebende lokale Werte und Ressourcen.
+// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn draw_text(
     g: *mut c_void,
     location: crate::shapes::Point,

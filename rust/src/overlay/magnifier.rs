@@ -1,5 +1,9 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: Positive Abmessungen und korrekte GDI-Ressourcenverwaltung sind erforderlich.
+// Warum erfüllt bzw. offen: select prüft Maße; Fehlerpfade geben erworbene Ressourcen frei, Erfolg geht an release_desktop.
+// Nachrichten: GDI-Aufrufe; keine pauschale Reentranzfreiheit angenommen.
 pub(super) unsafe fn capture_desktop(origin: (i32, i32), size: (i32, i32)) -> (H, H, H) {
     let estimated_bytes = i64::from(size.0)
         .checked_mul(i64::from(size.1))
@@ -49,6 +53,10 @@ pub(super) unsafe fn capture_desktop(origin: (i32, i32), size: (i32, i32)) -> (H
     (memory_dc, bitmap, original)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und enthält nur noch nicht freigegebene eigene GDI-Ressourcen.
+// Warum erfüllt bzw. offen: Die Ressourcen stammen aus capture_desktop und werden nach dem Fensterabbau freigegeben und genullt.
+// Nachrichten: GDI-Aufrufe; kein expliziter Fensternachrichtenversand.
 pub(super) unsafe fn release_desktop(state: *mut State) {
     let s = &mut *state;
     if !s.source_dc.is_null() {
@@ -65,6 +73,10 @@ pub(super) unsafe fn release_desktop(state: *mut State) {
     s.source_original = null_mut();
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Win32-Monitorabfragen erhalten korrekt initialisierte Ausgabestrukturen.
+// Warum erfüllt bzw. offen: Monitorhandle und MonitorInfo werden lokal erstellt und auf Fehler geprüft.
+// Nachrichten: Kein expliziter Fensternachrichtenversand.
 pub(super) unsafe fn monitor_local_rect(point: Point, origin: (i32, i32), desktop: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
     let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
     if !monitor.is_null() {
@@ -82,6 +94,10 @@ pub(super) unsafe fn monitor_local_rect(point: Point, origin: (i32, i32), deskto
     desktop
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state bleibt während der Berechnung gültig und unverändert.
+// Warum erfüllt bzw. offen: Der Aufrufer verwendet den UI-Thread; nur kopierte Werte und Monitorabfragen werden genutzt.
+// Nachrichten: Kein expliziter Fensternachrichtenversand.
 pub(super) unsafe fn magnifier_rect(state: &State, point: Point) -> (i32, i32, i32, i32) {
     let desktop = desktop_rect(state);
     let local_cursor = Point {
@@ -116,6 +132,10 @@ pub(super) fn magnifier_source_rect(state: &State, point: Point) -> (i32, i32, i
     (left, top, width, height)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: dc und Snapshot-DC sind während der Zeichnung gültig; state wird nicht gleichzeitig geändert.
+// Warum erfüllt bzw. offen: Der Aufruf nutzt den Paint-DC und den Overlay-Snapshot; vollständige Callback-Freiheit ist offen.
+// Nachrichten: GDI-Aufrufe; keine pauschale Reentranzfreiheit angenommen.
 pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     if state.source_dc.is_null() {
         return;
@@ -192,6 +212,10 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     if !old_font.is_null() { SelectObject(dc, old_font); }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: state ist gültig und enthält ein lebendes Magnifier-Handle.
+// Warum erfüllt bzw. offen: Handle und Koordinaten werden kopiert, bevor MoveWindow synchron reentrieren kann.
+// Nachrichten: MoveWindow kann synchron Nachrichten auslösen.
 pub(super) unsafe fn move_magnifier(state: *mut State) {
     // Copy everything needed before MoveWindow, which can synchronously call
     // the window procedure again; no reference into STATE crosses that call.
@@ -207,9 +231,12 @@ pub(super) unsafe fn move_magnifier(state: *mut State) {
     InvalidateRect(hwnd, null(), 0);
 }
 
-// SAFETY CONTRACT: Windows invokes this on the owning UI thread; WM_PAINT
-// pairs BeginPaint and EndPaint and the overlay remains alive for the callback.
-// Callback code must not unwind across the system ABI.
+// SAFETY CONTRACT:
+// Voraussetzung: Windows ruft auf dem Besitzerthread mit gültigem Fenster auf;
+// Overlayzustand und Snapshot leben während des Callbacks.
+// Warum erfüllt bzw. offen: select verwaltet die Lebensdauer; BeginPaint und
+// EndPaint sind gepaart. Panikfreiheit über die ABI ist noch nicht belegt.
+// Nachrichten: BeginPaint und DefWindowProcW können Nachrichten auslösen.
 pub(super) unsafe extern "system" fn magnifier_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
     match msg {
         WM_ERASEBKGND => 1,

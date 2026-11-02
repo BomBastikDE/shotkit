@@ -187,6 +187,10 @@ impl Drop for OwnedDc {
         }
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: dc und obj sind kompatibel und leben länger als der Auswahlguard.
+// Warum erfüllt bzw. offen: SelectObject wird geprüft; der Guard stellt die vorherige Auswahl wieder her und besitzt obj nicht.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn select(dc: Hdc, obj: Hgdiobj) -> Option<Selected> {
     if obj.is_null() {
         return None;
@@ -198,6 +202,10 @@ unsafe fn select(dc: Hdc, obj: Hgdiobj) -> Option<Selected> {
         Some(Selected { dc, old })
     }
 }
+// SAFETY CONTRACT:
+// Voraussetzung: dc ist gültig; der Selected-Guard wird vor dem zugehörigen OwnedObject verworfen.
+// Warum erfüllt bzw. offen: Aktuelle Aufrufer destrukturieren beide Guards; das unveränderte Tupel hätte eine kritische Drop-Reihenfolge.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn pen(dc: Hdc, color: Color, width: f32) -> Option<(OwnedObject, Selected)> {
     let object = OwnedObject(CreatePen(
         PS_SOLID,
@@ -207,11 +215,19 @@ unsafe fn pen(dc: Hdc, color: Color, width: f32) -> Option<(OwnedObject, Selecte
     let selected = select(dc, object.0)?;
     Some((object, selected))
 }
+// SAFETY CONTRACT:
+// Voraussetzung: dc ist gültig; der Selected-Guard wird vor dem zugehörigen OwnedObject verworfen.
+// Warum erfüllt bzw. offen: Aktuelle Aufrufer destrukturieren beide Guards; das unveränderte Tupel hätte eine kritische Drop-Reihenfolge.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn brush(dc: Hdc, color: Color) -> Option<(OwnedObject, Selected)> {
     let object = OwnedObject(CreateSolidBrush(rgb(color)));
     let selected = select(dc, object.0)?;
     Some((object, selected))
 }
+// SAFETY CONTRACT:
+// Voraussetzung: dc und der ausgewählte Pen sind gültig; Positionsänderung ist erlaubt.
+// Warum erfüllt bzw. offen: Aufrufer halten den DC und einen gültigen Pen während der Zeichnung.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn line(dc: Hdc, a: Point, b: Point) -> bool {
     let a = wp(a);
     let b = wp(b);
@@ -234,6 +250,10 @@ fn bounds(a: Point, b: Point) -> WinRect {
 /// DIB pixels are premultiplied as required by AC_SRC_ALPHA. The temporary DC
 /// and bitmap are dropped in reverse acquisition order, with the bitmap first
 /// restored out of the DC.
+// SAFETY CONTRACT:
+// Voraussetzung: Der Ziel-DC ist gültig; beteiligter Speicher wird nicht gleichzeitig von CPU und GDI geändert.
+// Warum erfüllt bzw. offen: Maße und DIB-Erzeugung werden geprüft; lokale Guards stellen die Auswahl vor der Freigabe wieder her.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn translucent_highlight(dc: Hdc, rect: WinRect, color: Color) -> bool {
     let (width, height) = (
         rect.right as i64 - rect.left as i64,
@@ -318,6 +338,10 @@ unsafe fn translucent_highlight(dc: Hdc, rect: WinRect, color: Color) -> bool {
 /// for Blur and must be the original, unannotated image HDC; if absent Blur draws
 /// a conspicuous diagonal fallback mark. Returns false for invalid input/HDC or
 /// failed GDI allocation, true when the requested primitive was issued.
+// SAFETY CONTRACT:
+// Voraussetzung: dc und optionaler source-DC sind gültig und deren Ressourcen bleiben während aller Operationen lebendig.
+// Warum erfüllt bzw. offen: Interne Ressourcen haben Guards; externe Handlelebensdauer und GDI-Synchronisation bleiben Aufruferpflicht.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
     if dc.is_null() {
         return false;

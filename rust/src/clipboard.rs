@@ -99,6 +99,10 @@ impl Drop for ScreenDc {
 /// ShotKit are read directly so their straight-alpha BGRA bytes are preserved.
 /// PNG and CF_DIBV5 carry alpha; CF_DIB is an opaque white
 /// compatibility fallback. The caller retains ownership of `bitmap`.
+// SAFETY CONTRACT:
+// Voraussetzung: bitmap bleibt gültig und entspricht den Maßen; direkter DIB-Speicher ist lesbar und korrekt orientiert.
+// Warum erfüllt bzw. offen: Der Aufrufer hält die temporäre Bitmap bis zur Rückkehr; DIB-Größe und Stride werden geprüft.
+// Nachrichten: Clipboard-Ausgabe und Fehlerpfade können reentrieren.
 pub unsafe fn copy_bitmap(
     owner: *mut c_void,
     bitmap: *mut c_void,
@@ -181,6 +185,10 @@ pub unsafe fn copy_bitmap(
 
 struct ClipboardGuard(bool);
 impl ClipboardGuard {
+    // SAFETY CONTRACT:
+    // Voraussetzung: owner ist null oder ein gültiges Fenster; Clipboard wird auf dem richtigen Thread verwendet.
+    // Warum erfüllt bzw. offen: Der Rückgabewert von OpenClipboard wird geprüft.
+    // Nachrichten: Kein expliziter Nachrichtenversand; allgemeine Reentranzfreiheit ist nicht belegt.
     unsafe fn open(owner: H) -> Result<Self, String> {
         if OpenClipboard(owner) == 0 {
             Err("OpenClipboard failed".into())
@@ -188,6 +196,10 @@ impl ClipboardGuard {
             Ok(Self(true))
         }
     }
+    // SAFETY CONTRACT:
+    // Voraussetzung: Dieser Guard besitzt eine erfolgreich geöffnete Clipboard-Sitzung auf demselben Thread.
+    // Warum erfüllt bzw. offen: Der Guard wird nach erfolgreichem OpenClipboard erzeugt und synchron geschlossen.
+    // Nachrichten: Kein expliziter Nachrichtenversand; allgemeine Reentranzfreiheit ist nicht belegt.
     unsafe fn close(&mut self) -> Result<(), String> {
         if self.0 {
             self.0 = false;
@@ -213,6 +225,10 @@ impl Drop for ClipboardGuard {
 /// DIB paths accept only 24/32-bit uncompressed layouts within 30000 pixels per
 /// dimension and 512 MiB decoded size. The clipboard remains open while its
 /// global-memory handles are copied; Windows retains ownership of those handles.
+// SAFETY CONTRACT:
+// Voraussetzung: owner ist null oder ein gültiges Fenster; Clipboard bleibt beim Lesen geöffnet.
+// Warum erfüllt bzw. offen: Ein Guard verwaltet die Sitzung; Formate und Decoderergebnisse werden geprüft.
+// Nachrichten: GetClipboardData kann verzögertes Rendering und Nachrichten auslösen.
 pub unsafe fn read_image(
     owner: *mut c_void,
 ) -> Result<Option<shotkit_rust_prototype::stitch::Image>, String> {
@@ -267,6 +283,10 @@ impl Drop for LockedGlobal {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: handle bezeichnet lesbaren Global-Memory-Speicher, der während decode gültig und unverändert bleibt.
+// Warum erfüllt bzw. offen: Größe und GlobalLock werden geprüft; der Decoder läuft synchron unter dem Lock.
+// Nachrichten: Kein expliziter Nachrichtenversand; der Decoder darf das Handle nicht invalidieren.
 unsafe fn with_global_bytes<T>(handle: H, decode: impl FnOnce(&[u8]) -> Result<T, String>) -> Result<T, String> {
     if handle.is_null() { return Err("GetClipboardData returned a null handle".into()); }
     let size = GlobalSize(handle);
@@ -280,18 +300,30 @@ unsafe fn with_global_bytes<T>(handle: H, decode: impl FnOnce(&[u8]) -> Result<T
     decode(bytes)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-Speicher.
+// Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
+// Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
 unsafe fn read_png_format(format: u32) -> Result<shotkit_rust_prototype::stitch::Image, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
         shotkit_rust_prototype::image_io::decode(bytes).map_err(|e| format!("PNG decode failed: {e}"))
     })
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-DIB-Speicher.
+// Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
+// Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
 unsafe fn read_dib_format(format: u32, require_v5: bool) -> Result<shotkit_rust_prototype::stitch::Image, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
         shotkit_rust_prototype::output_windows::decode_dib(bytes, require_v5)
     })
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: bitmap bleibt gültig und ist für GetDIBits geeignet.
+// Warum erfüllt bzw. offen: Das Handle stammt aus dem geöffneten Clipboard; der DC-Auswahlzustand ist nicht vollständig geprüft.
+// Nachrichten: Kein expliziter Fensternachrichtenversand im Funktionskörper.
 unsafe fn read_bitmap(bitmap: H) -> Result<shotkit_rust_prototype::stitch::Image, String> {
     if bitmap.is_null() { return Err("GetClipboardData(CF_BITMAP) returned null".into()); }
     let mut metadata = Bitmap::default();

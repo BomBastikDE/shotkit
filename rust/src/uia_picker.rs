@@ -279,6 +279,10 @@ fn worker_loop(
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: COM ist im passenden Apartment initialisiert; die Referenz wird dort verwendet und freigegeben.
+// Warum erfüllt bzw. offen: Der MTA-Worker initialisiert COM vor dem Aufruf und hält die Interface-Lebensdauer lokal.
+// Nachrichten: COM-Aktivierung kann fremden Code ausführen.
 unsafe fn create_automation(
 ) -> Result<windows::Win32::UI::Accessibility::IUIAutomation, PickerError> {
     use windows::{
@@ -294,6 +298,10 @@ unsafe fn create_automation(
 }
 
 #[cfg(windows)]
+// SAFETY CONTRACT:
+// Voraussetzung: automation ist im aktuellen initialisierten COM-Apartment gültig und bleibt bis zur Rückkehr lebendig.
+// Warum erfüllt bzw. offen: Aufruf und Interface-Freigaben liegen im MTA-Worker; Fensteridentität und Providerverhalten bleiben offen.
+// Nachrichten: UIA und Provider können synchron Nachrichten verarbeiten und reentrieren.
 unsafe fn inspect(
     automation: &windows::Win32::UI::Accessibility::IUIAutomation,
     request: Request,

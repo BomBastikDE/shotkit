@@ -1,5 +1,9 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes Fenster auf seinem Besitzerthread.
+// Warum erfüllt bzw. offen: run registriert Hotkeys nach erfolgreicher Fensteranlage.
+// Nachrichten: Fehlerdialoge verarbeiten Nachrichten.
 pub(super) unsafe fn register(h: H) {
         if RegisterHotKey(h, 1, 0x4000, 0x78) == 0 {
             MessageBoxW(
@@ -53,10 +57,18 @@ pub(super) unsafe fn register(h: H) {
         }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Die IDs wurden für h auf diesem Thread registriert.
+// Warum erfüllt bzw. offen: Der Aufruf erfolgt beim WM_DESTROY des Primärfensters mit denselben IDs.
+// Nachrichten: Kein expliziter synchroner Nachrichtenversand.
 pub(super) unsafe fn unregister(h: H) {
     for id in 1..=12 { UnregisterHotKey(h, id); }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h erfüllt die Verträge der gewählten Aufnahmeaktion.
+// Warum erfüllt bzw. offen: Der eigene Fensterhandler übergibt h; unbekannte IDs werden verworfen.
+// Nachrichten: Aufnahmeaktionen und Dialoge können Nachrichten auslösen.
 pub(super) unsafe fn dispatch(h: H, id: W) -> bool {
     use shotkit_rust_prototype::hotkey_action::{action_for_id, Action};
     match action_for_id(id) {

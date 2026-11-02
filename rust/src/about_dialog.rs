@@ -68,6 +68,10 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: parent und instance sind gültige Handles auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Die Stringpuffer leben während CreateWindowExW; Handle-Gültigkeit bleibt Aufruferpflicht.
+// Nachrichten: CreateWindowExW kann synchron Nachrichten auslösen.
 unsafe fn child(parent: H, class: &str, text: &str, style: u32,
     x: i32, y: i32, width: i32, height: i32, id: usize, instance: H) -> H {
     CreateWindowExW(
@@ -76,6 +80,10 @@ unsafe fn child(parent: H, class: &str, text: &str, style: u32,
     )
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Windows liefert gültige Callbackparameter auf dem Besitzerthread; ABOUT_HWND wird serialisiert.
+// Warum erfüllt bzw. offen: Die Klasse registriert diesen Callback; vollständige Einthreadigkeit und Panikfreiheit sind nicht im Typ erzwungen.
+// Nachrichten: Fensteranlage, Fokus, Shell, Dialoge und Zerstörung können Nachrichten auslösen.
 unsafe extern "system" fn about_proc(hwnd: H, message: u32, wparam: W, lparam: L) -> L {
     match message {
         WM_CREATE => {
@@ -126,6 +134,10 @@ extern "system" {
     fn DestroyWindow(hwnd: H) -> i32;
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: instance ist ein gültiges Modulhandle und Klassenregistrierung wird serialisiert.
+// Warum erfüllt bzw. offen: Der Aufrufer verwendet GetModuleHandleW; Einthreadigkeit bleibt Aufruferpflicht.
+// Nachrichten: Kein expliziter Nachrichtendurchlauf im Funktionskörper.
 unsafe fn register_class(instance: H) -> bool {
     if CLASS_REGISTERED { return true; }
     let class_name = wide(CLASS_NAME);

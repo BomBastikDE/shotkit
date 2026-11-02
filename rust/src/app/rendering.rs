@@ -1,5 +1,9 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: h besitzt gültigen eigenen Fensterzustand auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Die aufrufenden Fensterhandler verwenden nur kurzzeitige gelesene Werte; der Gesamtvertrag bleibt offen.
+// Nachrichten: Keine der geprüften synchronen Fensternachrichten im Funktionskörper.
 pub(super) unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     let mut r: Rect = zeroed();
     GetClientRect(h, &mut r);
@@ -12,6 +16,10 @@ pub(super) unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     );
     (v.x, v.y, v.width, v.height)
 }
+// SAFETY CONTRACT:
+// Voraussetzung: h erfüllt den image_view-Vertrag; l enthält gepackte Clientkoordinaten.
+// Warum erfüllt bzw. offen: l wird nur als Ganzzahl dekodiert; kein Pointer daraus wird dereferenziert.
+// Nachrichten: Keine der geprüften synchronen Fensternachrichten im Funktionskörper.
 pub(super) unsafe fn point(h: H, l: L) -> (i32, i32) {
     let (x, y, w, height) = image_view(h);
     let px = (l as u32 as u16 as i16) as i32;
@@ -29,6 +37,10 @@ pub(super) unsafe fn point(h: H, l: L) -> (i32, i32) {
 }
 // Build a temporary composited bitmap. The base image remains unchanged so
 // annotation objects can be selected and undone. Caller owns the returned HBITMAP.
+// SAFETY CONTRACT:
+// Voraussetzung: h erfüllt den Fensterzustandsvertrag; die Bitmap wird vom Aufrufer freigegeben.
+// Warum erfüllt bzw. offen: Bild, Formen und Auswahl werden vor GDI-Aufrufen kopiert; Ressourcenpfade werden geprüft.
+// Nachrichten: Native GDI-Aufrufe können Reentranz nicht pauschal ausschließen.
 pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String> {
     if window_state(h).bitmap.is_null() {
         return Err("Kein Bild geöffnet.".into());
@@ -133,6 +145,10 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     Ok(output)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h erfüllt den Fensterzustandsvertrag und enthält gültige Bilddaten.
+// Warum erfüllt bzw. offen: Arc und Formen werden vor dem Renderer kopiert.
+// Nachrichten: Native GDI-Aufrufe können Reentranz nicht pauschal ausschließen.
 pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
     if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0 {
         return Err("Kein Bild geöffnet.".into());
@@ -145,7 +161,13 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
     shotkit_rust_prototype::alpha_document::render_document(&image, &shapes)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Bildpufferlänge entspricht der 32-Bit-DIB-Größe und der DC ist gültig.
+// Warum erfüllt: validate prüft öffentliche Bildfelder; CreateDIBSection und DC
+// werden auf Fehler geprüft, der neue Zielspeicher überlappt die Quelle nicht.
+// Nachrichten: keine der geprüften synchronen Fensternachrichten; GDI-Aufrufe.
 pub(super) unsafe fn create_bitmap(image: &Image) -> Result<H, String> {
+    image.validate().map_err(str::to_owned)?;
     let width = i32::try_from(image.width).map_err(|_| "Bild zu breit".to_owned())?;
     let height = i32::try_from(image.height).map_err(|_| "Bild zu hoch".to_owned())?;
     let info = Bmi {
@@ -180,6 +202,10 @@ pub(super) unsafe fn create_bitmap(image: &Image) -> Result<H, String> {
     std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), bits.cast::<u8>(), image.pixels.len());
     Ok(bmp)
 }
+// SAFETY CONTRACT:
+// Voraussetzung: bmp ist eine neue gültige Bitmap für image, nicht die alte oder noch in einem DC ausgewählte Bitmap.
+// Warum erfüllt bzw. offen: Aktuelle Aufrufer übergeben Ergebnisse von create_bitmap; die Bedingungen sind nicht im Typ erzwungen.
+// Nachrichten: Kein expliziter synchroner Fensternachrichtenversand im Funktionskörper.
 pub(super) unsafe fn install_bitmap(h: H, bmp: H, image: &Image) {
     if !window_state(h).bitmap.is_null() {
         DeleteObject(window_state(h).bitmap);

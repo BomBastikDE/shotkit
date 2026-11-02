@@ -1,10 +1,18 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: hdc und ausgewählter Pen sind gültig; Positionsänderung ist zulässig.
+// Warum erfüllt bzw. offen: draw_icon übergibt einen geliehenen DC mit ausgewähltem Pen.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn icon_line(hdc: Hwnd, x1: i32, y1: i32, x2: i32, y2: i32) {
     MoveToEx(hdc, x1, y1, null_mut());
     LineTo(hdc, x2, y2);
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: hdc und temporäre GDI-Objekte bleiben während Auswahl und Wiederherstellung gültig.
+// Warum erfüllt bzw. offen: Lokale Objekte werden zurückgesetzt und gelöscht; FFI-Fehler bei Auswahl sind nicht vollständig geprüft.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn icon_fill_rect(hdc: Hwnd, rect: NativeRect, color: u32) {
     let brush = CreateSolidBrush(color);
     let old = SelectObject(hdc, brush);
@@ -13,6 +21,10 @@ pub(super) unsafe fn icon_fill_rect(hdc: Hwnd, rect: NativeRect, color: u32) {
     DeleteObject(brush);
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: hdc und temporäre GDI-Objekte bleiben während Auswahl und Wiederherstellung gültig.
+// Warum erfüllt bzw. offen: Lokale Objekte werden zurückgesetzt und gelöscht; FFI-Fehler bei Auswahl sind nicht vollständig geprüft.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn icon_fill_ellipse(hdc: Hwnd, rect: NativeRect, color: u32) {
     let brush = CreateSolidBrush(color);
     let old = SelectObject(hdc, brush);
@@ -21,6 +33,10 @@ pub(super) unsafe fn icon_fill_ellipse(hdc: Hwnd, rect: NativeRect, color: u32) 
     DeleteObject(brush);
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: hdc ist gültig und GDI-Objektauswahl wird nicht gleichzeitig geändert.
+// Warum erfüllt bzw. offen: Pens werden lokal angelegt und zurückgesetzt; Auswahl- und Anlagefehler sind nicht vollständig geprüft.
+// Nachrichten: GDI-/User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn draw_swatch(hdc: Hwnd, bounds: NativeRect, color: u32) {
     let left = bounds.left + ((bounds.right - bounds.left - 20) / 2);
     let top = bounds.top + ((bounds.bottom - bounds.top - 20) / 2);
@@ -41,6 +57,10 @@ pub(super) unsafe fn draw_swatch(hdc: Hwnd, bounds: NativeRect, color: u32) {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: hdc ist gültig; pts lebt über den Aufruf und seine Länge passt in i32.
+// Warum erfüllt bzw. offen: Aktuelle Aufrufer verwenden kleine lokale Arrays; Objektwiederherstellung bei FFI-Fehlern ist offen.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn icon_polygon(hdc: Hwnd, pts: &[NativePoint], color: u32) {
     let brush = CreateSolidBrush(color);
     let old = SelectObject(hdc, brush);
@@ -49,6 +69,10 @@ pub(super) unsafe fn icon_polygon(hdc: Hwnd, pts: &[NativePoint], color: u32) {
     DeleteObject(brush);
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: toolbar und zugehörige Kinder sind lebende HWNDs auf dem UI-Thread.
+// Warum erfüllt bzw. offen: GetDlgItem liefert opake Handles, Nullwerte werden verworfen; Handle-Reuse bleibt Aufruferpflicht.
+// Nachrichten: User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn invalidate_tools(toolbar: Hwnd) {
     for action in ACTIONS.iter().filter(|action| action.tool) {
         let button = GetDlgItem(toolbar, action.id as i32);
@@ -56,6 +80,10 @@ pub(super) unsafe fn invalidate_tools(toolbar: Hwnd) {
     }
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: SystemParametersInfoW erhält einen gültigen korrekt dimensionierten Ausgabepuffer.
+// Warum erfüllt bzw. offen: HighContrast ist lokal vollständig initialisiert; der Ergebniszeiger wird nicht dereferenziert.
+// Nachrichten: User32-Aufruf; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn high_contrast_enabled() -> bool {
     let mut settings = HighContrast {
         size: std::mem::size_of::<HighContrast>() as u32,
@@ -67,6 +95,10 @@ pub(super) unsafe fn high_contrast_enabled() -> bool {
 }
 
 /// Draw the same small, antialias-independent 20px geometry used by the C# toolbar.
+// SAFETY CONTRACT:
+// Voraussetzung: hdc und ausgewählte Objekte bleiben während der Zeichnung gültig.
+// Warum erfüllt bzw. offen: DC stammt aus WM_DRAWITEM; Objektanlage und Wiederherstellung bei allen Fehlern sind nicht vollständig geprüft.
+// Nachrichten: GDI-/User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color: u32, current_color: u32) {
     let ox = bounds.left + ((bounds.right - bounds.left - 20) / 2);
     let oy = bounds.top + ((bounds.bottom - bounds.top - 20) / 2);
