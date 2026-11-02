@@ -150,12 +150,19 @@ impl Shape {
                 })
                 .map(|(a, b)| Rect::from_points(a, b))
                 .unwrap_or_default(),
-            ShapeKind::Text { location, .. } => Rect {
-                x: location.x,
-                y: location.y,
-                width: 10.0,
-                height: 10.0,
-            },
+            ShapeKind::Text { location, text } => {
+                // Approximate glyph extents until the platform renderer supplies
+                // exact font metrics; the old 10px placeholder made most text
+                // impossible to select. Windows DPI/font tests remain required.
+                let size = self.style.font_size.max(1.0);
+                let chars = text.chars().count().max(1) as f32;
+                Rect {
+                    x: location.x,
+                    y: location.y,
+                    width: (chars * size * 0.65).max(10.0),
+                    height: (size * 1.4).max(10.0),
+                }
+            }
             ShapeKind::Step { center, .. } => {
                 let r = 10.0 + self.style.width * 2.2;
                 Rect {
@@ -431,6 +438,10 @@ impl ShapeDocument {
         }
     }
     fn checkpoint(&mut self) {
+        const MAX_UNDO_STATES: usize = 100;
+        if self.undo.len() >= MAX_UNDO_STATES {
+            self.undo.remove(0);
+        }
         self.undo.push(self.shapes.clone());
         self.redo.clear()
     }
@@ -439,6 +450,32 @@ impl ShapeDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn text_hitbox_covers_rendered_label_approximately() {
+        let mut shape = Shape::new(ShapeKind::Text {
+            location: Point::new(0.0, 0.0),
+            text: "Testtext".into(),
+        });
+        shape.style.font_size = 28.0;
+        assert!(shape.hit_test(Point::new(60.0, 12.0), 0.0));
+        assert!(!shape.hit_test(Point::new(400.0, 12.0), 0.0));
+    }
+    #[test]
+    fn history_has_a_finite_limit() {
+        let mut doc = ShapeDocument::default();
+        for i in 0..110 {
+            doc.push(Shape::new(ShapeKind::Step {
+                center: Point::new(i as f32, 0.0),
+                number: i,
+            }));
+        }
+        let mut n = 0;
+        while doc.undo() {
+            n += 1;
+        }
+        assert_eq!(n, 100);
+        assert_eq!(doc.shapes().len(), 10);
+    }
     #[test]
     fn normalizes_and_resizes_box() {
         let mut s = Shape::new(ShapeKind::Rectangle {

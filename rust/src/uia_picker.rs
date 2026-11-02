@@ -5,14 +5,17 @@
 //! overlay. The worker uses ElementFromHandle and searches a bounded Control
 //! View subtree by physical screen rectangles. All COM objects stay on the
 //! worker's MTA thread; the UI exchanges only integers and rectangle values.
+//! One process-wide worker coalesces queued points. UIA transaction timeouts
+//! apply per provider call; a misbehaving provider can occupy this worker while
+//! that call unwinds, so window suggestions and dragging remain available.
 
 use std::{
     io,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock,
     },
-    thread::{self, JoinHandle},
+    thread,
 };
 
 const MAX_TREE_NODES: usize = 128;
@@ -71,15 +74,16 @@ struct Shared {
     changed: Condvar,
     next_sequence: AtomicU64,
     latest_sequence: AtomicU64,
-    stopping: Mutex<bool>,
 }
 
 /// Single persistent worker. A new submission replaces any not-yet-started
 /// request; completed responses are tagged so callers can discard stale ones.
 pub struct UiaPicker {
     shared: Arc<Shared>,
-    worker: Option<JoinHandle<()>>,
 }
+
+static UIA_SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
+static UIA_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 impl UiaPicker {
     /// Create the dedicated COM worker. This starts the thread but does not wait
@@ -93,22 +97,31 @@ impl UiaPicker {
 
         #[cfg(windows)]
         {
+            if let Some(shared) = UIA_SHARED.get() {
+                return Ok(Self {
+                    shared: Arc::clone(shared),
+                });
+            }
+            let _guard = UIA_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(shared) = UIA_SHARED.get() {
+                return Ok(Self {
+                    shared: Arc::clone(shared),
+                });
+            }
             let shared = Arc::new(Shared {
                 pending: Mutex::new(None),
                 response: Mutex::new(None),
                 changed: Condvar::new(),
                 next_sequence: AtomicU64::new(1),
                 latest_sequence: AtomicU64::new(0),
-                stopping: Mutex::new(false),
             });
             let worker_shared = Arc::clone(&shared);
             let worker = thread::Builder::new()
                 .name("shotkit-uia-picker".into())
                 .spawn(move || windows_worker(worker_shared))?;
-            Ok(Self {
-                shared,
-                worker: Some(worker),
-            })
+            drop(worker); // One process-wide worker; do not join on a UI thread.
+            let _ = UIA_SHARED.set(Arc::clone(&shared));
+            Ok(Self { shared })
         }
     }
 
@@ -140,19 +153,6 @@ impl UiaPicker {
             return None;
         }
         response.take()
-    }
-}
-
-impl Drop for UiaPicker {
-    fn drop(&mut self) {
-        // Hold the condition-variable mutex while changing the stop condition;
-        // otherwise notification can be lost between the worker check and wait.
-        let _pending = lock(&self.shared.pending);
-        *lock(&self.shared.stopping) = true;
-        self.shared.changed.notify_one();
-        // Dropping JoinHandle detaches; never wait for an unresponsive provider
-        // on the caller's UI thread. UIA transaction timeout bounds COM calls.
-        self.worker.take();
     }
 }
 
@@ -204,14 +204,11 @@ fn worker_loop(
     loop {
         let request = {
             let mut pending = lock(&shared.pending);
-            while pending.is_none() && !*lock(&shared.stopping) {
+            while pending.is_none() {
                 pending = shared
                     .changed
                     .wait(pending)
                     .unwrap_or_else(|p| p.into_inner());
-            }
-            if *lock(&shared.stopping) {
-                return;
             }
             pending.take()
         };

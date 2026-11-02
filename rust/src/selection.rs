@@ -166,9 +166,22 @@ struct State {
     visible_hover_rect: Option<(i32, i32, i32, i32)>,
     uia_rect: Option<(i32, i32, i32, i32)>,
     request_sequence: u64,
+    window_picker: Option<element_picker::WindowPicker>,
+    window_sequence: u64,
+    window_point: Point,
+    window_confirmed_sequence: u64,
+    window_confirmed_root: isize,
+    pending_click: Option<PendingClick>,
     uia: Option<uia_picker::UiaPicker>,
     result: Option<(i32, i32, i32, i32)>,
     done: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PendingClick {
+    rect: (i32, i32, i32, i32),
+    point: Point,
+    root_hwnd: isize,
 }
 
 static mut STATE: State = State {
@@ -185,6 +198,12 @@ static mut STATE: State = State {
     visible_hover_rect: None,
     uia_rect: None,
     request_sequence: 0,
+    window_picker: None,
+    window_sequence: 0,
+    window_point: Point { x: 0, y: 0 },
+    window_confirmed_sequence: 0,
+    window_confirmed_root: 0,
+    pending_click: None,
     uia: None,
     result: None,
     done: false,
@@ -230,49 +249,101 @@ unsafe fn root_candidate(s: &State) -> Option<(i32, i32, i32, i32)> {
 }
 
 unsafe fn update_hover(state: *mut State, point: Point) {
-    {
-        let s = &mut *state;
-        s.current = point;
-        s.uia_rect = None;
+    let s = &mut *state;
+    s.current = point;
+    s.uia_rect = None;
+    s.request_sequence = 0;
+    s.window_confirmed_sequence = 0;
+    if let Some(worker) = &s.window_picker {
+        s.window_point = point;
+        s.window_sequence = worker.submit(
+            element_picker::ScreenPoint {
+                x: point.x,
+                y: point.y,
+            },
+            0,
+        );
+        // Keep the last drawn outline until the sequenced scan replaces it.
+        // MouseDown still freezes only a rectangle containing the actual point,
+        // then requires a fresh root-HWND confirmation before accepting it.
+    } else {
+        s.candidates.clear();
+        s.target_hwnd = 0;
+        s.hover_rect = None;
+        s.visible_hover_rect = None;
     }
-    let candidates = match element_picker::suggest_at(element_picker::ScreenPoint {
-        x: point.x,
-        y: point.y,
-    }) {
-        Ok(candidates) => candidates,
-        Err(_) => Vec::new(),
-    };
-    let target = candidates
-        .iter()
-        .find(|c| c.is_top_level)
-        .map(|c| c.hwnd)
-        .unwrap_or(0);
-    let sequence = {
+}
+
+unsafe fn poll_window(state: *mut State) -> Option<H> {
+    let scan = {
         let s = &*state;
-        if target != 0 {
-            s.uia
-                .as_ref()
-                .map(|uia| {
-                    uia.submit(
-                        target,
-                        uia_picker::ScreenPoint {
-                            x: point.x,
-                            y: point.y,
-                        },
-                    )
-                })
-                .unwrap_or(0)
+        s.window_picker
+            .as_ref()
+            .and_then(|worker| worker.try_take_latest())
+    }?;
+    let (window_seq, point, down) = {
+        let s = &*state;
+        (s.window_sequence, s.window_point, s.down)
+    };
+    if scan.sequence != window_seq || scan.point.x != point.x || scan.point.y != point.y {
+        return None;
+    }
+    let candidates = scan.candidates.unwrap_or_default();
+    let root = candidates.iter().find(|c| c.is_top_level).copied();
+    let (finish_result, should_choose) = {
+        let s = &mut *state;
+        s.window_confirmed_sequence = scan.sequence;
+        s.window_confirmed_root = root.map(|candidate| candidate.hwnd).unwrap_or(0);
+        if let Some(click) = s.pending_click {
+            let matching = element_picker::confirms_click(
+                click.root_hwnd,
+                root,
+                element_picker::ScreenPoint {
+                    x: click.point.x,
+                    y: click.point.y,
+                },
+            );
+            if matching {
+                s.pending_click = None;
+                (Some(Some(click.rect)), false)
+            } else {
+                s.pending_click = None;
+                (Some(None), false)
+            }
+        } else if down {
+            (None, false)
         } else {
-            0
+            s.candidates = candidates;
+            s.target_hwnd = root.map(|candidate| candidate.hwnd).unwrap_or(0);
+            s.uia_rect = None;
+            s.request_sequence = if s.target_hwnd != 0 {
+                s.uia
+                    .as_ref()
+                    .map(|uia| {
+                        uia.submit(
+                            s.target_hwnd,
+                            uia_picker::ScreenPoint {
+                                x: point.x,
+                                y: point.y,
+                            },
+                        )
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            (None, true)
         }
     };
-    {
-        let s = &mut *state;
-        s.candidates = candidates;
-        s.target_hwnd = target;
-        s.request_sequence = sequence;
+    if should_choose {
+        choose_hover(state);
     }
-    choose_hover(state);
+    if let Some(result) = finish_result {
+        let rect = result.and_then(|r| intersection(r, desktop_rect(&*state)));
+        let hwnd = mark_finished(state, rect);
+        return Some(hwnd);
+    }
+    Some(null_mut())
 }
 
 unsafe fn choose_hover(state: *mut State) {
@@ -281,7 +352,12 @@ unsafe fn choose_hover(state: *mut State) {
     let fallback = if control_down {
         root_candidate(s)
     } else {
-        s.candidates.first().map(|candidate| candidate.rect)
+        s.candidates
+            .iter()
+            .rev()
+            .find(|candidate| !candidate.is_top_level)
+            .map(|candidate| candidate.rect)
+            .or_else(|| root_candidate(s))
     };
     let rect = if !control_down {
         s.uia_rect.filter(|r| contains(*r, s.current)).or(fallback)
@@ -341,6 +417,23 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                     // Freeze the rectangle that was already visible. In-flight
                     // UIA completions cannot change the accepted click target.
                     s.press_rect = s.visible_hover_rect.filter(|rect| contains(*rect, point));
+                    s.pending_click = None;
+                    s.window_point = point;
+                    s.window_confirmed_sequence = 0;
+                    s.window_confirmed_root = 0;
+                    s.window_sequence = s
+                        .window_picker
+                        .as_ref()
+                        .map(|worker| {
+                            worker.submit(
+                                element_picker::ScreenPoint {
+                                    x: point.x,
+                                    y: point.y,
+                                },
+                                0,
+                            )
+                        })
+                        .unwrap_or(0);
                     true
                 }
             };
@@ -357,19 +450,24 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 (*state).current = point;
             } else {
                 update_hover(state, point);
-                let _ = poll_uia(state);
             }
             InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_LBUTTONUP if (*state).down => {
             let point = cursor_screen(l, (*state).origin);
-            let result = {
+            let (result, click_pending, click_cancelled, root_hwnd) = {
                 let s = &mut *state;
                 s.current = point;
                 let dx = (i64::from(s.start.x) - i64::from(s.current.x)).abs();
                 let dy = (i64::from(s.start.y) - i64::from(s.current.y)).abs();
                 let click = dx <= i64::from(CLICK_SLOP) && dy <= i64::from(CLICK_SLOP);
+                let root_hwnd = s
+                    .candidates
+                    .iter()
+                    .find(|c| c.is_top_level)
+                    .map(|c| c.hwnd)
+                    .unwrap_or(0);
                 let result = if click {
                     s.press_rect
                 } else {
@@ -381,15 +479,33 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                     ))
                 };
                 s.down = false;
-                result
+                let fresh_scan =
+                    s.window_confirmed_sequence == s.window_sequence && s.window_sequence != 0;
+                let fresh = fresh_scan && s.window_confirmed_root == root_hwnd;
+                let valid_click = click && result.is_some_and(|r| contains(r, point));
+                let pending = valid_click && !fresh_scan && root_hwnd != 0;
+                let cancelled = click
+                    && (!valid_click || (fresh_scan && !fresh) || (!fresh_scan && root_hwnd == 0));
+                if pending {
+                    s.pending_click = Some(PendingClick {
+                        rect: result.unwrap(),
+                        point,
+                        root_hwnd,
+                    });
+                }
+                (result, pending, cancelled, root_hwnd)
             };
-            let result = result.and_then(|r| intersection(r, desktop_rect(&*state)));
-            let target = mark_finished(state, result);
             ReleaseCapture();
-            if !target.is_null() {
-                let _ = KillTimer(target, UIA_TIMER_ID);
-                DestroyWindow(target);
+            if !click_pending {
+                let final_result = if click_cancelled { None } else { result }
+                    .and_then(|r| intersection(r, desktop_rect(&*state)));
+                let target = mark_finished(state, final_result);
+                if !target.is_null() {
+                    let _ = KillTimer(target, UIA_TIMER_ID);
+                    DestroyWindow(target);
+                }
             }
+            let _ = root_hwnd;
             0
         }
         WM_KEYDOWN if w == VK_ESCAPE => {
@@ -406,7 +522,18 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
             0
         }
         WM_TIMER if w == UIA_TIMER_ID => {
-            if poll_uia(state) {
+            let scan_handle = poll_window(state);
+            if (*state).done {
+                let target = scan_handle
+                    .filter(|h| !h.is_null())
+                    .unwrap_or((*state).hwnd);
+                if !target.is_null() {
+                    let _ = KillTimer(target, UIA_TIMER_ID);
+                    DestroyWindow(target);
+                }
+            } else if scan_handle.is_some()
+                || (!(*state).down && (*state).pending_click.is_none() && poll_uia(state))
+            {
                 InvalidateRect(hwnd, null(), 0);
             }
             0
@@ -421,6 +548,8 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                         s.start.x.max(s.current.x),
                         s.start.y.max(s.current.y),
                     ))
+                } else if let Some(click) = s.pending_click {
+                    Some(click.rect)
                 } else {
                     s.hover_rect
                 };
@@ -528,6 +657,12 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         hover_rect: None,
         uia_rect: None,
         request_sequence: 0,
+        window_picker: element_picker::WindowPicker::new().ok(),
+        window_sequence: 0,
+        window_point: Point::default(),
+        window_confirmed_sequence: 0,
+        window_confirmed_root: 0,
+        pending_click: None,
         visible_hover_rect: None,
         uia: uia_picker::UiaPicker::new().ok(),
         result: None,

@@ -7,7 +7,20 @@
 //! controller intentionally does not own a text-entry widget. Crop is not an
 //! annotation tool and is not handled here.
 
-use crate::shapes::{Point, Shape, ShapeDocument, ShapeKind, Tool};
+use crate::shapes::{Color, Point, Shape, ShapeDocument, ShapeKind, Style, Tool};
+
+const MIN_STYLE_WIDTH: f32 = 0.25;
+const MAX_STYLE_WIDTH: f32 = 256.0;
+const MIN_FONT_SIZE: f32 = 1.0;
+const MAX_FONT_SIZE: f32 = 512.0;
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+fn valid_style(style: &Style) -> bool {
+    style.width.is_finite()
+        && (MIN_STYLE_WIDTH..=MAX_STYLE_WIDTH).contains(&style.width)
+        && style.font_size.is_finite()
+        && (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&style.font_size)
+}
 
 #[derive(Clone, Debug)]
 enum Drag {
@@ -38,6 +51,7 @@ pub struct EditorController {
     last_position: Option<Point>,
     hit_tolerance: f32,
     next_step: i32,
+    current_style: Style,
 }
 
 impl Default for EditorController {
@@ -50,6 +64,7 @@ impl Default for EditorController {
             last_position: None,
             hit_tolerance: 6.0,
             next_step: 1,
+            current_style: Style::default(),
         }
     }
 }
@@ -78,6 +93,91 @@ impl EditorController {
     }
     pub fn selection(&self) -> Option<&Shape> {
         self.selected.and_then(|i| self.document.shapes().get(i))
+    }
+    /// Style applied to shapes created from this controller from now on.
+    pub fn current_style(&self) -> &Style {
+        &self.current_style
+    }
+    /// Replace the current drawing style. Width and font size must be finite
+    /// and within the renderer's supported range.
+    pub fn set_current_style(&mut self, style: Style) -> bool {
+        if !valid_style(&style) {
+            return false;
+        }
+        self.cancel_drag();
+        self.current_style = style;
+        true
+    }
+    pub fn set_current_color(&mut self, color: Color) {
+        self.cancel_drag();
+        self.current_style.color = color;
+    }
+    pub fn set_current_width(&mut self, width: f32) -> bool {
+        if !width.is_finite() || !(MIN_STYLE_WIDTH..=MAX_STYLE_WIDTH).contains(&width) {
+            return false;
+        }
+        self.cancel_drag();
+        self.current_style.width = width;
+        true
+    }
+    pub fn set_current_font_size(&mut self, font_size: f32) -> bool {
+        if !font_size.is_finite() || !(MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&font_size) {
+            return false;
+        }
+        self.cancel_drag();
+        self.current_style.font_size = font_size;
+        true
+    }
+    /// Change the selected shape's full style as one undoable document edit.
+    pub fn set_selected_style(&mut self, style: Style) -> bool {
+        if !valid_style(&style) {
+            return false;
+        }
+        self.cancel_drag();
+        let Some(index) = self.selected else {
+            return false;
+        };
+        if self
+            .document
+            .shapes()
+            .get(index)
+            .is_none_or(|shape| shape.style == style)
+        {
+            return false;
+        }
+        self.document.edit(index, |shape| shape.style = style)
+    }
+    /// Return the selected text object's contents, if the selection is text.
+    pub fn selected_text(&self) -> Option<&str> {
+        match &self.selection()?.kind {
+            ShapeKind::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+    /// Replace selected text as one undoable edit. Text is limited to 1 MiB.
+    pub fn set_selected_text(&mut self, text: impl Into<String>) -> bool {
+        let text = text.into();
+        if text.len() > MAX_TEXT_BYTES {
+            return false;
+        }
+        self.cancel_drag();
+        let Some(index) = self.selected else {
+            return false;
+        };
+        let Some(shape) = self.document.shapes().get(index) else {
+            return false;
+        };
+        if !matches!(shape.kind, ShapeKind::Text { .. }) {
+            return false;
+        }
+        if matches!(&shape.kind, ShapeKind::Text { text: current, .. } if current == &text) {
+            return false;
+        }
+        self.document.edit(index, |shape| {
+            if let ShapeKind::Text { text: current, .. } = &mut shape.kind {
+                *current = text;
+            }
+        })
     }
 
     /// Current uncommitted drag result, without changing document or history.
@@ -182,8 +282,10 @@ impl EditorController {
             },
             Tool::Select | Tool::Text | Tool::Crop => return,
         };
+        let mut shape = Shape::new(kind);
+        shape.style = self.current_style.clone();
         self.drag = Some(Drag::Create {
-            shape: Shape::new(kind),
+            shape,
             selection_before: self.selected,
         });
         self.last_position = Some(at);
@@ -279,10 +381,12 @@ impl EditorController {
             return false;
         }
         self.cancel_drag();
-        self.document.push(Shape::new(ShapeKind::Text {
+        let mut shape = Shape::new(ShapeKind::Text {
             location: at,
             text: text.into(),
-        }));
+        });
+        shape.style = self.current_style.clone();
+        self.document.push(shape);
         self.selected = Some(self.document.shapes().len() - 1);
         true
     }
@@ -531,5 +635,75 @@ mod tests {
         assert_eq!(e.shapes()[0].bounds().x, 10.0);
         assert_eq!(e.shapes()[1].bounds().x, 100.0);
         assert!(matches!(e.shapes()[2].kind, ShapeKind::Text { .. }));
+    }
+
+    #[test]
+    fn new_shapes_and_placed_text_use_current_style() {
+        let mut e = EditorController::new();
+        let style = Style {
+            color: Color::rgba(12, 34, 56, 200),
+            width: 7.5,
+            font_size: 31.0,
+        };
+        assert!(e.set_current_style(style.clone()));
+
+        e.set_tool(Tool::Rectangle);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_up(p(30.0, 30.0));
+        assert_eq!(e.shapes()[0].style, style);
+
+        assert!(e.place_text(p(40.0, 40.0), "styled"));
+        assert_eq!(e.shapes()[1].style, style);
+    }
+
+    #[test]
+    fn selected_style_change_is_undoable_and_redoable() {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.mouse_down(p(10.0, 25.0));
+        e.mouse_up(p(10.0, 25.0));
+        let replacement = Style {
+            color: Color::rgba(20, 80, 140, 255),
+            width: 9.0,
+            font_size: 42.0,
+        };
+
+        assert!(e.set_selected_style(replacement.clone()));
+        assert_eq!(e.shapes()[0].style, replacement);
+        assert!(e.undo());
+        assert_eq!(e.shapes()[0].style, Style::default());
+        assert!(e.redo());
+        assert_eq!(e.shapes()[0].style, replacement);
+    }
+
+    #[test]
+    fn selected_text_can_be_read_and_edited_with_undo() {
+        let mut e = EditorController::new();
+        assert!(e.place_text(p(5.0, 6.0), "before"));
+        assert_eq!(e.selected_text(), Some("before"));
+
+        assert!(e.set_selected_text("after"));
+        assert_eq!(e.selected_text(), Some("after"));
+        assert!(e.undo());
+        assert_eq!(e.selected_text(), Some("before"));
+        assert!(e.redo());
+        assert_eq!(e.selected_text(), Some("after"));
+    }
+
+    #[test]
+    fn invalid_style_parameters_are_rejected_without_changing_current_style() {
+        let mut e = EditorController::new();
+        let original = e.current_style().clone();
+        assert!(!e.set_current_width(f32::NAN));
+        assert!(!e.set_current_width(0.0));
+        assert!(!e.set_current_width(300.0));
+        assert!(!e.set_current_font_size(f32::INFINITY));
+        assert!(!e.set_current_font_size(0.5));
+        assert!(!e.set_current_font_size(600.0));
+        assert!(!e.set_current_style(Style {
+            width: f32::NAN,
+            ..Style::default()
+        }));
+        assert_eq!(e.current_style(), &original);
     }
 }

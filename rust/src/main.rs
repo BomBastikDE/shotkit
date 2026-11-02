@@ -27,6 +27,7 @@ use shotkit_rust_prototype::{
     view,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 type H = *mut c_void;
 type W = usize;
@@ -232,6 +233,7 @@ const COPY: u32 = 0x00cc0020;
 const TRAY: u32 = 0x8001;
 const SCROLL_DONE: u32 = 0x8002;
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
+static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
 static RESTORE_EDITOR: AtomicBool = AtomicBool::new(false);
 struct BusyGuard(bool);
 impl Drop for BusyGuard {
@@ -843,9 +845,12 @@ unsafe fn start_scroll(h: H) {
             std::thread::sleep(std::time::Duration::from_millis(350));
             scroll_capture::run(&mut io, direction)
         })();
-        let boxed = Box::into_raw(Box::new(result));
-        if PostMessageW(hwnd as H, SCROLL_DONE, 0, boxed as L) == 0 {
-            drop(Box::from_raw(boxed));
+        *SCROLL_RESULT.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+        if PostMessageW(hwnd as H, SCROLL_DONE, 0, 0) == 0 {
+            SCROLL_RESULT
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
             SCROLL_BUSY.store(false, Ordering::SeqCst);
         }
     });
@@ -864,6 +869,95 @@ unsafe fn copy_current(h: H) {
         MessageBoxW(h, wide(&e).as_ptr(), wide("Zwischenablage").as_ptr(), 0x10);
     }
 }
+#[repr(C)]
+struct ChooseColor {
+    size: u32,
+    owner: H,
+    instance: H,
+    color: u32,
+    custom: *mut u32,
+    flags: u32,
+    data: isize,
+    hook: *mut c_void,
+    template: *const u16,
+}
+#[link(name = "comdlg32")]
+extern "system" {
+    fn ChooseColorW(cc: *mut ChooseColor) -> i32;
+}
+unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes::Color> {
+    let current = editor().current_style().color;
+    let mut custom = [0u32; 16];
+    let mut cc = ChooseColor {
+        size: size_of::<ChooseColor>() as u32,
+        owner: h,
+        instance: null_mut(),
+        color: current.r as u32 | ((current.g as u32) << 8) | ((current.b as u32) << 16),
+        custom: custom.as_mut_ptr(),
+        flags: 0x1 | 0x2,
+        data: 0,
+        hook: null_mut(),
+        template: std::ptr::null(),
+    };
+    if ChooseColorW(&mut cc) == 0 {
+        return None;
+    }
+    Some(shotkit_rust_prototype::shapes::Color::rgba(
+        cc.color as u8,
+        (cc.color >> 8) as u8,
+        (cc.color >> 16) as u8,
+        255,
+    ))
+}
+unsafe fn choose_number(h: H, values: &[u32]) -> Option<f32> {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return None;
+    }
+    for (i, value) in values.iter().enumerate() {
+        AppendMenuW(menu, 0, i + 1, wide(&value.to_string()).as_ptr());
+    }
+    let mut p = Point { x: 0, y: 0 };
+    if GetCursorPos(&mut p) == 0 {
+        DestroyMenu(menu);
+        return None;
+    }
+    let selected = TrackPopupMenu(menu, 0x0100 | 0x0002, p.x, p.y, 0, h, std::ptr::null());
+    DestroyMenu(menu);
+    values
+        .get(selected.wrapping_sub(1) as usize)
+        .map(|v| *v as f32)
+}
+unsafe fn edit_style(h: H, id: usize) {
+    let selected = editor().selection().map(|s| s.style.clone());
+    let mut replacement = selected.unwrap_or_else(|| editor().current_style().clone());
+    match id {
+        toolbar::ID_COLOR => {
+            let Some(color) = choose_color(h) else { return };
+            editor().set_current_color(color);
+            replacement.color = color;
+        }
+        toolbar::ID_LINE_WIDTH => {
+            let Some(width) = choose_number(h, &[1, 2, 3, 4, 6, 8, 12, 16]) else {
+                return;
+            };
+            editor().set_current_width(width);
+            replacement.width = width;
+        }
+        toolbar::ID_FONT_SIZE => {
+            let Some(size) = choose_number(h, &[14, 18, 24, 28, 36, 48, 64, 96]) else {
+                return;
+            };
+            editor().set_current_font_size(size);
+            replacement.font_size = size;
+        }
+        _ => return,
+    }
+    if editor().set_selected_style(replacement) {
+        DIRTY = true;
+    }
+}
+
 unsafe fn toolbar_action(h: H, id: usize) {
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
@@ -889,6 +983,7 @@ unsafe fn toolbar_action(h: H, id: usize) {
         );
     } else {
         match id {
+            toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_SAVE => {
                 save(h, false);
             }
@@ -977,9 +1072,15 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         SCROLL_DONE => {
+            let result = SCROLL_RESULT
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            let Some(result) = result else {
+                return 0;
+            };
             SCROLL_BUSY.store(false, Ordering::SeqCst);
-            let result: Box<Result<Outcome, String>> = Box::from_raw(l as *mut _);
-            match *result {
+            match result {
                 Ok(outcome) => {
                     let message = outcome.reason;
                     if let Err(e) = display_image(h, outcome.image) {
@@ -1137,6 +1238,22 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             }
             0
         }
+        0x0203 if !BITMAP.is_null() => {
+            let (x, y) = point(h, l);
+            editor().set_tool(Tool::Select);
+            editor().mouse_down(ShapePoint::new(x as f32, y as f32));
+            editor().mouse_up(ShapePoint::new(x as f32, y as f32));
+            let current = editor().selected_text().map(str::to_owned);
+            if let Some(text) = current {
+                if let Some(changed) = text_dialog::prompt(h, &text) {
+                    if editor().set_selected_text(changed) {
+                        DIRTY = true;
+                    }
+                }
+            }
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
         0x0201 if !BITMAP.is_null() => {
             let (vx, vy, vw, vh) = image_view(h);
             let sx = (l as u32 as u16 as i16) as i32;
@@ -1236,7 +1353,7 @@ fn main() {
         let inst = GetModuleHandleW(std::ptr::null());
         let class = wide("ShotKitRustPrototype");
         let wc = WndClass {
-            style: 0,
+            style: 0x0008,
             proc: Some(proc),
             cls_extra: 0,
             wnd_extra: 0,

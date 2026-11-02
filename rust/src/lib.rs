@@ -1,4 +1,5 @@
 //! Shared, platform-independent parts of the Rust ShotKit work in progress.
+pub mod document;
 pub mod editor;
 pub mod image_edit;
 pub mod image_io;

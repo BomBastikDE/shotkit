@@ -2,9 +2,20 @@
 //!
 //! `suggest_at` ignores every window owned by this process (including the
 //! full-screen picker overlay), scans foreign top-level windows in Z order,
-//! then returns matching child-window rectangles inside the first usable root.
+//! then returns the topmost child chain at the point. [`WindowPicker`] provides
+//! a process-wide asynchronous worker for pointer event handlers.
 //! This is HWND geometry only: it does not inspect browser DOM or promise that
 //! controls correspond to visually meaningful page elements.
+
+#[cfg(windows)]
+use std::thread;
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex, MutexGuard, OnceLock,
+    },
+};
 
 /// A screen point in physical Win32 pixels. Call from a per-monitor DPI-aware
 /// thread, as this function temporarily requests that context for rectangle
@@ -15,8 +26,8 @@ pub struct ScreenPoint {
     pub y: i32,
 }
 
-/// A possible window-boundary selection. Matching children are ordered by
-/// increasing area; the top-level window is appended as the broad suggestion.
+/// A possible window-boundary selection. Matching children are returned from
+/// outermost to deepest; the top-level window is appended as the broad suggestion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ElementCandidate {
     /// Opaque HWND value. Do not retain as a durable identity; Windows may reuse it.
@@ -34,6 +45,136 @@ pub enum PickerError {
     NoWindowAtPoint,
 }
 
+#[cfg(any(windows, test))]
+fn layered_style_is_transparent(exstyle: u32, alpha: Option<u8>) -> bool {
+    const WS_EX_TRANSPARENT: u32 = 0x20;
+    const WS_EX_LAYERED: u32 = 0x0008_0000;
+    exstyle & WS_EX_LAYERED != 0 && (exstyle & WS_EX_TRANSPARENT != 0 || alpha == Some(0))
+}
+
+/// Result of one asynchronous window scan. Compare `sequence` and `point` to
+/// the latest submitted request before displaying or accepting the candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowScan {
+    pub sequence: u64,
+    pub point: ScreenPoint,
+    pub candidates: Result<Vec<ElementCandidate>, PickerError>,
+}
+
+struct ScanRequest {
+    sequence: u64,
+    point: ScreenPoint,
+    excluded_hwnd: isize,
+}
+
+struct ScanShared {
+    pending: Mutex<Option<ScanRequest>>,
+    result: Mutex<Option<WindowScan>>,
+    wake: Condvar,
+    next_sequence: AtomicU64,
+    latest_sequence: AtomicU64,
+}
+
+static SCAN_SHARED: OnceLock<Arc<ScanShared>> = OnceLock::new();
+static SCAN_INIT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Handle to the single process-wide Win32 scan worker. It coalesces pending
+/// cursor points and stays alive for process lifetime, so opening overlays does
+/// not create additional scan threads.
+pub struct WindowPicker {
+    shared: Arc<ScanShared>,
+}
+
+impl WindowPicker {
+    pub fn new() -> io::Result<Self> {
+        #[cfg(not(windows))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Win32 window scan is Windows-only",
+        ));
+
+        #[cfg(windows)]
+        {
+            if let Some(shared) = SCAN_SHARED.get() {
+                return Ok(Self {
+                    shared: Arc::clone(shared),
+                });
+            }
+            let _guard = SCAN_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(shared) = SCAN_SHARED.get() {
+                return Ok(Self {
+                    shared: Arc::clone(shared),
+                });
+            }
+            let shared = Arc::new(ScanShared {
+                pending: Mutex::new(None),
+                result: Mutex::new(None),
+                wake: Condvar::new(),
+                next_sequence: AtomicU64::new(1),
+                latest_sequence: AtomicU64::new(0),
+            });
+            let worker_shared = Arc::clone(&shared);
+            let worker = thread::Builder::new()
+                .name("shotkit-window-picker".into())
+                .spawn(move || scan_worker(worker_shared))?;
+            drop(worker); // The worker is process-wide and exits with the process.
+            let _ = SCAN_SHARED.set(Arc::clone(&shared));
+            Ok(Self { shared })
+        }
+    }
+
+    pub fn submit(&self, point: ScreenPoint, excluded_hwnd: isize) -> u64 {
+        let mut pending = lock(&self.shared.pending);
+        let sequence = self.shared.next_sequence.fetch_add(1, Ordering::Relaxed);
+        self.shared
+            .latest_sequence
+            .store(sequence, Ordering::Release);
+        *pending = Some(ScanRequest {
+            sequence,
+            point,
+            excluded_hwnd,
+        });
+        self.shared.wake.notify_one();
+        sequence
+    }
+
+    pub fn try_take_latest(&self) -> Option<WindowScan> {
+        let mut result = lock(&self.shared.result);
+        if result.as_ref().map(|scan| scan.sequence)
+            != Some(self.shared.latest_sequence.load(Ordering::Acquire))
+        {
+            return None;
+        }
+        result.take()
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(windows)]
+fn scan_worker(shared: Arc<ScanShared>) {
+    loop {
+        let request = {
+            let mut pending = lock(&shared.pending);
+            while pending.is_none() {
+                pending = shared.wake.wait(pending).unwrap_or_else(|p| p.into_inner());
+            }
+            pending.take()
+        };
+        let Some(request) = request else { continue };
+        let scan = WindowScan {
+            sequence: request.sequence,
+            point: request.point,
+            candidates: suggest_at_excluding(request.point, request.excluded_hwnd),
+        };
+        if shared.latest_sequence.load(Ordering::Acquire) == request.sequence {
+            *lock(&shared.result) = Some(scan);
+        }
+    }
+}
+
 /// Find the topmost eligible foreign top-level window at `point` and its
 /// visible child-window suggestions. The current process is always excluded,
 /// which removes the active ShotKit overlay without hiding or flashing it.
@@ -43,13 +184,7 @@ pub enum PickerError {
 /// custom region, per-pixel layered alpha, or non-HWND web content may not be
 /// represented exactly. In particular, this API does not inspect a browser's
 /// DOM; browser page areas often appear as one renderer HWND or no child HWNDs.
-pub fn suggest_at(point: ScreenPoint) -> Result<Vec<ElementCandidate>, PickerError> {
-    suggest_at_excluding(point, 0)
-}
-
-/// Like [`suggest_at`], with one additional HWND excluded. The process-wide
-/// exclusion remains active; `excluded_hwnd` is useful for hosts that want to
-/// exclude an overlay in a helper process too.
+/// An additional HWND can be excluded for overlays hosted by helper processes.
 #[cfg(windows)]
 pub fn suggest_at_excluding(
     point: ScreenPoint,
@@ -74,6 +209,16 @@ fn contains(rect: (i32, i32, i32, i32), point: ScreenPoint) -> bool {
 }
 
 #[cfg(any(windows, test))]
+pub(crate) fn confirms_click(
+    expected_hwnd: isize,
+    candidate: Option<ElementCandidate>,
+    point: ScreenPoint,
+) -> bool {
+    candidate
+        .is_some_and(|candidate| candidate.hwnd == expected_hwnd && contains(candidate.rect, point))
+}
+
+#[cfg(test)]
 fn area(rect: (i32, i32, i32, i32)) -> i128 {
     let (left, top, right, bottom) = rect;
     (i128::from(right) - i128::from(left)) * (i128::from(bottom) - i128::from(top))
@@ -81,7 +226,9 @@ fn area(rect: (i32, i32, i32, i32)) -> i128 {
 
 #[cfg(windows)]
 mod windows {
-    use super::{area, contains, ElementCandidate, PickerError, ScreenPoint};
+    use super::{
+        contains, layered_style_is_transparent, ElementCandidate, PickerError, ScreenPoint,
+    };
     use std::{ffi::c_void, mem::size_of};
 
     type Hwnd = *mut c_void;
@@ -98,12 +245,13 @@ mod windows {
     #[link(name = "user32")]
     extern "system" {
         fn EnumWindows(callback: EnumProc, param: isize) -> i32;
-        fn EnumChildWindows(parent: Hwnd, callback: EnumProc, param: isize) -> i32;
         fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
         fn IsWindowVisible(hwnd: Hwnd) -> i32;
         fn IsIconic(hwnd: Hwnd) -> i32;
         fn GetWindowThreadProcessId(hwnd: Hwnd, pid: *mut u32) -> u32;
         fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
+        fn GetTopWindow(hwnd: Hwnd) -> Hwnd;
+        fn GetWindow(hwnd: Hwnd, command: u32) -> Hwnd;
         fn GetLayeredWindowAttributes(
             hwnd: Hwnd,
             key: *mut u32,
@@ -122,12 +270,14 @@ mod windows {
     }
 
     const GWL_EXSTYLE: i32 = -20;
-    const WS_EX_TRANSPARENT: isize = 0x0000_0020;
     const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
     const WS_EX_LAYERED: isize = 0x0008_0000;
     const LWA_ALPHA: u32 = 0x2;
     const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
     const DWMWA_CLOAKED: u32 = 14;
+    const GW_HWNDNEXT: u32 = 2;
+    const MAX_SIBLINGS: usize = 256;
+    const MAX_CHILD_DEPTH: usize = 32;
     const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
     struct DpiContext(Hwnd);
@@ -162,7 +312,6 @@ mod windows {
     struct ChildSearch {
         point: ScreenPoint,
         own_pid: u32,
-        root_rect: Rect,
         items: Vec<ElementCandidate>,
     }
 
@@ -208,10 +357,13 @@ mod windows {
     }
 
     unsafe fn is_hit_test_transparent(hwnd: Hwnd, exstyle: isize) -> bool {
-        if exstyle & WS_EX_TRANSPARENT != 0 {
-            return true;
-        }
         if exstyle & WS_EX_LAYERED != 0 {
+            // WS_EX_TRANSPARENT makes a layered window pass mouse hit tests
+            // through; on a non-layered top-level window it is a paint-order
+            // style, not sufficient evidence of hit-test transparency.
+            if layered_style_is_transparent(exstyle as u32, None) {
+                return true;
+            }
             let mut key = 0;
             let mut alpha = 255;
             let mut flags = 0;
@@ -219,7 +371,7 @@ mod windows {
                 && flags & LWA_ALPHA != 0
                 && alpha == 0
             {
-                return true;
+                return layered_style_is_transparent(exstyle as u32, Some(alpha));
             }
         }
         false
@@ -259,35 +411,49 @@ mod windows {
         1
     }
 
-    unsafe extern "system" fn collect_child(hwnd: Hwnd, param: isize) -> i32 {
-        let search = &mut *(param as *mut ChildSearch);
-        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || is_cloaked(hwnd) {
-            return 1;
+    unsafe fn collect_topmost_child(
+        parent: Hwnd,
+        parent_rect: Rect,
+        search: &mut ChildSearch,
+        depth: usize,
+    ) {
+        if depth >= MAX_CHILD_DEPTH {
+            return;
         }
-        if process_id(hwnd) == Some(search.own_pid) {
-            return 1;
-        }
-        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        if is_hit_test_transparent(hwnd, exstyle) {
-            return 1;
-        }
-        if let Some(mut rect) = window_rect(hwnd, false) {
-            rect.left = rect.left.max(search.root_rect.left);
-            rect.top = rect.top.max(search.root_rect.top);
-            rect.right = rect.right.min(search.root_rect.right);
-            rect.bottom = rect.bottom.min(search.root_rect.bottom);
-            if rect.right > rect.left
-                && rect.bottom > rect.top
-                && contains(tuple(rect), search.point)
-            {
-                search.items.push(ElementCandidate {
-                    hwnd: hwnd as isize,
-                    rect: tuple(rect),
-                    is_top_level: false,
-                });
+        let mut child = GetTopWindow(parent);
+        let mut visited = Vec::new();
+        for _ in 0..MAX_SIBLINGS {
+            if child.is_null() || visited.contains(&(child as usize)) {
+                break;
             }
+            visited.push(child as usize);
+            let next = GetWindow(child, GW_HWNDNEXT);
+            let eligible = IsWindowVisible(child) != 0
+                && !is_cloaked(child)
+                && process_id(child) != Some(search.own_pid)
+                && !is_hit_test_transparent(child, GetWindowLongPtrW(child, GWL_EXSTYLE));
+            if eligible {
+                if let Some(mut rect) = window_rect(child, false) {
+                    rect.left = rect.left.max(parent_rect.left);
+                    rect.top = rect.top.max(parent_rect.top);
+                    rect.right = rect.right.min(parent_rect.right);
+                    rect.bottom = rect.bottom.min(parent_rect.bottom);
+                    if rect.right > rect.left
+                        && rect.bottom > rect.top
+                        && contains(tuple(rect), search.point)
+                    {
+                        search.items.push(ElementCandidate {
+                            hwnd: child as isize,
+                            rect: tuple(rect),
+                            is_top_level: false,
+                        });
+                        collect_topmost_child(child, rect, search, depth + 1);
+                        return; // Lower siblings are obscured at this point.
+                    }
+                }
+            }
+            child = next;
         }
-        1
     }
 
     pub(super) fn suggest_at(
@@ -312,12 +478,9 @@ mod windows {
             let mut children = ChildSearch {
                 point,
                 own_pid: search.own_pid,
-                root_rect,
                 items: Vec::new(),
             };
-            EnumChildWindows(root, Some(collect_child), &mut children as *mut _ as isize);
-            children.items.sort_by_key(|candidate| area(candidate.rect));
-            children.items.dedup_by_key(|candidate| candidate.hwnd);
+            collect_topmost_child(root, root_rect, &mut children, 0);
             children.items.push(ElementCandidate {
                 hwnd: root as isize,
                 rect: tuple(root_rect),
@@ -330,7 +493,9 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
-    use super::{area, contains, ScreenPoint};
+    use super::{
+        area, confirms_click, contains, layered_style_is_transparent, ElementCandidate, ScreenPoint,
+    };
 
     #[test]
     fn rectangle_contains_uses_half_open_edges_and_negative_desktop_origin() {
@@ -348,5 +513,31 @@ mod tests {
             area((i32::MIN, i32::MIN, i32::MAX, i32::MAX)),
             (i128::from(u32::MAX)) * i128::from(u32::MAX)
         );
+    }
+
+    #[test]
+    fn transparent_style_requires_layered_window_context() {
+        assert!(!layered_style_is_transparent(0x20, None));
+        assert!(layered_style_is_transparent(0x0008_0020, None));
+        assert!(layered_style_is_transparent(0x0008_0000, Some(0)));
+        assert!(!layered_style_is_transparent(0x0008_0000, Some(128)));
+    }
+
+    #[test]
+    fn click_confirmation_rejects_reused_or_moved_window_suggestions() {
+        let point = ScreenPoint { x: 10, y: 10 };
+        let candidate = ElementCandidate {
+            hwnd: 7,
+            rect: (0, 0, 20, 20),
+            is_top_level: true,
+        };
+        assert!(confirms_click(7, Some(candidate), point));
+        assert!(!confirms_click(8, Some(candidate), point));
+        let moved = ElementCandidate {
+            rect: (20, 20, 30, 30),
+            ..candidate
+        };
+        assert!(!confirms_click(7, Some(moved), point));
+        assert!(!confirms_click(7, None, point));
     }
 }
