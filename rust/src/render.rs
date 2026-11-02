@@ -353,38 +353,7 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
             };
             line(dc, *start, *end)
         }
-        ShapeKind::Arrow { start, end } => {
-            let dx = end.x - start.x;
-            let dy = end.y - start.y;
-            let len = (dx * dx + dy * dy).sqrt();
-            if !len.is_finite() || len < 1.0 {
-                return true;
-            }
-            let (ux, uy) = (dx / len, dy / len);
-            let head = len.min(12.0f32.max(shape.style.width * 3.2));
-            let half = head * 0.55;
-            let base = Point::new(end.x - ux * head, end.y - uy * head);
-            let left = Point::new(base.x - uy * half, base.y + ux * half);
-            let right = Point::new(base.x + uy * half, base.y - ux * half);
-            let Some((_p, _s)) = pen(dc, shape.style.color, shape.style.width) else {
-                return false;
-            };
-            let shaft_ok = if len > head {
-                line(
-                    dc,
-                    *start,
-                    Point::new(end.x - ux * head * 0.8, end.y - uy * head * 0.8),
-                )
-            } else {
-                true
-            };
-            let Some((_b, _bs)) = brush(dc, shape.style.color) else {
-                return false;
-            };
-            let pts = [wp(*end), wp(left), wp(right)];
-            let polygon_ok = Polygon(dc, pts.as_ptr(), 3) != 0;
-            shaft_ok && polygon_ok
-        }
+        ShapeKind::Arrow { start, end } => draw_arrow(dc, shape, start, end),
         ShapeKind::Rectangle { start, end } | ShapeKind::Ellipse { start, end } => {
             let Some((_p, _s)) = pen(dc, shape.style.color, shape.style.width) else {
                 return false;
@@ -483,75 +452,122 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
                 units.len().min(i32::MAX as usize) as i32,
             ) != 0
         }
-        ShapeKind::Step { center, number } => {
-            let radius = 10.0 + shape.style.width * 2.2;
-            let c = shape.style.color;
-            let Some((_b, _bs)) = brush(dc, c) else {
-                return false;
-            };
-            let _ = SetBkMode(dc, OPAQUE);
-            let ring = OwnedObject(CreatePen(
-                PS_SOLID,
-                (radius / 8.0).max(2.0) as i32,
-                rgb(Color::rgba(255, 255, 255, 255)),
-            ));
-            let Some(_rs) = select(dc, ring.0) else {
-                return false;
-            };
-            let _ = Ellipse(
-                dc,
-                pixel(center.x - radius),
-                pixel(center.y - radius),
-                pixel(center.x + radius),
-                pixel(center.y + radius),
-            );
-            let face = wide("Segoe UI");
-            let font_size = radius
-                * if number.to_string().len() > 1 {
-                    0.85
-                } else {
-                    1.05
-                };
-            let font = OwnedObject(CreateFontW(
-                -pixel(font_size).max(1),
-                0,
-                0,
-                0,
-                700,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                5,
-                0x20 | 0x01,
-                face.as_ptr(),
-            ));
-            let Some(_fs) = select(dc, font.0) else {
-                return false;
-            };
-            let _ = SetTextColor(
-                dc,
-                rgb(
-                    if (c.r as f32 * 0.299 + c.g as f32 * 0.587 + c.b as f32 * 0.114) > 150.0 {
-                        Color::rgba(40, 40, 40, 255)
-                    } else {
-                        Color::rgba(255, 255, 255, 255)
-                    },
-                ),
-            );
-            let s = number.to_string();
-            let u: Vec<u16> = s.encode_utf16().collect();
-            TextOutW(
-                dc,
-                pixel(center.x - (u.len() as f32 * radius * 0.28)),
-                pixel(center.y - radius * 0.42),
-                u.as_ptr(),
-                u.len() as i32,
-            ) != 0
-        }
+        ShapeKind::Step { center, number } => draw_step(dc, shape, center, number),
     }
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: dc ist ein gültiger geliehener GDI-DC mit stabiler Lebensdauer.
+// Warum erfüllt bzw. offen: draw_shape übergibt den geprüften DC; fremde Handles
+// und vollständige GDI-Synchronisation bleiben Aufruferpflicht.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit ist nicht belegt.
+unsafe fn draw_arrow(dc: Hdc, shape: &Shape, start: &Point, end: &Point) -> bool {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if !len.is_finite() || len < 1.0 {
+        return true;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let head = len.min(12.0f32.max(shape.style.width * 3.2));
+    let half = head * 0.55;
+    let base = Point::new(end.x - ux * head, end.y - uy * head);
+    let left = Point::new(base.x - uy * half, base.y + ux * half);
+    let right = Point::new(base.x + uy * half, base.y - ux * half);
+    let Some((_p, _s)) = pen(dc, shape.style.color, shape.style.width) else {
+        return false;
+    };
+    let shaft_ok = if len > head {
+        line(
+            dc,
+            *start,
+            Point::new(end.x - ux * head * 0.8, end.y - uy * head * 0.8),
+        )
+    } else {
+        true
+    };
+    let Some((_b, _bs)) = brush(dc, shape.style.color) else {
+        return false;
+    };
+    let pts = [wp(*end), wp(left), wp(right)];
+    let polygon_ok = Polygon(dc, pts.as_ptr(), 3) != 0;
+    shaft_ok && polygon_ok
+
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: dc ist ein gültiger geliehener GDI-DC mit stabiler Lebensdauer.
+// Warum erfüllt bzw. offen: draw_shape übergibt den geprüften DC; Guards stellen
+// lokale GDI-Auswahl wieder her, Fremdhandle-Gültigkeit bleibt Aufruferpflicht.
+// Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit ist nicht belegt.
+unsafe fn draw_step(dc: Hdc, shape: &Shape, center: &Point, number: &i32) -> bool {
+    let radius = 10.0 + shape.style.width * 2.2;
+    let c = shape.style.color;
+    let Some((_b, _bs)) = brush(dc, c) else {
+        return false;
+    };
+    let _ = SetBkMode(dc, OPAQUE);
+    let ring = OwnedObject(CreatePen(
+        PS_SOLID,
+        (radius / 8.0).max(2.0) as i32,
+        rgb(Color::rgba(255, 255, 255, 255)),
+    ));
+    let Some(_rs) = select(dc, ring.0) else {
+        return false;
+    };
+    let _ = Ellipse(
+        dc,
+        pixel(center.x - radius),
+        pixel(center.y - radius),
+        pixel(center.x + radius),
+        pixel(center.y + radius),
+    );
+    let face = wide("Segoe UI");
+    let font_size = radius
+        * if number.to_string().len() > 1 {
+            0.85
+        } else {
+            1.05
+        };
+    let font = OwnedObject(CreateFontW(
+        -pixel(font_size).max(1),
+        0,
+        0,
+        0,
+        700,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0x20 | 0x01,
+        face.as_ptr(),
+    ));
+    let Some(_fs) = select(dc, font.0) else {
+        return false;
+    };
+    let _ = SetTextColor(
+        dc,
+        rgb(
+            if (c.r as f32 * 0.299 + c.g as f32 * 0.587 + c.b as f32 * 0.114) > 150.0 {
+                Color::rgba(40, 40, 40, 255)
+            } else {
+                Color::rgba(255, 255, 255, 255)
+            },
+        ),
+    );
+    let s = number.to_string();
+    let u: Vec<u16> = s.encode_utf16().collect();
+    TextOutW(
+        dc,
+        pixel(center.x - (u.len() as f32 * radius * 0.28)),
+        pixel(center.y - radius * 0.42),
+        u.as_ptr(),
+        u.len() as i32,
+    ) != 0
+
 }
 
 /// Compatibility helper for a bitmap passed as a GDI device context.

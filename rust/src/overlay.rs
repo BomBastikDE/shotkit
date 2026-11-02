@@ -9,6 +9,8 @@
 //! hold Shift while releasing the drag, then use the same keys. Pointer motion
 //! resumes hover mode, a new mouse gesture starts the usual flow, and Esc cancels.
 
+mod input;
+mod painting;
 mod hover;
 use hover::*;
 mod magnifier;

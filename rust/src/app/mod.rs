@@ -1,3 +1,5 @@
+mod window_commands;
+mod window_mouse;
 mod region;
 use region::*;
 mod config;
@@ -430,7 +432,17 @@ unsafe fn quit_application(h: H) {
     }
 }
 pub(crate) fn run() {
-    unsafe {
+    // SAFETY: startup runs once on the entrypoint thread; run_application
+    // owns the Win32 handles and message loop until their teardown.
+    unsafe { run_application(); }
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf genau einmal auf dem Windows-Eintrittsthread.
+// Warum erfüllt: main ruft run einmal auf; Fenster und Nachrichtenpumpe werden
+// hier erzeugt und auf demselben Thread verarbeitet. Callback-Panikfreiheit ist offen.
+// Nachrichten: Fenstererstellung, Dialoge und die Nachrichtenpumpe können reentrieren.
+unsafe fn run_application() {
         let (_instance_handle, already_running) = match create_instance_mutex() {
             Ok(result) => result,
             Err(error) => {
@@ -500,5 +512,4 @@ pub(crate) fn run() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-    }
 }
