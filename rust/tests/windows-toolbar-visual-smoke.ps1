@@ -98,10 +98,15 @@ try {
   $actual=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);[void][ShotKitToolbarVisual.Native]::GetCursorPos([ref]$actual)
   $hit=[ShotKitToolbarVisual.Native]::WindowFromPoint($actual)
   if($hit -ne $hover.H){throw "HOVER_TARGET_MISMATCH: expected '$tipLabel' handle $($hover.H), got $hit at $($actual.X),$($actual.Y)."}
-  $deadline=[DateTime]::UtcNow.AddSeconds(5);$tip=$null
-  while([DateTime]::UtcNow -lt $deadline){$tip=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'tooltips_class32'}|Select-Object -First 1;if($tip){break};Start-Sleep -Milliseconds 100}
+  $deadline=[DateTime]::UtcNow.AddSeconds(5);$tip=$null;$tooltipText=''
+  # A visible tooltip may still contain the previous hovered button's text.
+  # Keep checking until the exact new tooltip appears, or fail on timeout.
+  while([DateTime]::UtcNow -lt $deadline){
+   $tip=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'tooltips_class32'}|Select-Object -First 1
+   if($tip){$tooltipText=[Windows.Automation.AutomationElement]::FromHandle($tip.H).Current.Name;if($tooltipText -ceq $tipLabel){break}}
+   Start-Sleep -Milliseconds 100
+  }
   if(-not $tip){$details=(Owned-Windows|ForEach-Object{"$($_.ClassName):visible=$($_.Visible):title=$($_.Title)"}) -join ', ';throw "TOOLTIP_NOT_VISIBLE: native tooltip for '$tipLabel' did not appear after real hover. Owned windows: $details"}
-  $tooltipText=[Windows.Automation.AutomationElement]::FromHandle($tip.H).Current.Name
   if($tooltipText -cne $tipLabel){throw "TOOLTIP_TEXT_MISMATCH: expected exact '$tipLabel'; observed '$tooltipText'."}
  }
  # The color action must open its owned native color chooser. Cancel only that
