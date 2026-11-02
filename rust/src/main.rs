@@ -164,6 +164,11 @@ extern "system" {
     fn SetForegroundWindow(h: H) -> i32;
     fn SetFocus(h: H) -> H;
     fn GetForegroundWindow() -> H;
+    fn GetShellWindow() -> H;
+    fn GetAncestor(h: H, flags: u32) -> H;
+    fn GetClassNameW(h: H, name: *mut u16, max: i32) -> i32;
+    fn IsWindow(h: H) -> i32;
+    fn GetWindowThreadProcessId(h: H, process_id: *mut u32) -> u32;
     fn GetKeyState(key: i32) -> i16;
     fn GetCursorPos(point: *mut Point) -> i32;
     fn CreatePopupMenu() -> H;
@@ -181,10 +186,20 @@ extern "system" {
     fn IsWindowVisible(h: H) -> i32;
     fn SetProcessDpiAwarenessContext(context: H) -> i32;
     fn WindowFromPoint(p: Point) -> H;
-    fn GetAncestor(h: H, flags: u32) -> H;
     fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
     fn SendMessageTimeoutW(h: H, msg: u32, w: W, l: L, flags: u32, timeout: u32, result: *mut W) -> i32;
+}
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        h: H,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> H;
 }
 #[link(name = "gdi32")]
 extern "system" {
@@ -741,16 +756,130 @@ fn post_capture_after(h: H, ticket: CaptureTicket, delay: std::time::Duration) {
     });
 }
 unsafe fn capture_active(h: H, window: H) {
-    if window == h || window.is_null() {
+    let target = match active_window_target(h, window) {
+        Ok(snapshot) => resolve_active_window_target(h, &snapshot),
+        Err(error) => Err(error),
+    };
+    capture_rect(h, target);
+}
+struct ActiveWindowSnapshot {
+    hwnd: H,
+    process_id: u32,
+    thread_id: u32,
+    class_name: String,
+}
+unsafe fn active_window_target(
+    h: H,
+    window: H,
+) -> Result<ActiveWindowSnapshot, String> {
+    if window.is_null() || IsWindow(window) == 0 {
+        return Err("Windows hat kein gültiges aktives Fenster geliefert.".into());
+    }
+    let root = GetAncestor(window, 2);
+    let root = if root.is_null() { window } else { root };
+    if root == h || editor_windows().iter().any(|editor| *editor == root) {
+        return Err("ShotKit war das aktive Fenster. Bitte zuerst das gewünschte Fenster aktivieren und erneut wählen.".into());
+    }
+    let mut class_name = [0u16; 256];
+    let class_len = GetClassNameW(root, class_name.as_mut_ptr(), class_name.len() as i32);
+    if class_len <= 0 {
+        return Err("Windows konnte die Klasse des aktiven Fensters nicht ermitteln.".into());
+    }
+    let class_name = String::from_utf16_lossy(&class_name[..class_len as usize]);
+    let shell = GetShellWindow();
+    if root == shell
+        || matches!(
+            class_name.as_str(),
+            "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "TrayNotifyWnd"
+                | "NotifyIconOverflowWindow"
+                | "TopLevelWindowForOverflowXamlIsland"
+                | "Progman"
+                | "WorkerW"
+        )
+    {
+        return Err("Die Windows-Shell war im Vordergrund; ein Zielfenster lässt sich daraus nicht sicher bestimmen. Bitte gewünschtes Fenster aktivieren und erneut wählen.".into());
+    }
+    let mut process_id = 0;
+    let thread_id = GetWindowThreadProcessId(root, &mut process_id);
+    if thread_id == 0 || process_id == 0 {
+        return Err("Windows konnte Prozess und Thread des aktiven Fensters nicht bestimmen.".into());
+    }
+    Ok(ActiveWindowSnapshot {
+        hwnd: root,
+        process_id,
+        thread_id,
+        class_name,
+    })
+}
+unsafe fn resolve_active_window_target(
+    h: H,
+    saved: &ActiveWindowSnapshot,
+) -> Result<capture_targets::ScreenRect, String> {
+    if IsWindow(saved.hwnd) == 0 {
+        return Err("Das zuvor aktive Fenster wurde geschlossen, bevor die Aufnahme startete.".into());
+    }
+    let current = active_window_target(h, saved.hwnd).map_err(|_| {
+        "Das zuvor aktive Fenster ist nicht mehr als dasselbe gültige Zielfenster verfügbar.".to_string()
+    })?;
+    if current.hwnd != saved.hwnd
+        || current.process_id != saved.process_id
+        || current.thread_id != saved.thread_id
+        || current.class_name != saved.class_name
+    {
+        return Err("Das zuvor aktive Fenster wurde geschlossen oder sein HWND inzwischen wiederverwendet. Bitte den Tray-Befehl erneut wählen.".into());
+    }
+    capture_targets::saved_window(saved.hwnd as isize)
+}
+unsafe fn open_storage_folder(h: H) {
+    let Some(folder) = active_settings().save_folder else {
         MessageBoxW(
             h,
-            wide("Kein geeignetes aktives Fenster gefunden.").as_ptr(),
-            wide("Fensteraufnahme").as_ptr(),
+            wide("Es ist kein Speicherordner eingestellt. Wählen Sie zuerst unter Einstellungen einen Speicherordner.").as_ptr(),
+            wide("Speicherordner öffnen").as_ptr(),
             0x30,
         );
         return;
+    };
+    match std::fs::metadata(&folder) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            MessageBoxW(
+                h,
+                wide(&format!("Der eingestellte Speicherpfad ist kein Ordner:\n{}", folder.display())).as_ptr(),
+                wide("Speicherordner öffnen").as_ptr(),
+                0x10,
+            );
+            return;
+        }
+        Err(error) => {
+            MessageBoxW(
+                h,
+                wide(&format!("Der eingestellte Speicherordner ist nicht verfügbar:\n{}\n\n{error}", folder.display())).as_ptr(),
+                wide("Speicherordner öffnen").as_ptr(),
+                0x10,
+            );
+            return;
+        }
     }
-    capture_rect(h, capture_targets::saved_window(window as isize));
+    let path: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = ShellExecuteW(
+        h,
+        wide("open").as_ptr(),
+        path.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        5,
+    );
+    if result as usize <= 32 {
+        MessageBoxW(
+            h,
+            wide(&format!("Windows konnte den Speicherordner nicht öffnen:\n{}\n\nShellExecuteW meldete Fehlercode {}.", folder.display(), result as usize)).as_ptr(),
+            wide("Speicherordner öffnen").as_ptr(),
+            0x10,
+        );
+    }
 }
 unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     let mut r: Rect = zeroed();
@@ -1736,7 +1865,7 @@ unsafe fn toolbar_action(h: H, id: usize) {
     InvalidateRect(h, std::ptr::null(), 0);
 }
 
-unsafe fn tray_menu(h: H) {
+unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return;
@@ -1749,9 +1878,11 @@ unsafe fn tray_menu(h: H) {
         (2, "Bereich aufnehmen (F11)"),
         (3, "Scroll-Aufnahme (F10)"),
         (7, "Alle Bildschirme aufnehmen"),
+        (13, "Aktives Fenster aufnehmen"),
         (4, "Editor anzeigen"),
         (5, "Bild öffnen …"),
         (12, "Bild aus Zwischenablage öffnen"),
+        (14, "Speicherordner öffnen"),
         (8, "Ungesicherte Aufnahme speichern …"),
         (6, "Beenden"),
     ] {
@@ -1815,9 +1946,14 @@ unsafe fn tray_menu(h: H) {
         2 => capture_region(h),
         3 => start_scroll(h),
         7 => capture_rect(h, capture_targets::virtual_desktop()),
+        13 => {
+            let target = active_target.and_then(|saved| resolve_active_window_target(h, &saved));
+            capture_rect(h, target);
+        }
         4 => show_editors(),
         5 => open_image(h),
         12 => paste_image(h),
+        14 => open_storage_folder(h),
         8 => {
             resolve_recovery(h);
         }
@@ -1937,8 +2073,8 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             capture(h);
             0
         }
-        TRAY if l as u32 == 0x0203 => {
-            capture(h);
+        TRAY if l as u32 == 0x0202 => {
+            capture_region(h);
             0
         }
         0x0312 if w == 2 => {
@@ -2002,7 +2138,11 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         TRAY if l as u32 == 0x0205 => {
-            tray_menu(h);
+            // Save the target before the menu activates ShotKit. The menu
+            // command later uses these validated bounds without querying the
+            // menu or Shell as foreground again.
+            let active_target = active_window_target(h, GetForegroundWindow());
+            tray_menu(h, active_target);
             0
         }
         0x0100 if w == 0x56 && GetKeyState(0x11) < 0 => {
@@ -2389,7 +2529,7 @@ fn main() {
         n.flags = 1 | 2 | 4;
         n.callback = TRAY;
         n.icon = LoadIconW(null_mut(), 32512usize as *const u16);
-        let tip = wide("ShotKit Rust: F9 oder Doppelklick = Aufnahme, Rechtsklick = Beenden");
+        let tip = wide("ShotKit Rust: F9 oder Einzelklick = Bereich, Rechtsklick = Menü");
         n.tip[..tip.len()].copy_from_slice(&tip);
         if Shell_NotifyIconW(0, &n) == 0 {
             MessageBoxW(
@@ -2404,7 +2544,7 @@ fn main() {
         if RegisterHotKey(h, 1, 0x4000, 0x78) == 0 {
             MessageBoxW(
                 h,
-                wide("F9 ist belegt. Aufnahme über Doppelklick auf das Tray-Symbol.").as_ptr(),
+                wide("F9 ist belegt. Bereichsaufnahme über Einzelklick auf das Tray-Symbol.").as_ptr(),
                 wide("ShotKit Rust").as_ptr(),
                 0x30,
             );
