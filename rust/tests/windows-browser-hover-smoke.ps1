@@ -115,10 +115,10 @@ if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
     throw "Windows PowerShell 5.1 was not found at '$windowsPowerShell'."
 }
 
-$edgeCandidates = @(
+$edgeCandidates = @(@(
     (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
     (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
-) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
 if ($edgeCandidates.Count -eq 0) {
     throw 'EDGE_NOT_INSTALLED: Microsoft Edge was not found in the runner image.'
 }
