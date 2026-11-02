@@ -21,6 +21,8 @@ Beim ersten Start öffnet sich nach einer Aufnahme der Editor; automatisches Spe
 
 Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert und ausschließlich für Testzwecke gedacht. Im Entwicklungsstand nur mit Kopien wichtiger Bilder arbeiten.
 
+Für einen manuellen Test auf Windows-Geräten siehe [WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md).
+
 ## Bauen und testen
 
 ```sh

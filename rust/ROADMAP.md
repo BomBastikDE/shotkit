@@ -1,6 +1,6 @@
 # Rust-Portierung: Funktionsstand
 
-Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.6` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
+Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.9` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
 
 ## Bestehende ShotKit-Funktionen für die Portierung
 
@@ -41,3 +41,5 @@ Der Windows-[Lauf 41453703225](https://github.com/BomBastikDE/shotkit/actions/ru
 Die Vorabversion Alpha 5 basiert auf Commit `41e8bbd` und bestand [GitHub Actions Lauf 41457711642](https://github.com/BomBastikDE/shotkit/actions/runs/41457711642) unter Linux und Windows. Dabei wurden die pixelgenaue Tastaturkorrektur eines manuell gezogenen Bereichs, Abbruch und der normale Mausablauf sowie die Wiederholung des letzten Bereichs über das Tray-Menü geprüft. Tests auf realen Geräten und mit gemischten Skalierungen stehen weiterhin aus.
 
 Die Vorabversion Alpha 6 basiert auf Commit `bc8efbe` und bestand [GitHub Actions Lauf 41459734057](https://github.com/BomBastikDE/shotkit/actions/runs/41459734057). Der Windows-Lauf prüfte insbesondere den Klick nach Tastaturkorrektur und das Wiederholen mit Bilddatei und Zwischenablage; Monitorwechsel und gemischte Skalierungen bleiben separate Praxistests.
+
+Die Vorabversion Alpha 9 basiert auf Commit `7fba242` und bestand [GitHub Actions Lauf 41475395472](https://github.com/BomBastikDE/shotkit/actions/runs/41475395472) unter Linux und Windows. Der Windows-Lauf prüfte unter anderem das Anlegen, erneute Öffnen und Bearbeiten von Text sowie Rückgängig. Monitorwechsel und gemischte Skalierungen bleiben separate Praxistests.
