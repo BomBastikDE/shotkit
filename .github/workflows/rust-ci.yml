@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2022]
+        os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -44,19 +44,11 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo build --locked --release
-      - name: Interactive Windows About dialog smoke test
-        timeout-minutes: 10
+      - name: Run all interactive Windows smoke tests
+        timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
-        run: ./tests/windows-about-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      # Temporary: the toolbar smoke test stays visible while its failures are fixed.
-      # Remove continue-on-error and require this test to pass before beta.
-      - name: Interactive Windows toolbar and icon visual smoke test (non-blocking until beta)
-        continue-on-error: true
-        timeout-minutes: 5
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-toolbar-visual-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -ScreenshotPath target/shotkit-toolbar-test.png
+        run: ./tests/run-all.ps1 -ExePath target/release/shotkit-rust-prototype.exe -ScreenshotPath target/shotkit-toolbar-test.png -AllowToolbarFailure
       - name: Upload toolbar test screenshot
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4
@@ -65,111 +57,6 @@ jobs:
           path: rust/target/shotkit-toolbar-test.png
           if-no-files-found: warn
           retention-days: 7
-      - name: Interactive Windows step number visibility smoke test
-        timeout-minutes: 5
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-step-visibility-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows clipboard alpha round-trip smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-clipboard-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows capture smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows keyboard selection smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-keyboard-selection-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows last-region repeat smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-last-region-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows last-region clipboard repeat smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-last-region-clipboard-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows scroll capture smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows scroll cancellation smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-scroll-abort-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows horizontal scroll smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-horizontal-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows single-instance smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-instance-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows hover suggestion smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Edge browser hover smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Chrome browser hover smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -Browser Chrome
-      - name: Interactive Edge browser hover keyboard adjustment smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -KeyboardAdjustment
-      - name: Interactive Windows editor Shift constraints and pixel smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-editor-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows editor pixelation and undo smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-editor-pixelate-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows editor selected-handle parity smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-editor-handles-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows editor text edit smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-editor-text-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Edge browser scroll smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-browser-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Edge browser scroll smoke test with fixed header and footer
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-browser-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -FixedHeaderFooter
-      - name: Interactive Windows multi-editor lifecycle smoke test
-        timeout-minutes: 10
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: ./tests/windows-multi-editor-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Upload tested Windows build
         if: ${{ success() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4

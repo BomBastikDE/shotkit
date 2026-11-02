@@ -5,7 +5,7 @@ param(
     [ValidateRange(10,120)][int]$StartupTimeoutSeconds=30
 )
 $ErrorActionPreference='Stop'
-if($env:GITHUB_ACTIONS -ne 'true'){throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'}
+if($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1'){throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'}
 if(-not [Environment]::UserInteractive){throw 'NO_INTERACTIVE_DESKTOP: the Windows runner is not interactive.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
 $ExePath=(Resolve-Path -LiteralPath $ExePath).Path
@@ -43,6 +43,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll",EntryPoint="GetClassLongPtrW")] static extern IntPtr GetClassLongPtrW(IntPtr h,int index);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool SetWindowTextW(IntPtr h,string text);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
@@ -171,6 +172,7 @@ try {
  if($trayStatus -ne 0 -and $trayStatus -ne 1){throw ('TRAY_ICON_RECT_FAILED: Shell_NotifyIconGetRect returned HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
  if($trayStatus -eq 1){Write-Output 'TRAY: icon identity verified by Windows; no visible bounding rectangle (S_FALSE).'}
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
+ if(-not [ShotKitToolbarVisual.Native]::SetWindowTextW($main.H,'ShotKit visual smoke fixture')){throw 'SCREENSHOT_TITLE_SANITIZE_FAILED'}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
  $captureBitmap=[Drawing.Bitmap]::new(($captureRect.Right-$captureRect.Left),($captureRect.Bottom-$captureRect.Top))
  try { $captureGraphics=[Drawing.Graphics]::FromImage($captureBitmap);try { $sourceDC=[ShotKitToolbarVisual.Native]::GetWindowDC($main.H);if($sourceDC -eq [IntPtr]::Zero){throw 'SCREENSHOT_DC_FAILED'};try {$targetDC=$captureGraphics.GetHdc();try {if(-not [ShotKitToolbarVisual.Native]::BitBlt($targetDC,0,0,$captureBitmap.Width,$captureBitmap.Height,$sourceDC,0,0,0x00CC0020)){throw 'SCREENSHOT_BITBLT_FAILED'}}finally{$captureGraphics.ReleaseHdc($targetDC)}}finally{[void][ShotKitToolbarVisual.Native]::ReleaseDC($main.H,$sourceDC)}}finally{$captureGraphics.Dispose()};$captureBitmap.Save($ScreenshotPath,[Drawing.Imaging.ImageFormat]::Png)}finally{$captureBitmap.Dispose()};if(-not(Test-Path -LiteralPath $ScreenshotPath -PathType Leaf) -or (Get-Item $ScreenshotPath).Length -lt 10000){throw 'SCREENSHOT_INVALID: editor capture missing or implausibly small.'}

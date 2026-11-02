@@ -12,10 +12,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($env:GITHUB_ACTIONS -ne 'true') {
+if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
-if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:OS -ne 'Windows_NT') {
+if (($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT') {
     throw 'This smoke test requires an ephemeral GitHub-hosted Windows runner.'
 }
 if (-not [Environment]::UserInteractive) {

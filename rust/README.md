@@ -34,6 +34,17 @@ docker run --rm --user "$(id -u):$(id -g)" -e CARGO_HOME=/work/target/cargo-home
 
 Ergebnis: `target/x86_64-pc-windows-gnu/release/shotkit-rust-prototype.exe`. Docker und MinGW sind nur für den Linux-Cross-Build erforderlich. Ein erfolgreicher Build und synthetische Tests ersetzen keine interaktiven Windows-Tests.
 
+### Interaktive Windows-Smoke-Tests
+
+Die vollständige Testreihe benötigt PowerShell 7, einen interaktiven Windows-Desktop sowie Edge und Chrome. Sie bedient Maus und Tastatur und ersetzt den Inhalt der Zwischenablage; deshalb nur in einer dafür vorgesehenen Testsitzung ausführen und alle laufenden ShotKit-Instanzen vorher schließen.
+
+```powershell
+cargo build --locked --release
+pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit-rust-prototype.exe -AllowLocalInteractive
+```
+
+Das Skript führt alle 23 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.
+
 ## Lizenz
 
 MIT, siehe [LICENSE](LICENSE). Der Lizenzhinweis des ursprünglichen ShotKit bleibt erhalten.

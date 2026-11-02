@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
-if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
+if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'Desktop session unavailable: this Windows runner is not interactive.' }
 
 if (-not ('ShotKitKeyboardSmoke.Native' -as [type])) {

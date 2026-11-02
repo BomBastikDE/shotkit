@@ -20,7 +20,7 @@ $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 
 # The smoke test must run on a real interactive desktop. In a headless Actions
 # service session this fails explicitly instead of reporting a false pass.
-if ($env:GITHUB_ACTIONS -ne 'true') {
+if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
 if (-not [Environment]::UserInteractive) {

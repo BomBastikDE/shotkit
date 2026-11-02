@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
+if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the Windows runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
@@ -152,7 +152,7 @@ try {
 catch { $failure=$_ }
 finally {
     if($mouseDown){try{[ShotKitPixelSmoke.N]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{}}
-    if($process -and -not $process.HasExited){try{Stop-Process -Id $process.Id -Force -ErrorAction Stop;$process.WaitForExit()}catch{}}
+    if($process -and -not $process.HasExited){try{$process.Kill();$process.WaitForExit()}catch{}}
     $env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData
     if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
 }
