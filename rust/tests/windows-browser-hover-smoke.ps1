@@ -393,12 +393,25 @@ function Get-ProfileBrowserProcesses {
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
 }
 function Stop-OwnedBrowserProcess {
-    param([int] $ProcessId, [string] $ProfilePath)
+    param($ProcessSnapshot, [string] $ProfilePath)
+    $ProcessId = [int]$ProcessSnapshot.ProcessId
     $current = Get-BrowserProcessById $ProcessId
     if ($null -eq $current) { return }
+    $snapshotCreated = $ProcessSnapshot.CreationDate
+    $currentCreated = $current.CreationDate
     if ($current.Name -ne $browserProcessName -or -not $current.CommandLine -or
-        $current.CommandLine -notmatch [Regex]::Escape($ProfilePath)) {
-        throw "Refusing to stop PID ${ProcessId}: current process identity does not match the test-owned $Browser profile."
+        $current.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
+        $null -eq $snapshotCreated -or $null -eq $currentCreated -or
+        $snapshotCreated -ne $currentCreated) {
+        # The profile-scoped CIM enumeration and this PID lookup are separate
+        # snapshots. Chrome children can exit between them, allowing Windows
+        # to reuse the PID. Never act on that replacement; the fresh final
+        # profile scan below determines whether any test-owned process remains.
+        $snapshotCreatedText = if ($null -ne $snapshotCreated) { $snapshotCreated.ToString('o') } else { 'unknown' }
+        $currentCreatedText = if ($null -ne $currentCreated) { $currentCreated.ToString('o') } else { 'unknown' }
+        $currentProfileMatch = [bool]($current.CommandLine -and $current.CommandLine -match [Regex]::Escape($ProfilePath))
+        Write-Output "CLEANUP: stale Chrome PID snapshot $ProcessId (enumerated=$snapshotCreatedText, current=$currentCreatedText, name='$($current.Name)', profileMatch=$currentProfileMatch); current process left untouched and profile will be rescanned."
+        return
     }
     $processHandle = $null
     try { $processHandle = [Diagnostics.Process]::GetProcessById($ProcessId) }
@@ -411,7 +424,8 @@ function Stop-OwnedBrowserProcess {
         if ($null -eq $confirmed) { return }
         if ($confirmed.Name -ne $browserProcessName -or -not $confirmed.CommandLine -or
             $confirmed.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
-            $confirmed.CreationDate -ne $current.CreationDate) {
+            $null -eq $snapshotCreated -or $null -eq $confirmed.CreationDate -or
+            $confirmed.CreationDate -ne $snapshotCreated) {
             throw "PID $ProcessId changed identity during cleanup; refusing to stop the replacement process."
         }
         try { $processHandle.Kill() }
@@ -892,7 +906,7 @@ finally {
         $stragglers = Get-ProfileBrowserProcesses $browserProfile
         foreach ($process in $stragglers) {
             try {
-                Stop-OwnedBrowserProcess -ProcessId $process.ProcessId -ProfilePath $browserProfile
+                Stop-OwnedBrowserProcess -ProcessSnapshot $process -ProfilePath $browserProfile
             }
             catch { $cleanupFailures += "Could not stop owned $Browser profile process $($process.ProcessId): $($_.Exception.Message)" }
         }
