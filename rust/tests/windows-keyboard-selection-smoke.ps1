@@ -63,6 +63,7 @@ if ([string]::IsNullOrWhiteSpace($inputDesktop)) { throw 'Could not open the int
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Keyboard-Selection-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $testRoot 'appdata'; $localAppData = Join-Path $testRoot 'localappdata'; $saveFolder = Join-Path $testRoot 'captures'
 $surfaceScript = Join-Path $testRoot 'surface.ps1'; $readyFile = Join-Path $testRoot 'surface-ready.txt'
+$surfaceStdout = Join-Path $testRoot 'surface.stdout.log'; $surfaceStderr = Join-Path $testRoot 'surface.stderr.log'
 $shotKit = $null; $surface = $null; $shiftDown = $false
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 
@@ -101,7 +102,7 @@ namespace ShotKitKeyboardSurface {
   public Surface(string path) {
    try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {}
    ready=path; Text="ShotKit Keyboard Selection Fixture"; StartPosition=FormStartPosition.Manual; Location=new Point(20,20);
-   ClientSize=new Size(900,650); FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false; MinimizeBox=false; ShowInTaskbar=false; DoubleBuffered=true;
+   ClientSize=new Size(900,650); FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false; MinimizeBox=false; ShowInTaskbar=false; DoubleBuffered=true; TopMost=true;
    image=new Bitmap(900,650);
    for(int y=0;y<650;y++) for(int x=0;x<900;x++) image.SetPixel(x,y,Color.FromArgb((x*29+y*17+(y/19)*53)&255,(x*7+y*31+(y/23)*97)&255,(x*19+y*11+(y/11)*41)&255));
   }
@@ -117,9 +118,19 @@ namespace ShotKitKeyboardSurface {
     $powershellExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if(-not(Test-Path -LiteralPath $powershellExe -PathType Leaf)){throw 'Windows PowerShell 5.1 is required for the isolated WinForms fixture.'}
     $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $surfaceScript,$readyFile
-    $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $testRoot -WindowStyle Hidden -PassThru
-    $surfaceWindow=Wait-ForCondition -TimeoutSeconds 20 -Description 'the deterministic color fixture' -OwnedProcess $surface -Condition {
-        [ShotKitKeyboardSmoke.Native]::WindowsForProcess($surface.Id) | Where-Object {$_.Title -eq 'ShotKit Keyboard Selection Fixture' -and $_.Visible} | Select-Object -First 1
+    $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $testRoot -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
+    Write-Output "MILESTONE: started keyboard fixture host PID=$($surface.Id); waiting for its topmost WinForms surface."
+    try {
+        $surfaceWindow=Wait-ForCondition -TimeoutSeconds 30 -Description 'the deterministic color fixture' -OwnedProcess $surface -Condition {
+            [ShotKitKeyboardSmoke.Native]::WindowsForProcess($surface.Id) | Where-Object {$_.Title -eq 'ShotKit Keyboard Selection Fixture' -and $_.Visible} | Select-Object -First 1
+        }
+    }
+    catch {
+        $ownedWindows=@([ShotKitKeyboardSmoke.Native]::WindowsForProcess($surface.Id) | ForEach-Object {"HWND=0x$($_.Handle.ToInt64().ToString('X')) Class='$($_.ClassName)' Title='$($_.Title)' Visible=$($_.Visible)"}) -join '; '
+        if(-not $ownedWindows){$ownedWindows='no enumerated top-level windows'}
+        $stdout=if(Test-Path -LiteralPath $surfaceStdout){Get-Content -LiteralPath $surfaceStdout -Raw}else{''}
+        $stderr=if(Test-Path -LiteralPath $surfaceStderr){Get-Content -LiteralPath $surfaceStderr -Raw}else{''}
+        throw "Fixture startup failed. PID=$($surface.Id) Exited=$($surface.HasExited) ExitCode=$(if($surface.HasExited){$surface.ExitCode}else{'running'}); windows=[$ownedWindows]; stdout=[$stdout]; stderr=[$stderr]. Cause: $($_.Exception.Message)"
     }
     $ready=Wait-ForCondition -TimeoutSeconds 10 -Description 'fixture client coordinates' -OwnedProcess $surface -Condition {if(Test-Path -LiteralPath $readyFile){Get-Content -LiteralPath $readyFile -Raw}}
     $geometry=$ready.Trim().Split(',') | ForEach-Object {[int]$_}
