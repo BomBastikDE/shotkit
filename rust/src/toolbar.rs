@@ -62,9 +62,6 @@ const DEFAULT_GUI_FONT: i32 = 17;
 const TTF_IDISHWND: u32 = 0x0001;
 const TTF_SUBCLASS: u32 = 0x0010;
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
-const MARGIN: i32 = 4;
-const GAP: i32 = 3;
-const BUTTON_SIZE: i32 = 36;
 static ACTIVE_TOOLS: OnceLock<Mutex<HashMap<usize, (usize, usize)>>> = OnceLock::new();
 static CURRENT_COLORS: OnceLock<Mutex<HashMap<usize, u32>>> = OnceLock::new();
 
@@ -205,26 +202,7 @@ const ACTIONS: [Action; 24] = [
 ];
 
 fn layout(width: i32) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
-    let width = width.max(1);
-    let available = (width - 2 * MARGIN).max(1);
-    let columns = ((available + GAP) / (BUTTON_SIZE + GAP)).max(1) as usize;
-    let columns = columns.min(ACTIONS.len());
-    let rows = ACTIONS.len().div_ceil(columns);
-    let button_width = ((available - GAP * (columns as i32 - 1)) / columns as i32).max(1);
-    let height = MARGIN * 2 + rows as i32 * BUTTON_SIZE + (rows as i32 - 1) * GAP;
-    let positions = (0..ACTIONS.len())
-        .map(|index| {
-            let col = index % columns;
-            let row = index / columns;
-            (
-                MARGIN + col as i32 * (button_width + GAP),
-                MARGIN + row as i32 * (BUTTON_SIZE + GAP),
-                button_width,
-                BUTTON_SIZE,
-            )
-        })
-        .collect();
-    (columns as i32, height, positions)
+    shotkit_rust_prototype::toolbar_layout::layout(width, ACTIONS.len())
 }
 
 unsafe extern "system" fn toolbar_proc(

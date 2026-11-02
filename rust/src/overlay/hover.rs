@@ -13,7 +13,7 @@ pub(super) fn intersection(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> 
     valid_rect(rect).then_some(rect)
 }
 
-pub(super) unsafe fn cursor_screen(l: L, origin: (i32, i32)) -> Point {
+pub(super) fn cursor_screen(l: L, origin: (i32, i32)) -> Point {
     let (x, y) = unpack(l);
     Point {
         x: x.saturating_add(origin.0),
@@ -29,7 +29,7 @@ pub(super) unsafe fn is_shift_down() -> bool {
     (GetKeyState(VK_SHIFT) as u16 & 0x8000) != 0
 }
 
-pub(super) unsafe fn desktop_rect(s: &State) -> (i32, i32, i32, i32) {
+pub(super) fn desktop_rect(s: &State) -> (i32, i32, i32, i32) {
     (
         s.origin.0,
         s.origin.1,
@@ -38,7 +38,7 @@ pub(super) unsafe fn desktop_rect(s: &State) -> (i32, i32, i32, i32) {
     )
 }
 
-pub(super) unsafe fn root_candidate(s: &State) -> Option<(i32, i32, i32, i32)> {
+pub(super) fn root_candidate(s: &State) -> Option<(i32, i32, i32, i32)> {
     s.candidates.iter().find(|c| c.is_top_level).map(|c| c.rect)
 }
 
@@ -220,4 +220,18 @@ pub(super) unsafe fn mark_finished(state: *mut State, result: Option<(i32, i32, 
     let hwnd = s.hwnd;
     s.hwnd = null_mut();
     hwnd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn containment_is_half_open_and_intersection_requires_area() {
+        let rect = (10, 20, 30, 40);
+        assert!(contains(rect, Point { x: 10, y: 20 }));
+        assert!(!contains(rect, Point { x: 30, y: 40 }));
+        assert_eq!(intersection(rect, (20, 30, 50, 60)), Some((20, 30, 30, 40)));
+        assert_eq!(intersection(rect, (30, 20, 40, 40)), None);
+    }
 }

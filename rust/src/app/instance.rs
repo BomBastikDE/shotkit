@@ -118,6 +118,9 @@ pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
     Ok(())
 }
 
+// SAFETY CONTRACT: called only for a synchronous WM_COPYDATA message. Windows
+// supplies a valid COPYDATASTRUCT and payload for the duration of this call;
+// their contents are copied into an owned PathBuf before the modal dialog.
 pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
     if l == 0 { return 0; }
     let packet = &*(l as *const CopyData);

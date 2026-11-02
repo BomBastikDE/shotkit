@@ -319,9 +319,15 @@ impl WindowState {
 static mut PRIMARY: H = null_mut();
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
 static QUITTING: AtomicBool = AtomicBool::new(false);
+// SAFETY CONTRACT: h must be an owned, live window whose WM_NCCREATE installed
+// WindowState. Access is limited to its UI thread; callers must not retain a
+// mutable reference across another borrow, a reentrant Win32 call, or destruction.
+// The 'static return type does not enforce these rules; callers require audit.
 unsafe fn window_state(h: H) -> &'static mut WindowState {
     &mut *(GetWindowLongPtrW(h, -21) as *mut WindowState)
 }
+// SAFETY CONTRACT: the same window lifetime, thread and exclusive-borrow rules
+// as window_state apply to the returned controller.
 unsafe fn editor(h: H) -> &'static mut EditorController {
     window_state(h).editor.get_or_insert_with(EditorController::new)
 }

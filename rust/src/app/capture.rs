@@ -338,6 +338,8 @@ pub(super) struct MonitorList {
     failed: bool,
 }
 
+// SAFETY: EnumDisplayMonitors invokes this synchronously while `data` points
+// to the live MonitorList passed by current_monitor_rects; no callback retains it.
 pub(super) unsafe extern "system" fn collect_monitor(
     monitor: H,
     _dc: H,

@@ -1,5 +1,8 @@
 use super::*;
 
+// SAFETY CONTRACT: Windows invokes this procedure on the window's owning
+// thread. WM_NCCREATE installs the boxed state; WM_NCDESTROY clears and drops it.
+// Callback code must not unwind across this ABI boundary.
 pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     if m == 0x0081 { // WM_NCCREATE
         let state = Box::into_raw(Box::new(WindowState::new()));

@@ -34,20 +34,24 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         return Err("Kein Bild geöffnet.".into());
     }
     let (crop_start, crop_end) = (window_state(h).crop_start, window_state(h).crop_end);
-    let state = editor(h);
-    let mut draft = if preview { state.preview() } else { None };
-    let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
-    for (i, shape) in state.shapes().iter().enumerate() {
-        if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i) {
-            shapes.push(draft.take().expect("draft checked above"));
-        } else {
-            shapes.push(shape.clone());
+    // Copy editor data before rendering or making Win32 calls, which may
+    // synchronously dispatch messages and borrow this window state again.
+    let (source, shapes, tool, selection) = {
+        let state = editor(h);
+        let mut draft = if preview { state.preview() } else { None };
+        let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
+        for (i, shape) in state.shapes().iter().enumerate() {
+            if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i) {
+                shapes.push(draft.take().expect("draft checked above"));
+            } else {
+                shapes.push(shape.clone());
+            }
         }
-    }
-    if let Some(shape) = draft {
-        shapes.push(shape);
-    }
-    let source = state.image_arc();
+        if let Some(shape) = draft {
+            shapes.push(shape);
+        }
+        (state.image_arc(), shapes, state.tool(), state.selection().cloned())
+    };
     let rendered = shotkit_rust_prototype::alpha_document::render_document(&source, &shapes)?;
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
     // preview against a checkerboard so transparent source pixels and
@@ -75,7 +79,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         rendered
     };
     let output = create_bitmap(&display_image)?;
-    if !preview || (state.tool() != Tool::Crop && state.tool() != Tool::Select) {
+    if !preview || (tool != Tool::Crop && tool != Tool::Select) {
         return Ok(output);
     }
     let screen = GetDC(null_mut());
@@ -96,7 +100,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         DeleteObject(output);
         return Err("Bild konnte nicht ausgewählt werden.".into());
     }
-    if preview && state.tool() == Tool::Crop {
+    if preview && tool == Tool::Crop {
         if let (Some(a), Some(b)) = (crop_start, crop_end) {
             let pen = CreatePen(0, 2, 0x00ffffff);
             let previous_pen = SelectObject(out_dc, pen);
@@ -107,8 +111,8 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             DeleteObject(pen);
         }
     }
-    if preview && state.tool() == Tool::Select {
-        if let Some(shape) = state.selection() {
+    if preview && tool == Tool::Select {
+        if let Some(shape) = selection.as_ref() {
             let b = shape.bounds();
             let pen = CreatePen(0, 1, 0x00d77800);
             let old_pen = SelectObject(out_dc, pen);
@@ -133,8 +137,12 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
     if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0 {
         return Err("Kein Bild geöffnet.".into());
     }
-    let state = editor(h);
-    shotkit_rust_prototype::alpha_document::render_document(&state.image_arc(), state.shapes())
+    // Do not retain a window-state borrow while the renderer calls GDI+.
+    let (image, shapes) = {
+        let state = editor(h);
+        (state.image_arc(), state.shapes().to_vec())
+    };
+    shotkit_rust_prototype::alpha_document::render_document(&image, &shapes)
 }
 
 pub(super) unsafe fn create_bitmap(image: &Image) -> Result<H, String> {

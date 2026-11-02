@@ -19,4 +19,5 @@ pub mod selection_rect;
 pub mod settings;
 pub mod shapes;
 pub mod stitch;
+pub mod toolbar_layout;
 pub mod view;

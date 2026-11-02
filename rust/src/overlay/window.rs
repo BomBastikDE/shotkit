@@ -1,5 +1,8 @@
 use super::*;
 
+// SAFETY CONTRACT: Windows supplies the HWND and message parameters on the
+// overlay's UI thread while select owns the serialized overlay state.
+// Callback code must not unwind across the system ABI.
 pub(super) unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
     let state = std::ptr::addr_of_mut!(STATE);
     match msg {

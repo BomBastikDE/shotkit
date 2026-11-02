@@ -193,22 +193,23 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
 }
 
 pub(super) unsafe fn move_magnifier(state: *mut State) {
-    let s = &*state;
-    if s.magnifier_hwnd.is_null() {
-        return;
-    }
-    let (left, top, _, _) = magnifier_rect(s, s.current);
-    MoveWindow(
-        s.magnifier_hwnd,
-        left.saturating_add(s.origin.0),
-        top.saturating_add(s.origin.1),
-        MAG_SIZE,
-        MAG_WINDOW_HEIGHT,
-        0,
-    );
-    InvalidateRect(s.magnifier_hwnd, null(), 0);
+    // Copy everything needed before MoveWindow, which can synchronously call
+    // the window procedure again; no reference into STATE crosses that call.
+    let (hwnd, left, top) = {
+        let s = &*state;
+        if s.magnifier_hwnd.is_null() {
+            return;
+        }
+        let (left, top, _, _) = magnifier_rect(s, s.current);
+        (s.magnifier_hwnd, left.saturating_add(s.origin.0), top.saturating_add(s.origin.1))
+    };
+    MoveWindow(hwnd, left, top, MAG_SIZE, MAG_WINDOW_HEIGHT, 0);
+    InvalidateRect(hwnd, null(), 0);
 }
 
+// SAFETY CONTRACT: Windows invokes this on the owning UI thread; WM_PAINT
+// pairs BeginPaint and EndPaint and the overlay remains alive for the callback.
+// Callback code must not unwind across the system ABI.
 pub(super) unsafe extern "system" fn magnifier_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
     match msg {
         WM_ERASEBKGND => 1,

@@ -286,7 +286,7 @@ static mut STATE: State = State {
 };
 static SELECTION_LOCK: Mutex<()> = Mutex::new(());
 
-unsafe fn unpack(l: L) -> (i32, i32) {
+fn unpack(l: L) -> (i32, i32) {
     (
         (l as u16 as i16) as i32,
         (((l as usize >> 16) & 0xffff) as u16 as i16) as i32,
