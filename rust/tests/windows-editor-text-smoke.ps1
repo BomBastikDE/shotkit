@@ -64,7 +64,9 @@ namespace ShotKitTextSmoke {
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Text-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'; $inputPath = Join-Path $root 'input.png'
-$oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $proc = $null; $mouseDown = $false; $failure = $null
+$diagnosticPath = Join-Path $root 'uia-diagnostics.log'
+$oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA; $oldDiagnosticPath = $env:SHOTKIT_UIA_DIAGNOSTICS_PATH
+$proc = $null; $mouseDown = $false; $failure = $null
 function Owned-Windows { if ($null -eq $proc -or $proc.HasExited) { return @() }; @([ShotKitTextSmoke.Native]::Windows($proc.Id)) }
 function Wait-For([scriptblock]$Probe,[int]$Seconds,[string]$What) {
     $until=[DateTime]::UtcNow.AddSeconds($Seconds)
@@ -102,16 +104,32 @@ function Check-DialogText([string]$Expected,[string]$Stage) {
     $edit=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'Edit'} | Select-Object -First 1
     if($null -eq $edit){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
     $actual=[ShotKitTextSmoke.Native]::EditText($edit.Handle)
-    if($actual -cne $Expected){throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at ${Stage}: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."}
+    if($actual -cne $Expected){
+        $clickDiag=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue | Where-Object {$_ -like 'text-click *'} | Select-Object -Last 1) -join ''
+        throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at ${Stage}: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Product text-click diagnostic: '$clickDiag'. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."
+    }
     return $d
+}
+function Wait-ForTextPlacement {
+    Wait-For {
+        $lines=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue)
+        $lines | Where-Object {$_ -match '^text-place image=\(30,30\) placed=true shapes=1$'} | Select-Object -Last 1
+    } 5 'text placement confirmation from product diagnostics'
 }
 
 try {
     New-Item -ItemType Directory -Path $root,$appData,$localAppData -Force | Out-Null
     $bmp=[Drawing.Bitmap]::new(160,120,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {$g=[Drawing.Graphics]::FromImage($bmp);try{$g.Clear([Drawing.Color]::Transparent)}finally{$g.Dispose()};$bmp.Save($inputPath,[Drawing.Imaging.ImageFormat]::Png)}finally{$bmp.Dispose()}
-    try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru}
-    finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+    try {
+        $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
+        $env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$diagnosticPath
+        $proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru
+    }
+    finally {
+        $env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData
+        if($null -eq $oldDiagnosticPath){Remove-Item Env:SHOTKIT_UIA_DIAGNOSTICS_PATH -ErrorAction SilentlyContinue}else{$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnosticPath}
+    }
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'editor window'
     [void][ShotKitTextSmoke.Native]::ShowWindow($main.Handle,3);[void][ShotKitTextSmoke.Native]::SetForegroundWindow($main.Handle)
     $welcome=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
@@ -130,8 +148,14 @@ try {
     $original='smoke original';$changed='smoke edited'
     Canvas-Click 30 30
     $d=Text-Dialog 'new text dialog';$e=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.ClassName -eq 'Edit'} | Select-Object -First 1
-    if($null -eq $e){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'};[ShotKitTextSmoke.Native]::SetEditText($e.Handle,$original);Button $d.Handle 'OK'
+    if($null -eq $e){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
+    [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$original)
+    $entered=[ShotKitTextSmoke.Native]::EditText($e.Handle)
+    if($entered -cne $original){throw "TEXT_ENTRY_NOT_ACCEPTED: input control reads '$entered' before confirmation; expected '$original'."}
+    Button $d.Handle 'OK'
     [void](Wait-For {@(@(Owned-Windows | Where-Object {$_.ClassName -eq 'ShotKitRustTextEntryDialog'}).Count -eq 0)} 2 'text creation dialog close')
+    $placement=Wait-ForTextPlacement
+    Write-Output "TEXT_PLACEMENT_STATUS: $placement"
 
     # Keep Text selected and click within the new object's hit bounds.
     [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Text*'} | Select-Object -First 1} 5 'Text tool remaining active after creation')
@@ -152,11 +176,16 @@ try {
     Button $d.Handle 'Abbrechen'
     Write-Output 'PASS: created a text object, reopened it with the Text tool and verified initial text, saved an edit, reopened the edited content, and verified Undo restored the original text.'
 }
-catch {$failure=$_}
+catch {
+    $failure=$_
+    $lines=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue | Select-Object -Last 80)
+    if($lines.Count -gt 0){$failure=[Exception]::new("$($_ | Out-String)`nSHOTKIT_UIA_DIAGNOSTICS ($diagnosticPath):`n$($lines -join [Environment]::NewLine)")}
+}
 finally {
     if($mouseDown){try{[ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{}}
     if($null -ne $proc -and -not $proc.HasExited){try{$proc.Kill();[void]$proc.WaitForExit(5000)}catch{}}
     if($oldAppData){$env:APPDATA=$oldAppData};if($oldLocalAppData){$env:LOCALAPPDATA=$oldLocalAppData}
+    if($null -eq $oldDiagnosticPath){Remove-Item Env:SHOTKIT_UIA_DIAGNOSTICS_PATH -ErrorAction SilentlyContinue}else{$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnosticPath}
     if($null -eq $proc -or $proc.HasExited){Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
 }
 if($null -ne $failure){throw $failure}

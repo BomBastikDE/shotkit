@@ -2487,23 +2487,44 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             }
             let (x, y) = point(h, l);
             let image_point = ShapePoint::new(x as f32, y as f32);
-            if editor(h).tool() == Tool::Text
-                && !editor(h).selected_handle_hit(image_point)
-            {
-                if let Some((index, existing)) = editor(h).text_at(image_point) {
-                    if let Some(changed) = text_dialog::prompt(h, &existing) {
-                        if editor(h).set_text_at(index, changed) {
-                            window_state(h).dirty = true;
+            let text_tool = editor(h).tool() == Tool::Text;
+            let handle_hit = text_tool && editor(h).selected_handle_hit(image_point);
+            if text_tool {
+                let hit = editor(h).text_at(image_point);
+                let shape_count = editor(h).shapes().len();
+                crate::uia_picker::log_diagnostic(&format!(
+                    "text-click image=({x},{y}) shapes={shape_count} hit={} hit_index={} selected_handle_hit={handle_hit}",
+                    hit.is_some(),
+                    hit.as_ref().map_or_else(|| "none".to_owned(), |(index, _)| index.to_string()),
+                ));
+                if !handle_hit {
+                    if let Some((index, existing)) = hit {
+                        if let Some(changed) = text_dialog::prompt(h, &existing) {
+                            let edited = editor(h).set_text_at(index, changed);
+                            crate::uia_picker::log_diagnostic(&format!(
+                                "text-edit index={index} changed={edited} shapes={}",
+                                editor(h).shapes().len(),
+                            ));
+                            if edited {
+                                window_state(h).dirty = true;
+                            }
+                        }
+                    } else if let Some(text) = text_dialog::prompt(h, "") {
+                        if !text.trim().is_empty() {
+                            let placed = editor(h).place_text(image_point, text);
+                            crate::uia_picker::log_diagnostic(&format!(
+                                "text-place image=({x},{y}) placed={placed} shapes={}",
+                                editor(h).shapes().len(),
+                            ));
+                            if placed {
+                                window_state(h).dirty = true;
+                            }
                         }
                     }
-                } else if let Some(text) = text_dialog::prompt(h, "") {
-                    if !text.trim().is_empty() && editor(h).place_text(image_point, text) {
-                        window_state(h).dirty = true;
-                    }
+                    report_editor_error(h);
+                    InvalidateRect(h, std::ptr::null(), 0);
+                    return 0;
                 }
-                report_editor_error(h);
-                InvalidateRect(h, std::ptr::null(), 0);
-                return 0;
             }
             window_state(h).drawing = true;
             if editor(h).tool() == Tool::Crop {
