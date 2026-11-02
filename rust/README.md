@@ -14,7 +14,7 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 Windows-Laufzeittests fehlen noch. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Bearbeitete Bilder mit Transparenz lassen sich momentan aus Sicherheitsgründen nicht speichern. Einstellungen, einige Bild- und Editorfunktionen sowie weitere Originalfunktionen fehlen noch. Siehe [ROADMAP.md](ROADMAP.md).
 
-Die Ausgaben nach einer Aufnahme (Editor, Zwischenablage, automatisches PNG) können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
+Die Ausgaben nach einer Aufnahme (Editor, Zwischenablage, automatisches PNG) und der optionale Autostart können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 
 Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert und ausschließlich für Testzwecke gedacht. Im Entwicklungsstand nur mit Kopien wichtiger Bilder arbeiten.
 

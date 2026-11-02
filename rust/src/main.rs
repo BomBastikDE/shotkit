@@ -9,6 +9,7 @@ use std::{
     ptr::null_mut,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod autostart;
 mod capture_targets;
 mod clipboard;
 mod element_picker;
@@ -1406,6 +1407,25 @@ unsafe fn tray_menu(h: H) {
             );
         }
         AppendMenuW(submenu, 0, 104, wide("Speicherordner wählen …").as_ptr());
+        match autostart::get() {
+            Ok(enabled) => {
+                AppendMenuW(
+                    submenu,
+                    if enabled { 0x0008 } else { 0 },
+                    105,
+                    wide("Mit Windows starten").as_ptr(),
+                );
+            }
+            Err(_) => {
+                AppendMenuW(
+                    submenu,
+                    0x0003,
+                    105,
+                    wide("Autostart nicht verfügbar").as_ptr(),
+                );
+            }
+        }
+
         AppendMenuW(
             menu,
             0x0010,
@@ -1460,6 +1480,12 @@ unsafe fn tray_menu(h: H) {
                 _ => {}
             }
             save_settings(h, prefs);
+        }
+        105 => {
+            let result = autostart::get().and_then(|value| autostart::set(!value));
+            if let Err(e) = result {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Autostart").as_ptr(), 0x10);
+            }
         }
         104 => match folder_dialog::choose_folder(h) {
             Ok(Some(path)) => {
@@ -1958,7 +1984,7 @@ fn main() {
                 0x30,
             );
         }
-        MessageBoxW(h,wide("Prototyp gestartet. F9 oder Doppelklick auf das Tray-Symbol: Bildschirm aufnehmen. F10 startet die experimentelle Scroll-Aufnahme. Im Editor mit der Maus zeichnen, S speichert als BMP. Rechtsklick auf das Tray-Symbol beendet das Programm.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
+        MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
         let mut msg: Msg = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);

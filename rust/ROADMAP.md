@@ -32,4 +32,4 @@ Gewünscht: Beim Bewegen der Maus Fenster und sinnvolle Bereiche optisch umrande
 
 ## Windows-CI
 
-Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sowie einen Windows-Release-Build aus. Die Läufe für Commits `fe34bc9` und `1a342e3` waren auf beiden Plattformen erfolgreich; letzterer umfasst Windows-GDI-Pixeltests. Die CI verifiziert keine interaktive Windows-Oberfläche und keine realen Browser-Scrollaufnahmen.
+Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sowie einen Windows-Release-Build aus. Die Läufe für Commits `fe34bc9`, `1a342e3`, `6534b8d` und `5fa325a` waren auf beiden Plattformen erfolgreich; sie umfassen Windows-GDI-Pixeltests. Die CI verifiziert keine interaktive Windows-Oberfläche und keine realen Browser-Scrollaufnahmen.
