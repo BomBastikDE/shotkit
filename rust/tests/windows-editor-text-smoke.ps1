@@ -102,7 +102,7 @@ function Check-DialogText([string]$Expected,[string]$Stage) {
     $edit=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'Edit'} | Select-Object -First 1
     if($null -eq $edit){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
     $actual=[ShotKitTextSmoke.Native]::EditText($edit.Handle)
-    if($actual -cne $Expected){throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at $Stage: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."}
+    if($actual -cne $Expected){throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at ${Stage}: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."}
     return $d
 }
 
