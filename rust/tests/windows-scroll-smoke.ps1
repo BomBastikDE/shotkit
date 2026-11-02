@@ -375,7 +375,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         throw 'Could not select downward scrolling.'
     }
 
-    $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the scroll-selection overlay' -OwnedProcess $shotKit -Condition {
+    $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
     }
     $originX = $geometry[0]
