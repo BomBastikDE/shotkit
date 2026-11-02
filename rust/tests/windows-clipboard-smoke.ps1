@@ -26,6 +26,8 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 namespace ShotKitClipboardSmoke {
+  public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+  public struct Point { public int X; public int Y; }
   public sealed class Window { public IntPtr Handle; public string ClassName; public string Title; public bool Visible; }
   public static class Native {
     private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
@@ -36,7 +38,12 @@ namespace ShotKitClipboardSmoke {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern uint RegisterClipboardFormatW(string name);
     [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr owner);
@@ -56,6 +63,21 @@ namespace ShotKitClipboardSmoke {
     }
     public static uint OwnerPid(IntPtr h) { uint p; GetWindowThreadProcessId(h,out p); return p; }
     public static string WindowTitle(IntPtr h) { return GetText(h,true); }
+    public static void ClickCanvas(IntPtr hwnd, int expectedPid) {
+      if(OwnerPid(hwnd)!=(uint)expectedPid) throw new InvalidOperationException("Canvas HWND is not owned by the test process.");
+      ShowWindow(hwnd,3); // SW_MAXIMIZE gives a stable, large canvas hit target.
+      System.Threading.Thread.Sleep(200);
+      Rect r; if(!GetClientRect(hwnd,out r)) throw new InvalidOperationException("GetClientRect failed for owned editor.");
+      int width=r.Right-r.Left, height=r.Bottom-r.Top;
+      if(width<400 || height<300) throw new InvalidOperationException("Owned editor client is too small for a reliable canvas click.");
+      Point p=new Point { X=width/2, Y=(height*3)/4 };
+      if(!ClientToScreen(hwnd,ref p) || !SetCursorPos(p.X,p.Y)) throw new InvalidOperationException("Could not position pointer over editor canvas.");
+      if(WindowFromPoint(p)!=hwnd) throw new InvalidOperationException("Canvas hit target is not the owned editor HWND.");
+      mouse_event(0x0002,0,0,0,UIntPtr.Zero);
+      try { System.Threading.Thread.Sleep(60); }
+      finally { mouse_event(0x0004,0,0,0,UIntPtr.Zero); }
+      if(GetForegroundWindow()!=hwnd) throw new InvalidOperationException("Canvas click did not leave the owned editor in the foreground.");
+    }
     public static byte[] ReadClipboardPng() {
       uint format=RegisterClipboardFormatW("PNG"); if(format==0) throw new InvalidOperationException("Could not register PNG clipboard format.");
       if(!OpenClipboard(IntPtr.Zero)) throw new InvalidOperationException("OpenClipboard failed.");
@@ -127,7 +149,8 @@ try {
     }
     if ($null -eq $main) { throw 'EDITOR_TIMEOUT: owned image editor window not found.' }
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'EDITOR_FOCUS_FAILED: could not foreground owned editor.' }
-    Start-Sleep -Milliseconds 150
+    [ShotKitClipboardSmoke.Native]::ClickCanvas($main.Handle, $process.Id)
+    Start-Sleep -Milliseconds 100
     if ([ShotKitClipboardSmoke.Native]::GetForegroundWindow() -ne $main.Handle) { throw 'EDITOR_FOCUS_FAILED: foreground window is not the owned editor.' }
     $sequenceBeforeCopy = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
     # Send an actual Ctrl+C keystroke to the foreground editor window.
@@ -162,6 +185,7 @@ try {
     # Exercise ShotKit's actual clipboard import path (Ctrl+V), which invokes
     # clipboard::read_image and opens a second editor for the copied image.
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'PASTE_FOCUS_FAILED: could not refocus the owned source editor.' }
+    [ShotKitClipboardSmoke.Native]::ClickCanvas($main.Handle, $process.Id)
     [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero)
     try { [ShotKitClipboardSmoke.Native]::keybd_event(0x56,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 80; [ShotKitClipboardSmoke.Native]::keybd_event(0x56,0,2,[UIntPtr]::Zero) }
     finally { [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero) }
@@ -176,6 +200,7 @@ try {
     if ($null -eq $pasted) { throw 'CLIPBOARD_IMPORT_FAILURE: Ctrl+V did not open the copied clipboard image in a new owned editor.' }
     if ([ShotKitClipboardSmoke.Native]::OwnerPid($pasted.Handle) -ne [uint32]$process.Id) { throw 'PASTED_WINDOW_OWNER_MISMATCH: imported image editor is not owned by the test process.' }
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($pasted.Handle)) { throw 'PASTED_FOCUS_FAILED: could not focus the imported editor.' }
+    [ShotKitClipboardSmoke.Native]::ClickCanvas($pasted.Handle, $process.Id)
     $focusDeadline = [DateTime]::UtcNow.AddSeconds(3)
     while ([DateTime]::UtcNow -lt $focusDeadline -and [ShotKitClipboardSmoke.Native]::GetForegroundWindow() -ne $pasted.Handle) { Start-Sleep -Milliseconds 50 }
     if ([ShotKitClipboardSmoke.Native]::GetForegroundWindow() -ne $pasted.Handle) { throw 'PASTED_FOCUS_FAILED: foreground window is not the imported editor.' }
