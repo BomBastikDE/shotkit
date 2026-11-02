@@ -73,6 +73,7 @@ namespace ShotKitEditorSmoke {
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+        [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
 
         private static string Text(IntPtr hwnd) {
@@ -180,6 +181,7 @@ $processStartTicks = $null
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
 $mouseDown = $false
+$shiftDown = $false
 $editorStopped = $true
 $testFailure = $null
 $cleanupFailures = @()
@@ -311,6 +313,57 @@ function Save-FromToolbar {
 function Get-CoordinateForImagePoint {
     param([int] $ImagePoint, [int] $ImageLength, [int] $ViewOrigin, [int] $ViewLength)
     [int][Math]::Round($ViewOrigin + ($ImagePoint + 0.5) * $ViewLength / $ImageLength, [MidpointRounding]::AwayFromZero)
+}
+function Invoke-CanvasDrag {
+    param([int] $FromX, [int] $FromY, [int] $ToX, [int] $ToY, [bool] $WithShift)
+    $origin = [Activator]::CreateInstance([ShotKitEditorSmoke.Point])
+    if (-not [ShotKitEditorSmoke.Native]::ClientToScreen($main.Handle, [ref]$origin)) { throw 'Could not map editor client origin for Shift drag.' }
+    $x1 = Get-CoordinateForImagePoint $FromX 160 $viewX $displayWidth
+    $y1 = Get-CoordinateForImagePoint $FromY 120 $viewY $displayHeight
+    $x2 = Get-CoordinateForImagePoint $ToX 160 $viewX $displayWidth
+    $y2 = Get-CoordinateForImagePoint $ToY 120 $viewY $displayHeight
+    if ($WithShift) {
+        [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+        $script:shiftDown = $true
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not [ShotKitEditorSmoke.Native]::SetCursorPos($origin.X + $x1, $origin.Y + $y1)) { throw 'Could not position pointer at Shift-drag start.' }
+    $actual = [Activator]::CreateInstance([ShotKitEditorSmoke.Point])
+    if (-not [ShotKitEditorSmoke.Native]::GetCursorPos([ref]$actual) -or $actual.X -ne ($origin.X + $x1) -or $actual.Y -ne ($origin.Y + $y1)) { throw 'Shift-drag start cursor did not reach its requested position.' }
+    if ([ShotKitEditorSmoke.Native]::OwnerPid([ShotKitEditorSmoke.Native]::WindowFromPoint($actual)) -ne [uint32]$process.Id) { throw 'Shift-drag start is not over the owned editor.' }
+    [ShotKitEditorSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    $script:mouseDown = $true
+    Start-Sleep -Milliseconds 100
+    if (-not [ShotKitEditorSmoke.Native]::SetCursorPos($origin.X + $x2, $origin.Y + $y2)) { throw 'Could not position pointer at Shift-drag end.' }
+    Start-Sleep -Milliseconds 200
+    [ShotKitEditorSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    $script:mouseDown = $false
+    if ($WithShift) {
+        [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        $script:shiftDown = $false
+        Start-Sleep -Milliseconds 100
+    }
+}
+function Get-RedBounds {
+    param($Image)
+    $xs = [System.Collections.Generic.List[int]]::new(); $ys = [System.Collections.Generic.List[int]]::new(); $count = 0
+    for ($y = 0; $y -lt $Image.Height; $y++) {
+        for ($x = 0; $x -lt $Image.Width; $x++) {
+            $p = $Image.Pixels[$y * $Image.Width + $x]
+            if ($p.A -gt 0 -and $p.R -gt 200 -and $p.G -lt 80 -and $p.B -lt 80) { $xs.Add($x); $ys.Add($y); $count++ }
+        }
+    }
+    if ($count -eq 0) { return $null }
+    return [pscustomobject]@{ Count=$count; Left=($xs | Measure-Object -Minimum).Minimum; Right=($xs | Measure-Object -Maximum).Maximum; Top=($ys | Measure-Object -Minimum).Minimum; Bottom=($ys | Measure-Object -Maximum).Maximum }
+}
+function Test-OriginalImage {
+    param($Image)
+    if ($Image.Width -ne $expectedBase.Width -or $Image.Height -ne $expectedBase.Height) { return $false }
+    for ($i = 0; $i -lt $Image.Pixels.Length; $i++) {
+        $a = $Image.Pixels[$i]; $b = $expectedBase.Pixels[$i]
+        if ($a.R -ne $b.R -or $a.G -ne $b.G -or $a.B -ne $b.B -or $a.A -ne $b.A) { return $false }
+    }
+    return $true
 }
 
 try {
@@ -471,7 +524,46 @@ try {
         }
         return $true
     })
-    $passMessage = 'PASS: loaded the generated transparent PNG, drew and exported a red rectangle, verified alpha/color pixels, then undid and verified every original pixel was restored.'
+
+    # Shift + rectangle must produce equal side lengths in the saved image.
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rechteck (R)') -Description 'Shift rectangle tool')
+    Invoke-CanvasDrag 30 20 70 40 $true
+    Save-FromToolbar $main.Handle
+    $square = Wait-ForImageState -Path $inputPath -Description 'saved Shift-constrained square' -Predicate {
+        param($image)
+        $bounds = Get-RedBounds $image
+        return ($null -ne $bounds -and $bounds.Count -ge 60 -and [Math]::Abs((($bounds.Right-$bounds.Left)-($bounds.Bottom-$bounds.Top))) -le 3)
+    }
+    $squareBounds = Get-RedBounds $square
+    if ([Math]::Abs((($squareBounds.Right-$squareBounds.Left)-($squareBounds.Bottom-$squareBounds.Top))) -gt 3) { throw "SHIFT_RECTANGLE_NOT_SQUARE: red bounds $($squareBounds.Left),$($squareBounds.Top)-$($squareBounds.Right),$($squareBounds.Bottom)." }
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo Shift square')
+    Save-FromToolbar $main.Handle
+    [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring image before line snap' -Predicate { param($image) Test-OriginalImage $image })
+
+    # A 35-by-30 drag snaps to the 45 degree diagonal. Verify saved red pixels
+    # stay on that diagonal, rather than just counting a non-empty annotation.
+    foreach ($toolSpec in @(@{ Label='Linie (L)'; Name='line' }, @{ Label='Pfeil (A)'; Name='arrow' })) {
+        [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @($toolSpec.Label) -Description "Shift $($toolSpec.Name) tool")
+        Invoke-CanvasDrag 35 35 70 65 $true
+        Save-FromToolbar $main.Handle
+        $snapped = Wait-ForImageState -Path $inputPath -Description "saved Shift-snapped $($toolSpec.Name)" -Predicate {
+            param($image)
+            $bounds = Get-RedBounds $image
+            if ($null -eq $bounds -or $bounds.Count -lt 8) { return $false }
+            $diagonal = 0
+            for ($y=$bounds.Top; $y -le $bounds.Bottom; $y++) { for ($x=$bounds.Left; $x -le $bounds.Right; $x++) {
+                $p=$image.Pixels[$y*$image.Width+$x]
+                if ($p.A -gt 0 -and $p.R -gt 200 -and $p.G -lt 80 -and $p.B -lt 80 -and [Math]::Abs($x-$y) -le 3) { $diagonal++ }
+            }}
+            return ($diagonal -ge 8 -and [Math]::Abs(($bounds.Right-$bounds.Left)-($bounds.Bottom-$bounds.Top)) -le 12)
+        }
+        $bounds = Get-RedBounds $snapped
+        if ([Math]::Abs(($bounds.Right-$bounds.Left)-($bounds.Bottom-$bounds.Top)) -gt 12) { throw "SHIFT_$($toolSpec.Name.ToUpper())_NOT_45_DEGREES: red bounds ($($bounds.Right-$bounds.Left))x($($bounds.Bottom-$bounds.Top))." }
+        [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description "undo Shift $($toolSpec.Name)")
+        Save-FromToolbar $main.Handle
+        [void](Wait-ForImageState -Path $inputPath -Description "undo restoring image after Shift $($toolSpec.Name)" -Predicate { param($image) Test-OriginalImage $image })
+    }
+    $passMessage = 'PASS: verified the saved Shift rectangle is square and saved Shift line and arrow pixels follow a 45-degree diagonal; undo restored the original image between gestures.'
 }
 catch {
     $testFailure = $_
@@ -480,6 +572,10 @@ finally {
     if ($mouseDown) {
         try { [ShotKitEditorSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
         catch { $cleanupFailures += "Could not release test mouse button: $($_.Exception.Message)" }
+    }
+    if ($shiftDown) {
+        try { [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero) }
+        catch { $cleanupFailures += "Could not release test Shift key: $($_.Exception.Message)" }
     }
     if ($null -ne $process) {
         try {

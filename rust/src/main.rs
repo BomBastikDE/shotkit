@@ -2515,7 +2515,10 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
                 InvalidateRect(h, std::ptr::null(), 0);
                 return 0;
             }
-            editor(h).mouse_move(ShapePoint::new(x as f32, y as f32));
+            editor(h).mouse_move_with_shift(
+                ShapePoint::new(x as f32, y as f32),
+                GetKeyState(0x10) < 0,
+            );
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
@@ -2530,7 +2533,10 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
                 return 0;
             }
             let before = editor(h).shapes().to_vec();
-            editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
+            editor(h).mouse_up_with_shift(
+                ShapePoint::new(x as f32, y as f32),
+                GetKeyState(0x10) < 0,
+            );
             if before != editor(h).shapes() {
                 window_state(h).dirty = true;
             }

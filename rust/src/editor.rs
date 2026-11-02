@@ -364,18 +364,27 @@ impl EditorController {
     }
 
     pub fn mouse_move(&mut self, at: Point) {
+        self.mouse_move_with_shift(at, false);
+    }
+
+    /// Update a pointer gesture, applying the original editor's Shift constraint
+    /// to two-point annotations while the modifier is held.
+    pub fn mouse_move_with_shift(&mut self, at: Point, shift: bool) {
         if !at.x.is_finite() || !at.y.is_finite() {
             return;
         }
         self.last_position = Some(at);
         match self.drag.as_mut() {
             Some(Drag::Create { shape, .. }) => match &mut shape.kind {
-                ShapeKind::Line { end, .. }
-                | ShapeKind::Arrow { end, .. }
-                | ShapeKind::Rectangle { end, .. }
-                | ShapeKind::Ellipse { end, .. }
-                | ShapeKind::Highlight { end, .. }
-                | ShapeKind::Blur { end, .. } => *end = at,
+                ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
+                    *end = if shift { constrain_endpoint(*start, at, false) } else { at };
+                }
+                ShapeKind::Rectangle { start, end }
+                | ShapeKind::Ellipse { start, end }
+                | ShapeKind::Highlight { start, end }
+                | ShapeKind::Blur { start, end } => {
+                    *end = if shift { constrain_endpoint(*start, at, true) } else { at };
+                }
                 ShapeKind::Freehand { points } => {
                     if points.last().map_or(true, |p| distance(*p, at) >= 1.0) {
                         points.push(at);
@@ -389,7 +398,12 @@ impl EditorController {
 
     /// Commit a gesture as one undoable operation, or discard an empty shape.
     pub fn mouse_up(&mut self, at: Point) {
-        self.mouse_move(at);
+        self.mouse_up_with_shift(at, false);
+    }
+
+    /// Commit a gesture using the modifier state at mouse-up as the final point.
+    pub fn mouse_up_with_shift(&mut self, at: Point, shift: bool) {
+        self.mouse_move_with_shift(at, shift);
         let Some(drag) = self.drag.take() else {
             self.last_position = None;
             return;
@@ -547,6 +561,50 @@ fn distance(a: Point, b: Point) -> f32 {
     ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
 }
 
+/// Match `EditorCanvas.Constrain`: boxes use the larger absolute delta, while
+/// lines and arrows snap to the nearest 45-degree angle. C# Math.Round uses
+/// midpoint-to-even, so keep that rule explicit for negative and positive ties.
+fn constrain_endpoint(start: Point, at: Point, square: bool) -> Point {
+    let dx = at.x - start.x;
+    let dy = at.y - start.y;
+    if square {
+        let distance = dx.abs().max(dy.abs());
+        let sign = |value: f32| {
+            if value > 0.0 {
+                1.0
+            } else if value < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
+        return Point::new(start.x + sign(dx) * distance, start.y + sign(dy) * distance);
+    }
+
+    let angle = (dy as f64).atan2(dx as f64);
+    let step = std::f64::consts::FRAC_PI_4;
+    let snapped = round_ties_even(angle / step) * step;
+    let length = (dx * dx + dy * dy).sqrt();
+    Point::new(
+        start.x + (snapped.cos() as f32) * length,
+        start.y + (snapped.sin() as f32) * length,
+    )
+}
+
+fn round_ties_even(value: f64) -> f64 {
+    let lower = value.floor();
+    let fraction = value - lower;
+    if fraction < 0.5 {
+        lower
+    } else if fraction > 0.5 {
+        lower + 1.0
+    } else if (lower as i64) % 2 == 0 {
+        lower
+    } else {
+        lower + 1.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +612,75 @@ mod tests {
     fn p(x: f32, y: f32) -> Point {
         Point::new(x, y)
     }
+
+    #[test]
+    fn shift_constrains_box_shapes_in_both_drag_directions_and_preserves_zero_axes() {
+        assert_eq!(constrain_endpoint(p(10.0, 10.0), p(20.0, 15.0), true), p(20.0, 20.0));
+        assert_eq!(constrain_endpoint(p(10.0, 10.0), p(5.0, 8.0), true), p(5.0, 5.0));
+        assert_eq!(constrain_endpoint(p(10.0, 10.0), p(10.0, 15.0), true), p(10.0, 15.0));
+        assert_eq!(constrain_endpoint(p(10.0, 10.0), p(15.0, 10.0), true), p(15.0, 10.0));
+    }
+
+    #[test]
+    fn shift_snaps_lines_and_arrows_to_nearest_45_degrees_in_all_quadrants() {
+        let length = (10.0_f32 * 10.0 + 4.0 * 4.0).sqrt();
+        let right = constrain_endpoint(p(0.0, 0.0), p(10.0, 4.0), false);
+        assert!((right.x - length).abs() < 0.0001);
+        assert!(right.y.abs() < 0.0001);
+
+        let left = constrain_endpoint(p(0.0, 0.0), p(-10.0, -4.0), false);
+        assert!((left.x + length).abs() < 0.0001);
+        assert!(left.y.abs() < 0.0001);
+
+        let diagonal = constrain_endpoint(p(2.0, 3.0), p(-8.0, 13.0), false);
+        assert!((diagonal.x + 8.0).abs() < 0.0001);
+        assert!((diagonal.y - 13.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn csharp_midpoint_rounding_is_ties_to_even_for_positive_and_negative_angles() {
+        assert_eq!(round_ties_even(0.5), 0.0);
+        assert_eq!(round_ties_even(1.5), 2.0);
+        assert_eq!(round_ties_even(-0.5), 0.0);
+        assert_eq!(round_ties_even(-1.5), -2.0);
+    }
+
+    #[test]
+    fn shift_modifier_is_applied_to_preview_and_final_mouse_up() {
+        for tool in [Tool::Rectangle, Tool::Ellipse, Tool::Highlight, Tool::Blur] {
+            let mut e = editor();
+            e.set_tool(tool);
+            e.mouse_down(p(10.0, 10.0));
+            e.mouse_move_with_shift(p(20.0, 15.0), true);
+            let preview = e.preview().unwrap();
+            assert_eq!(preview.bounds().width, 10.0, "{tool:?}");
+            assert_eq!(preview.bounds().height, 10.0, "{tool:?}");
+            e.mouse_up_with_shift(p(20.0, 12.0), true);
+            assert_eq!(e.shapes()[0].bounds().width, 10.0, "{tool:?}");
+            assert_eq!(e.shapes()[0].bounds().height, 10.0, "{tool:?}");
+        }
+
+        for tool in [Tool::Line, Tool::Arrow] {
+            let mut e = editor();
+            e.set_tool(tool);
+            e.mouse_down(p(0.0, 0.0));
+            e.mouse_up_with_shift(p(10.0, 4.0), true);
+            let end = match &e.shapes()[0].kind {
+                ShapeKind::Line { end, .. } | ShapeKind::Arrow { end, .. } => *end,
+                _ => panic!("expected a two-point line tool"),
+            };
+            assert!(end.y.abs() < 0.0001, "{tool:?}");
+        }
+
+        let mut freehand = editor();
+        freehand.set_tool(Tool::Pen);
+        freehand.mouse_down(p(1.0, 1.0));
+        freehand.mouse_move_with_shift(p(5.0, 8.0), true);
+        let preview = freehand.preview().unwrap();
+        let ShapeKind::Freehand { points } = preview.kind else { panic!("expected freehand"); };
+        assert_eq!(points.last(), Some(&p(5.0, 8.0)));
+    }
+
     fn editor() -> EditorController {
         EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap())
             .unwrap()
