@@ -85,20 +85,36 @@ mod win32 {
     // model. Leave one code unit for the terminator.
     const FILE_BUFFER_LEN: usize = 32_768;
 
-    fn filter() -> Vec<u16> {
+    fn filter(save: bool) -> Vec<u16> {
         // The Win32 filter is a sequence of NUL-terminated display/pattern
         // pairs and ends with an additional NUL.
         let mut v = Vec::new();
-        for part in [
-            "PNG images (*.png)",
-            "*.png",
-            "JPEG images (*.jpg;*.jpeg)",
-            "*.jpg;*.jpeg",
-            "Bitmap images (*.bmp)",
-            "*.bmp",
-            "GIF images (*.gif)",
-            "*.gif",
-        ] {
+        let entries: &[&str] = if save {
+            &[
+                "PNG images (*.png)",
+                "*.png",
+                "JPEG images (*.jpg;*.jpeg)",
+                "*.jpg;*.jpeg",
+                "Bitmap images (*.bmp)",
+                "*.bmp",
+                "GIF images (*.gif)",
+                "*.gif",
+            ]
+        } else {
+            &[
+                "PNG images (*.png)",
+                "*.png",
+                "JPEG images (*.jpg;*.jpeg)",
+                "*.jpg;*.jpeg",
+                "Bitmap images (*.bmp)",
+                "*.bmp",
+                "GIF images (*.gif)",
+                "*.gif",
+                "TIFF images (*.tif;*.tiff)",
+                "*.tif;*.tiff",
+            ]
+        };
+        for &part in entries {
             v.extend(part.encode_utf16());
             v.push(0);
         }
@@ -153,7 +169,7 @@ mod win32 {
             }
         }
 
-        let filters = filter();
+        let filters = filter(save);
         let mut ofn = OpenFileNameW {
             size: size_of::<OpenFileNameW>() as u32,
             owner,

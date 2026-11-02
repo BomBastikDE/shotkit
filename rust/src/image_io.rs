@@ -1,6 +1,9 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
 use crate::stitch::Image;
-use image::{DynamicImage, ImageFormat, ImageReader, Limits, RgbImage, RgbaImage};
+use image::{
+    codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, ImageReader, Limits, RgbImage,
+    RgbaImage,
+};
 use std::{
     io::{BufReader, Cursor},
     path::Path,
@@ -25,6 +28,12 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
 }
 
 pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Bmp | ImageFormat::Gif
+    ) {
+        return Err("Bitte PNG, JPG, BMP oder GIF wählen.".into());
+    }
     let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
     let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
     let mut pixels = image.pixels.clone();
@@ -32,18 +41,20 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
         px.swap(0, 2);
     }
     let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
-    let output = if format == ImageFormat::Jpeg {
-        DynamicImage::ImageRgb8(
+    let mut bytes = Cursor::new(Vec::new());
+    if format == ImageFormat::Jpeg {
+        let output = DynamicImage::ImageRgb8(
             RgbImage::from_raw(w, h, jpeg_rgb_on_white(rgba.into_raw()))
                 .ok_or("Ungültige Bildgröße")?,
-        )
+        );
+        JpegEncoder::new_with_quality(&mut bytes, 92)
+            .encode_image(&output)
+            .map_err(|e| e.to_string())?;
     } else {
         DynamicImage::ImageRgba8(rgba)
-    };
-    let mut bytes = Cursor::new(Vec::new());
-    output
-        .write_to(&mut bytes, format)
-        .map_err(|e| e.to_string())?;
+            .write_to(&mut bytes, format)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(bytes.into_inner())
 }
 
@@ -103,6 +114,63 @@ mod tests {
             let image = decode(&bytes).unwrap();
             assert_eq!((image.width, image.height), (2, 2));
         }
+    }
+
+    #[test]
+    fn tiff_round_trip_preserves_pixels_without_enabling_tiff_export_paths() {
+        let src = sample();
+        let mut rgba = src.pixels.clone();
+        for px in rgba.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let tiff_image = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 2, rgba).unwrap());
+        let mut fixture = Cursor::new(Vec::new());
+        tiff_image.write_to(&mut fixture, ImageFormat::Tiff).unwrap();
+        assert_eq!(decode(&fixture.into_inner()).unwrap(), src);
+        assert!(encode(&src, ImageFormat::Tiff).is_err());
+        assert!(format_from_path(Path::new("capture.tif")).is_err());
+        assert!(format_from_path(Path::new("capture.tiff")).is_err());
+    }
+
+    #[test]
+    fn jpeg_export_uses_quality_92_relative_to_quality_75() {
+        let mut pixels = Vec::with_capacity(64 * 64 * 4);
+        for y in 0..64usize {
+            for x in 0..64usize {
+                let r = ((x * 37 + y * 13 + (x * y) % 71) & 255) as u8;
+                let g = ((x * 11 + y * 43 + (x * y) % 97) & 255) as u8;
+                let b = ((x * 53 + y * 7 + (x * y) % 113) & 255) as u8;
+                pixels.extend_from_slice(&[b, g, r, 255]);
+            }
+        }
+        let src = Image::new(64, 64, pixels).unwrap();
+        let quality_92 = decode(&encode(&src, ImageFormat::Jpeg).unwrap()).unwrap();
+
+        let mut rgb = Vec::with_capacity(64 * 64 * 3);
+        for px in src.pixels.chunks_exact(4) {
+            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+        let rgb = RgbImage::from_raw(64, 64, rgb).unwrap();
+        let mut baseline = Cursor::new(Vec::new());
+        JpegEncoder::new_with_quality(&mut baseline, 75)
+            .encode_image(&DynamicImage::ImageRgb8(rgb))
+            .unwrap();
+        let quality_75 = decode(&baseline.into_inner()).unwrap();
+
+        let mean_squared_error = |decoded: &Image| -> u64 {
+            src.pixels
+                .chunks_exact(4)
+                .zip(decoded.pixels.chunks_exact(4))
+                .flat_map(|(a, b)| (0..3).map(move |channel| {
+                    let delta = i64::from(a[channel]) - i64::from(b[channel]);
+                    (delta * delta) as u64
+                }))
+                .sum()
+        };
+        assert!(
+            mean_squared_error(&quality_92) < mean_squared_error(&quality_75),
+            "quality 92 should retain more source detail than quality 75"
+        );
     }
 
     #[test]
