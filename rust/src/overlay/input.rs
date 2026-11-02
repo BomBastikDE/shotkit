@@ -4,7 +4,7 @@ use super::*;
 // Voraussetzung: Windows-Callbackparameter und der serialisierte Overlayzustand sind gültig.
 // Warum erfüllt bzw. offen: window_proc wird von Windows auf dem Besitzerthread
 // aufgerufen; Panic-/Lebensdauerverträge bleiben für alle Aufrufer zu beachten.
-// Nachrichten: Manche Zweige können synchron reentrieren; State-Borrows enden davor.
+// Nachrichten: SetCapture, ReleaseCapture und MoveWindow können reentrieren; die Zustandsblöcke enden vor diesen Aufrufen.
 pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
     let state = std::ptr::addr_of_mut!(STATE);
     Some(match msg {
@@ -155,7 +155,7 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
 // Voraussetzung: Windows-Callbackparameter und der serialisierte Overlayzustand sind gültig.
 // Warum erfüllt bzw. offen: window_proc wird von Windows auf dem Besitzerthread
 // aufgerufen; Panic-/Lebensdauerverträge bleiben für alle Aufrufer zu beachten.
-// Nachrichten: Manche Zweige können synchron reentrieren; State-Borrows enden davor.
+// Nachrichten: DestroyWindow kann reentrieren; Rechtecke und Handles werden vorher kopiert.
 pub(super) unsafe fn handle_keyboard(hwnd: H, msg: u32, w: W, _l: L) -> Option<L> {
     let state = std::ptr::addr_of_mut!(STATE);
     Some(match msg {

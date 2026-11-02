@@ -4,7 +4,7 @@ use super::*;
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: Textdialog und SetCapture können reentrieren; Text und Koordinaten werden vor den Aufrufen kopiert.
 pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L> {
     Some(match m {
         0x0203 if !window_state(h).bitmap.is_null() => {
@@ -94,7 +94,7 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: ReleaseCapture und Toolbaraktionen können reentrieren; Zustandszugriffe enden vor den Aufrufen.
 pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Option<L> {
     Some(match m {
         0x0200 if window_state(h).drawing && !window_state(h).bitmap.is_null() => {
@@ -151,7 +151,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: DestroyWindow und DefWindowProcW können reentrieren; Toolbar und Bitmap werden vor ihrer Freigabe aus dem Zustand entnommen.
 pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Option<L> {
     Some(match m {
         0x000f => {

@@ -408,42 +408,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         .encode_utf16()
         .chain(Some(0))
         .collect();
-    let magnifier_class = WndClass {
-        style: 0,
-        proc: Some(magnifier_proc),
-        cls_extra: 0,
-        wnd_extra: 0,
-        instance,
-        icon: null_mut(),
-        cursor: null_mut(),
-        background: null_mut(),
-        menu: null(),
-        class: magnifier_class_name.as_ptr(),
-    };
-    if !(*std::ptr::addr_of!(STATE)).source_dc.is_null() && RegisterClassW(&magnifier_class) != 0 {
-        (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = true;
-        let (left, top, _, _) = magnifier_rect(&*std::ptr::addr_of!(STATE), cursor);
-        let magnifier = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            magnifier_class_name.as_ptr(),
-            magnifier_class_name.as_ptr(),
-            WS_POPUP,
-            left.saturating_add(origin.0),
-            top.saturating_add(origin.1),
-            MAG_SIZE,
-            MAG_WINDOW_HEIGHT,
-            hwnd,
-            null_mut(),
-            instance,
-            null_mut(),
-        );
-        if !magnifier.is_null() {
-            (*std::ptr::addr_of_mut!(STATE)).magnifier_hwnd = magnifier;
-        } else {
-            UnregisterClassW(magnifier_class_name.as_ptr(), instance);
-            (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = false;
-        }
-    }
+    setup_magnifier(instance, hwnd, origin, cursor, &magnifier_class_name);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
@@ -459,24 +424,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         move_magnifier(std::ptr::addr_of_mut!(STATE));
     }
 
-    let mut msg: Msg = zeroed();
-    let mut quit_code = None;
-    loop {
-        let r = GetMessageW(&mut msg, null_mut(), 0, 0);
-        if r == 0 {
-            (*std::ptr::addr_of_mut!(STATE)).done = true;
-            quit_code = Some(msg.wparam as i32);
-            break;
-        }
-        if r < 0 {
-            break;
-        }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-        if (*std::ptr::addr_of!(STATE)).done {
-            break;
-        }
-    }
+    let quit_code = run_message_loop();
     if !(*std::ptr::addr_of!(STATE)).hwnd.is_null() {
         let active = (*std::ptr::addr_of!(STATE)).hwnd;
         let _ = KillTimer(active, UIA_TIMER_ID);

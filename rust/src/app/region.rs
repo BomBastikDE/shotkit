@@ -3,7 +3,7 @@ use super::*;
 // SAFETY CONTRACT:
 // Voraussetzung: h bleibt über Auswahl und modal verschachtelte Nachrichten gültig.
 // Warum erfüllt bzw. offen: Die Funktion wird vom Fensterhandler aufgerufen; vollständiger Reentranznachweis steht noch aus.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: ShowWindow, MessageBoxW und overlay::select können reentrieren; Koordinaten und BusyGuard sind eigene Werte, kein State-Borrow bleibt aktiv.
 pub(super) unsafe fn capture_region(h: H) {
     if SCROLL_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -31,7 +31,7 @@ pub(super) unsafe fn capture_region(h: H) {
 // SAFETY CONTRACT:
 // Voraussetzung: h und rect bleiben während der Auswahl-/Ausgabeoperation gültig.
 // Warum erfüllt bzw. offen: rect ist ein besitzender Wert; die Lebensdauer von h bei Reentranz ist noch zu belegen.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: ShowWindow, MessageBoxW und EnumDisplayMonitors können reentrieren; Monitorliste und LAST_REGION-Zuweisungs-Guard enden vor späteren Dialogen.
 pub(super) unsafe fn capture_region_rect(
     h: H,
     rect: last_region::Rect,
@@ -152,7 +152,7 @@ pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, S
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster; gespeicherte Koordinaten sind gültig.
 // Warum erfüllt bzw. offen: Der Handler übergibt h; Monitorgrenzen werden vor Wiederholung geprüft.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: MessageBoxW, ShowWindow und capture_region_rect können reentrieren; LAST_REGION wird kopiert und der MutexGuard vor dem Dialog beendet.
 pub(super) unsafe fn repeat_last_region(h: H) {
     if SCROLL_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -161,7 +161,9 @@ pub(super) unsafe fn repeat_last_region(h: H) {
         return;
     }
     let _busy = BusyGuard(true);
-    let Some(rect) = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) else {
+    // Drop the mutex guard before the dialog can dispatch nested messages.
+    let previous_region = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(rect) = previous_region else {
         MessageBoxW(
             h,
             wide("Es wurde in dieser Sitzung noch kein Aufnahmebereich erfolgreich aufgenommen.").as_ptr(),
@@ -178,7 +180,7 @@ pub(super) unsafe fn repeat_last_region(h: H) {
 // SAFETY CONTRACT:
 // Voraussetzung: h lebt während der modalen Auswahl und des Starts des Workers.
 // Warum erfüllt bzw. offen: BusyGuard serialisiert die Aufnahme; die übrigen Reentranzpfade müssen noch geprüft werden.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow und overlay::select können reentrieren; Einstellungen sind geklont, BusyGuard hält keinen State-Borrow.
 pub(super) unsafe fn start_scroll(h: H) {
     if SCROLL_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

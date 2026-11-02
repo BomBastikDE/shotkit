@@ -7,7 +7,7 @@ Prüfbereich: Rust-Quellcode des Entwicklungszweigs. Dieser statische Befund bet
 | Stelle | Befund für die geprüfte Reentranzfrage |
 |---|---|
 | `overlay::select`: Initialisierung und Picker-Übernahme | Zustandszugriffe enden vor der nächsten Fenstererstellung beziehungsweise vor dem Freigeben des Pickers. |
-| `overlay::select`: `magnifier_rect` vor `CreateWindowExW` | Die temporäre Referenz dient nur der Koordinatenberechnung und endet vor dem Fensteraufruf. |
+| `overlay::magnifier::setup_magnifier`: `magnifier_rect` vor `CreateWindowExW` | Die temporäre Referenz dient nur der Koordinatenberechnung und endet vor dem Fensteraufruf. |
 | `overlay::select`: `ShowWindow`, `UpdateWindow`, `DestroyWindow` | Die Aufrufe erhalten kopierte Fenster-Handles; es bleibt keine Zustandsreferenz über die Aufrufe aktiv. |
 | `overlay::hover::update_hover` | Zustandsänderung und Worker-Anforderung ohne geprüften synchronen Fensteraufruf innerhalb des Borrows. |
 | `overlay::hover::poll_window` | Einzelne Borrows lesen Worker-Ergebnisse oder ändern Zustand; sie enden vor `choose_hover` beziehungsweise `mark_finished`. |
@@ -33,7 +33,7 @@ Prüfbereich: Rust-Quellcode des Entwicklungszweigs. Dieser statische Befund bet
 | `app::window_state`, `app::editor` | **Offen auf API-Ebene:** `&'static mut` erzwingt weder die Lebensdauer des Fensters noch exklusive Zugriffe. Alle weiteren Aufrufer und verschachtelten Nachrichten müssen diese Bedingungen einhalten. |
 | `app::toolbar_height`, `ModalGuard`, `refresh_title` | Kurzzeitiger Zugriff beziehungsweise besitzender Titel; kein Zustandsborrow über den anschließenden Windows-Aufruf. Die Lebensdauer des Guard-Handles bleibt ein eigener Vertrag. |
 | `app::show_editors`, `quit_application` | Fensterliste und Modal-Tiefe werden kopiert; Dialoge und Fensteraufrufe folgen ohne gehaltenen Zustandsborrow. |
-| `app::capture` und `app::region`: Aufnahme-, Wiederholungs- und Scrollabläufe | `ShowWindow` verwendet Handles und besitzende Aufnahme-/Einstellungsdaten; keine `WindowState`-/Editorreferenz über dem Aufruf gefunden. Das beweist nicht die Lebensdauer aller Handles bei jeder Nachricht. |
+| `app::capture` und `app::region`: Aufnahme-, Wiederholungs- und Scrollabläufe | `ShowWindow` verwendet Handles und besitzende Aufnahme-/Einstellungsdaten; keine `WindowState`-/Editorreferenz über dem Aufruf gefunden. `repeat_last_region` kopiert die Auswahl und beendet den `LAST_REGION`-MutexGuard vor dem Fehlerdialog. Die Lebensdauer aller Handles ist damit nicht allgemein bewiesen. |
 | `app::document`: Speichern, Wiederherstellen, Öffnen und Einfügen | Feldzugriffe beziehungsweise besitzende Pfadkopien; keine gehaltene Zustandsreferenz über die geprüften Dialog-/Fensteraufrufe gefunden. Die Lebensdauer des Dialogbesitzers bleibt zu prüfen. |
 | `app::document::create_editor_window` | Toolbar wird erst nach Fenstererstellung im Zustand ersetzt; die vorherige Toolbar wird nach Ende des Borrows freigegeben. |
 | `app::document::display_image`, `initialize_image` | Fenster-/Bildzustand wird ohne gehaltenen Borrow vor `ShowWindow`, `DestroyWindow` und `SetWindowTextW` aktualisiert. |

@@ -252,3 +252,47 @@ pub(super) unsafe extern "system" fn magnifier_proc(hwnd: H, msg: u32, w: W, l: 
         _ => DefWindowProcW(hwnd, msg, w, l),
     }
 }
+
+// SAFETY CONTRACT:
+// Voraussetzung: instance und hwnd sind gültig; STATE ist auf dem UI-Thread initialisiert.
+// Warum erfüllt bzw. offen: select ruft nach erfolgreicher Fensteranlage auf;
+// Rückrufe dürfen die Lebensdauer der Handles während der Anlage nicht beenden.
+// Nachrichten: CreateWindowExW kann synchron Nachrichten auslösen.
+pub(super) unsafe fn setup_magnifier(instance: H, hwnd: H, origin: (i32, i32), cursor: Point, magnifier_class_name: &[u16]) {
+    let magnifier_class = WndClass {
+        style: 0,
+        proc: Some(magnifier_proc),
+        cls_extra: 0,
+        wnd_extra: 0,
+        instance,
+        icon: null_mut(),
+        cursor: null_mut(),
+        background: null_mut(),
+        menu: null(),
+        class: magnifier_class_name.as_ptr(),
+    };
+    if !(*std::ptr::addr_of!(STATE)).source_dc.is_null() && RegisterClassW(&magnifier_class) != 0 {
+        (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = true;
+        let (left, top, _, _) = magnifier_rect(&*std::ptr::addr_of!(STATE), cursor);
+        let magnifier = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            magnifier_class_name.as_ptr(),
+            magnifier_class_name.as_ptr(),
+            WS_POPUP,
+            left.saturating_add(origin.0),
+            top.saturating_add(origin.1),
+            MAG_SIZE,
+            MAG_WINDOW_HEIGHT,
+            hwnd,
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        if !magnifier.is_null() {
+            (*std::ptr::addr_of_mut!(STATE)).magnifier_hwnd = magnifier;
+        } else {
+            UnregisterClassW(magnifier_class_name.as_ptr(), instance);
+            (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = false;
+        }
+    }
+}

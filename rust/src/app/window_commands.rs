@@ -4,7 +4,7 @@ use super::*;
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: DestroyWindow, ShowWindow und Menü-/Aufnahmefunktionen können reentrieren; der Handler hält keine Zustandsreferenz über diese Aufrufe.
 pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
     Some(match m {
         WM_FINISH_QUIT if h == PRIMARY => { DestroyWindow(h); 0 }
@@ -83,7 +83,7 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: Dateidialoge, Aufnahme und SetWindowTextW können reentrieren; verwendete Zustandswerte sind vor dem Aufruf kopiert.
 pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> {
     Some(match m {
         0x0100 if w == 0x56 && GetKeyState(0x11) < 0 => {
@@ -169,7 +169,7 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
-// Nachrichten: Abhängig vom Zweig können synchrone Fenster-/Dialogaufrufe erfolgen.
+// Nachrichten: Toolbar-Resize, SetWindowTextW und Dialoge können reentrieren; die Toolbar wird als Rc geklont und Borrows enden zuvor.
 pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L> {
     Some(match m {
         0x0005 => {

@@ -3,7 +3,7 @@ use super::*;
 // SAFETY CONTRACT:
 // Voraussetzung: h lebt während der Ausgabe und erzeugte Fenster besitzen initialisierten Zustand.
 // Warum erfüllt bzw. offen: display_image prüft die Fensteranlage; Reentranz bei modalen Fehlerdialogen bleibt zu prüfen.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: display_image, Clipboard, ShowWindow und MessageBoxW können reentrieren; Bild/Einstellungen sind eigene Werte und kurze Zustandszuweisungen enden vorher.
 pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Result<(), String> {
     let prefs = active_settings();
     let mut output = CaptureOutputState::new(&prefs);
@@ -102,7 +102,7 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
 // SAFETY CONTRACT:
 // Voraussetzung: h bleibt während Aufnahme und möglichen Dialogen gültig.
 // Warum erfüllt bzw. offen: BusyGuard serialisiert Aufnahmen; die Lebensdauer bei Reentranz ist noch zu belegen.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: ShowWindow, MessageBoxW und handle_capture können reentrieren; es wird keine WindowState-Referenz gehalten, die HWND-Lebensdauer bleibt offen.
 pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>) {
     if SCROLL_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -147,14 +147,14 @@ pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRe
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster auf dem UI-Thread.
 // Warum erfüllt: Der Nachrichtenhandler übergibt sein Fenster; capture_rect hält es während der Aufnahme.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: capture_rect kann ShowWindow und Dialoge auslösen; h und das Zielergebnis sind Werte ohne gehaltenen State-Borrow.
 pub(super) unsafe fn capture(h: H) {
     capture_rect(h, capture_targets::monitor_under_cursor());
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Dialogbesitzer auf dem UI-Thread.
 // Warum erfüllt: Die Nachrichtenbehandlung übergibt das eigene Fenster; der Worker postet nur eine Nachricht.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: MessageBoxW kann reentrieren; der DELAYED_CAPTURE_STATE-Guard endet vor dem Dialog, der Worker postet später eine Nachricht.
 pub(super) unsafe fn schedule_capture(h: H, seconds: u64) {
     let request = DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).begin();
     let ticket = match request {
@@ -187,7 +187,7 @@ pub(super) fn post_capture_after(h: H, ticket: CaptureTicket, delay: std::time::
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein eigenes Fenster; window ist ein Windows-Fensterhandle.
 // Warum erfüllt bzw. offen: active_window_target und resolve_active_window_target überprüfen Identität vor der Aufnahme.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: capture_rect kann Fenster und Dialoge aufrufen; Snapshot und Ziel sind eigene Werte ohne gehaltenen State-Borrow.
 pub(super) unsafe fn capture_active(h: H, window: H) {
     let target = match active_window_target(h, window) {
         Ok(snapshot) => resolve_active_window_target(h, &snapshot),

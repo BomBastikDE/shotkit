@@ -10,7 +10,7 @@ pub(super) fn active_settings() -> Settings {
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Besitzer für mögliche Fehlerdialoge.
 // Warum erfüllt: Aufruf nach erfolgreicher Erstellung des Hauptfensters.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: MessageBoxW kann reentrieren; der SETTINGS-Guard der Zuweisung endet vor dem Fehlerdialog.
 pub(super) unsafe fn load_settings(h: H) {
     let result = settings::settings_path().and_then(settings::load_or_default);
     match result {
@@ -28,7 +28,7 @@ pub(super) unsafe fn load_settings(h: H) {
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Dialog-Besitzerfenster.
 // Warum erfüllt: Menü- und Editoraktionen übergeben ihr eigenes Fenster.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: MessageBoxW kann reentrieren; bei Fehlerdialogen wird kein SETTINGS-Guard gehalten.
 pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
     if !SETTINGS_WRITABLE.load(Ordering::SeqCst) {
         MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die vorhandene Datei nicht lesbar ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
@@ -57,7 +57,7 @@ pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
 // SAFETY CONTRACT:
 // Voraussetzung: h hat einen initialisierten WindowState auf dem UI-Thread.
 // Warum erfüllt: Aufruf aus der Ereignisbehandlung eines eigenen Editorfensters.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: ReleaseCapture kann Nachrichten auslösen; der Editor-Borrow endet vor diesem Aufruf.
 pub(super) unsafe fn cancel_gesture(h: H) {
     let had_capture = window_state(h).drawing;
     window_state(h).drawing = false;
@@ -73,7 +73,7 @@ pub(super) unsafe fn cancel_gesture(h: H) {
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Besitzer; UTF-16-Zeiger leben bis zum API-Rücksprung.
 // Warum erfüllt: eigene Menüaktion; alle Puffer bleiben während der synchronen Aufrufe im Scope.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: ShellExecuteW und MessageBoxW können reentrieren; Einstellungen, Ordner und UTF-16-Puffer sind eigene Werte.
 pub(super) unsafe fn open_storage_folder(h: H) {
     let Some(folder) = active_settings().save_folder else {
         MessageBoxW(

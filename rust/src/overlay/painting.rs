@@ -4,7 +4,7 @@ use super::*;
 // Voraussetzung: Windows-Callbackparameter und der serialisierte Overlayzustand sind gültig.
 // Warum erfüllt bzw. offen: window_proc wird von Windows auf dem Besitzerthread
 // aufgerufen; Panic-/Lebensdauerverträge bleiben für alle Aufrufer zu beachten.
-// Nachrichten: Manche Zweige können synchron reentrieren; State-Borrows enden davor.
+// Nachrichten: DestroyWindow kann reentrieren; das Magnifier-Handle wird vorher aus dem Zustand entnommen.
 pub(super) unsafe fn handle_paint(hwnd: H, msg: u32, _w: W, _l: L) -> Option<L> {
     let state = std::ptr::addr_of_mut!(STATE);
     Some(match msg {

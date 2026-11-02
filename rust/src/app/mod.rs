@@ -376,7 +376,7 @@ unsafe fn editor_windows() -> Vec<H> {
 // SAFETY CONTRACT:
 // Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
 // Warum erfüllt: Aufruf für eigene Editorfenster; der Titel besitzt seine Daten vor dem Win32-Aufruf.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: SetWindowTextW kann synchron WM_SETTEXT auslösen; der aus dem State erzeugte Titel ist besitzend und der Borrow endet vorher.
 unsafe fn refresh_title(h: H) {
     let state = window_state(h);
     let name = state.current_path.as_ref().map(|p| p.display().to_string())
@@ -388,7 +388,7 @@ unsafe fn refresh_title(h: H) {
 // SAFETY CONTRACT:
 // Voraussetzung: Fensterliste und PRIMARY gehören zum aktiven UI-Thread.
 // Warum erfüllt: der Aufruf erfolgt aus der Nachrichtenbehandlung der Anwendung.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: Fensteranlage, ShowWindow und Dialoge können reentrieren; die Fensterliste ist eine Kopie und kein State-Borrow bleibt aktiv.
 unsafe fn show_editors() {
     if QUITTING.load(Ordering::SeqCst) { return; }
     let mut windows = editor_windows();
@@ -411,7 +411,7 @@ unsafe fn show_editors() {
 // SAFETY CONTRACT:
 // Voraussetzung: h und alle gelisteten Fenster gehören zum UI-Thread.
 // Warum erfüllt: die Liste enthält ausschließlich von der Anwendung erzeugte Fenster.
-// Nachrichten: synchrone Nachrichten bzw. Rückrufe sind möglich; Borrow-Grenzen beachten.
+// Nachrichten: Dialoge und DestroyWindow können reentrieren; Fensterliste und Modal-Tiefe werden vor den Aufrufen als Werte übernommen.
 unsafe fn quit_application(h: H) {
     if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
         MessageBoxW(h, wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
