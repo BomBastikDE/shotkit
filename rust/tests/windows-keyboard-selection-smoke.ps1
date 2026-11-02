@@ -238,6 +238,46 @@ namespace ShotKitKeyboardSurface {
         }
     }
     finally {$plainBitmap.Dispose()}
+
+    # A reverse manual drag ends inside its rectangle. Resize it with the
+    # keyboard, then click at the unchanged pointer position. The click must
+    # accept the edited rectangle, not the stale hover outline from before
+    # the drag. A click also exercises the existing fresh-root confirmation.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $clickOverlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the overlay for the keyboard-edit click case' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($clickOverlay.Handle)
+    $clickX=$geometry[0]+80; $clickY=$geometry[1]+60
+    $dragX=$geometry[0]+280; $dragY=$geometry[1]+210
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos($dragX,$dragY); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos($clickX,$clickY); Start-Sleep -Milliseconds 150
+    Send-Key 0x10 $true; $shiftDown=$true
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 180
+    Send-Key 0x10 $false; $shiftDown=$false
+    Send-Key 0x10 $true; $shiftDown=$true
+    Send-Key 0x27 $true; Start-Sleep -Milliseconds 60; Send-Key 0x27 $false
+    Send-Key 0x10 $false; $shiftDown=$false; Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 60
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+    $clickPng=Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'the capture accepted by clicking the keyboard-edited rectangle' -OwnedProcess $shotKit -Condition {
+        $files=@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Where-Object {$_.FullName -ne $png.FullName -and $_.FullName -ne $plainPng.FullName})
+        if($files.Count -ge 1){$files | Select-Object -First 1}
+    }
+    $clickBitmap=[Drawing.Bitmap]::new($clickPng.FullName)
+    try {
+        if($clickBitmap.Width -ne 201 -or $clickBitmap.Height -ne 150){throw "Click after keyboard resize produced $($clickBitmap.Width)x$($clickBitmap.Height); expected the edited 201x150 rectangle."}
+        foreach($point in @(@(0,0),@(73,41),@(200,149))) {
+            $x=$point[0]; $y=$point[1]; $sx=$x+80; $sy=$y+60
+            $er=($sx*29+$sy*17+[int][Math]::Floor($sy/19)*53)%256
+            $eg=($sx*7+$sy*31+[int][Math]::Floor($sy/23)*97)%256
+            $eb=($sx*19+$sy*11+[int][Math]::Floor($sy/11)*41)%256
+            $actual=$clickBitmap.GetPixel($x,$y)
+            if($actual.R -ne $er -or $actual.G -ne $eg -or $actual.B -ne $eb){throw "Click-confirmed output pixel ($x,$y) was RGB=$($actual.R),$($actual.G),$($actual.B); expected RGB=$er,$eg,$eb."}
+        }
+    }
+    finally {$clickBitmap.Dispose()}
     Write-Output "PASS: Escape cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
 }
 finally {

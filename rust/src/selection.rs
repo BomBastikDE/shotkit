@@ -740,13 +740,21 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 } else {
                     // Any new pointer gesture returns to the established
                     // hover/click/drag flow and discards keyboard-only edits.
-                    s.keyboard_rect = None;
                     s.down = true;
                     s.start = point;
                     s.current = point;
                     // Freeze the rectangle that was already visible. In-flight
                     // UIA completions cannot change the accepted click target.
-                    s.press_rect = s.visible_hover_rect.filter(|rect| contains(*rect, point));
+                    // A keyboard edit is the rectangle the user is currently
+                    // looking at, even though visible_hover_rect still tracks
+                    // the last pointer hover. Freeze that edited rectangle for
+                    // a click before clearing keyboard mode; real drags still
+                    // take the manual start/current path on mouse-up.
+                    s.press_rect = s
+                        .keyboard_rect
+                        .or(s.visible_hover_rect)
+                        .filter(|rect| contains(*rect, point));
+                    s.keyboard_rect = None;
                     crate::uia_picker::log_diagnostic(&format!(
                         "selection mouse_down point=({}, {}) visible_rect={:?} frozen_rect={:?}",
                         point.x, point.y, s.visible_hover_rect, s.press_rect

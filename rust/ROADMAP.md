@@ -1,6 +1,6 @@
 # Rust-Portierung: Funktionsstand
 
-Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.4` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
+Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.5` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
 
 ## Bestehende ShotKit-Funktionen für die Portierung
 
@@ -37,3 +37,5 @@ Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sow
 Der veröffentlichte Stand `eec082b` (Alpha 4) bestand [GitHub Actions Lauf 41451797144](https://github.com/BomBastikDE/shotkit/actions/runs/41451797144): Linux und Windows erfolgreich; unter anderem wurden das Infofenster über das Tray-Menü, das transparente Kopieren und Einfügen sowie die Scroll- und Browserprüfungen ausgeführt. Der Link im Infofenster wurde dabei nicht geöffnet. Die oben genannten realen Windows-Praxistests bleiben offen.
 
 Der Windows-[Lauf 41453703225](https://github.com/BomBastikDE/shotkit/actions/runs/41453703225) hat die Elementauswahl auf derselben lokalen Testseite zusätzlich in Chrome geprüft: tatsächlicher Klick, ausgewählte Grenzen und vier Bildpunkte. Der Edge-Test bestand im selben Lauf ebenfalls. Andere Webseiten, Browser, Zoomstufen und DPI-Konfigurationen sind dadurch nicht allgemein nachgewiesen.
+
+Die Vorabversion Alpha 5 basiert auf Commit `41e8bbd` und bestand [GitHub Actions Lauf 41457711642](https://github.com/BomBastikDE/shotkit/actions/runs/41457711642) unter Linux und Windows. Dabei wurden die pixelgenaue Tastaturkorrektur eines manuell gezogenen Bereichs, Abbruch und der normale Mausablauf sowie die Wiederholung des letzten Bereichs über das Tray-Menü geprüft. Tests auf realen Geräten und mit gemischten Skalierungen stehen weiterhin aus.
