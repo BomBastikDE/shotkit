@@ -4,6 +4,7 @@ on:
     branches: [main, 'rust/**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -22,6 +23,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
+      - name: Test release safety checks
+        if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Check Rust formatting
         if: runner.os == 'Linux'
         run: cargo fmt --check

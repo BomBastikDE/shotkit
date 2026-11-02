@@ -1,0 +1,32 @@
+name: Rust tagged release
+on:
+  push:
+    tags: ['v2.*']
+permissions:
+  contents: read
+jobs:
+  checks:
+    uses: ./.github/workflows/rust-ci.yml
+    permissions:
+      contents: read
+  publish-alpha:
+    needs: checks
+    if: ${{ startsWith(github.ref, 'refs/tags/v2.') && contains(github.ref_name, '-alpha.') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: shotkit-windows-x64
+          path: release-artifact
+      - name: Create alpha release without overwriting existing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 rust/scripts/create-alpha-release.py release-artifact/shotkit.exe
