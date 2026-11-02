@@ -237,6 +237,73 @@ function Wait-ForCondition {
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
 }
+function Test-FullyDecodablePng {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $memory = $null
+    $bitmap = $null
+    $locked = $null
+    try {
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+        if ($bytes.Length -lt 20) {
+            $script:lastPngReadinessError = "file is only $($bytes.Length) bytes; minimum PNG header/IEND length is 20"
+            return $false
+        }
+        for ($i = 0; $i -lt $signature.Length; $i++) {
+            if ($bytes[$i] -ne $signature[$i]) {
+                $script:lastPngReadinessError = 'PNG signature is incomplete or invalid'
+                return $false
+            }
+        }
+        $iend = $bytes.Length - 12
+        if ($bytes[$iend] -ne 0 -or $bytes[$iend + 1] -ne 0 -or
+            $bytes[$iend + 2] -ne 0 -or $bytes[$iend + 3] -ne 0 -or
+            $bytes[$iend + 4] -ne 73 -or $bytes[$iend + 5] -ne 69 -or
+            $bytes[$iend + 6] -ne 78 -or $bytes[$iend + 7] -ne 68 -or
+            $bytes[$iend + 8] -ne 174 -or $bytes[$iend + 9] -ne 66 -or
+            $bytes[$iend + 10] -ne 96 -or $bytes[$iend + 11] -ne 130) {
+            $script:lastPngReadinessError = 'PNG does not yet end with a complete IEND chunk'
+            return $false
+        }
+
+        $memory = [IO.MemoryStream]::new($bytes, $false)
+        $bitmap = [Drawing.Bitmap]::new($memory)
+        if ($bitmap.Width -le 0 -or $bitmap.Height -le 0) {
+            $script:lastPngReadinessError = "decoder returned invalid dimensions $($bitmap.Width)x$($bitmap.Height)"
+            return $false
+        }
+        $rectangle = [Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height)
+        $locked = $bitmap.LockBits(
+            $rectangle,
+            [Drawing.Imaging.ImageLockMode]::ReadOnly,
+            [Drawing.Imaging.PixelFormat]::Format32bppArgb
+        )
+        $rowBytes = $bitmap.Width * 4
+        $decodedRow = [byte[]]::new($rowBytes)
+        for ($y = 0; $y -lt $bitmap.Height; $y++) {
+            [Runtime.InteropServices.Marshal]::Copy(
+                [IntPtr]::Add($locked.Scan0, $y * $locked.Stride),
+                $decodedRow,
+                0,
+                $rowBytes
+            )
+        }
+        $script:lastPngReadinessError = $null
+        return $true
+    }
+    catch {
+        $script:lastPngReadinessError = $_.Exception.ToString()
+        return $false
+    }
+    finally {
+        if ($null -ne $locked -and $null -ne $bitmap) {
+            $bitmap.UnlockBits($locked)
+        }
+        if ($null -ne $bitmap) { $bitmap.Dispose() }
+        if ($null -ne $memory) { $memory.Dispose() }
+    }
+}
 function Click-DialogButton {
     param([System.Diagnostics.Process] $OwnedProcess, $Dialog, [string[]] $ExpectedTexts, [string] $Description)
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -548,8 +615,27 @@ catch {
     [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $mouseDown = $false
 
-    $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'the auto-saved browser target PNG' -OwnedProcess $shotKit -Condition {
-        Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
+    $script:lastPngReadinessError = 'PNG file not present yet'
+    try {
+        $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'a completely written, decodable auto-saved browser target PNG' -OwnedProcess $shotKit -Condition {
+            $candidate = Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
+            if ($null -ne $candidate -and (Test-FullyDecodablePng -Path $candidate.FullName)) {
+                return $candidate
+            }
+            return $null
+        }
+    }
+    catch {
+        if ($_.Exception.Message -like 'Timed out after * waiting for a completely written, decodable auto-saved browser target PNG.*') {
+            $fileDiagnostic = 'no PNG file exists'
+            $latestFile = Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if ($null -ne $latestFile) {
+                $fileDiagnostic = "latest file='$($latestFile.FullName)' length=$($latestFile.Length) lastWriteUtc=$($latestFile.LastWriteTimeUtc.ToString('o'))"
+            }
+            throw "Timed out waiting for a fully decodable PNG. Last decoder/readiness result: $script:lastPngReadinessError; $fileDiagnostic"
+        }
+        throw
     }
     $pngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)
     if ($pngs.Count -ne 1) { throw "Expected exactly one captured PNG, found $($pngs.Count)." }
