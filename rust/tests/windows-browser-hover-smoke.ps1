@@ -37,8 +37,14 @@ namespace ShotKitBrowserHoverSmoke {
         public string Title;
         public bool Visible;
     }
+    public sealed class ButtonInfo {
+        public IntPtr Handle;
+        public int ControlId;
+        public string Text;
+    }
     public static class Native {
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+        private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
         [DllImport("user32.dll", SetLastError=true)]
         private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll", SetLastError=true)]
@@ -51,6 +57,12 @@ namespace ShotKitBrowserHoverSmoke {
         private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
         private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
+        [DllImport("user32.dll")]
+        private static extern int GetDlgCtrlID(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern int SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
@@ -94,6 +106,27 @@ namespace ShotKitBrowserHoverSmoke {
                 return true;
             }, IntPtr.Zero);
             return windows.ToArray();
+        }
+        public static ButtonInfo[] VisibleButtons(IntPtr dialog) {
+            List<ButtonInfo> buttons = new List<ButtonInfo>();
+            EnumChildProc callback = delegate(IntPtr child, IntPtr ignored) {
+                if (!IsWindowVisible(child)) return true;
+                StringBuilder cls = new StringBuilder(128);
+                GetClassNameW(child, cls, cls.Capacity);
+                if (!String.Equals(cls.ToString(), "Button", StringComparison.OrdinalIgnoreCase)) return true;
+                StringBuilder text = new StringBuilder(256);
+                GetWindowTextW(child, text, text.Capacity);
+                buttons.Add(new ButtonInfo { Handle=child, ControlId=GetDlgCtrlID(child), Text=text.ToString() });
+                return true;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            return buttons.ToArray();
+        }
+        public static void ClickButton(IntPtr button) {
+            const uint BM_CLICK = 0x00F5;
+            if (button == IntPtr.Zero) throw new ArgumentException("Dialog button handle is null.");
+            SendMessageW(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
         }
     }
 }
@@ -182,6 +215,31 @@ function Wait-ForCondition {
         Start-Sleep -Milliseconds 100
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
+}
+function Click-DialogButton {
+    param([System.Diagnostics.Process] $OwnedProcess, $Dialog, [int] $ExpectedId, [string[]] $ExpectedTexts, [string] $Description)
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $buttons = @()
+    while ([DateTime]::UtcNow -lt $deadline -and -not $OwnedProcess.HasExited) {
+        $buttons = @([ShotKitBrowserHoverSmoke.Native]::VisibleButtons($Dialog.Handle))
+        $button = $buttons | Where-Object {
+            $_.ControlId -eq $ExpectedId -and $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
+        } | Select-Object -First 1
+        if ($null -ne $button) {
+            [ShotKitBrowserHoverSmoke.Native]::ClickButton($button.Handle)
+            return $button
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $detail = ($buttons | ForEach-Object { "HWND=$($_.Handle) ID=$($_.ControlId) Text='$($_.Text)'" }) -join '; '
+    if (-not $detail) { $detail = 'no visible Button-class children' }
+    throw "BUTTON_TIMEOUT: $Description on '$($Dialog.Title)' HWND=$($Dialog.Handle); buttons=$detail"
+}
+function Wait-ForDialogClosed {
+    param([System.Diagnostics.Process] $OwnedProcess, [IntPtr] $DialogHandle, [string] $Description)
+    Wait-ForCondition -TimeoutSeconds 5 -Description $Description -OwnedProcess $OwnedProcess -Condition {
+        @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
+    } | Out-Null
 }
 function Get-EdgeProcessById {
     param([int] $ProcessId)
@@ -398,7 +456,7 @@ catch {
     $settings = @{
         version = 1
         save_folder = $saveFolder
-        open_editor = $false
+        open_editor = $true
         copy_to_clipboard = $false
         auto_save = $true
         scroll_direction = 'down'
@@ -421,10 +479,8 @@ catch {
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    if (-not [ShotKitBrowserHoverSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the ShotKit startup dialog.'
-    }
-    Start-Sleep -Milliseconds 300
+    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedId 1 -ExpectedTexts @('OK') -Description 'startup acknowledgement')
+    Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'the startup dialog to close'
     if ($shotKit.HasExited) { throw 'ShotKit exited after its startup dialog was closed.' }
     Assert-NoUnexpectedDialog $shotKit
 

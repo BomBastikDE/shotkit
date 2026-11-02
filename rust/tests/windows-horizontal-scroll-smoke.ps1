@@ -46,6 +46,11 @@ namespace ShotKitScrollSmoke {
         public string Title;
         public bool Visible;
     }
+    public sealed class ButtonInfo {
+        public IntPtr Handle;
+        public int ControlId;
+        public string Text;
+    }
     public static class Native {
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
         private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
@@ -63,6 +68,10 @@ namespace ShotKitScrollSmoke {
         private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int GetDlgCtrlID(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         public static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
@@ -105,6 +114,27 @@ namespace ShotKitScrollSmoke {
                 if (!GetUserObjectInformationW(desktop, 2, name, (uint)(name.Capacity * 2), out needed)) return null;
                 return name.ToString();
             } finally { CloseDesktop(desktop); }
+        }
+        public static ButtonInfo[] VisibleButtons(IntPtr dialog) {
+            List<ButtonInfo> buttons = new List<ButtonInfo>();
+            EnumChildProc callback = delegate(IntPtr child, IntPtr ignored) {
+                if (!IsWindowVisible(child)) return true;
+                StringBuilder cls = new StringBuilder(128);
+                GetClassNameW(child, cls, cls.Capacity);
+                if (!String.Equals(cls.ToString(), "Button", StringComparison.OrdinalIgnoreCase)) return true;
+                StringBuilder text = new StringBuilder(256);
+                GetWindowTextW(child, text, text.Capacity);
+                buttons.Add(new ButtonInfo { Handle = child, ControlId = GetDlgCtrlID(child), Text = text.ToString() });
+                return true;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            return buttons.ToArray();
+        }
+        public static void ClickButton(IntPtr button) {
+            const uint BM_CLICK = 0x00F5;
+            if (button == IntPtr.Zero) throw new ArgumentException("Dialog button handle is null.");
+            SendMessageW(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
         }
         private static string GetText(IntPtr hwnd) {
             StringBuilder text = new StringBuilder(512);
@@ -225,6 +255,41 @@ function Assert-NoUnexpectedDialog {
         $text = [ShotKitScrollSmoke.Native]::WindowText($dialog.Handle)
         throw "Unexpected ShotKit dialog. Title='$($dialog.Title)' Text='$text'"
     }
+}
+function Click-DialogButton {
+    param(
+        [System.Diagnostics.Process] $OwnedProcess,
+        $Dialog,
+        [int] $ExpectedId,
+        [string[]] $ExpectedTexts,
+        [string] $Description
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $buttons = @()
+    while ([DateTime]::UtcNow -lt $deadline -and -not $OwnedProcess.HasExited) {
+        $buttons = @([ShotKitScrollSmoke.Native]::VisibleButtons($Dialog.Handle))
+        $button = $buttons | Where-Object {
+            $_.ControlId -eq $ExpectedId -and $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
+        } | Select-Object -First 1
+        if ($null -ne $button) {
+            [ShotKitScrollSmoke.Native]::ClickButton($button.Handle)
+            return $button
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $details = ($buttons | ForEach-Object {
+        "HWND=0x$($_.Handle.ToInt64().ToString('X')) ID=$($_.ControlId) Text='$($_.Text)'"
+    }) -join '; '
+    if (-not $details) { $details = 'no visible Button-class children' }
+    $dialogText = [ShotKitScrollSmoke.Native]::WindowText($Dialog.Handle)
+    $exitDetail = if ($OwnedProcess.HasExited) { " Process exited with code $($OwnedProcess.ExitCode)." } else { '' }
+    throw "BUTTON_TIMEOUT: $Description on dialog '$($Dialog.Title)' HWND=$($Dialog.Handle); text='$dialogText'; buttons=$details.$exitDetail"
+}
+function Wait-ForDialogClosed {
+    param([System.Diagnostics.Process] $OwnedProcess, [IntPtr] $DialogHandle, [string] $Description, [string[]] $AllowedDialogTitles = @())
+    Wait-ForCondition -TimeoutSeconds 5 -Description $Description -OwnedProcess $OwnedProcess -AllowedDialogTitles $AllowedDialogTitles -Condition {
+        @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
+    } | Out-Null
 }
 function Wait-ForCondition {
     param(
@@ -393,12 +458,8 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    if (-not [ShotKitScrollSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the ShotKit startup dialog.'
-    }
-    Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-        @((Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })).Count -eq 0
-    } | Out-Null
+    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedId 1 -ExpectedTexts @('OK') -Description 'startup acknowledgement')
+    Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'the startup dialog to close'
     Assert-NoUnexpectedDialog $shotKit
 
     $cases = @(
@@ -475,18 +536,14 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
             Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' } | Select-Object -First 1
         }
         # IDNO selects horizontal scrolling.
-        if (-not [ShotKitScrollSmoke.Native]::PostMessageW($axisDialog.Handle, 0x0111, [IntPtr]7, [IntPtr]::Zero)) {
-            throw 'Could not select horizontal scrolling.'
-        }
-        Wait-ForCondition -TimeoutSeconds 5 -Description 'the horizontal-axis prompt to close' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
-            @((Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' })).Count -eq 0
-        } | Out-Null
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $axisDialog -ExpectedId 7 -ExpectedTexts @('No', 'Nein') -Description 'horizontal axis choice')
+        Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $axisDialog.Handle -Description 'the horizontal-axis prompt to close' -AllowedDialogTitles @('Scroll-Richtung')
         $directionDialog = Wait-ForCondition -TimeoutSeconds 10 -Description "the $($case.Name) direction prompt" -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
             Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' } | Select-Object -First 1
         }
-        if (-not [ShotKitScrollSmoke.Native]::PostMessageW($directionDialog.Handle, 0x0111, [IntPtr]$case.DirectionChoice, [IntPtr]::Zero)) {
-            throw "Could not select scrolling to the $($case.Name)."
-        }
+        $directionButton = if ($case.DirectionChoice -eq 6) { @('Yes', 'Ja') } else { @('No', 'Nein') }
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $directionDialog -ExpectedId $case.DirectionChoice -ExpectedTexts $directionButton -Description "$($case.Name) direction choice")
+        Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $directionDialog.Handle -Description "the $($case.Name) direction prompt to close" -AllowedDialogTitles @('Scroll-Richtung')
 
         $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the horizontal scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
             Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
@@ -546,12 +603,8 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
         }
         Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')
         $passMessages += "$($case.Name): reached the horizontal page edge and reconstructed $expectedWidth columns in $($png.Name)."
-        if (-not [ShotKitScrollSmoke.Native]::PostMessageW($completion.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-            throw "Could not close the $($case.Name) completion notice before the next direction."
-        }
-        Wait-ForCondition -TimeoutSeconds 5 -Description "the $($case.Name) completion notice to close" -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
-            @((Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $completion.Handle })).Count -eq 0
-        } | Out-Null
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $completion -ExpectedId 1 -ExpectedTexts @('OK') -Description "$($case.Name) completion acknowledgement")
+        Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $completion.Handle -Description "the $($case.Name) completion notice to close" -AllowedDialogTitles @('Scroll-Aufnahme beendet')
 
         if (-not $surface.HasExited) {
             $surface.Kill()
