@@ -136,7 +136,12 @@ pub unsafe fn copy_bitmap(
                 w,
                 h,
                 source_stride,
-                section.header.height < 0,
+                // copy_bitmap is called with the editor bitmap created by
+                // main::create_bitmap: that DIB section has negative
+                // biHeight and its bytes are copied from top-down BGRA rows.
+                // Use that creation contract directly; GetObject's BITMAP
+                // dimensions are not the row-order contract for this buffer.
+                true,
             );
         }
     }
