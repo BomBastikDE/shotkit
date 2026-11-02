@@ -35,6 +35,8 @@ namespace ShotKitTextSmoke {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
+        [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint data, UIntPtr extra);
@@ -45,12 +47,15 @@ namespace ShotKitTextSmoke {
         [DllImport("user32.dll")] static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
         static string Read(IntPtr h, bool cls) { var s=new StringBuilder(512); if(cls)GetClassNameW(h,s,s.Capacity);else GetWindowTextW(h,s,s.Capacity);return s.ToString(); }
+        public static string ClassName(IntPtr h) { return Read(h,true); }
+        public static string Title(IntPtr h) { return Read(h,false); }
         public static Win[] Windows(int wanted) { var a=new List<Win>(); EnumProc cb=(h,d)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==(uint)wanted)a.Add(new Win{Handle=h,Pid=(int)p,ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
         public static Child[] Children(IntPtr parent) { var a=new List<Child>();EnumProc cb=(h,d)=>{a.Add(new Child{Handle=h,ClassName=Read(h,true),Text=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
         public static string EditText(IntPtr h) { return Read(h,false); }
         public static void SetEditText(IntPtr h,string s) { IntPtr p=Marshal.StringToHGlobalUni(s);try{SendMessageW(h,0x000C,IntPtr.Zero,p);}finally{Marshal.FreeHGlobal(p);} }
         public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
         public static bool Client(IntPtr h,out Rect r) { return GetClientRect(h,out r); }
+        public static bool WindowRect(IntPtr h,out Rect r) { return GetWindowRect(h,out r); }
         public static int Owner(IntPtr h) { uint p;GetWindowThreadProcessId(h,out p);return (int)p; }
         public static int Id(IntPtr h) { return GetDlgCtrlID(h); }
     }
@@ -74,9 +79,16 @@ function Canvas-Click([int]$ImageX,[int]$ImageY) {
     $o=[Activator]::CreateInstance([ShotKitTextSmoke.Point]); if(-not [ShotKitTextSmoke.Native]::ClientToScreen($main.Handle,[ref]$o)){throw 'Could not map editor origin.'}
     $sx=$o.X+$viewX+[int][Math]::Floor(($ImageX+0.5)*$shownW/160.0); $sy=$o.Y+$viewY+[int][Math]::Floor(($ImageY+0.5)*$shownH/120.0)
     if(-not [ShotKitTextSmoke.Native]::SetForegroundWindow($main.Handle)){throw 'EDITOR_FOCUS_FAILED.'}
-    if(-not [ShotKitTextSmoke.Native]::SetCursorPos($sx,$sy)){throw 'Could not position pointer.'}
     $p=[Activator]::CreateInstance([ShotKitTextSmoke.Point]);$p.X=$sx;$p.Y=$sy
-    if([ShotKitTextSmoke.Native]::Owner([ShotKitTextSmoke.Native]::WindowFromPoint($p)) -ne $proc.Id){throw 'INPUT_TARGET_MISMATCH: canvas click would not target the test-owned application.'}
+    if(-not [ShotKitTextSmoke.Native]::SetCursorPos($sx,$sy)){throw 'Could not position pointer.'}
+    Start-Sleep -Milliseconds 200
+    # Resolve ownership after pointer movement and immediately before the
+    # mouse event, so hover UI is included in the actual input-target check.
+    $target=[ShotKitTextSmoke.Native]::WindowFromPoint($p)
+    $targetPid=[ShotKitTextSmoke.Native]::Owner($target)
+    $cursor=[Activator]::CreateInstance([ShotKitTextSmoke.Point]);[void][ShotKitTextSmoke.Native]::GetCursorPos([ref]$cursor)
+    $targetRect=[Activator]::CreateInstance([ShotKitTextSmoke.Rect]);$rectOk=[ShotKitTextSmoke.Native]::WindowRect($target,[ref]$targetRect)
+    if($targetPid -ne $proc.Id){throw "INPUT_TARGET_MISMATCH before click: requested screen=($sx,$sy), cursor=($($cursor.X),$($cursor.Y)), HWND=$target, class='$([ShotKitTextSmoke.Native]::ClassName($target))', title='$([ShotKitTextSmoke.Native]::Title($target))', owner PID=$targetPid, expected test PID=$($proc.Id), target rect valid=$rectOk ($($targetRect.Left),$($targetRect.Top))-($($targetRect.Right),$($targetRect.Bottom)), editor HWND=$($main.Handle), image point=($ImageX,$ImageY), view=($viewX,$viewY ${shownW}x${shownH})."}
     [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true;Start-Sleep -Milliseconds 80
     [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
 }
