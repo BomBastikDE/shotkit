@@ -404,7 +404,6 @@ catch {
         '--disable-extensions',
         '--disable-component-update',
         '--disable-features=msEdgeSidebarV2,msEdgeDiscover,msSmartScreenProtection',
-        '--force-renderer-accessibility',
         '--force-device-scale-factor=1',
         "--app=`"$fileUri`"",
         '--window-size=1000,720'
