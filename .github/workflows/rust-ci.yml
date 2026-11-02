@@ -58,3 +58,11 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-browser-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Upload tested Windows build
+        if: ${{ success() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shotkit-rust-windows-x64
+          path: rust/target/release/shotkit-rust-prototype.exe
+          if-no-files-found: error
+          retention-days: 7
