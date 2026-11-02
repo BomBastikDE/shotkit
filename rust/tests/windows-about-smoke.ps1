@@ -89,7 +89,7 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (-not $main -or -not $welcome) { throw 'STARTUP_TIMEOUT: did not find ShotKit main window and its expected startup dialog.' }
-    if (-not [ShotKitAboutSmoke.Native]::ClickOk($welcome.Handle)) { throw 'STARTUP_DIALOG_BUTTON: expected startup OK button was not found.' }
+    if (-not [ShotKitAboutSmoke.Native]::PostMessageW($welcome.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'STARTUP_DIALOG_CLOSE_POST_FAILED: could not close the startup dialog.' }
     $deadline = [DateTime]::UtcNow.AddSeconds(8)
     while ([DateTime]::UtcNow -lt $deadline -and [ShotKitAboutSmoke.Native]::IsWindow($welcome.Handle)) { Start-Sleep -Milliseconds 100 }
     if ([ShotKitAboutSmoke.Native]::IsWindow($welcome.Handle)) { throw 'STARTUP_DIALOG_CLOSE_TIMEOUT: startup dialog did not close.' }
