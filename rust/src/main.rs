@@ -1227,21 +1227,55 @@ unsafe fn start_scroll(h: H) {
     if !confirm_replace(h) {
         return;
     }
-    let choice = MessageBoxW(h, wide("Scroll-Aufnahme (experimentell):\nJa = nach unten, Nein = nach rechts oder links, Abbrechen = schließen.\nDanach den Inhaltsbereich mit der Maus aufziehen; Esc bricht ab.").as_ptr(), wide("Scroll-Richtung").as_ptr(), 0x23);
+    let previous_direction = active_settings().scroll_direction;
+    let previous_label = match previous_direction {
+        settings::ScrollDirection::Down => "nach unten",
+        settings::ScrollDirection::Right => "nach rechts",
+        settings::ScrollDirection::Left => "nach links",
+    };
+    let first_default = if previous_direction == settings::ScrollDirection::Down {
+        0
+    } else {
+        0x0100 // MB_DEFBUTTON2: horizontal choice
+    };
+    let prompt = wide(&format!(
+        "Scroll-Aufnahme (experimentell):\nJa = nach unten, Nein = nach rechts oder links, Abbrechen = schließen.\nZuletzt verwendet: {previous_label}.\nDanach den Inhaltsbereich mit der Maus aufziehen; Esc bricht ab."
+    ));
+    let choice = MessageBoxW(
+        h,
+        prompt.as_ptr(),
+        wide("Scroll-Richtung").as_ptr(),
+        0x23 | first_default,
+    );
     let direction = match choice {
         6 => Direction::Down,
-        7 => match MessageBoxW(
-            h,
-            wide("Ja = nach rechts, Nein = nach links, Abbrechen = schließen.").as_ptr(),
-            wide("Scroll-Richtung").as_ptr(),
-            0x23,
-        ) {
-            6 => Direction::Right,
-            7 => Direction::Left,
-            _ => return,
-        },
+        7 => {
+            let second_default = match previous_direction {
+                settings::ScrollDirection::Left => 0x0100, // MB_DEFBUTTON2: left choice
+                settings::ScrollDirection::Down | settings::ScrollDirection::Right => 0,
+            };
+            match MessageBoxW(
+                h,
+                wide("Ja = nach rechts, Nein = nach links, Abbrechen = schließen.").as_ptr(),
+                wide("Scroll-Richtung").as_ptr(),
+                0x23 | second_default,
+            ) {
+                6 => Direction::Right,
+                7 => Direction::Left,
+                _ => return,
+            }
+        }
         _ => return,
     };
+    let mut prefs = active_settings();
+    prefs.scroll_direction = match direction {
+        Direction::Down => settings::ScrollDirection::Down,
+        Direction::Right => settings::ScrollDirection::Right,
+        Direction::Left => settings::ScrollDirection::Left,
+    };
+    // save_settings refuses to replace unreadable or unsupported settings
+    // files; a persistence error must not prevent the requested capture.
+    let _ = save_settings(h, prefs);
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, width, height)) = selection::select() else {
@@ -1580,9 +1614,9 @@ unsafe fn tray_menu(h: H) {
     }
     for (id, label) in [
         (1, "Bildschirm aufnehmen (F9)"),
-        (9, "Bildschirmaufnahme in 3 Sekunden"),
-        (10, "Bildschirmaufnahme in 5 Sekunden"),
-        (11, "Bildschirmaufnahme in 10 Sekunden"),
+        (9, "Bereich nach 3 Sekunden auswählen"),
+        (10, "Bereich nach 5 Sekunden auswählen"),
+        (11, "Bereich nach 10 Sekunden auswählen"),
         (2, "Bereich aufnehmen (F11)"),
         (3, "Scroll-Aufnahme (F10)"),
         (7, "Alle Bildschirme aufnehmen"),
@@ -1804,8 +1838,11 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         DELAYED_CAPTURE => {
+            capture_region(h);
+            // Keep the pending guard set while the confirmation and region
+            // selector run. Modal UI can pump another timer request before
+            // capture_region returns.
             DELAYED_CAPTURE_PENDING.store(false, Ordering::SeqCst);
-            capture(h);
             0
         }
         TRAY if l as u32 == 0x0205 => {
@@ -1818,6 +1855,24 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
         }
         0x0100 if w == 0x4f && GetKeyState(0x11) < 0 => {
             open_image(h);
+            0
+        }
+        0x0100 if w == 0x4e && GetKeyState(0x11) < 0 => {
+            capture_region(h);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && GetKeyState(0x10) < 0 && w == 0x5a => {
+            history(h, true);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && (w == 0x6b || w == 0xbb) => {
+            ZOOM = (ZOOM * 1.25).clamp(0.05, 64.0);
+            InvalidateRect(h, std::ptr::null(), 1);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && (w == 0x6d || w == 0xbd) => {
+            ZOOM = (ZOOM * 0.8).clamp(0.05, 64.0);
+            InvalidateRect(h, std::ptr::null(), 1);
             0
         }
         0x020a if !BITMAP.is_null() => {
@@ -1890,7 +1945,7 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             history(h, w == 0x59);
             0
         }
-        0x0100 if w == 0x2e => {
+        0x0100 if w == 0x2e || w == 0x08 => {
             if editor().delete_selected() {
                 DIRTY = true;
                 InvalidateRect(h, std::ptr::null(), 0);
@@ -1898,14 +1953,40 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             report_editor_error(h);
             0
         }
-        0x0100 if w == 0x1b && DRAW => {
-            editor().cancel_drag();
-            CROP_START = None;
-            CROP_END = None;
-            DRAW = false;
+        0x0100 if w == 0x1b => {
+            if editor().selected_index().is_some() {
+                cancel_gesture();
+                editor().clear_selection();
+            } else if DRAW {
+                cancel_gesture();
+            } else if editor().tool() != Tool::Select {
+                cancel_gesture();
+                editor().set_tool(Tool::Select);
+            } else {
+                return 0;
+            }
             report_editor_error(h);
-            ReleaseCapture();
             InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        0x0100 if matches!(w, 0x25..=0x28)
+            && GetKeyState(0x11) >= 0
+            && GetKeyState(0x12) >= 0
+            && !DRAW
+            && editor().selected_index().is_some() =>
+        {
+            let step = if GetKeyState(0x10) < 0 { 10.0 } else { 1.0 };
+            let (dx, dy) = match w {
+                0x25 => (-step, 0.0),
+                0x26 => (0.0, -step),
+                0x27 => (step, 0.0),
+                _ => (0.0, step),
+            };
+            if editor().nudge_selected(dx, dy) {
+                DIRTY = true;
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            report_editor_error(h);
             0
         }
         0x0100 if GetKeyState(0x11) >= 0 => {

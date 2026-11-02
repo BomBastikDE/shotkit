@@ -139,6 +139,33 @@ impl EditorController {
     pub fn selection(&self) -> Option<&Shape> {
         self.selected.and_then(|i| self.document.shapes().get(i))
     }
+    /// Clear the current selection and discard any in-progress gesture.
+    pub fn clear_selection(&mut self) {
+        self.cancel_drag();
+        self.selected = None;
+    }
+    /// Move the selected shape by an image-space offset as one undoable edit.
+    pub fn nudge_selected(&mut self, dx: f32, dy: f32) -> bool {
+        if !dx.is_finite() || !dy.is_finite() || (dx == 0.0 && dy == 0.0) {
+            return false;
+        }
+        // The UI owns the corresponding pointer capture. Refuse a keyboard
+        // nudge during a pointer gesture instead of cancelling only the model
+        // side and leaving that capture active.
+        if self.drag.is_some() {
+            return false;
+        }
+        let Some(index) = self.selected else {
+            return false;
+        };
+        let Some(original) = self.document.shapes().get(index).cloned() else {
+            self.selected = None;
+            return false;
+        };
+        let mut moved = original.clone();
+        moved.offset(dx, dy);
+        self.commit_replacement(index, original, moved)
+    }
     /// Style applied to shapes created from this controller from now on.
     pub fn current_style(&self) -> &Style {
         &self.current_style
@@ -494,9 +521,11 @@ impl EditorController {
         changed
     }
 
-    fn commit_replacement(&mut self, index: usize, original: Shape, replacement: Shape) {
+    fn commit_replacement(&mut self, index: usize, original: Shape, replacement: Shape) -> bool {
         if original != replacement {
-            self.edit_shape(index, |shape| *shape = replacement);
+            self.edit_shape(index, |shape| *shape = replacement)
+        } else {
+            false
         }
     }
 
@@ -595,6 +624,35 @@ mod tests {
         assert_eq!(e.shapes().len(), 1);
         assert!(e.redo());
         assert!(e.shapes().is_empty());
+    }
+    #[test]
+    fn nudge_is_one_undoable_edit_and_requires_a_selection() {
+        let mut e = rect_editor();
+        e.clear_selection();
+        assert!(!e.nudge_selected(1.0, 0.0));
+        e.set_tool(Tool::Select);
+        select_first(&mut e);
+        assert!(e.nudge_selected(1.0, -10.0));
+        assert_eq!(e.shapes()[0].bounds().x, 11.0);
+        assert_eq!(e.shapes()[0].bounds().y, 0.0);
+        assert!(e.undo());
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+        assert_eq!(e.shapes()[0].bounds().y, 10.0);
+        assert!(e.redo());
+        assert_eq!(e.shapes()[0].bounds().x, 11.0);
+        assert_eq!(e.shapes()[0].bounds().y, 0.0);
+    }
+    #[test]
+    fn nudge_during_pointer_gesture_does_not_cancel_or_commit_it() {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.mouse_down(p(10.0, 25.0));
+        e.mouse_move(p(30.0, 25.0));
+        assert!(!e.nudge_selected(1.0, 0.0));
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+        assert!(e.preview().is_some());
+        e.mouse_up(p(30.0, 25.0));
+        assert_eq!(e.shapes()[0].bounds().x, 30.0);
     }
     #[test]
     fn resizes_a_selected_handle_as_one_step() {
