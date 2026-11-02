@@ -77,6 +77,12 @@ impl Document {
     pub fn image_arc(&self) -> Arc<Image> {
         Arc::clone(&self.current.image)
     }
+    pub fn undo_image_arc(&self) -> Option<Arc<Image>> {
+        self.undo.back().map(|s| Arc::clone(&s.image))
+    }
+    pub fn redo_image_arc(&self) -> Option<Arc<Image>> {
+        self.redo.last().map(|s| Arc::clone(&s.image))
+    }
     pub fn shapes(&self) -> &[Shape] {
         &self.current.shapes
     }
@@ -395,6 +401,23 @@ mod tests {
         })
     }
 
+    #[test]
+    fn peek_image_follows_undo_and_redo_order() {
+        let mut d = Document::new(image()).unwrap();
+        assert!(d.undo_image_arc().is_none());
+        let original = d.image_arc();
+        d.crop(CropRect {
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 2,
+        })
+        .unwrap();
+        let cropped = d.image_arc();
+        assert!(Arc::ptr_eq(&original, &d.undo_image_arc().unwrap()));
+        assert!(d.undo());
+        assert!(Arc::ptr_eq(&cropped, &d.redo_image_arc().unwrap()));
+    }
     #[test]
     fn shared_history_orders_shape_and_image_changes() {
         let mut d = Document::new(image()).unwrap();

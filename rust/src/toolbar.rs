@@ -28,6 +28,7 @@ pub const ID_MARKER: usize = 0x5107;
 pub const ID_BLUR: usize = 0x5108;
 pub const ID_STEP: usize = 0x5109;
 pub const ID_PEN: usize = 0x510A;
+pub const ID_CROP: usize = 0x510B;
 pub const ID_SAVE: usize = 0x5110;
 pub const ID_COPY: usize = 0x5111;
 pub const ID_UNDO: usize = 0x5112;
@@ -128,7 +129,7 @@ struct Action {
     id: usize,
     label: &'static str,
 }
-const ACTIONS: [Action; 17] = [
+const ACTIONS: [Action; 18] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -168,6 +169,10 @@ const ACTIONS: [Action; 17] = [
     Action {
         id: ID_PEN,
         label: "Stift (P)",
+    },
+    Action {
+        id: ID_CROP,
+        label: "Zuschneiden (C)",
     },
     Action {
         id: ID_COLOR,
@@ -331,6 +336,7 @@ impl Drop for Toolbar {
 /// | `ID_SELECT` / `ID_ARROW` / `ID_LINE` | Auswahl / Pfeil / Linie |
 /// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
 /// | `ID_MARKER` / `ID_BLUR` / `ID_STEP` / `ID_PEN` | Marker / Verpixeln / Nummer / Stift |
+/// | `ID_CROP` | Zuschneiden |
 /// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` | Farbe / Linienbreite / Schriftgröße |
 /// | `ID_SAVE` / `ID_COPY` / `ID_UNDO` / `ID_REDO` | Speichern / Kopieren / Zurück / Wiederholen |
 ///

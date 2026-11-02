@@ -1,13 +1,19 @@
 //! Platform-independent annotation editor controller.
 //!
-//! This module only handles image-space input and document edits; a UI must
+//! This module handles image-space input and document edits; a UI must
 //! convert screen coordinates to image coordinates and render `preview()` and
 //! `selection()`. Drags stay in a temporary draft until mouse-up, producing at
 //! most one history entry. Text is committed through `place_text` because this
-//! controller intentionally does not own a text-entry widget. Crop is not an
-//! annotation tool and is not handled here.
+//! controller intentionally does not own a text-entry widget. Image operations
+//! and annotation edits share the same `Document` history.
 
-use crate::shapes::{Color, Point, Shape, ShapeDocument, ShapeKind, Style, Tool};
+use crate::{
+    document::{Document, DocumentError},
+    image_edit::{CropRect, FrameOptions},
+    shapes::{Color, Point, Shape, ShapeKind, Style, Tool},
+    stitch::Image,
+};
+use std::sync::Arc;
 
 const MIN_STYLE_WIDTH: f32 = 0.25;
 const MAX_STYLE_WIDTH: f32 = 256.0;
@@ -44,7 +50,7 @@ enum Drag {
 
 #[derive(Clone, Debug)]
 pub struct EditorController {
-    document: ShapeDocument,
+    document: Document,
     tool: Tool,
     selected: Option<usize>,
     drag: Option<Drag>,
@@ -52,12 +58,22 @@ pub struct EditorController {
     hit_tolerance: f32,
     next_step: i32,
     current_style: Style,
+    last_error: Option<DocumentError>,
 }
 
 impl Default for EditorController {
     fn default() -> Self {
-        Self {
-            document: ShapeDocument::default(),
+        // Compatibility for existing UI construction sites. The real image
+        // should be supplied with `with_image` when the controller is installed.
+        Self::with_image(Image::new(1, 1, vec![0; 4]).expect("valid fallback image"))
+            .expect("fallback image is valid")
+    }
+}
+
+impl EditorController {
+    pub fn with_image(image: Image) -> Result<Self, DocumentError> {
+        Ok(Self {
+            document: Document::new(image)?,
             tool: Tool::Select,
             selected: None,
             drag: None,
@@ -65,13 +81,35 @@ impl Default for EditorController {
             hit_tolerance: 6.0,
             next_step: 1,
             current_style: Style::default(),
-        }
+            last_error: None,
+        })
     }
-}
-
-impl EditorController {
+    /// Compatibility constructor. Prefer `with_image` for a controller tied
+    /// to the actual canvas image.
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+    pub fn document_mut(&mut self) -> &mut Document {
+        &mut self.document
+    }
+    pub fn image_arc(&self) -> Arc<Image> {
+        self.document.image_arc()
+    }
+    /// Return and clear the last failed document mutation. Boolean/void UI
+    /// methods retain their existing signatures while making failures visible.
+    pub fn take_error(&mut self) -> Option<DocumentError> {
+        self.last_error.take()
+    }
+    pub fn crop(&mut self, rect: CropRect) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.crop(rect)
+    }
+    pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.add_frame(options)
     }
     pub fn tool(&self) -> Tool {
         self.tool
@@ -145,7 +183,7 @@ impl EditorController {
         {
             return false;
         }
-        self.document.edit(index, |shape| shape.style = style)
+        self.edit_shape(index, |shape| shape.style = style)
     }
     /// Return the selected text object's contents, if the selection is text.
     pub fn selected_text(&self) -> Option<&str> {
@@ -173,7 +211,7 @@ impl EditorController {
         if matches!(&shape.kind, ShapeKind::Text { text: current, .. } if current == &text) {
             return false;
         }
-        self.document.edit(index, |shape| {
+        self.edit_shape(index, |shape| {
             if let ShapeKind::Text { text: current, .. } = &mut shape.kind {
                 *current = text;
             }
@@ -326,10 +364,18 @@ impl EditorController {
             Drag::Create { shape, .. } => {
                 if !shape.is_empty() {
                     let is_step = matches!(shape.kind, ShapeKind::Step { .. });
-                    self.document.push(shape);
-                    self.selected = Some(self.document.shapes().len() - 1);
-                    if is_step {
-                        self.next_step = self.next_step.saturating_add(1);
+                    let selection_before = self.selected;
+                    match self.document.add_shape(shape) {
+                        Ok(()) => {
+                            self.selected = Some(self.document.shapes().len() - 1);
+                            if is_step {
+                                self.next_step = self.next_step.saturating_add(1);
+                            }
+                        }
+                        Err(error) => {
+                            self.last_error = Some(error);
+                            self.selected = selection_before;
+                        }
                     }
                 }
             }
@@ -386,9 +432,18 @@ impl EditorController {
             text: text.into(),
         });
         shape.style = self.current_style.clone();
-        self.document.push(shape);
-        self.selected = Some(self.document.shapes().len() - 1);
-        true
+        let selection_before = self.selected;
+        match self.document.add_shape(shape) {
+            Ok(()) => {
+                self.selected = Some(self.document.shapes().len() - 1);
+                true
+            }
+            Err(error) => {
+                self.last_error = Some(error);
+                self.selected = selection_before;
+                false
+            }
+        }
     }
 
     pub fn delete_selected(&mut self) -> bool {
@@ -398,9 +453,13 @@ impl EditorController {
         let Some(index) = self.selected else {
             return false;
         };
-        if self.document.remove(index).is_none() {
-            self.selected = None;
-            return false;
+        match self.document.remove_shape(index) {
+            Ok(_) => {}
+            Err(error) => {
+                self.last_error = Some(error);
+                self.selected = Some(index);
+                return false;
+            }
         }
         self.selected = None;
         true
@@ -430,7 +489,20 @@ impl EditorController {
 
     fn commit_replacement(&mut self, index: usize, original: Shape, replacement: Shape) {
         if original != replacement {
-            self.document.edit(index, |shape| *shape = replacement);
+            self.edit_shape(index, |shape| *shape = replacement);
+        }
+    }
+
+    fn edit_shape<F>(&mut self, index: usize, edit: F) -> bool
+    where
+        F: FnOnce(&mut Shape),
+    {
+        match self.document.edit_shape(index, edit) {
+            Ok(()) => true,
+            Err(error) => {
+                self.last_error = Some(error);
+                false
+            }
         }
     }
 }
@@ -446,8 +518,13 @@ mod tests {
     fn p(x: f32, y: f32) -> Point {
         Point::new(x, y)
     }
+    fn editor() -> EditorController {
+        EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap())
+            .unwrap()
+    }
+
     fn rect_editor() -> EditorController {
-        let mut e = EditorController::new();
+        let mut e = editor();
         e.set_tool(Tool::Rectangle);
         e.mouse_down(p(10.0, 10.0));
         e.mouse_up(p(50.0, 40.0));
@@ -456,7 +533,7 @@ mod tests {
 
     #[test]
     fn creates_with_preview_then_commits_once_and_undo_redoes() {
-        let mut e = EditorController::new();
+        let mut e = editor();
         e.set_tool(Tool::Arrow);
         e.mouse_down(p(2.0, 3.0));
         e.mouse_move(p(22.0, 33.0));
@@ -526,7 +603,7 @@ mod tests {
     }
     #[test]
     fn text_and_step_are_creatable() {
-        let mut e = EditorController::new();
+        let mut e = editor();
         assert!(e.place_text(p(5.0, 6.0), "note"));
         assert!(matches!(e.shapes()[0].kind, ShapeKind::Text { .. }));
         e.set_tool(Tool::Step);
@@ -539,7 +616,7 @@ mod tests {
     }
 
     fn two_rectangles() -> EditorController {
-        let mut e = EditorController::new();
+        let mut e = editor();
         e.set_tool(Tool::Rectangle);
         e.mouse_down(p(10.0, 10.0));
         e.mouse_up(p(50.0, 40.0));
@@ -639,7 +716,7 @@ mod tests {
 
     #[test]
     fn new_shapes_and_placed_text_use_current_style() {
-        let mut e = EditorController::new();
+        let mut e = editor();
         let style = Style {
             color: Color::rgba(12, 34, 56, 200),
             width: 7.5,
@@ -678,7 +755,7 @@ mod tests {
 
     #[test]
     fn selected_text_can_be_read_and_edited_with_undo() {
-        let mut e = EditorController::new();
+        let mut e = editor();
         assert!(e.place_text(p(5.0, 6.0), "before"));
         assert_eq!(e.selected_text(), Some("before"));
 
@@ -692,7 +769,7 @@ mod tests {
 
     #[test]
     fn invalid_style_parameters_are_rejected_without_changing_current_style() {
-        let mut e = EditorController::new();
+        let mut e = editor();
         let original = e.current_style().clone();
         assert!(!e.set_current_width(f32::NAN));
         assert!(!e.set_current_width(0.0));
@@ -705,5 +782,126 @@ mod tests {
             ..Style::default()
         }));
         assert_eq!(e.current_style(), &original);
+    }
+
+    #[test]
+    fn mixed_shape_and_crop_share_one_undo_redo_history() {
+        let mut e = editor();
+        let original_image = e.image_arc();
+        e.set_tool(Tool::Rectangle);
+        e.mouse_down(p(20.0, 20.0));
+        e.mouse_up(p(40.0, 40.0));
+        assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+
+        e.crop(CropRect {
+            x: 10,
+            y: 10,
+            width: 60,
+            height: 70,
+        })
+        .unwrap();
+        assert_eq!(
+            (e.document().image().width, e.document().image().height),
+            (60, 70)
+        );
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+
+        assert!(e.undo());
+        assert_eq!(
+            (e.document().image().width, e.document().image().height),
+            (100, 100)
+        );
+        assert_eq!(e.shapes()[0].bounds().x, 20.0);
+        assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+        assert!(e.undo());
+        assert!(e.shapes().is_empty());
+        assert!(e.redo());
+        assert_eq!(e.shapes().len(), 1);
+        assert!(e.redo());
+        assert_eq!(e.document().image().width, 60);
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+    }
+
+    #[test]
+    fn frame_is_undoable_with_shape_coordinates_and_image_arc() {
+        let mut e = rect_editor();
+        let original_image = e.image_arc();
+        let before = e.shapes()[0].bounds();
+        e.add_frame(FrameOptions {
+            width: 5,
+            color: Color::rgba(255, 255, 255, 255),
+            shadow: None,
+        })
+        .unwrap();
+        assert_eq!(e.document().image().width, 110);
+        assert_eq!(e.shapes()[0].bounds().x, before.x + 5.0);
+        assert!(!Arc::ptr_eq(&original_image, &e.image_arc()));
+        assert!(e.undo());
+        assert_eq!(e.document().image().width, 100);
+        assert_eq!(e.shapes()[0].bounds().x, before.x);
+        assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+        assert!(e.redo());
+        assert_eq!(e.document().image().width, 110);
+    }
+
+    #[test]
+    fn history_budget_errors_are_exposed_and_leave_document_unchanged() {
+        let mut e = editor();
+        e.document_mut().set_history_budget(0);
+        e.set_tool(Tool::Rectangle);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_up(p(30.0, 30.0));
+        assert!(e.shapes().is_empty());
+        assert_eq!(e.take_error(), Some(DocumentError::HistoryBudgetExceeded));
+        assert!(e.take_error().is_none());
+        assert_eq!(
+            e.crop(CropRect {
+                x: 0,
+                y: 0,
+                width: 50,
+                height: 50
+            }),
+            Err(DocumentError::HistoryBudgetExceeded)
+        );
+        assert_eq!(
+            (e.document().image().width, e.document().image().height),
+            (100, 100)
+        );
+    }
+
+    #[test]
+    fn failed_delete_keeps_shape_and_selection_and_exposes_error() {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.mouse_down(p(10.0, 25.0));
+        e.mouse_up(p(10.0, 25.0));
+        e.document_mut().set_history_budget(0);
+
+        assert!(!e.delete_selected());
+        assert_eq!(e.shapes().len(), 1);
+        assert_eq!(e.selected_index(), Some(0));
+        assert_eq!(e.take_error(), Some(DocumentError::HistoryBudgetExceeded));
+    }
+
+    #[test]
+    fn undo_redo_keeps_selection_valid_across_crop() {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.mouse_down(p(10.0, 25.0));
+        e.mouse_up(p(10.0, 25.0));
+        assert_eq!(e.selected_index(), Some(0));
+        e.crop(CropRect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 80,
+        })
+        .unwrap();
+        assert!(e.undo());
+        assert_eq!(e.selected_index(), Some(0));
+        assert!(e.selection().is_some());
+        assert!(e.redo());
+        assert_eq!(e.selected_index(), Some(0));
+        assert!(e.selection().is_some());
     }
 }

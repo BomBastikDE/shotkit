@@ -15,7 +15,7 @@ Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Der Rust-Zweig ist ein Arbeitssta
 - Experimenteller Windows-Editor: Werkzeugleiste, bearbeitbare Formen und Undo/Redo; native Dialoge und PNG/JPEG/BMP/GIF; Bildschirm- und Bereichsaufnahme, Scroll-Prototyp, Zoom/Pan und Zwischenablage sind implementiert. Windows-Laufzeittest ausstehend.
 - Scroll-Algorithmus und Editorlogik sind synthetisch getestet. Die Anbindung an echte Browser, Fenster, DPI und Maus muss unter Windows überprüft werden.
 - Transparente Bilder werden nach Bearbeitung vorsorglich nicht gespeichert; verlustfreie Bearbeitung und Export müssen ergänzt werden.
-- Crop, Rahmen und Schatten haben getestete Bildoperationen, sind aber noch nicht in den Editor integriert. Einstellungen, Farb-/Breitenwahl, Öffnen aus Clipboard und weitere Originalfunktionen fehlen.
+- Crop ist mit der gemeinsamen Bild- und Objekt-Historie integriert; Rahmen und Schatten haben getestete Bildoperationen, sind aber noch nicht in den Editor integriert. Einstellungen, Öffnen aus Clipboard und weitere Originalfunktionen fehlen. Farb-/Breitenwahl und Textänderungen sind implementiert, aber unter Windows noch ungeprüft.
 - Fenster- und UI-Automation-Vorschläge sind experimentell integriert; brauchbare Grenzen je Browser und Seitentyp sind noch nicht verifiziert.
 
 ## Ideen nach funktionsgleicher Portierung
@@ -29,3 +29,7 @@ Auf Windows 10/11 mit normaler und gemischter DPI prüfen: Bereichs-/Fensterwahl
 ## Bereichsvorschläge unter dem Mauszeiger
 
 Gewünscht: Beim Bewegen der Maus Fenster und sinnvolle Bereiche optisch umranden und per Klick übernehmen; manuelles Aufziehen bleibt möglich. In Browsern sind Seitenelemente häufig keine einzelnen Win32-Fenster. Deshalb Windows UI Automation und die zugänglichen Elementgrenzen untersuchen; bei verschachtelten Elementen Größen- und Auswahlregeln vorsehen. Webseiten, Canvas, fehlende Accessibility-Daten, Zoom und gemischte DPI können die Erkennung begrenzen. Die Funktion soll lokal arbeiten und bei ungeeigneten Treffern zur manuellen Auswahl zurückfallen. Experimentell integriert, noch nicht unter Windows geprüft.
+
+## Windows-CI
+
+Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sowie einen Windows-Release-Build aus. Die Läufe für Commits `fe34bc9` und `1a342e3` waren auf beiden Plattformen erfolgreich; letzterer umfasst Windows-GDI-Pixeltests. Die CI verifiziert keine interaktive Windows-Oberfläche und keine realen Browser-Scrollaufnahmen.

@@ -1,4 +1,5 @@
-//! Win32 clipboard support for transferring a GDI bitmap as a CF_DIB.
+//! Win32 clipboard support for transferring a GDI bitmap as a CF_DIB and
+//! reading clipboard-owned CF_BITMAP data into the application's BGRA image.
 use std::{ffi::c_void, ptr::null_mut};
 
 type H = *mut c_void;
@@ -39,6 +40,8 @@ extern "system" {
     fn CloseClipboard() -> i32;
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, memory: H) -> H;
+    fn GetClipboardData(format: u32) -> H;
+    fn IsClipboardFormatAvailable(format: u32) -> i32;
 }
 #[link(name = "kernel32")]
 extern "system" {
@@ -49,9 +52,30 @@ extern "system" {
 }
 
 const CF_DIB: u32 = 8;
+const CF_BITMAP: u32 = 2;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
 const BI_RGB: u32 = 0;
+const DIB_RGB_COLORS: u32 = 0;
+const MAX_IMAGE_DIMENSION: usize = 30_000;
+const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Bitmap {
+    kind: i32,
+    width: i32,
+    height: i32,
+    width_bytes: i32,
+    planes: u16,
+    bits_pixel: u16,
+    bits: *mut c_void,
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn GetObjectW(object: H, bytes: i32, out: *mut c_void) -> i32;
+}
 
 struct GlobalMemory(H);
 impl Drop for GlobalMemory {
@@ -171,4 +195,130 @@ pub unsafe fn copy_bitmap(
         return Err("CloseClipboard failed after transferring CF_DIB".into());
     }
     Ok(())
+}
+
+struct ClipboardGuard(bool);
+impl ClipboardGuard {
+    unsafe fn open(owner: H) -> Result<Self, String> {
+        if OpenClipboard(owner) == 0 {
+            Err("OpenClipboard failed".into())
+        } else {
+            Ok(Self(true))
+        }
+    }
+    unsafe fn close(&mut self) -> Result<(), String> {
+        if self.0 {
+            self.0 = false;
+            if CloseClipboard() == 0 {
+                return Err("CloseClipboard failed".into());
+            }
+        }
+        Ok(())
+    }
+}
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                CloseClipboard();
+            }
+        }
+    }
+}
+
+/// Reads clipboard-owned `CF_BITMAP` data as a top-row-first BGRA image.
+///
+/// Returns `Ok(None)` when the clipboard has no `CF_BITMAP` format. The
+/// clipboard remains open while its handle is queried and copied. The returned
+/// HBITMAP belongs to the clipboard and is never deleted/freed here.
+/// `CF_BITMAP` does not provide dependable alpha data, so every output pixel
+/// gets A=255; transparent edges are neither preserved nor trimmed. The B, G,
+/// and R bytes from the 32-bit `BI_RGB` conversion are kept in BGRA order.
+///
+/// Each dimension is limited to 30,000 pixels and decoded storage to 512 MiB.
+/// The caller must pass a valid owner HWND or null. Invalid metadata and GDI
+/// failures are returned as errors instead of panicking.
+pub unsafe fn read_image(
+    owner: *mut c_void,
+) -> Result<Option<shotkit_rust_prototype::stitch::Image>, String> {
+    let mut clipboard = ClipboardGuard::open(owner)?;
+    if IsClipboardFormatAvailable(CF_BITMAP) == 0 {
+        clipboard.close()?;
+        return Ok(None);
+    }
+    let bitmap = GetClipboardData(CF_BITMAP);
+    if bitmap.is_null() {
+        return Err("GetClipboardData(CF_BITMAP) failed".into());
+    }
+
+    let mut metadata = Bitmap::default();
+    let object_bytes = i32::try_from(std::mem::size_of::<Bitmap>())
+        .map_err(|_| "BITMAP metadata size overflow".to_string())?;
+    if GetObjectW(bitmap, object_bytes, (&mut metadata as *mut Bitmap).cast()) != object_bytes {
+        return Err("GetObjectW(CF_BITMAP) returned invalid metadata".into());
+    }
+    if metadata.width <= 0 || metadata.height == 0 || metadata.height == i32::MIN {
+        return Err("CF_BITMAP has invalid dimensions".into());
+    }
+    let width =
+        usize::try_from(metadata.width).map_err(|_| "CF_BITMAP width is invalid".to_string())?;
+    let height = usize::try_from(metadata.height.unsigned_abs())
+        .map_err(|_| "CF_BITMAP height is invalid".to_string())?;
+    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err("CF_BITMAP exceeds the 30000-pixel dimension limit".into());
+    }
+    let row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| "CF_BITMAP row size overflow".to_string())?;
+    let pixel_bytes = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| "CF_BITMAP pixel size overflow".to_string())?;
+    if pixel_bytes > MAX_IMAGE_BYTES || pixel_bytes > u32::MAX as usize {
+        return Err("CF_BITMAP exceeds the 512 MiB image limit".into());
+    }
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(pixel_bytes)
+        .map_err(|e| format!("Could not allocate CF_BITMAP pixels: {e}"))?;
+    pixels.resize(pixel_bytes, 0);
+
+    let mut header = BitmapInfoHeader {
+        size: std::mem::size_of::<BitmapInfoHeader>() as u32,
+        width: metadata.width,
+        height: -(height as i32), // top-down rows match Image's row order
+        planes: 1,
+        bit_count: 32,
+        compression: BI_RGB,
+        size_image: pixel_bytes as u32,
+        x_pels_per_meter: 0,
+        y_pels_per_meter: 0,
+        clr_used: 0,
+        clr_important: 0,
+    };
+    let dc = ScreenDc(GetDC(null_mut()));
+    if dc.0.is_null() {
+        return Err("GetDC failed while reading CF_BITMAP".into());
+    }
+    let lines = GetDIBits(
+        dc.0,
+        bitmap,
+        0,
+        height as u32,
+        pixels.as_mut_ptr().cast(),
+        (&mut header as *mut BitmapInfoHeader).cast(),
+        DIB_RGB_COLORS,
+    );
+    if lines != height as i32 {
+        return Err(format!("GetDIBits returned {lines} of {height} scan lines"));
+    }
+    // BI_RGB does not define alpha for this source format.
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    drop(dc);
+    clipboard.close()?;
+
+    let image = shotkit_rust_prototype::stitch::Image::new(width, height, pixels)
+        .map_err(|e| format!("Invalid CF_BITMAP image: {e}"))?;
+    Ok(Some(image))
 }
