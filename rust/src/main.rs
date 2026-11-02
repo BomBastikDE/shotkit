@@ -2529,7 +2529,7 @@ fn main() {
         n.flags = 1 | 2 | 4;
         n.callback = TRAY;
         n.icon = LoadIconW(null_mut(), 32512usize as *const u16);
-        let tip = wide("ShotKit Rust: F9 oder Einzelklick = Bereich, Rechtsklick = Menü");
+        let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
         n.tip[..tip.len()].copy_from_slice(&tip);
         if Shell_NotifyIconW(0, &n) == 0 {
             MessageBoxW(
