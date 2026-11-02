@@ -6,6 +6,7 @@ Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile 
 
 - Windows-Version und -Build; Anzahl und Anordnung der Monitore sowie die jeweilige Skalierung (Windows-Einstellungen → System → Anzeige). Falls nur ein Monitor vorhanden ist, den Mehrmonitor-Teil als nicht geprüft markieren.
 - ShotKit starten; Einstellungen der C#-Version bleiben getrennt. Im Tray-Menü einen Testordner wählen und die gewünschten Ausgabeoptionen (Editor, Zwischenablage, automatisches Speichern) bewusst einstellen.
+- Im Tray „Über ShotKit“ öffnen: Versionsnummer, Oliver Muenk und die Schaltfläche für alleswasbewegt.de prüfen. Beim Anklicken soll die Website im Standardbrowser geöffnet werden.
 
 ## Aufnahme und Auswahl
 
