@@ -148,7 +148,7 @@ try {
     }
     if ($null -eq $png) { throw 'CLIPBOARD_PNG_TIMEOUT: Ctrl+C did not publish PNG clipboard image data.' }
     if ($sequenceAfterCopy -eq $sequenceBeforeCopy) { throw 'CLIPBOARD_SEQUENCE_INVALID: the clipboard did not change after Ctrl+C.' }
-    $stream = [IO.MemoryStream]::new(,$png)
+    $stream = [IO.MemoryStream]::new([byte[]]$png)
     try {
         $image = [Drawing.Bitmap]::new($stream)
         try {
@@ -199,7 +199,7 @@ try {
     }
     if ($null -eq $importedPng) { throw 'IMPORTED_CLIPBOARD_PNG_TIMEOUT: Ctrl+C from imported editor did not publish PNG data.' }
     if ($importedSequence -eq $sequenceBeforeImportedCopy) { throw 'IMPORTED_CLIPBOARD_SEQUENCE_INVALID: clipboard did not change after copying from imported editor.' }
-    $importedStream = [IO.MemoryStream]::new(,$importedPng)
+    $importedStream = [IO.MemoryStream]::new([byte[]]$importedPng)
     try {
         $importedImage = [Drawing.Bitmap]::new($importedStream)
         try {
