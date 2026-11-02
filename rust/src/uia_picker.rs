@@ -473,3 +473,34 @@ fn is_no_child_error(hr: i32) -> bool {
     // A provider may expose an empty/removed branch as a null interface.
     hr == 0x8000_4003u32 as i32 || hr == 0x8004_0201u32 as i32
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn automation_supports_configurable_timeouts() {
+        use windows::{
+            core::Interface,
+            Win32::{
+                System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
+                UI::Accessibility::IUIAutomation2,
+            },
+        };
+
+        std::thread::spawn(|| unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .expect("initialize COM for UI Automation");
+            let _apartment = super::ComApartment;
+            let automation = super::create_automation().expect("create UI Automation 8");
+            let automation2: IUIAutomation2 = automation.cast().expect("IUIAutomation2 must exist");
+            automation2
+                .SetTransactionTimeout(super::UIA_TRANSACTION_TIMEOUT_MS)
+                .expect("set transaction timeout");
+            automation2
+                .SetConnectionTimeout(super::UIA_TRANSACTION_TIMEOUT_MS)
+                .expect("set connection timeout");
+        })
+        .join()
+        .expect("UI Automation test thread");
+    }
+}
