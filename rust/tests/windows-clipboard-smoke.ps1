@@ -130,14 +130,14 @@ namespace ShotKitClipboardSmoke {
       finally { mouse_event(0x0004,0,0,0,UIntPtr.Zero); }
       if(GetForegroundWindow()!=hwnd) throw new InvalidOperationException("Canvas click did not leave the owned editor in the foreground.");
     }
-    public static byte[] ReadClipboardPng() {
-      uint format=RegisterClipboardFormatW("PNG"); if(format==0) throw new InvalidOperationException("Could not register PNG clipboard format.");
+    public static byte[] ReadClipboardDibV5() {
+      const uint format=17; // CF_DIBV5
       if(!OpenClipboard(IntPtr.Zero)) throw new InvalidOperationException("OpenClipboard failed.");
       IntPtr memory=IntPtr.Zero, ptr=IntPtr.Zero;
       try {
-        memory=GetClipboardData(format); if(memory==IntPtr.Zero) throw new InvalidOperationException("PNG clipboard format is absent; alpha cannot be proven by an opaque fallback.");
-        ulong size=GlobalSize(memory).ToUInt64(); if(size<8 || size>67108864) throw new InvalidOperationException("PNG clipboard block size is invalid or exceeds 64 MiB.");
-        ptr=GlobalLock(memory); if(ptr==IntPtr.Zero) throw new InvalidOperationException("GlobalLock failed for clipboard PNG.");
+        memory=GetClipboardData(format); if(memory==IntPtr.Zero) throw new InvalidOperationException("CF_DIBV5 clipboard format is absent; alpha cannot be proven by an opaque fallback.");
+        ulong size=GlobalSize(memory).ToUInt64(); if(size<124 || size>67108864) throw new InvalidOperationException("CF_DIBV5 clipboard block size is invalid or exceeds 64 MiB.");
+        ptr=GlobalLock(memory); if(ptr==IntPtr.Zero) throw new InvalidOperationException("GlobalLock failed for CF_DIBV5 clipboard data.");
         byte[] bytes=new byte[(int)size]; Marshal.Copy(ptr,bytes,0,bytes.Length); return bytes;
       } finally { if(ptr!=IntPtr.Zero) GlobalUnlock(memory); if(!CloseClipboard()) throw new InvalidOperationException("CloseClipboard failed."); }
     }
@@ -146,6 +146,47 @@ namespace ShotKitClipboardSmoke {
 '@
 }
 Add-Type -AssemblyName System.Drawing
+
+function Assert-DibV5MatchesFixture([byte[]] $Dib, [object[]] $ExpectedPixels, [string] $Context) {
+    if ($Dib.Length -lt 124) { throw "${Context}_DIBV5_HEADER_INVALID: block has only $($Dib.Length) bytes." }
+    $headerSize = [BitConverter]::ToUInt32($Dib, 0)
+    $width = [BitConverter]::ToInt32($Dib, 4)
+    $signedHeight = [BitConverter]::ToInt32($Dib, 8)
+    $planes = [BitConverter]::ToUInt16($Dib, 12)
+    $bitsPerPixel = [BitConverter]::ToUInt16($Dib, 14)
+    $compression = [BitConverter]::ToUInt32($Dib, 16)
+    $imageBytes = [BitConverter]::ToUInt32($Dib, 20)
+    $redMask = [BitConverter]::ToUInt32($Dib, 40)
+    $greenMask = [BitConverter]::ToUInt32($Dib, 44)
+    $blueMask = [BitConverter]::ToUInt32($Dib, 48)
+    $alphaMask = [BitConverter]::ToUInt32($Dib, 52)
+    if ($headerSize -ne 124 -or $width -ne 32 -or $signedHeight -ne -24 -or $planes -ne 1 -or $bitsPerPixel -ne 32 -or $compression -ne 3) {
+        throw "${Context}_DIBV5_HEADER_MISMATCH: header=$headerSize width=$width signedHeight=$signedHeight planes=$planes bpp=$bitsPerPixel compression=$compression."
+    }
+    if ($redMask -ne 16711680 -or $greenMask -ne 65280 -or $blueMask -ne 255 -or $alphaMask -ne 4278190080L) {
+        throw "${Context}_DIBV5_MASK_MISMATCH: R=$redMask G=$greenMask B=$blueMask A=$alphaMask."
+    }
+    $rowBytes = [long]$width * 4
+    $requiredBytes = [long]$headerSize + $rowBytes * 24
+    if ($imageBytes -ne ($rowBytes * 24) -or $Dib.Length -lt $requiredBytes) {
+        throw "${Context}_DIBV5_SIZE_MISMATCH: imageBytes=$imageBytes blockBytes=$($Dib.Length), expected at least $requiredBytes."
+    }
+    # The source writes biHeight=-height and copies rows in increasing y,
+    # so pixels are top-down BGRA after applying the verified V5 masks.
+    for ($y = 0; $y -lt 24; $y++) {
+        for ($x = 0; $x -lt 32; $x++) {
+            $offset = [int]($headerSize + $y * $rowBytes + $x * 4)
+            $expected = $ExpectedPixels[$y * $width + $x]
+            $blue = $Dib[$offset]
+            $green = $Dib[$offset + 1]
+            $red = $Dib[$offset + 2]
+            $alpha = $Dib[$offset + 3]
+            if ($alpha -ne $expected.A -or $red -ne $expected.R -or $green -ne $expected.G -or $blue -ne $expected.B) {
+                throw "${Context}_PIXEL_MISMATCH at ($x,$y): expected A$($expected.A) R$($expected.R) G$($expected.G) B$($expected.B), got A$alpha R$red G$green B$blue."
+            }
+        }
+    }
+}
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Clipboard-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $root 'appdata'
@@ -228,35 +269,25 @@ try {
     $ctrlStateAfterCopy = [ShotKitClipboardSmoke.Native]::ControlKeyState()
 
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    $png = $null
+    $dibv5 = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($process.HasExited) { throw 'PROCESS_EXITED after Ctrl+C.' }
         $sequenceAfterCopy = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
         if ($sequenceAfterCopy -eq $sequenceBeforeCopy) { Start-Sleep -Milliseconds 100; continue }
-        try { $png = [ShotKitClipboardSmoke.Native]::ReadClipboardPng(); break } catch {
-            if ($_.Exception.Message -notlike '*PNG clipboard format is absent*') { throw }
+        try { $dibv5 = [ShotKitClipboardSmoke.Native]::ReadClipboardDibV5(); break } catch {
+            if ($_.Exception.Message -notlike '*CF_DIBV5 clipboard format is absent*') { throw }
         }
         Start-Sleep -Milliseconds 100
     }
-    if ($null -eq $png) {
+    if ($null -eq $dibv5) {
         $sequenceAtTimeout = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
         $formatsAtTimeout = [ShotKitClipboardSmoke.Native]::ClipboardFormats()
         $focusAtTimeout = [ShotKitClipboardSmoke.Native]::FocusReport($main.Handle)
         $ownedWindowsAtTimeout = [ShotKitClipboardSmoke.Native]::DescribeProcessWindows($process.Id)
-        throw "CLIPBOARD_PNG_TIMEOUT: Ctrl+C did not publish PNG clipboard image data. sequenceBefore=$sequenceBeforeCopy sequenceAfter=$sequenceAtTimeout formatsBefore=[$formatsBeforeCopy] formatsAfter=[$formatsAtTimeout] focusBefore=[$focusBeforeCopy] focusAtTimeout=[$focusAtTimeout] ctrlStateDuring=[$ctrlStateDuringCopy] ctrlStateAfter=[$ctrlStateAfterCopy] ownedWindowsAndDialogs=[$ownedWindowsAtTimeout]"
+        throw "CLIPBOARD_DIBV5_TIMEOUT: Ctrl+C did not publish CF_DIBV5 image data. sequenceBefore=$sequenceBeforeCopy sequenceAfter=$sequenceAtTimeout formatsBefore=[$formatsBeforeCopy] formatsAfter=[$formatsAtTimeout] focusBefore=[$focusBeforeCopy] focusAtTimeout=[$focusAtTimeout] ctrlStateDuring=[$ctrlStateDuringCopy] ctrlStateAfter=[$ctrlStateAfterCopy] ownedWindowsAndDialogs=[$ownedWindowsAtTimeout]"
     }
     if ($sequenceAfterCopy -eq $sequenceBeforeCopy) { throw 'CLIPBOARD_SEQUENCE_INVALID: the clipboard did not change after Ctrl+C.' }
-    $stream = [IO.MemoryStream]::new([byte[]]$png)
-    try {
-        $image = [Drawing.Bitmap]::new($stream)
-        try {
-            $transparent = $image.GetPixel(2,2); $semi = $image.GetPixel(7,9); $opaque = $image.GetPixel(22,16)
-            if ($image.Width -ne 32 -or $image.Height -ne 24) { throw "CLIPBOARD_DIMENSIONS_MISMATCH: got $($image.Width)x$($image.Height), expected 32x24." }
-            if ($transparent.A -ne 0) { throw "ALPHA_FAILURE: transparent fixture pixel came back with alpha $($transparent.A)." }
-            if ($semi.A -ne 73 -or $semi.R -ne 19 -or $semi.G -ne 137 -or $semi.B -ne 211) { throw "ALPHA_COLOR_FAILURE: semitransparent pixel expected A73 R19 G137 B211; got A$($semi.A) R$($semi.R) G$($semi.G) B$($semi.B)." }
-            if ($opaque.A -ne 255 -or $opaque.R -ne 241 -or $opaque.G -ne 37 -or $opaque.B -ne 83) { throw "OPAQUE_COLOR_FAILURE: expected A255 R241 G37 B83; got A$($opaque.A) R$($opaque.R) G$($opaque.G) B$($opaque.B)." }
-        } finally { $image.Dispose() }
-    } finally { $stream.Dispose() }
+    Assert-DibV5MatchesFixture $dibv5 $expectedPixels 'CLIPBOARD'
     # Exercise ShotKit's actual clipboard import path (Ctrl+V), which invokes
     # clipboard::read_image and opens a second editor for the copied image.
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'PASTE_FOCUS_FAILED: could not refocus the owned source editor.' }
@@ -286,35 +317,20 @@ try {
     [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero)
     try { [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 80; [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,2,[UIntPtr]::Zero) }
     finally { [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero) }
-    $importedPng = $null
+    $importedDibV5 = $null
     $importedCopyDeadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([DateTime]::UtcNow -lt $importedCopyDeadline) {
         if ($process.HasExited) { throw 'PROCESS_EXITED after Ctrl+C from imported editor.' }
         $importedSequence = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
         if ($importedSequence -eq $sequenceBeforeImportedCopy) { Start-Sleep -Milliseconds 100; continue }
-        try { $importedPng = [ShotKitClipboardSmoke.Native]::ReadClipboardPng(); break } catch {
-            if ($_.Exception.Message -notlike '*PNG clipboard format is absent*') { throw }
+        try { $importedDibV5 = [ShotKitClipboardSmoke.Native]::ReadClipboardDibV5(); break } catch {
+            if ($_.Exception.Message -notlike '*CF_DIBV5 clipboard format is absent*') { throw }
         }
         Start-Sleep -Milliseconds 100
     }
-    if ($null -eq $importedPng) { throw 'IMPORTED_CLIPBOARD_PNG_TIMEOUT: Ctrl+C from imported editor did not publish PNG data.' }
+    if ($null -eq $importedDibV5) { throw 'IMPORTED_CLIPBOARD_DIBV5_TIMEOUT: Ctrl+C from imported editor did not publish CF_DIBV5 data.' }
     if ($importedSequence -eq $sequenceBeforeImportedCopy) { throw 'IMPORTED_CLIPBOARD_SEQUENCE_INVALID: clipboard did not change after copying from imported editor.' }
-    $importedStream = [IO.MemoryStream]::new([byte[]]$importedPng)
-    try {
-        $importedImage = [Drawing.Bitmap]::new($importedStream)
-        try {
-            if ($importedImage.Width -ne 32 -or $importedImage.Height -ne 24) { throw "IMPORTED_DIMENSIONS_MISMATCH: got $($importedImage.Width)x$($importedImage.Height), expected 32x24." }
-            for ($y = 0; $y -lt 24; $y++) {
-                for ($x = 0; $x -lt 32; $x++) {
-                    $expected = $expectedPixels[$y * 32 + $x]
-                    $actual = $importedImage.GetPixel($x, $y)
-                    if ($actual.A -ne $expected.A -or $actual.R -ne $expected.R -or $actual.G -ne $expected.G -or $actual.B -ne $expected.B) {
-                        throw "IMPORTED_PIXEL_MISMATCH at ($x,$y): expected A$($expected.A) R$($expected.R) G$($expected.G) B$($expected.B), got A$($actual.A) R$($actual.R) G$($actual.G) B$($actual.B)."
-                    }
-                }
-            }
-        } finally { $importedImage.Dispose() }
-    } finally { $importedStream.Dispose() }
+    Assert-DibV5MatchesFixture $importedDibV5 $expectedPixels 'IMPORTED_CLIPBOARD'
 } catch { $failure = $_ }
 finally {
     $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData
@@ -337,4 +353,4 @@ finally {
 }
 if ($null -ne $failure) { throw $failure }
 if ($cleanupFailures.Count -gt 0) { throw ('CLEANUP_FAILURE: ' + ($cleanupFailures -join '; ')) }
-Write-Output 'PASS: Ctrl+C published PNG data with verified alpha/color pixels; Ctrl+V imported it into a second owned editor, and Ctrl+C from that editor produced a PNG whose every RGBA pixel matched the fixture.'
+Write-Output 'PASS: Ctrl+C published CF_DIBV5 data with verified header, masks, orientation, alpha and every pixel; Ctrl+V imported it into a second owned editor, and Ctrl+C from that editor reproduced the fixture.'

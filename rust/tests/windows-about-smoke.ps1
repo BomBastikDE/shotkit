@@ -47,7 +47,7 @@ namespace ShotKitAboutSmoke {
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
         public static WindowInfo[] Windows(int wantedPid) {
             var list = new List<WindowInfo>();
-            EnumProc cb = delegate(IntPtr h, IntPtr d) { uint pid; GetWindowThreadProcessId(h, out pid); if (pid == (uint)wantedPid) {
+            EnumProc cb = delegate(IntPtr h, IntPtr d) { uint pid; GetWindowThreadProcessId(h, out pid); if (wantedPid == 0 || pid == (uint)wantedPid) {
                 var c = new StringBuilder(256); var t = new StringBuilder(1024); GetClassNameW(h,c,c.Capacity); GetWindowTextW(h,t,t.Capacity);
                 list.Add(new WindowInfo { Handle=h, Pid=(int)pid, ClassName=c.ToString(), Title=t.ToString(), Visible=IsWindowVisible(h) }); } return true; };
             EnumWindows(cb, IntPtr.Zero); GC.KeepAlive(cb); return list.ToArray();
@@ -99,21 +99,39 @@ try {
     if (-not [ShotKitAboutSmoke.Native]::PostMessageW($main.Handle, 0x8001, [IntPtr]1, [IntPtr]0x0205)) {
         throw 'TRAY_CALLBACK_POST_FAILED: could not post the tray right-click notification.'
     }
-    $desktop = [System.Windows.Automation.AutomationElement]::RootElement
+    # TrackPopupMenu creates a native #32768 popup window. Scope UIA to that
+    # visible menu HWND instead of the desktop tree: menu items are hosted by
+    # the popup window and may not report the app PID through UI Automation.
+    $popup = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $popup = @([ShotKitAboutSmoke.Native]::Windows($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32768' } | Select-Object -First 1)
+        if ($popup.Count -gt 0) { $popup = $popup[0]; break }
+        if ($process.HasExited) { throw "PROCESS_EXITED before native tray popup appeared (code $($process.ExitCode))." }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $popup) { throw 'TRAY_MENU_TIMEOUT: the app process did not create a visible native #32768 popup after its tray callback.' }
+    $menuRoot = [System.Windows.Automation.AutomationElement]::FromHandle($popup.Handle)
     $menuItemCondition = [System.Windows.Automation.AndCondition]::new(@(
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Über ShotKit'),
-        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem),
-        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem)
     ))
     $menuItem = $null
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $menuItem = $desktop.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $menuItemCondition)
+        $menuItem = $menuRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $menuItemCondition)
         if ($menuItem) { break }
         if ($process.HasExited) { throw "PROCESS_EXITED before tray menu opened (code $($process.ExitCode))." }
         Start-Sleep -Milliseconds 150
     }
-    if (-not $menuItem) { throw 'TRAY_MENU_TIMEOUT: native popup menu did not expose the Über ShotKit item through UI Automation.' }
+    if (-not $menuItem) {
+        $names = @()
+        try {
+            $children = $menuRoot.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($child in $children) { if ($child.Current.Name) { $names += $child.Current.Name } }
+        } catch { $names += "UIA enumeration error: $($_.Exception.Message)" }
+        throw "TRAY_MENU_ITEM_TIMEOUT: visible native #32768 menu did not expose the exact 'Über ShotKit' item. Items='$($names -join ' | ')'"
+    }
     $invoke = $menuItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $invoke.Invoke()
 
