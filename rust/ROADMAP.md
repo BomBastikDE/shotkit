@@ -4,7 +4,7 @@ Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Der Rust-Zweig ist ein Arbeitssta
 
 ## Bestehende ShotKit-Funktionen für die Portierung
 
-- Tray-Menü, Einzelinstanz, globale und konfigurierbare Tastenkürzel, verzögerte Aufnahme.
+- Tray-Menü, Einzelinstanz, globale Tastenkürzel und verzögerte Aufnahme.
 - Bereich/Fenster/Unterfenster, Monitor unter Maus, alle Monitore, aktives Fenster; Auswahl-Overlay, Lupe und DPI.
 - Scroll-Aufnahme: Bereichs- und Fensterwahl, Auswahl der Richtung (unten/rechts/links), Scrollen, Stop mit Esc/Maus, Teilbild erhalten, ruhige Bildfolge, Bildabgleich, Grenzwerte, Hinweise und Diagnose.
 - Editor: Auswahl und Bearbeitung aller Formen, Pfeile, Text, Textmarker, Verpixeln, Schritt-Nummern, Freihand, Zuschneiden, Zoom, Rahmen/Schatten, Undo/Redo, ungespeicherte Änderungen.
