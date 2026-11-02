@@ -339,9 +339,16 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     if (-not [ShotKitHoverSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
         throw 'Could not close the ShotKit startup dialog.'
     }
-    $welcomeClosed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the ShotKit startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-        -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
+    # Match the established area smoke test: allow the asynchronous button
+    # command to be dispatched before enumerating the owned modal windows.
+    Start-Sleep -Milliseconds 300
+    if ($shotKit.HasExited) {
+        throw "ShotKit exited after closing its startup dialog (exit code $($shotKit.ExitCode))."
     }
+    if (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle }) {
+        throw 'The ShotKit startup dialog remained open after its default OK command was posted.'
+    }
+    Assert-NoUnexpectedDialog $shotKit
 
     $surfaceWindow = Wait-ForCondition -TimeoutSeconds 10 -Description 'the visible synthetic form' -OwnedProcess $surface -Condition {
         Get-ProcessWindows $surface | Where-Object { $_.Title -eq 'ShotKit Hover Synthetic Surface' -and $_.Visible } | Select-Object -First 1
