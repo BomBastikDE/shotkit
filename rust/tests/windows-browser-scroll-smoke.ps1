@@ -422,7 +422,7 @@ try {
 
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
-    $settings = @{ version=1; save_folder=$saveFolder; open_editor=$false; copy_to_clipboard=$false; auto_save=$true; scroll_direction='down' } | ConvertTo-Json
+    $settings = @{ version=1; save_folder=$saveFolder; open_editor=$true; copy_to_clipboard=$false; auto_save=$true; scroll_direction='down' } | ConvertTo-Json
     [IO.File]::WriteAllText($settingsPath, $settings, [Text.UTF8Encoding]::new($false))
     try {
         $env:APPDATA = $appData
