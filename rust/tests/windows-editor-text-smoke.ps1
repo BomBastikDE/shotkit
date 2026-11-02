@@ -45,14 +45,27 @@ namespace ShotKitTextSmoke {
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
         [DllImport("user32.dll")] static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)]
+        static extern IntPtr SendMessageText(IntPtr h, uint m, IntPtr w, [Out] StringBuilder l);
         [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
         static string Read(IntPtr h, bool cls) { var s=new StringBuilder(512); if(cls)GetClassNameW(h,s,s.Capacity);else GetWindowTextW(h,s,s.Capacity);return s.ToString(); }
         public static string ClassName(IntPtr h) { return Read(h,true); }
         public static string Title(IntPtr h) { return Read(h,false); }
         public static Win[] Windows(int wanted) { var a=new List<Win>(); EnumProc cb=(h,d)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==(uint)wanted)a.Add(new Win{Handle=h,Pid=(int)p,ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
         public static Child[] Children(IntPtr parent) { var a=new List<Child>();EnumProc cb=(h,d)=>{a.Add(new Child{Handle=h,ClassName=Read(h,true),Text=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
-        public static string EditText(IntPtr h) { return Read(h,false); }
-        public static void SetEditText(IntPtr h,string s) { IntPtr p=Marshal.StringToHGlobalUni(s);try{SendMessageW(h,0x000C,IntPtr.Zero,p);}finally{Marshal.FreeHGlobal(p);} }
+        public static string EditText(IntPtr h) {
+            long length=SendMessageW(h,0x000E,IntPtr.Zero,IntPtr.Zero).ToInt64(); // WM_GETTEXTLENGTH
+            if(length<0 || length>Int32.MaxValue-1) throw new InvalidOperationException("WM_GETTEXTLENGTH returned an invalid edit length.");
+            var text=new StringBuilder((int)length+1);
+            long copied=SendMessageText(h,0x000D,(IntPtr)text.Capacity,text).ToInt64(); // WM_GETTEXT
+            if(copied<0 || copied>text.Capacity-1) throw new InvalidOperationException("WM_GETTEXT returned an invalid character count.");
+            return text.ToString(0,(int)copied);
+        }
+        public static bool SetEditText(IntPtr h,string s) {
+            IntPtr p=Marshal.StringToHGlobalUni(s);
+            try { return SendMessageW(h,0x000C,IntPtr.Zero,p).ToInt64()!=0; } // WM_SETTEXT
+            finally { Marshal.FreeHGlobal(p); }
+        }
         public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
         public static bool Client(IntPtr h,out Rect r) { return GetClientRect(h,out r); }
         public static bool WindowRect(IntPtr h,out Rect r) { return GetWindowRect(h,out r); }
@@ -149,7 +162,7 @@ try {
     Canvas-Click 30 30
     $d=Text-Dialog 'new text dialog';$e=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.ClassName -eq 'Edit'} | Select-Object -First 1
     if($null -eq $e){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
-    [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$original)
+    if(-not [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$original)){throw 'TEXT_SET_FAILED: synchronous WM_SETTEXT returned zero for the test-owned dialog Edit control.'}
     $entered=[ShotKitTextSmoke.Native]::EditText($e.Handle)
     if($entered -cne $original){throw "TEXT_ENTRY_NOT_ACCEPTED: input control reads '$entered' before confirmation; expected '$original'."}
     Button $d.Handle 'OK'
@@ -163,7 +176,10 @@ try {
     Canvas-Click 40 40
     $d=Check-DialogText $original 'first reopen after creation'
     $e=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.ClassName -eq 'Edit'} | Select-Object -First 1
-    [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$changed);Button $d.Handle 'OK'
+    if(-not [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$changed)){throw 'TEXT_SET_FAILED: synchronous WM_SETTEXT returned zero while editing the existing text.'}
+    $changedInput=[ShotKitTextSmoke.Native]::EditText($e.Handle)
+    if($changedInput -cne $changed){throw "TEXT_EDIT_NOT_ACCEPTED: input control reads '$changedInput' before confirmation; expected '$changed'."}
+    Button $d.Handle 'OK'
     Start-Sleep -Milliseconds 250
     Canvas-Click 40 40
     $d=Check-DialogText $changed 'reopen after saved text edit'
