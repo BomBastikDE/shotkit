@@ -286,8 +286,10 @@ unsafe fn create_automation(
         Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
     };
 
-    const CLSID_CUIAUTOMATION: GUID = GUID::from_u128(0xff48dba4_60ef_4201_aa87_54103eef594e);
-    CoCreateInstance(&CLSID_CUIAUTOMATION, None, CLSCTX_INPROC_SERVER)
+    // CUIAutomation8 implements IUIAutomation2, including bounded provider
+    // timeouts. The older CUIAutomation class can return E_NOINTERFACE here.
+    const CLSID_CUIAUTOMATION8: GUID = GUID::from_u128(0xe22ad333_b25f_460c_83d0_0581107395c9);
+    CoCreateInstance(&CLSID_CUIAUTOMATION8, None, CLSCTX_INPROC_SERVER)
         .map_err(|e| PickerError::Automation(e.code().0))
 }
 
