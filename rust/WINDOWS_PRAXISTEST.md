@@ -33,6 +33,14 @@ Für jeden Schritt **bestanden**, **fehlgeschlagen** oder **nicht geprüft** not
 
 ## Gemeldeter Fehler: Werkzeugleiste mit Text statt Symbolen
 
-**Status: offen.** Am 2. November 2026 meldete der Owner nach dem Start der Datei `shotkit-v2.0.0-alpha.15-windows-x64.exe` ein leeres Editorfenster mit 19 Textschaltflächen statt der erwarteten Symbole. Der übermittelte Screenshot zeigt diesen Zustand; die tatsächlich laufende EXE ist damit noch nicht identifiziert.
+**Status: für diesen Vorfall geklärt.** Am 2. November 2026 meldete der Owner nach dem Start der Datei `shotkit-v2.0.0-alpha.15-windows-x64.exe` ein leeres Editorfenster mit 19 Textschaltflächen statt der erwarteten Symbole. Der übermittelte Screenshot zeigt diesen Zustand; die tatsächlich laufende EXE ist damit noch nicht identifiziert.
 
-Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2](https://github.com/BomBastikDE/shotkit/actions/runs/41532056391/attempts/2) getesteten Windows-Build überein. Die Windows-CI zeigt in ihrem Werkzeugleisten-Screenshot Symbole; das ersetzt den Owner-Test nicht. Alpha 9 und Alpha 15 verwenden dieselbe Einzelinstanz-Sperre; eine noch laufende alte Version könnte daher beim Start aktiviert worden sein. Diese Erklärung ist **nicht bestätigt**. Als nächster Schritt wurde das vollständige Beenden über das Tray und der erneute Start von Alpha 15 vorgeschlagen; das Ergebnis steht aus.
+Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2](https://github.com/BomBastikDE/shotkit/actions/runs/41532056391/attempts/2) getesteten Windows-Build überein. Die Windows-CI zeigt in ihrem Werkzeugleisten-Screenshot Symbole; das ersetzt den Owner-Test nicht. Alpha 9 und Alpha 15 verwenden dieselbe Einzelinstanz-Sperre; eine noch laufende alte Version könnte daher beim Start aktiviert worden sein. Der Owner bestätigte anschließend, dass eine falsche ältere EXE noch lief. Nach deren vollständigem Beenden und erneutem Start zeigt der neue Screenshot die Symbolleiste und lesbare Nummern 1 bis 8. Das belegt diese Darstellung auf dem gezeigten Bildschirm, nicht die übrigen Windows-Praxistests oder die allgemeine Bedienungsqualität.
+
+## Gemeldeter Fehler: Ruckeln beim Zeichnen und Verschieben
+
+**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15 spürbares Ruckeln beim Zeichnen oder Verschieben von Formen. Bildgröße, Bildrate und die genaue Ursache sind nicht gemessen. Im Quellcode wird die Vorschau bei Mausbewegungen neu gerendert; dabei wird für jede Form eine bildgroße Ebene verarbeitet. Dieser Aufwand ist ein möglicher Engpass und muss durch Tests beziehungsweise Messungen überprüft werden. Eine Verbesserung ist erst nach erneuter Rückmeldung des Owners auf seinem Rechner bestätigt.
+
+## Gemeldeter Fehler: Symbolleiste wirkt unscharf
+
+**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15, dass die Symbole der Werkzeugleiste zwar erkennbar, aber unscharf und optisch unbefriedigend wirken. Die Symbole werden derzeit mit Win32-GDI anhand eines festen 20×20-Koordinatenrasters gezeichnet. Ob und wie Windows-Skalierung zur Darstellung auf dem Rechner beiträgt, ist nicht geprüft. Eine Korrektur benötigt eine visuelle Prüfung durch den Owner; die bestehende CI belegt die Bedienbarkeit, nicht die gewünschte Bildqualität.

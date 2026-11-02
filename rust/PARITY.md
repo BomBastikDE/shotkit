@@ -89,7 +89,7 @@ OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nich
 
 ## Offene Owner-Meldung
 
-Der Owner meldete für Alpha 9 eine nicht erwartungsgemäße Text-Symbolleiste, ein unpassendes Tray-Symbol und auf seinem Screenshot unleserliche Nummernmarkierungen. Der überarbeitete Stand befindet sich in Prüfung; bis zum erfolgreichen Windows-Test und einer Rückmeldung des Owners bleibt diese Meldung **offen**. Eine simulierte CI-Anzeige ersetzt die Owner-Prüfung nicht.
+Der Owner meldete für Alpha 9 eine nicht erwartungsgemäße Text-Symbolleiste, ein unpassendes Tray-Symbol und auf seinem Screenshot unleserliche Nummernmarkierungen. Nach Beenden einer noch laufenden alten EXE zeigte sein neuer Screenshot mit Alpha 15 eine Symbolleiste und lesbare Nummern 1 bis 8; der konkrete Textleisten-Vorfall ist damit geklärt. Eine gesonderte Beurteilung des Tray-Symbols, der allgemeinen Bedienung und weiterer Windows-Konfigurationen steht aus. Siehe [Windows-Praxistest](WINDOWS_PRAXISTEST.md).
 
 ## Owner-Praxistests
 
