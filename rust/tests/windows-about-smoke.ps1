@@ -158,13 +158,7 @@ try {
     }
     if (-not $about) { throw 'ABOUT_WINDOW_TIMEOUT: selecting the tray menu item did not open the expected ShotKitRustAboutWindow.' }
 
-    $dialogElement = [System.Windows.Automation.AutomationElement]::FromHandle($about.Handle)
     $allText = [ShotKitAboutSmoke.Native]::WindowText($about.Handle)
-    try {
-        $textCondition = [System.Windows.Automation.Condition]::TrueCondition
-        $descendants = $dialogElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCondition)
-        foreach ($element in $descendants) { if ($element.Current.Name) { $allText += ' ' + $element.Current.Name } }
-    } catch { throw "UIA_CONTENT_READ_FAILED: $($_.Exception.Message)" }
     foreach ($expectedText in @('ShotKit Rust', "Version: $expectedVersion", 'Entwickler: Oliver Muenk', 'Website öffnen: alleswasbewegt.de')) {
         if ($allText -notmatch [regex]::Escape($expectedText)) {
             throw "ABOUT_CONTENT_MISSING: expected '$expectedText' in the native About window. Content='$allText'"
