@@ -36,9 +36,11 @@ namespace ShotKitLastRegionSmoke {
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+        public static bool WindowVisible(IntPtr hwnd) { return IsWindowVisible(hwnd); }
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+        public static void CloseDialog(IntPtr hwnd) { SendMessageW(hwnd,0x0010,IntPtr.Zero,IntPtr.Zero); }
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
         [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu, uint position);
@@ -127,8 +129,10 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitLastRegionSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Close-ClipboardConfirmation([Diagnostics.Process] $Process) {
     $dialog=Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and [ShotKitLastRegionSmoke.Native]::WindowText($_.Handle) -like '*Aufnahme in die Zwischenablage kopiert*'} | Select-Object -First 1
-    if($null -ne $dialog -and -not [ShotKitLastRegionSmoke.Native]::PostMessageW($dialog.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)){throw 'Could not close the owned clipboard confirmation dialog.'}
-    if($null -ne $dialog){[void](Wait-ForCondition -Seconds 5 -Description 'clipboard confirmation dialog to close' -OwnedProcess $Process -Condition {if(-not [ShotKitLastRegionSmoke.Native]::IsWindow($dialog.Handle)){$true}})}
+    if($null -ne $dialog){
+        [ShotKitLastRegionSmoke.Native]::CloseDialog($dialog.Handle)
+        [void](Wait-ForCondition -Seconds 5 -Description 'clipboard confirmation dialog to close' -OwnedProcess $Process -Condition {if(-not [ShotKitLastRegionSmoke.Native]::WindowVisible($dialog.Handle)){$true}})
+    }
 }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
     $bitmap=[Drawing.Bitmap]::new($File.FullName)
