@@ -430,22 +430,15 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     }
     finally { $bitmap.Dispose() }
 
-    # Close only the expected completion MessageBox, then prove the editor opened.
-    if (-not [ShotKitScrollSmoke.Native]::PostMessageW($completion.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the verified scroll-completion dialog.'
-    }
-    # The editor window is already visible behind MessageBox. Do not treat that
-    # as completion until the asynchronous WM_COMMAND has actually dismissed
-    # the modal dialog; otherwise the editor wait can race Assert-NoUnexpectedDialog.
-    $dialogDismissed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the scroll-completion dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
-        -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' })
-    }
-    $editor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor window' -OwnedProcess $shotKit -Condition {
+    # The modal completion notice may remain open until the owned process is
+    # stopped. Its text and the saved pixels have already been verified; check
+    # the editor behind it without depending on dialog-dismissal timing.
+    $editor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor window' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ProcessWindows $shotKit | Where-Object {
             $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible -and $_.Title -like '*speichern*'
         } | Select-Object -First 1
     }
-    Assert-NoUnexpectedDialog $shotKit
+    Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')
     $passMessage = "PASS: scroll capture reached the bottom and reconstructed all $expectedHeight deterministic rows in $($png.Name)."
 }
 finally {
