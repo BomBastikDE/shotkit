@@ -140,6 +140,7 @@ $uiaProbe = $null
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
 $passMessage = $null
+$testFailure = $null
 $cleanupFailures = @()
 $mouseDown = $false
 
@@ -181,6 +182,49 @@ function Wait-ForCondition {
         Start-Sleep -Milliseconds 100
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
+}
+function Get-EdgeProcessById {
+    param([int] $ProcessId)
+    Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+}
+function Get-ProfileEdgeProcesses {
+    param([string] $ProfilePath)
+    $escapedProfile = [Regex]::Escape($ProfilePath)
+    @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
+}
+function Stop-OwnedEdgeProcess {
+    param([int] $ProcessId, [string] $ProfilePath)
+    $current = Get-EdgeProcessById $ProcessId
+    if ($null -eq $current) { return }
+    if ($current.Name -ne 'msedge.exe' -or -not $current.CommandLine -or
+        $current.CommandLine -notmatch [Regex]::Escape($ProfilePath)) {
+        throw "Refusing to stop PID $ProcessId: current process identity does not match the test-owned Edge profile."
+    }
+    $processHandle = $null
+    try { $processHandle = [Diagnostics.Process]::GetProcessById($ProcessId) }
+    catch {
+        if ($null -eq (Get-EdgeProcessById $ProcessId)) { return }
+        throw
+    }
+    try {
+        $confirmed = Get-EdgeProcessById $ProcessId
+        if ($null -eq $confirmed) { return }
+        if ($confirmed.Name -ne 'msedge.exe' -or -not $confirmed.CommandLine -or
+            $confirmed.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
+            $confirmed.CreationDate -ne $current.CreationDate) {
+            throw "PID $ProcessId changed identity during cleanup; refusing to stop the replacement process."
+        }
+        try { $processHandle.Kill() }
+        catch {
+            if ($processHandle.HasExited -or $null -eq (Get-EdgeProcessById $ProcessId)) { return }
+            throw
+        }
+        if (-not $processHandle.WaitForExit(3000) -and -not $processHandle.HasExited) {
+            throw "Test-owned Edge PID $ProcessId remains after termination was requested."
+        }
+    }
+    finally { $processHandle.Dispose() }
 }
 try {
     New-Item -ItemType Directory -Path $testRoot, $edgeProfile, $appData, $localAppData, $saveFolder -Force | Out-Null
@@ -345,6 +389,7 @@ catch {
         $targetBottom -gt $desktopTop + $desktopHeight) {
         throw 'UIA_PRECHECK_FAILED: target bounds extend outside the interactive desktop.'
     }
+    Write-Output "MILESTONE: UIA named button confirmed at ${targetWidth}x${targetHeight} screen pixels."
     $centerX = $targetLeft + [int]($targetWidth / 2)
     $centerY = $targetTop + [int]($targetHeight / 2)
 
@@ -434,9 +479,13 @@ catch {
         }
     }
     finally { $bitmap.Dispose() }
+    Write-Output 'MILESTONE: capture dimensions and all four expected pixels validated.'
 
     Assert-NoUnexpectedDialog $shotKit
     $passMessage = "PASS: Edge UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($targetLeft,$targetTop,${targetWidth}x${targetHeight}); real hover-click captured exact dimensions and four expected pixels."
+}
+catch {
+    $testFailure = $_
 }
 finally {
     if ($mouseDown) {
@@ -469,18 +518,21 @@ finally {
     }
     if ($null -ne $edge) {
         try {
-            if (-not $edge.HasExited) {
-                $ownedEdge = Get-CimInstance Win32_Process -Filter "ProcessId=$($edge.Id)"
-                if ($null -ne $ownedEdge -and $ownedEdge.Name -eq 'msedge.exe' -and
-                    $ownedEdge.CommandLine -match [Regex]::Escape($edgeProfile)) {
-                    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-                    $kill = Start-Process -FilePath $taskkill -ArgumentList "/PID $($edge.Id) /T /F" -PassThru -Wait -WindowStyle Hidden
-                    if ($kill.ExitCode -ne 0 -and -not $edge.HasExited) {
-                        throw "taskkill returned $($kill.ExitCode) for owned Edge process $($edge.Id)."
+            $ownedEdge = Get-EdgeProcessById $edge.Id
+            if ($null -eq $ownedEdge) {
+                Write-Output "CLEANUP: Edge launcher PID $($edge.Id) is verified absent."
+            } elseif ($ownedEdge.Name -eq 'msedge.exe' -and $ownedEdge.CommandLine -and
+                $ownedEdge.CommandLine -match [Regex]::Escape($edgeProfile)) {
+                # Start-Process returned a Process object for this exact process;
+                # Kill uses its process handle instead of re-opening a bare PID.
+                if (-not $edge.HasExited) {
+                    $edge.Kill()
+                    if (-not $edge.WaitForExit(3000) -and -not $edge.HasExited) {
+                        throw "Owned Edge launcher PID $($edge.Id) remains after termination was requested."
                     }
-                } else {
-                    throw "Refusing to terminate Edge PID $($edge.Id): its command line no longer identifies the test-owned profile."
                 }
+            } else {
+                Write-Output "CLEANUP: Edge launcher PID $($edge.Id) now belongs to another process; it was left untouched."
             }
         }
         catch { $cleanupFailures += "Could not stop test-owned Edge process tree: $($_.Exception.Message)" }
@@ -489,21 +541,19 @@ finally {
     $env:APPDATA = $oldAppData
     $env:LOCALAPPDATA = $oldLocalAppData
 
-    # Only inspect and stop Edge processes whose command line contains this
-    # unique profile path; never stop unrelated user/runner Edge instances.
+    # Only stop processes whose current identity still matches this unique
+    # profile. A process disappearing between enumeration and Stop-Process is
+    # accepted only after a fresh PID query confirms absence.
     try {
-        $escapedProfile = [Regex]::Escape($edgeProfile)
-        $stragglers = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
+        $stragglers = Get-ProfileEdgeProcesses $edgeProfile
         foreach ($process in $stragglers) {
             try {
-                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+                Stop-OwnedEdgeProcess -ProcessId $process.ProcessId -ProfilePath $edgeProfile
             }
             catch { $cleanupFailures += "Could not stop owned Edge profile process $($process.ProcessId): $($_.Exception.Message)" }
         }
         Start-Sleep -Milliseconds 200
-        $remaining = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
+        $remaining = Get-ProfileEdgeProcesses $edgeProfile
         if ($remaining.Count -gt 0) {
             $cleanupFailures += "Owned Edge processes remain for the test profile: $(@($remaining | ForEach-Object ProcessId) -join ', ')."
         }
@@ -514,8 +564,11 @@ finally {
         try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
         catch { $cleanupFailures += "Could not remove test-owned files/profile '$testRoot': $($_.Exception.Message)" }
     }
-    if ($cleanupFailures.Count -gt 0) {
-        throw ($cleanupFailures -join [Environment]::NewLine)
-    }
+}
+if ($null -ne $testFailure -or $cleanupFailures.Count -gt 0) {
+    $failureParts = @()
+    if ($null -ne $testFailure) { $failureParts += "TEST FAILURE: $($testFailure.Exception.Message)" }
+    if ($cleanupFailures.Count -gt 0) { $failureParts += "CLEANUP FAILURE: $($cleanupFailures -join [Environment]::NewLine)" }
+    throw ($failureParts -join [Environment]::NewLine)
 }
 Write-Output $passMessage

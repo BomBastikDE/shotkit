@@ -64,13 +64,31 @@ namespace ShotKitScrollSmoke {
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll")]
-        private static extern bool IsWindowVisible(IntPtr hwnd);
+        public static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hwnd, int command);
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hwnd);
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachState);
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetFocus(IntPtr hwnd);
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hwnd, int command);
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hwnd);
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")]
         public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")]
@@ -121,6 +139,44 @@ namespace ShotKitScrollSmoke {
                 return true;
             }, IntPtr.Zero);
             return windows.ToArray();
+        }
+        public static uint OwnerProcessId(IntPtr hwnd) {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            return processId;
+        }
+        public static void ShowNormal(IntPtr hwnd) { ShowWindow(hwnd, 1); }
+        public static string WindowTitle(IntPtr hwnd) { return GetText(hwnd); }
+        public static string WindowClass(IntPtr hwnd) {
+            StringBuilder className = new StringBuilder(256);
+            GetClassNameW(hwnd, className, className.Capacity);
+            return className.ToString();
+        }
+        public static bool ActivateOwnedWindow(IntPtr hwnd, uint expectedProcessId) {
+            if (hwnd == IntPtr.Zero || OwnerProcessId(hwnd) != expectedProcessId) return false;
+            ShowWindow(hwnd, 1);
+            uint currentThread = GetCurrentThreadId();
+            uint ignoredProcessId;
+            uint targetThread = GetWindowThreadProcessId(hwnd, out ignoredProcessId);
+            IntPtr foreground = GetForegroundWindow();
+            uint foregroundThread = 0;
+            if (foreground != IntPtr.Zero)
+                foregroundThread = GetWindowThreadProcessId(foreground, out ignoredProcessId);
+            bool attachedForeground = false;
+            bool attachedTarget = false;
+            try {
+                if (foregroundThread != 0 && foregroundThread != currentThread)
+                    attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+                if (targetThread != 0 && targetThread != currentThread && targetThread != foregroundThread)
+                    attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+                SetFocus(hwnd);
+                return OwnerProcessId(GetForegroundWindow()) == expectedProcessId;
+            } finally {
+                if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+                if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+            }
         }
     }
 }
@@ -346,7 +402,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
     if (-not [ShotKitScrollSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
         throw 'Could not close the ShotKit startup dialog.'
     }
-    Start-Sleep -Milliseconds 250
+    Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
+        @((Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })).Count -eq 0
+    } | Out-Null
     Assert-NoUnexpectedDialog $shotKit
 
     $cases = @(
@@ -379,8 +437,41 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
             throw "Interactive desktop ${desktopWidth}x${desktopHeight} cannot fit the controlled horizontal test window and selection."
         }
 
-        if (-not [ShotKitScrollSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)) {
-            throw 'Could not activate the synthetic horizontal test surface.'
+        $surfaceRoot = $surfaceWindow.Handle
+        $surfaceOwner = [ShotKitScrollSmoke.Native]::OwnerProcessId($surfaceRoot)
+        if ($surfaceOwner -ne [uint32]$surface.Id) {
+            throw "Refusing to activate an HWND not owned by the helper process: HWND=$surfaceRoot owner PID=$surfaceOwner expected PID=$($surface.Id)."
+        }
+        if ([ShotKitScrollSmoke.Native]::WindowTitle($surfaceRoot) -ne 'ShotKit Synthetic Horizontal Surface') {
+            throw "Helper-owned HWND $surfaceRoot has an unexpected title."
+        }
+        [ShotKitScrollSmoke.Native]::ShowNormal($surfaceRoot)
+        $surfaceWindow = Wait-ForCondition -TimeoutSeconds 5 -Description 'the visible helper-owned horizontal surface' -OwnedProcess $surface -Condition {
+            if ([ShotKitScrollSmoke.Native]::OwnerProcessId($surfaceRoot) -eq [uint32]$surface.Id -and
+                [ShotKitScrollSmoke.Native]::IsWindowVisible($surfaceRoot)) {
+                Get-ProcessWindows $surface | Where-Object { $_.Handle -eq $surfaceRoot } | Select-Object -First 1
+            }
+        }
+        $blockingDialogs = @(Get-ProcessDialogs $shotKit)
+        if ($blockingDialogs.Count -gt 0) {
+            $details = $blockingDialogs | ForEach-Object {
+                "Title='$($_.Title)' Text='$([ShotKitScrollSmoke.Native]::WindowText($_.Handle))'"
+            }
+            throw "ACTIVATION_BLOCKED_BY_SHOTKIT_DIALOG: $($details -join '; ')"
+        }
+        $activationApiResult = [ShotKitScrollSmoke.Native]::ActivateOwnedWindow($surfaceRoot, [uint32]$surface.Id)
+        $foreground = [ShotKitScrollSmoke.Native]::GetForegroundWindow()
+        $foregroundPid = [ShotKitScrollSmoke.Native]::OwnerProcessId($foreground)
+        if ($foregroundPid -ne [uint32]$surface.Id) {
+            $foregroundClass = if ($foreground -eq [IntPtr]::Zero) { '<none>' } else { [ShotKitScrollSmoke.Native]::WindowClass($foreground) }
+            $foregroundTitle = if ($foregroundPid -eq [uint32]$shotKit.Id -or $foregroundPid -eq [uint32]$surface.Id) {
+                [ShotKitScrollSmoke.Native]::WindowTitle($foreground)
+            } else { '<suppressed: outside test processes>' }
+            $appDialogs = @(Get-ProcessDialogs $shotKit | ForEach-Object {
+                "Title='$($_.Title)' Text='$([ShotKitScrollSmoke.Native]::WindowText($_.Handle))'"
+            })
+            $dialogInfo = if ($appDialogs.Count -gt 0) { $appDialogs -join '; ' } else { '<none owned by ShotKit>' }
+            throw "SURFACE_ACTIVATION_FAILED: own HWND=$surfaceRoot PID=$surfaceOwner visible=$([ShotKitScrollSmoke.Native]::IsWindowVisible($surfaceRoot)); activation API returned $activationApiResult. Foreground HWND=$foreground PID=$foregroundPid class='$foregroundClass' title='$foregroundTitle'; ShotKit dialogs=$dialogInfo. Likely Windows foreground-lock/another foreground process."
         }
         Start-Sleep -Milliseconds 150
         $beforePngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | ForEach-Object { $_.FullName })
@@ -464,7 +555,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
         if (-not [ShotKitScrollSmoke.Native]::PostMessageW($completion.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
             throw "Could not close the $($case.Name) completion notice before the next direction."
         }
-        Start-Sleep -Milliseconds 250
+        Wait-ForCondition -TimeoutSeconds 5 -Description "the $($case.Name) completion notice to close" -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
+            @((Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $completion.Handle })).Count -eq 0
+        } | Out-Null
 
         if (-not $surface.HasExited) {
             $surface.Kill()
