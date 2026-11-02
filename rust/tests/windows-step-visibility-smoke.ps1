@@ -255,9 +255,18 @@ try {
     [ShotKitStepSmoke.Native]::keybd_event(0x43,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 80
     [ShotKitStepSmoke.Native]::keybd_event(0x43,0,2,[UIntPtr]::Zero)
     [ShotKitStepSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero)
-    [void](Wait-For {[uint32]$s=[ShotKitStepSmoke.Native]::ClipboardSequence();if($s -ne $sequence){$s}} 5 'Ctrl+C clipboard update')
+    # EmptyClipboard can change the sequence before SetClipboardData completes.
+    # Wait for the requested format itself, then still verify every pixel below.
+    $clipboard=Wait-For {
+        [uint32]$s=[ShotKitStepSmoke.Native]::ClipboardSequence()
+        if($s -ne $sequence) {
+            try { Read-ClipboardBitmap }
+            catch {
+                if($_.Exception.Message -notmatch 'CF_DIBV5 missing after Ctrl\+C|OpenClipboard failed after Ctrl\+C') { throw }
+            }
+        }
+    } 5 'Ctrl+C CF_DIBV5 bitmap'
     $expected=New-ExpectedImage 12
-    $clipboard=Read-ClipboardBitmap
     try {Assert-StepPixels $clipboard $expected 12 'CLIPBOARD'} finally {$clipboard.Dispose();$expected.Dispose()}
     Write-Output 'PASS: real editor clicks created step numbers 1–12 on dark and light halves; PNG and Ctrl+C CF_DIBV5 pixels matched centered, contrasting Segoe UI Bold references, and Undo/Redo removed/restored number 12.'
 }

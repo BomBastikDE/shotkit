@@ -85,9 +85,13 @@ try {
   $hover=$buttons|Where-Object{$_.Text -ceq $tipLabel}|Select-Object -First 1
   $wr=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($hover.H,[ref]$wr)){throw "BUTTON_RECT_FAILED: $tipLabel"}
   $pos=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);$pos.X=[int](($wr.Left+$wr.Right)/2);$pos.Y=[int](($wr.Top+$wr.Bottom)/2)
-  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($pos.X,$pos.Y)){throw "HOVER_CURSOR_FAILED: $tipLabel"};Start-Sleep -Milliseconds 1400
-  $tip=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'tooltips_class32'}|Select-Object -First 1
-  if(-not $tip){throw "TOOLTIP_NOT_VISIBLE: native tooltip for '$tipLabel' did not appear after real hover."}
+  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($pos.X,$pos.Y)){throw "HOVER_CURSOR_FAILED: $tipLabel"}
+  $actual=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);[void][ShotKitToolbarVisual.Native]::GetCursorPos([ref]$actual)
+  $hit=[ShotKitToolbarVisual.Native]::WindowFromPoint($actual)
+  if($hit -ne $hover.H){throw "HOVER_TARGET_MISMATCH: expected '$tipLabel' handle $($hover.H), got $hit at $($actual.X),$($actual.Y)."}
+  $deadline=[DateTime]::UtcNow.AddSeconds(5);$tip=$null
+  while([DateTime]::UtcNow -lt $deadline){$tip=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'tooltips_class32'}|Select-Object -First 1;if($tip){break};Start-Sleep -Milliseconds 100}
+  if(-not $tip){$details=(Owned-Windows|ForEach-Object{"$($_.ClassName):visible=$($_.Visible)"}) -join ', ';throw "TOOLTIP_NOT_VISIBLE: native tooltip for '$tipLabel' did not appear after real hover. Owned windows: $details"}
   $tooltipText=[Windows.Automation.AutomationElement]::FromHandle($tip.H).Current.Name
   if($tooltipText -cne $tipLabel){throw "TOOLTIP_TEXT_MISMATCH: expected exact '$tipLabel'; observed '$tooltipText'."}
  }
@@ -130,7 +134,9 @@ try {
  $state=Owned-Windows|Where-Object{$_.H -eq $main.H}|Select-Object -First 1;if($state.Title -notlike '*Werkzeug Select*'){throw "KEYBOARD_TOOL_SELECTION_FAILED: title='$($state.Title)'"}
  # Resource tray icon must be registered for the test process, and the editor window must carry an icon.
  $icon=[ShotKitToolbarVisual.Native]::Icon($main.H);if($icon -eq [IntPtr]::Zero){throw 'WINDOW_ICON_MISSING: WM_GETICON returned no icon.'}
- $nid=[Activator]::CreateInstance([ShotKitToolbarVisual.NotifyId]);$nid.Size=[Runtime.InteropServices.Marshal]::SizeOf([type][ShotKitToolbarVisual.NotifyId]);$nid.Hwnd=$p.MainWindowHandle;$nid.Id=1
+ $trayHost=Owned-Windows|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1
+ if(-not $trayHost -or [ShotKitToolbarVisual.Native]::Owner($trayHost.H) -ne [uint32]$p.Id){throw 'TRAY_HOST_MISSING_OR_WRONG_OWNER'}
+ $nid=[Activator]::CreateInstance([ShotKitToolbarVisual.NotifyId]);$nid.Size=[Runtime.InteropServices.Marshal]::SizeOf([type][ShotKitToolbarVisual.NotifyId]);$nid.Hwnd=$trayHost.H;$nid.Id=1
  $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if([ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect) -ne 0){throw 'TRAY_ICON_NOT_REGISTERED: Shell_NotifyIconGetRect could not locate the test app icon.'}
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
