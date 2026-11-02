@@ -689,9 +689,23 @@ mod windows_pixel_tests {
                 };
                 assert_eq!(pixel(0, 0), [0, 0, 0, 0]);
                 let mut glyph = Vec::new();
-                for y in 30..=66 {
-                    for x in 30..=66 {
+                // The white outline sits near radius 18.8; inspect only the
+                // opaque center region so neither that ring nor transparent
+                // pixels outside the marker can satisfy the text assertions.
+                let inner_extent = (18.8_f32 * 0.70).floor() as usize;
+                let lo = 48 - inner_extent;
+                let hi = 48 + inner_extent;
+                for y in lo..=hi {
+                    for x in lo..=hi {
+                        let dx = x as f32 - 48.0;
+                        let dy = y as f32 - 48.0;
+                        if dx * dx + dy * dy > (18.8_f32 * 0.70).powi(2) {
+                            continue;
+                        }
                         let p = pixel(x, y);
+                        if p[3] == 0 {
+                            continue;
+                        }
                         let visible = if color.r == 0 {
                             p[0] > 235 && p[1] > 235 && p[2] > 235
                         } else {
