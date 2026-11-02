@@ -42,3 +42,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/windows-instance-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Edge browser hover smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
