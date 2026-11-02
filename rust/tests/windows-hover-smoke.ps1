@@ -49,7 +49,7 @@ namespace ShotKitHoverSmoke {
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
         [DllImport("user32.dll")]
-        private static extern bool IsWindowVisible(IntPtr hwnd);
+        public static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll")]
