@@ -51,14 +51,30 @@ pub struct Document {
 
 impl Document {
     pub fn new(image: Image) -> Result<Self, DocumentError> {
-        Self::with_history_budget(image, DEFAULT_HISTORY_BUDGET)
+        Self::new_recover(image).map_err(|(error, _image)| error)
+    }
+
+    /// Construct a document while returning the original image if validation
+    /// fails, so callers can retain or inspect rejected input.
+    pub fn new_recover(image: Image) -> Result<Self, (DocumentError, Image)> {
+        Self::with_history_budget_recover(image, DEFAULT_HISTORY_BUDGET)
     }
 
     pub fn with_history_budget(
         image: Image,
         history_budget_bytes: usize,
     ) -> Result<Self, DocumentError> {
-        validate_image(&image)?;
+        Self::with_history_budget_recover(image, history_budget_bytes)
+            .map_err(|(error, _image)| error)
+    }
+
+    fn with_history_budget_recover(
+        image: Image,
+        history_budget_bytes: usize,
+    ) -> Result<Self, (DocumentError, Image)> {
+        if let Err(error) = validate_image(&image) {
+            return Err((error, image));
+        }
         Ok(Self {
             current: State {
                 image: Arc::new(image),
@@ -578,6 +594,24 @@ mod tests {
         assert_eq!((d.image().width, d.image().height), (3, 2));
         assert_eq!(d.image().pixels, image().pixels);
         assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn recover_constructor_returns_invalid_image_unchanged() {
+        let invalid = Image {
+            width: 2,
+            height: 2,
+            pixels: vec![1, 2, 3, 4],
+        };
+        let (error, recovered) = Document::new_recover(invalid.clone()).unwrap_err();
+        assert_eq!(error, DocumentError::InvalidImage);
+        assert_eq!(recovered, invalid);
+
+        let valid = image();
+        assert_eq!(
+            Document::new_recover(valid.clone()).unwrap().image(),
+            &valid
+        );
     }
 
     #[test]

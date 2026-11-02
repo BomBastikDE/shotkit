@@ -72,8 +72,15 @@ impl Default for EditorController {
 
 impl EditorController {
     pub fn with_image(image: Image) -> Result<Self, DocumentError> {
+        Self::with_image_recover(image).map_err(|(error, _image)| error)
+    }
+
+    /// Construct a controller while returning the original image if document
+    /// validation fails.
+    pub fn with_image_recover(image: Image) -> Result<Self, (DocumentError, Image)> {
+        let document = Document::new_recover(image)?;
         Ok(Self {
-            document: Document::new(image)?,
+            document,
             tool: Tool::Select,
             selected: None,
             drag: None,
@@ -521,6 +528,27 @@ mod tests {
     fn editor() -> EditorController {
         EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap())
             .unwrap()
+    }
+
+    #[test]
+    fn recover_constructor_returns_invalid_image_unchanged() {
+        let invalid = Image {
+            width: 3,
+            height: 2,
+            pixels: vec![9, 8, 7, 6],
+        };
+        let (error, recovered) = EditorController::with_image_recover(invalid.clone()).unwrap_err();
+        assert_eq!(error, DocumentError::InvalidImage);
+        assert_eq!(recovered, invalid);
+
+        let valid = Image::new(1, 1, vec![4, 3, 2, 1]).unwrap();
+        assert_eq!(
+            EditorController::with_image_recover(valid.clone())
+                .unwrap()
+                .document()
+                .image(),
+            &valid
+        );
     }
 
     fn rect_editor() -> EditorController {

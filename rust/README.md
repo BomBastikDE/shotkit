@@ -4,7 +4,7 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 ## Bisherige Funktionen
 
-- Tray-Menü; primären Bildschirm mit `F9`, Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen. `Strg` wählt das größere Fenster.
+- Tray-Menü; Bildschirm unter dem Mauszeiger mit `F9` oder `Strg+Druck`, alle Bildschirme mit `Strg+Umschalt+Druck`, aktives Fenster mit `Umschalt+Druck` und Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen. `Strg` wählt das größere Fenster.
 - Experimentelle Scroll-Aufnahme mit `F10`: Bereich auswählen, nach unten/rechts/links scrollen, Abbruch mit Esc oder Mausbewegung. Der bisher gesicherte Teil bleibt erhalten.
 - Editor-Werkzeuge über die Leiste: Auswahl, Pfeil, Linie, Rechteck, Ellipse, Text, Marker, Verpixeln, Nummer, Stift und Zuschneiden. Objekte können ausgewählt, verschoben, geändert und mit `Strg+Z`/`Strg+Y` zurückgenommen/wiederholt werden.
 - `Strg+O` öffnet Bilder, `Strg+S` speichert, `Strg+Umschalt+S` speichert unter; PNG/JPEG/BMP/GIF stehen zur Verfügung. `Strg+C` kopiert ein Bitmap in die Zwischenablage; `Strg+V` öffnet ein Bild daraus. Die aktuelle Einfüge-Variante übernimmt keine Transparenz. Vor dem Ersetzen ungesicherter Bilder wird nachgefragt.
@@ -13,6 +13,8 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 ## Bekannte Grenzen
 
 Windows-Laufzeittests fehlen noch. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Bearbeitete Bilder mit Transparenz lassen sich momentan aus Sicherheitsgründen nicht speichern. Einstellungen, einige Bild- und Editorfunktionen sowie weitere Originalfunktionen fehlen noch. Siehe [ROADMAP.md](ROADMAP.md).
+
+Die Ausgaben nach einer Aufnahme (Editor, Zwischenablage, automatisches PNG) können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 
 Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert und ausschließlich für Testzwecke gedacht. Im Entwicklungsstand nur mit Kopien wichtiger Bilder arbeiten.
 

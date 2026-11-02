@@ -9,9 +9,11 @@ use std::{
     ptr::null_mut,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod capture_targets;
 mod clipboard;
 mod element_picker;
 mod file_dialog;
+mod folder_dialog;
 mod scroll_windows;
 mod selection;
 mod text_dialog;
@@ -19,10 +21,12 @@ mod toolbar;
 mod uia_picker;
 
 use shotkit_rust_prototype::{
+    capture_output::{Advance, CaptureAction, CaptureOutputState},
     editor::EditorController,
     image_edit::CropRect,
-    image_io, render,
+    image_io, output_windows, render,
     scroll_capture::{self, Direction, Outcome, ScrollIo},
+    settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
     stitch::Image,
     view,
@@ -143,7 +147,6 @@ extern "system" {
     fn MessageBoxW(h: H, t: *const u16, c: *const u16, k: u32) -> i32;
     fn RegisterHotKey(h: H, id: i32, mods: u32, key: u32) -> i32;
     fn UnregisterHotKey(h: H, id: i32) -> i32;
-    fn GetSystemMetrics(i: i32) -> i32;
     fn GetDC(h: H) -> H;
     fn ReleaseDC(h: H, dc: H) -> i32;
     fn BeginPaint(h: H, p: *mut Paint) -> H;
@@ -236,6 +239,9 @@ const TRAY: u32 = 0x8001;
 const SCROLL_DONE: u32 = 0x8002;
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
 static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
+static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
+static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
+static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
 static RESTORE_EDITOR: AtomicBool = AtomicBool::new(false);
 struct BusyGuard(bool);
 impl Drop for BusyGuard {
@@ -267,6 +273,52 @@ static mut BH: i32 = 0;
 static mut DRAW: bool = false;
 static mut CROP_START: Option<(i32, i32)> = None;
 static mut CROP_END: Option<(i32, i32)> = None;
+fn active_settings() -> Settings {
+    SETTINGS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+unsafe fn load_settings(h: H) {
+    let result = settings::settings_path().and_then(settings::load_or_default);
+    match result {
+        Ok(value) => {
+            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
+            SETTINGS_WRITABLE.store(true, Ordering::SeqCst);
+        }
+        Err(e) => {
+            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
+            SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
+            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+        }
+    }
+}
+unsafe fn save_settings(h: H, new: Settings) -> bool {
+    if !SETTINGS_WRITABLE.load(Ordering::SeqCst) {
+        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die vorhandene Datei nicht lesbar ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+        return false;
+    }
+    let result = settings::settings_path().and_then(|path| settings::save_atomic(path, &new));
+    match result {
+        Ok(()) => {
+            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
+            true
+        }
+        Err(e) => {
+            MessageBoxW(
+                h,
+                wide(&format!(
+                    "Einstellungen konnten nicht gespeichert werden: {e}"
+                ))
+                .as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
+            false
+        }
+    }
+}
 unsafe fn cancel_gesture() {
     let had_capture = DRAW;
     DRAW = false;
@@ -279,18 +331,126 @@ unsafe fn cancel_gesture() {
         ReleaseCapture();
     }
 }
-unsafe fn capture(h: H) {
-    if SCROLL_BUSY.load(Ordering::SeqCst) || !confirm_replace(h) {
+unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Result<(), String> {
+    let prefs = active_settings();
+    let mut output = CaptureOutputState::new(&prefs);
+    let mut image = Some(image);
+    let mut saved = None;
+    let mut opened = false;
+    while let Some(action) = output.next_action() {
+        let result = match action {
+            CaptureAction::OpenEditor => {
+                let owned = image.take().ok_or("Aufnahme ist nicht mehr verfügbar")?;
+                let result = display_image(h, owned);
+                if result.is_ok() {
+                    opened = true;
+                    if let Some(path) = saved.take() {
+                        *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
+                        DIRTY = false;
+                    }
+                }
+                result
+            }
+            _ => {
+                let result = output_windows::execute_action(
+                    action,
+                    &prefs,
+                    image.as_ref().ok_or("Aufnahme ist nicht mehr verfügbar")?,
+                    h,
+                );
+                match result {
+                    Ok(result) => {
+                        if result.saved_path.is_some() {
+                            saved = result.saved_path;
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        let advance = match output.finish_action(action, result) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(image) = image.take() {
+                    RECOVERY
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(image);
+                }
+                return Err(format!(
+                    "Ausgabe konnte nicht abgeschlossen werden: {error}"
+                ));
+            }
+        };
+        if advance == Advance::RetainImage {
+            return Err("Die Aufnahme konnte nicht im Editor geöffnet werden und bleibt im Speicher. Über das Tray-Menü kann sie gesichert werden.".into());
+        }
+    }
+    if !opened {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        let message = match saved {
+            Some(path) => format!("Aufnahme gespeichert: {}", path.display()),
+            None => "Aufnahme in die Zwischenablage kopiert.".into(),
+        };
+        MessageBoxW(
+            h,
+            wide(&message).as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x40,
+        );
+    }
+    if !output.failures().is_empty() {
+        let details = output
+            .failures()
+            .iter()
+            .map(|f| format!("{:?}: {}", f.action, f.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        MessageBoxW(
+            h,
+            wide(&format!(
+                "Ein Teil der Ausgabe ist fehlgeschlagen:\n{details}"
+            ))
+            .as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x30,
+        );
+    }
+    Ok(())
+}
+unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
     }
+    let _busy = BusyGuard(true);
+    if !confirm_replace(h) {
+        return;
+    }
+    let rect = match target {
+        Ok(r) => r,
+        Err(e) => {
+            MessageBoxW(h, wide(&e).as_ptr(), wide("Aufnahme").as_ptr(), 0x10);
+            return;
+        }
+    };
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let width = GetSystemMetrics(0);
-    let height = GetSystemMetrics(1);
-    let image = scroll_windows::WindowsScrollIo::new(0, 0, width, height, 0)
-        .and_then(|mut io| io.capture());
-    match image.and_then(|image| display_image(h, image)) {
+    let image = scroll_windows::WindowsScrollIo::new(
+        rect.left(),
+        rect.top(),
+        rect.width(),
+        rect.height(),
+        0,
+    )
+    .and_then(|mut io| io.capture());
+    match image.and_then(|image| handle_capture(h, image, was_visible)) {
         Ok(()) => {}
         Err(e) => {
             if was_visible {
@@ -304,6 +464,21 @@ unsafe fn capture(h: H) {
             );
         }
     }
+}
+unsafe fn capture(h: H) {
+    capture_rect(h, capture_targets::monitor_under_cursor());
+}
+unsafe fn capture_active(h: H, window: H) {
+    if window == h || window.is_null() {
+        MessageBoxW(
+            h,
+            wide("Kein geeignetes aktives Fenster gefunden.").as_ptr(),
+            wide("Fensteraufnahme").as_ptr(),
+            0x30,
+        );
+        return;
+    }
+    capture_rect(h, capture_targets::saved_window(window as isize));
 }
 unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     let mut r: Rect = zeroed();
@@ -591,7 +766,63 @@ unsafe fn save(h: H, save_as: bool) -> bool {
         }
     }
 }
+unsafe fn resolve_recovery(h: H) -> bool {
+    loop {
+        if RECOVERY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty()
+        {
+            return true;
+        }
+        let answer=MessageBoxW(h,wide("Eine Aufnahme konnte nicht im Editor geöffnet werden und ist noch im Speicher. Jetzt speichern?").as_ptr(),wide("Ungesicherte Aufnahme").as_ptr(),0x23);
+        if answer == 2 {
+            return false;
+        }
+        if answer == 7 {
+            RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+            continue;
+        }
+        if answer != 6 {
+            return false;
+        }
+        let path = match file_dialog::save(h, None) {
+            Ok(Some(path)) => path,
+            Ok(None) => return false,
+            Err(e) => {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
+                return false;
+            }
+        };
+        let result = {
+            let pending = RECOVERY.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(image) = pending.last() else {
+                continue;
+            };
+            image_io::format_from_path(&path)
+                .and_then(|format| image_io::encode(image, format))
+                .and_then(|bytes| write_atomic(&path, &bytes))
+        };
+        match result {
+            Ok(()) => {
+                RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+            }
+            Err(e) => {
+                MessageBoxW(
+                    h,
+                    wide(&e).as_ptr(),
+                    wide("Speichern fehlgeschlagen").as_ptr(),
+                    0x10,
+                );
+                return false;
+            }
+        }
+    }
+}
 unsafe fn confirm_replace(h: H) -> bool {
+    if !resolve_recovery(h) {
+        return false;
+    }
     if !DIRTY || BITMAP.is_null() {
         return true;
     }
@@ -708,10 +939,30 @@ unsafe fn install_bitmap(bmp: H, image: &Image) {
     BH = image.height as i32;
 }
 unsafe fn display_image(h: H, image: Image) -> Result<(), String> {
-    let state = EditorController::with_image(image)
-        .map_err(|e| format!("Bild konnte nicht geladen werden: {e:?}"))?;
+    let bmp = match create_bitmap(&image) {
+        Ok(bmp) => bmp,
+        Err(error) => {
+            RECOVERY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(image);
+            return Err(format!("{error} Die Aufnahme bleibt im Speicher."));
+        }
+    };
+    let state = match EditorController::with_image_recover(image) {
+        Ok(state) => state,
+        Err((e, image)) => {
+            DeleteObject(bmp);
+            RECOVERY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(image);
+            return Err(format!(
+                "Bild konnte nicht geladen werden: {e:?}. Die Aufnahme bleibt im Speicher."
+            ));
+        }
+    };
     let image = state.image_arc();
-    let bmp = create_bitmap(&image)?;
     cancel_gesture();
     install_bitmap(bmp, &image);
     *std::ptr::addr_of_mut!(EDITOR) = Some(state);
@@ -847,7 +1098,7 @@ unsafe fn capture_region(h: H) {
     std::thread::sleep(std::time::Duration::from_millis(200));
     let image =
         scroll_windows::WindowsScrollIo::new(x, y, w, height, 0).and_then(|mut io| io.capture());
-    match image.and_then(|image| display_image(h, image)) {
+    match image.and_then(|image| handle_capture(h, image, was_visible)) {
         Ok(()) => {}
         Err(e) => {
             if was_visible {
@@ -1131,11 +1382,36 @@ unsafe fn tray_menu(h: H) {
         (1, "Bildschirm aufnehmen (F9)"),
         (2, "Bereich aufnehmen (F11)"),
         (3, "Scroll-Aufnahme (F10)"),
+        (7, "Alle Bildschirme aufnehmen"),
         (4, "Editor anzeigen"),
         (5, "Bild öffnen …"),
+        (8, "Ungesicherte Aufnahme speichern …"),
         (6, "Beenden"),
     ] {
         AppendMenuW(menu, 0, id, wide(label).as_ptr());
+    }
+    let prefs = active_settings();
+    let submenu = CreatePopupMenu();
+    if !submenu.is_null() {
+        for (id, label, checked) in [
+            (101, "Nach Aufnahme Editor öffnen", prefs.open_editor),
+            (102, "In Zwischenablage kopieren", prefs.copy_to_clipboard),
+            (103, "Automatisch als PNG speichern", prefs.auto_save),
+        ] {
+            AppendMenuW(
+                submenu,
+                if checked { 0x0008 } else { 0 },
+                id,
+                wide(label).as_ptr(),
+            );
+        }
+        AppendMenuW(submenu, 0, 104, wide("Speicherordner wählen …").as_ptr());
+        AppendMenuW(
+            menu,
+            0x0010,
+            submenu as usize,
+            wide("Einstellungen").as_ptr(),
+        );
     }
     let mut pos = Point { x: 0, y: 0 };
     if GetCursorPos(&mut pos) == 0 {
@@ -1149,11 +1425,53 @@ unsafe fn tray_menu(h: H) {
         1 => capture(h),
         2 => capture_region(h),
         3 => start_scroll(h),
+        7 => capture_rect(h, capture_targets::virtual_desktop()),
         4 => {
             ShowWindow(h, 5);
             SetForegroundWindow(h);
         }
         5 => open_image(h),
+        8 => {
+            resolve_recovery(h);
+        }
+        101 | 102 | 103 => {
+            let mut prefs = active_settings();
+            match choice {
+                101 => prefs.open_editor = !prefs.open_editor,
+                102 => prefs.copy_to_clipboard = !prefs.copy_to_clipboard,
+                103 => {
+                    if !prefs.auto_save && prefs.save_folder.is_none() {
+                        match folder_dialog::choose_folder(h) {
+                            Ok(Some(path)) => prefs.save_folder = Some(path),
+                            Ok(None) => return,
+                            Err(e) => {
+                                MessageBoxW(
+                                    h,
+                                    wide(&e).as_ptr(),
+                                    wide("Speicherordner").as_ptr(),
+                                    0x10,
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    prefs.auto_save = !prefs.auto_save;
+                }
+                _ => {}
+            }
+            save_settings(h, prefs);
+        }
+        104 => match folder_dialog::choose_folder(h) {
+            Ok(Some(path)) => {
+                let mut prefs = active_settings();
+                prefs.save_folder = Some(path);
+                save_settings(h, prefs);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherordner").as_ptr(), 0x10);
+            }
+        },
         6 => {
             if SCROLL_BUSY.load(Ordering::SeqCst) {
                 MessageBoxW(
@@ -1172,6 +1490,23 @@ unsafe fn tray_menu(h: H) {
 
 unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     match m {
+        0x0312 if w == 6 || w == 10 => {
+            capture(h);
+            0
+        }
+        0x0312 if w == 7 => {
+            capture_rect(h, capture_targets::virtual_desktop());
+            0
+        }
+        0x0312 if w == 8 || w == 11 => {
+            let window = GetForegroundWindow();
+            capture_active(h, window);
+            0
+        }
+        0x0312 if w == 9 || w == 12 => {
+            start_scroll(h);
+            0
+        }
         0x0312 if w == 1 => {
             capture(h);
             0
@@ -1200,8 +1535,9 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             match result {
                 Ok(outcome) => {
                     let message = outcome.reason;
-                    if let Err(e) = display_image(h, outcome.image) {
-                        if RESTORE_EDITOR.swap(false, Ordering::SeqCst) {
+                    let was_visible = RESTORE_EDITOR.swap(false, Ordering::SeqCst);
+                    if let Err(e) = handle_capture(h, outcome.image, was_visible) {
+                        if was_visible {
                             ShowWindow(h, 5);
                         }
                         MessageBoxW(h, wide(&e).as_ptr(), wide("ShotKit Rust").as_ptr(), 0x10);
@@ -1489,6 +1825,9 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             UnregisterHotKey(h, 3);
             UnregisterHotKey(h, 4);
             UnregisterHotKey(h, 5);
+            for id in 6..=12 {
+                UnregisterHotKey(h, id);
+            }
             let mut n: Notify = zeroed();
             n.size = size_of::<Notify>() as u32;
             n.hwnd = h;
@@ -1541,6 +1880,7 @@ fn main() {
         if h.is_null() {
             return;
         }
+        load_settings(h);
         match toolbar::create(h) {
             Ok(bar) => *std::ptr::addr_of_mut!(TOOLBAR) = Some(bar),
             Err(e) => {
@@ -1591,6 +1931,32 @@ fn main() {
         let alt_ok = RegisterHotKey(h, 5, 0x4000 | 0x0002 | 0x0004, 0x31) != 0;
         if !print_ok && !alt_ok {
             MessageBoxW(h,wide("Druck und Strg+Umschalt+1 sind belegt. Für Bereichsaufnahmen F11 oder das Tray-Menü verwenden.").as_ptr(),wide("Tastenkürzel" ).as_ptr(),0x30);
+        }
+        let mut unavailable = Vec::new();
+        for (id, mods, key, label) in [
+            (6, 2, 0x2c, "Strg+Druck"),
+            (7, 6, 0x2c, "Strg+Umschalt+Druck"),
+            (8, 4, 0x2c, "Umschalt+Druck"),
+            (9, 3, 0x2c, "Strg+Alt+Druck"),
+            (10, 6, 0x32, "Strg+Umschalt+2"),
+            (11, 6, 0x33, "Strg+Umschalt+3"),
+            (12, 6, 0x34, "Strg+Umschalt+4"),
+        ] {
+            if RegisterHotKey(h, id, mods | 0x4000, key) == 0 {
+                unavailable.push(label);
+            }
+        }
+        if !unavailable.is_empty() {
+            MessageBoxW(
+                h,
+                wide(&format!(
+                    "Nicht verfügbare Tastenkürzel: {}",
+                    unavailable.join(", ")
+                ))
+                .as_ptr(),
+                wide("Tastenkürzel").as_ptr(),
+                0x30,
+            );
         }
         MessageBoxW(h,wide("Prototyp gestartet. F9 oder Doppelklick auf das Tray-Symbol: Bildschirm aufnehmen. F10 startet die experimentelle Scroll-Aufnahme. Im Editor mit der Maus zeichnen, S speichert als BMP. Rechtsklick auf das Tray-Symbol beendet das Programm.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
         let mut msg: Msg = zeroed();
