@@ -338,9 +338,22 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    $okButton = [ShotKitHoverSmoke.Native]::GetDlgItem($welcome.Handle, 1)
+    $okButton = [IntPtr]::Zero
+    $buttonDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $buttonDeadline -and -not $shotKit.HasExited) {
+        $liveWelcome = Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle } | Select-Object -First 1
+        if ($null -ne $liveWelcome) {
+            $okButton = [ShotKitHoverSmoke.Native]::GetDlgItem($welcome.Handle, 1)
+            if ($okButton -ne [IntPtr]::Zero) { break }
+        }
+        Start-Sleep -Milliseconds 100
+    }
     if ($okButton -eq [IntPtr]::Zero) {
-        throw 'Could not find the IDOK button in the ShotKit startup dialog.'
+        $liveWelcome = Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle } | Select-Object -First 1
+        $dialogTitle = if ($null -ne $liveWelcome) { $liveWelcome.Title } else { $welcome.Title }
+        $dialogText = [ShotKitHoverSmoke.Native]::WindowText($welcome.Handle)
+        $exitDetail = if ($shotKit.HasExited) { " process exited with code $($shotKit.ExitCode)." } else { '' }
+        throw "Timed out waiting for startup IDOK button (HWND $($welcome.Handle)). Dialog title='$dialogTitle'; text='$dialogText'$exitDetail"
     }
     if (-not [ShotKitHoverSmoke.Native]::PostMessageW($okButton, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)) {
         throw 'Could not post BM_CLICK to the startup dialog IDOK button.'
