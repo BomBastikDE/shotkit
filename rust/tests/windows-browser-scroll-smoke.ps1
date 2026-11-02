@@ -194,7 +194,7 @@ function Stop-ProfileEdgeProcess {
     if ($null -eq $identity) { return }
     if ($identity.Name -ne 'msedge.exe' -or -not $identity.CommandLine -or
         $identity.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
-        throw "Refusing to stop PID $ProcessId: it no longer identifies the test Edge profile."
+        throw "Refusing to stop PID ${ProcessId}: it no longer identifies the test Edge profile."
     }
     $process = $null
     try { $process = [Diagnostics.Process]::GetProcessById($ProcessId) }
