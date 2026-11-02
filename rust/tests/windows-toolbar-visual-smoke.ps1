@@ -31,6 +31,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll",EntryPoint="GetClassLongPtrW")] static extern IntPtr GetClassLongPtrW(IntPtr h,int index);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -92,7 +93,7 @@ try {
  # The color action must open its owned native color chooser. Cancel only that
  # verified dialog, then exercise a quick color swatch and retain it in capture.
  $colorButton=$buttons|Where-Object{$_.Text -ceq 'Farbe…'}|Select-Object -First 1
- [void][ShotKitToolbarVisual.Native]::SendMessageW($colorButton.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+ if(-not [ShotKitToolbarVisual.Native]::PostMessageW($colorButton.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'COLOR_CLICK_POST_FAILED'}
  $deadline=[DateTime]::UtcNow.AddSeconds(5);$colorDialog=$null
  while([DateTime]::UtcNow -lt $deadline){$colorDialog=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}|Select-Object -First 1;if($colorDialog){break};Start-Sleep -Milliseconds 100}
  if(-not $colorDialog -or [ShotKitToolbarVisual.Native]::Owner($colorDialog.H) -ne [uint32]$p.Id){throw 'COLOR_CHOOSER_MISSING_OR_WRONG_OWNER'}
@@ -105,7 +106,7 @@ try {
  # Verify the toolbar capture action and Ctrl+N shortcut by observing the
  # owned selection overlay, then cancel only that overlay with Escape.
  foreach($captureMode in @('button','shortcut')) {
-  if($captureMode -eq 'button') { $capture=$buttons|Where-Object{$_.Text -ceq 'Neue Aufnahme (Strg+N)'}|Select-Object -First 1;[void][ShotKitToolbarVisual.Native]::SendMessageW($capture.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero) }
+  if($captureMode -eq 'button') { $capture=$buttons|Where-Object{$_.Text -ceq 'Neue Aufnahme (Strg+N)'}|Select-Object -First 1;if(-not [ShotKitToolbarVisual.Native]::PostMessageW($capture.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'CAPTURE_CLICK_POST_FAILED'} }
   else { [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H);[ShotKitToolbarVisual.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero);$controlDown=$true;[ShotKitToolbarVisual.Native]::keybd_event(0x4e,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 60;[ShotKitToolbarVisual.Native]::keybd_event(0x4e,0,2,[UIntPtr]::Zero);[ShotKitToolbarVisual.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero);$controlDown=$false }
   $deadline=[DateTime]::UtcNow.AddSeconds(5);$overlay=$null
   while([DateTime]::UtcNow -lt $deadline){$overlay=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitSelectionOverlay'}|Select-Object -First 1;if($overlay){break};Start-Sleep -Milliseconds 100}

@@ -46,6 +46,7 @@ namespace ShotKitStepSmoke {
         [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint data, UIntPtr extra);
         [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
         [DllImport("user32.dll")] static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint m, IntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result);
         [DllImport("user32.dll")] static extern bool OpenClipboard(IntPtr owner);
         [DllImport("user32.dll")] static extern bool CloseClipboard();
         [DllImport("user32.dll")] static extern IntPtr GetClipboardData(uint format);
@@ -73,7 +74,7 @@ namespace ShotKitStepSmoke {
             if(!ScreenToClient(parent,ref a)||!ScreenToClient(parent,ref b))return false;
             r=new Rect{Left=a.X,Top=a.Y,Right=b.X,Bottom=b.Y};return true;
         }
-        public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
+        public static void Click(IntPtr h) { UIntPtr result; if(SendMessageTimeoutW(h,0x00F5,IntPtr.Zero,IntPtr.Zero,2,5000,out result)==IntPtr.Zero) throw new InvalidOperationException("Button click timed out or failed; an owned dialog may require attention."); }
         public static byte[] ReadDibV5() {
             if(!OpenClipboard(IntPtr.Zero))throw new InvalidOperationException("OpenClipboard failed after Ctrl+C.");
             IntPtr memory=IntPtr.Zero,p=IntPtr.Zero;
