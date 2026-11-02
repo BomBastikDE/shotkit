@@ -60,8 +60,14 @@ namespace ShotKitHoverSmoke {
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll", SetLastError=true)]
         public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", SetLastError=true)]
-        public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+        public static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")]
@@ -104,6 +110,30 @@ namespace ShotKitHoverSmoke {
                 return true;
             }, IntPtr.Zero);
             return all.ToString();
+        }
+        public static IntPtr FindVisibleOkButton(IntPtr dialog, out string details) {
+            IntPtr found = IntPtr.Zero;
+            List<string> buttons = new List<string>();
+            EnumChildProc callback = delegate(IntPtr child, IntPtr ignored) {
+                if (!IsWindowVisible(child)) return true;
+                StringBuilder cls = new StringBuilder(128);
+                StringBuilder title = new StringBuilder(256);
+                GetClassNameW(child, cls, cls.Capacity);
+                GetWindowTextW(child, title, title.Capacity);
+                if (String.Equals(cls.ToString(), "Button", StringComparison.OrdinalIgnoreCase)) {
+                    int id = GetDlgCtrlID(child);
+                    buttons.Add(String.Format("HWND=0x{0:X} ID={1} Text='{2}'", child.ToInt64(), id, title));
+                    if (String.Equals(title.ToString().Trim(), "OK", StringComparison.OrdinalIgnoreCase)) {
+                        found = child;
+                        return false;
+                    }
+                }
+                return true;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            details = buttons.Count == 0 ? "no visible Button-class children" : String.Join("; ", buttons.ToArray());
+            return found;
         }
         public static WindowInfo[] WindowsForProcess(int processId) {
             List<WindowInfo> windows = new List<WindowInfo>();
@@ -341,25 +371,29 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     $okButton = [IntPtr]::Zero
     $buttonDeadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([DateTime]::UtcNow -lt $buttonDeadline -and -not $shotKit.HasExited) {
-        $liveWelcome = Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle } | Select-Object -First 1
-        if ($null -ne $liveWelcome) {
-            $okButton = [ShotKitHoverSmoke.Native]::GetDlgItem($welcome.Handle, 1)
-            if ($okButton -ne [IntPtr]::Zero) { break }
-        }
+        $buttonDetails = ''
+        $okButton = [ShotKitHoverSmoke.Native]::FindVisibleOkButton($welcome.Handle, [ref]$buttonDetails)
+        if ($okButton -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 100
     }
     if ($okButton -eq [IntPtr]::Zero) {
-        $liveWelcome = Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle } | Select-Object -First 1
-        $dialogTitle = if ($null -ne $liveWelcome) { $liveWelcome.Title } else { $welcome.Title }
+        $dialogTitle = $welcome.Title
         $dialogText = [ShotKitHoverSmoke.Native]::WindowText($welcome.Handle)
         $exitDetail = if ($shotKit.HasExited) { " process exited with code $($shotKit.ExitCode)." } else { '' }
-        throw "Timed out waiting for startup IDOK button (HWND $($welcome.Handle)). Dialog title='$dialogTitle'; text='$dialogText'$exitDetail"
+        throw "Timed out waiting for a visible Button-class child titled OK (dialog HWND $($welcome.Handle)). Dialog title='$dialogTitle'; text='$dialogText'; buttons='$buttonDetails'$exitDetail"
     }
+    $okControlId = [ShotKitHoverSmoke.Native]::GetDlgCtrlID($okButton)
     if (-not [ShotKitHoverSmoke.Native]::PostMessageW($okButton, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)) {
-        throw 'Could not post BM_CLICK to the startup dialog IDOK button.'
+        throw "Could not post BM_CLICK to startup OK button HWND=$($okButton.ToInt64()) control ID=$okControlId."
     }
-    $welcomeClosed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the ShotKit startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-        -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
+    try {
+        $welcomeClosed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the ShotKit startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
+            -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
+        }
+    }
+    catch {
+        $dialogText = [ShotKitHoverSmoke.Native]::WindowText($welcome.Handle)
+        throw "Startup dialog remained after BM_CLICK (button HWND=$($okButton.ToInt64()), control ID=$okControlId). Title='$($welcome.Title)'; text='$dialogText'. $($_.Exception.Message)"
     }
     Assert-NoUnexpectedDialog $shotKit
 

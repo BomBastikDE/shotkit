@@ -34,14 +34,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/windows-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
-      - name: Interactive Windows hover suggestion smoke test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./tests/windows-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows single-instance smoke test
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/windows-instance-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows hover suggestion smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Edge browser hover smoke test
         if: runner.os == 'Windows'
         shell: pwsh
