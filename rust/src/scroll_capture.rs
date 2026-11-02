@@ -298,6 +298,7 @@ mod tests {
         cancel: bool,
         mouse_move: bool,
         cancel_on_wait: Option<usize>,
+        mouse_move_on_wait: Option<usize>,
         wait_calls: usize,
         capture_calls: usize,
         fail_capture_at: Option<usize>,
@@ -318,6 +319,7 @@ mod tests {
                 cancel: false,
                 mouse_move: false,
                 cancel_on_wait: None,
+                mouse_move_on_wait: None,
                 wait_calls: 0,
                 capture_calls: 0,
                 fail_capture_at: None,
@@ -337,6 +339,7 @@ mod tests {
                 cancel: false,
                 mouse_move: false,
                 cancel_on_wait: None,
+                mouse_move_on_wait: None,
                 wait_calls: 0,
                 capture_calls: 0,
                 fail_capture_at: None,
@@ -446,6 +449,9 @@ mod tests {
             if self.cancel_on_wait == Some(self.wait_calls) {
                 self.cancel = true;
             }
+            if self.mouse_move_on_wait == Some(self.wait_calls) {
+                self.mouse_move = true;
+            }
         }
         fn cancelled(&mut self) -> bool {
             self.cancel
@@ -546,6 +552,34 @@ mod tests {
         assert_eq!(io.capture_calls, 2);
         assert_eq!(out.image.height, 220);
         assert_eq!(out.image.pixels, io.capture_page_vertical(220));
+    }
+
+    #[test]
+    fn cancellation_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
+        let mut io = FakeScrollIo::vertical(220, 700);
+        // Waits 1-3 settle the initial and first scrolled viewports. The first
+        // 50px overlap is stitched before wait 4, after the next scroll event.
+        io.cancel_on_wait = Some(4);
+        let out = run(&mut io, Direction::Down).unwrap();
+
+        assert_eq!(out.reason, "Mit Esc beendet.");
+        assert_eq!(io.scroll_calls, 2);
+        assert_eq!(io.capture_calls, 4, "the uncommitted second scroll must not be captured");
+        assert_eq!((out.image.width, out.image.height), (120, 270));
+        assert_eq!(out.image.pixels, io.capture_page_vertical(270));
+    }
+
+    #[test]
+    fn mouse_movement_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
+        let mut io = FakeScrollIo::vertical(220, 700);
+        io.mouse_move_on_wait = Some(4);
+        let out = run(&mut io, Direction::Down).unwrap();
+
+        assert_eq!(out.reason, "Durch Mausbewegung beendet.");
+        assert_eq!(io.scroll_calls, 2);
+        assert_eq!(io.capture_calls, 4, "the uncommitted second scroll must not be captured");
+        assert_eq!((out.image.width, out.image.height), (120, 270));
+        assert_eq!(out.image.pixels, io.capture_page_vertical(270));
     }
 
     #[test]
