@@ -35,6 +35,11 @@ namespace ShotKitBrowserScrollSmoke {
         public uint ProcessId;
         public int[] ClientBounds;
     }
+    public sealed class ButtonInfo {
+        public IntPtr Handle;
+        public int ControlId;
+        public string Text;
+    }
     public static class Native {
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
         private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
@@ -47,6 +52,9 @@ namespace ShotKitBrowserScrollSmoke {
         private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
         private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern int SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
@@ -90,6 +98,25 @@ namespace ShotKitBrowserScrollSmoke {
             EnumChildWindows(hwnd, callback, IntPtr.Zero);
             GC.KeepAlive(callback);
             return all.ToString();
+        }
+        public static ButtonInfo[] VisibleButtons(IntPtr dialog) {
+            List<ButtonInfo> buttons = new List<ButtonInfo>();
+            EnumChildProc callback = delegate(IntPtr child, IntPtr ignored) {
+                if (!IsWindowVisible(child)) return true;
+                StringBuilder cls = new StringBuilder(128); GetClassNameW(child, cls, cls.Capacity);
+                if (!String.Equals(cls.ToString(), "Button", StringComparison.OrdinalIgnoreCase)) return true;
+                StringBuilder text = new StringBuilder(256); GetWindowTextW(child, text, text.Capacity);
+                buttons.Add(new ButtonInfo { Handle=child, ControlId=GetDlgCtrlID(child), Text=text.ToString() });
+                return true;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            return buttons.ToArray();
+        }
+        public static void ClickButton(IntPtr button) {
+            const uint BM_CLICK = 0x00F5;
+            if (button == IntPtr.Zero) throw new ArgumentException("Dialog button handle is null.");
+            SendMessageW(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
         }
         public static WindowInfo[] WindowsForProcess(int processId) {
             List<WindowInfo> windows = new List<WindowInfo>();
@@ -201,35 +228,65 @@ function Wait-ForCondition {
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
 }
+function Click-DialogButton {
+    param([System.Diagnostics.Process] $OwnedProcess, $Dialog, [string[]] $ExpectedTexts, [string] $Description)
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $buttons = @()
+    while ([DateTime]::UtcNow -lt $deadline -and -not $OwnedProcess.HasExited) {
+        $buttons = @([ShotKitBrowserScrollSmoke.Native]::VisibleButtons($Dialog.Handle))
+        $button = $buttons | Where-Object { $ExpectedTexts -contains (($_.Text -replace '&', '').Trim()) } | Select-Object -First 1
+        if ($null -ne $button) {
+            [ShotKitBrowserScrollSmoke.Native]::ClickButton($button.Handle)
+            return $button
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $detail = ($buttons | ForEach-Object { "HWND=$($_.Handle) ID=$($_.ControlId) Text='$($_.Text)'" }) -join '; '
+    if (-not $detail) { $detail = 'no visible Button-class children' }
+    throw "BUTTON_TIMEOUT: $Description on '$($Dialog.Title)' HWND=$($Dialog.Handle); buttons=$detail"
+}
+function Wait-ForDialogClosed {
+    param([System.Diagnostics.Process] $OwnedProcess, [IntPtr] $DialogHandle, [string] $Description)
+    Wait-ForCondition -TimeoutSeconds 5 -Description $Description -OwnedProcess $OwnedProcess -Condition {
+        @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
+    } | Out-Null
+}
 function Get-ProfileEdgeProcesses {
     $escapedProfile = [Regex]::Escape($edgeProfile)
     @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
 }
 function Stop-ProfileEdgeProcess {
-    param([int] $ProcessId)
-    $identity = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
-    if ($null -eq $identity) { return }
-    if ($identity.Name -ne 'msedge.exe' -or -not $identity.CommandLine -or
-        $identity.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
+    param($ProcessIdentity)
+    $ProcessId = [int]$ProcessIdentity.ProcessId
+    $currentIdentity = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+    if ($null -eq $currentIdentity) { return }
+    # The original process may have exited and Windows may already have reused its PID.
+    # Treat that as successful cleanup, without ever touching the replacement.
+    if ($currentIdentity.CreationDate -ne $ProcessIdentity.CreationDate) { return }
+    if ($currentIdentity.Name -ne 'msedge.exe' -or -not $currentIdentity.CommandLine -or
+        $currentIdentity.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
         throw "Refusing to stop PID ${ProcessId}: it no longer identifies the test Edge profile."
     }
     $process = $null
     try { $process = [Diagnostics.Process]::GetProcessById($ProcessId) }
     catch {
-        if ($null -eq (Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop)) { return }
+        $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($null -eq $latest -or $latest.CreationDate -ne $ProcessIdentity.CreationDate) { return }
         throw
     }
     try {
         $confirmed = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
         if ($null -eq $confirmed) { return }
-        if ($confirmed.Name -ne 'msedge.exe' -or $confirmed.CreationDate -ne $identity.CreationDate -or
+        if ($confirmed.CreationDate -ne $ProcessIdentity.CreationDate) { return }
+        if ($confirmed.Name -ne 'msedge.exe' -or
             -not $confirmed.CommandLine -or $confirmed.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
-            throw "PID $ProcessId changed identity during cleanup; replacement was not stopped."
+            throw "Refusing to stop PID ${ProcessId}: the original creation identity does not match the test Edge profile."
         }
         try { $process.Kill() }
         catch {
-            if ($process.HasExited -or $null -eq (Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop)) { return }
+            $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+            if ($process.HasExited -or $null -eq $latest -or $latest.CreationDate -ne $ProcessIdentity.CreationDate) { return }
             throw
         }
         if (-not $process.WaitForExit(3000) -and -not $process.HasExited) { throw "Owned Edge PID $ProcessId did not exit." }
@@ -295,10 +352,12 @@ try {
         }
     }
     if (-not [ShotKitBrowserScrollSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) { throw 'Could not foreground the owned Edge surface.' }
-    if ([ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow(
-        [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()) -ne $browserWindow.ProcessId) {
-        throw 'EDGE_FOCUS_MISMATCH: foreground window is not the owned browser surface.'
+    $foreground = Wait-ForCondition -TimeoutSeconds 3 -Description 'owned Edge foreground HWND activation' -OwnedProcess $null -Condition {
+        $foregroundHwnd = [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()
+        if ($foregroundHwnd -eq $browserWindow.Handle -and
+            [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
     }
+    if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND is not the activated owned browser surface.' }
     $browserClient = [ShotKitBrowserScrollSmoke.Native]::ClientBounds($browserWindow.Handle)
     if ($browserWindow.Title -match 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') {
         $innerWidth = [int]$Matches[1]
@@ -368,15 +427,28 @@ try {
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    if (-not [ShotKitBrowserScrollSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) { throw 'Could not close ShotKit startup dialog.' }
-    Start-Sleep -Milliseconds 300
+    Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedTexts @('OK') -Description 'startup acknowledgement' | Out-Null
+    Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'startup dialog closure after its OK button was clicked'
     Assert-NoUnexpectedDialog $shotKit
 
-    if (-not [ShotKitBrowserScrollSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) { throw 'Could not restore Edge foreground before sending the scroll hotkey.' }
-    if ([ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow(
-        [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()) -ne $browserWindow.ProcessId) {
-        throw 'EDGE_FOCUS_MISMATCH: foreground PID changed before F10.'
+    # Reacquire the actual top-level browser window after ShotKit's dialog has
+    # closed; do not assume the earlier HWND remained the active foreground target.
+    $browserWindow = Wait-ForCondition -TimeoutSeconds 5 -Description 'owned Edge window after startup dialog closure' -OwnedProcess $null -Condition {
+        $owned = Get-ProfileEdgeProcesses
+        foreach ($process in $owned) {
+            [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$process.ProcessId) |
+                Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' -and $_.Title -like '*READY inner=*scroll=2400*' } |
+                Select-Object -First 1
+        }
     }
+
+    if (-not [ShotKitBrowserScrollSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) { throw 'Could not restore Edge foreground before sending the scroll hotkey.' }
+    $foreground = Wait-ForCondition -TimeoutSeconds 3 -Description 'Edge foreground HWND before F10' -OwnedProcess $null -Condition {
+        $foregroundHwnd = [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()
+        if ($foregroundHwnd -eq $browserWindow.Handle -and
+            [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
+    }
+    if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND changed before F10.' }
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero) # release stale Ctrl
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0, [UIntPtr]::Zero) # F10 down
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0x0002, [UIntPtr]::Zero) # F10 up
@@ -476,7 +548,7 @@ finally {
         do {
             $owned = Get-ProfileEdgeProcesses
             foreach ($process in $owned) {
-                try { Stop-ProfileEdgeProcess ([int]$process.ProcessId) }
+                try { Stop-ProfileEdgeProcess -ProcessIdentity $process }
                 catch { $cleanupFailures += "Could not stop owned Edge PID $($process.ProcessId): $($_.Exception.Message)" }
             }
             Start-Sleep -Milliseconds 200
