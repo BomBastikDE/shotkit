@@ -31,6 +31,35 @@ pub fn source_over(dst: [u8; 4], src: [u8; 4], opacity: u8) -> [u8; 4] {
     out
 }
 
+/// Flatten a preview against the checkerboard without compositing opaque pixels.
+pub fn flatten_checkerboard(image: &Image) -> Result<Image, String> {
+    let len = checked_image_len(image).map_err(str::to_owned)?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(len)
+        .map_err(|_| "Nicht genug Speicher für die Bildvorschau.".to_owned())?;
+    for (index, src) in image.pixels.as_chunks::<4>().0.iter().enumerate() {
+        if src[3] == 255 {
+            pixels.extend_from_slice(src);
+        } else {
+            let x = index % image.width;
+            let y = index / image.width;
+            let gray = if ((x / 12) + (y / 12)).is_multiple_of(2) {
+                236
+            } else {
+                196
+            };
+            let pixel = source_over(
+                [gray, gray, gray, 255],
+                [src[0], src[1], src[2], src[3]],
+                255,
+            );
+            pixels.extend_from_slice(&pixel);
+        }
+    }
+    Image::new(image.width, image.height, pixels).map_err(str::to_owned)
+}
+
 /// Composites an equally sized straight-alpha BGRA layer over `base`.
 ///
 /// Both public `Image` fields are revalidated because callers can construct an
@@ -88,6 +117,36 @@ mod tests {
 
     fn img(pixels: Vec<u8>) -> Image {
         Image::new(pixels.len() / 4, 1, pixels).unwrap()
+    }
+
+    #[test]
+    fn checkerboard_flattens_only_transparent_pixels_without_changing_output() {
+        let mut pixels = vec![0; 25 * 2 * 4];
+        for (i, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[i as u8, 100, 200, [0, 128, 255][i % 3]]);
+        }
+        let image = Image::new(25, 2, pixels).unwrap();
+        let result = flatten_checkerboard(&image).unwrap();
+        for (index, (src, dst)) in image
+            .pixels
+            .chunks_exact(4)
+            .zip(result.pixels.chunks_exact(4))
+            .enumerate()
+        {
+            let gray = if (((index % image.width) / 12) + ((index / image.width) / 12)) % 2 == 0 {
+                236
+            } else {
+                196
+            };
+            assert_eq!(
+                dst,
+                source_over(
+                    [gray, gray, gray, 255],
+                    [src[0], src[1], src[2], src[3]],
+                    255
+                )
+            );
+        }
     }
 
     #[test]

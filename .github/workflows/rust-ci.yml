@@ -44,6 +44,10 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo test --locked --all-targets
+      - name: Measure preview redraw on Windows
+        timeout-minutes: 15
+        if: runner.os == 'Windows'
+        run: cargo run --locked --release --example preview_redraw_benchmark
       - name: Build Windows application
         timeout-minutes: 15
         if: runner.os == 'Windows'

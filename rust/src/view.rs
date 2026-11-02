@@ -52,9 +52,176 @@ pub fn to_image(view: View, image: (u32, u32), point: (i32, i32)) -> (i32, i32) 
         ((point.1 - view.y) as i64 * h as i64 / view.height.max(1) as i64).clamp(0, (h - 1) as i64);
     (x as i32, y as i32)
 }
+/// The screen-space union of old and new shape footprints, clipped to the image.
+/// Text bounds are approximate in the editor; conservatively redraw its image view.
+pub fn dirty_shape_region(
+    view: View,
+    image: (u32, u32),
+    before: Option<&crate::shapes::Shape>,
+    after: Option<&crate::shapes::Shape>,
+) -> Option<View> {
+    use crate::shapes::ShapeKind;
+    let shapes: Vec<_> = [before, after].into_iter().flatten().collect();
+    if shapes.is_empty() {
+        return None;
+    }
+    if shapes
+        .iter()
+        .any(|shape| matches!(shape.kind, ShapeKind::Text { .. }))
+    {
+        return Some(view);
+    }
+    let sx = f64::from(view.width) / f64::from(image.0.max(1));
+    let sy = f64::from(view.height) / f64::from(image.1.max(1));
+    let mut left = f64::INFINITY;
+    let mut top = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for shape in shapes {
+        let bounds = shape.bounds();
+        let values = [
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            shape.style.width,
+        ];
+        if values.iter().any(|v| !v.is_finite()) {
+            return Some(view);
+        }
+        // Arrowheads extend up to four stroke widths; 16 image pixels and
+        // 8 screen pixels cover antialiasing and the editor selection handles.
+        let margin = f64::from(shape.style.width.abs().max(1.0) * 4.0 + 16.0);
+        left = left.min(f64::from(view.x) + (f64::from(bounds.x) - margin) * sx - 8.0);
+        top = top.min(f64::from(view.y) + (f64::from(bounds.y) - margin) * sy - 8.0);
+        right =
+            right.max(f64::from(view.x) + (f64::from(bounds.x + bounds.width) + margin) * sx + 8.0);
+        bottom = bottom
+            .max(f64::from(view.y) + (f64::from(bounds.y + bounds.height) + margin) * sy + 8.0);
+    }
+    let l = left.floor().max(f64::from(view.x));
+    let t = top.floor().max(f64::from(view.y));
+    let r = right.ceil().min(f64::from(view.x) + f64::from(view.width));
+    let b = bottom
+        .ceil()
+        .min(f64::from(view.y) + f64::from(view.height));
+    if r <= l || b <= t {
+        None
+    } else {
+        Some(View {
+            x: l as i32,
+            y: t as i32,
+            width: (r - l) as i32,
+            height: (b - t) as i32,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dirty_region_covers_old_and_new_shapes_and_clips_to_image_view() {
+        use crate::shapes::{Point, Shape, ShapeKind};
+        let v = View {
+            x: 10,
+            y: 20,
+            width: 1000,
+            height: 500,
+        };
+        let before = Shape::new(ShapeKind::Arrow {
+            start: Point::new(10.0, 10.0),
+            end: Point::new(100.0, 90.0),
+        });
+        let after = Shape::new(ShapeKind::Arrow {
+            start: Point::new(100.0, 20.0),
+            end: Point::new(300.0, 110.0),
+        });
+        let region = dirty_shape_region(v, (1000, 500), Some(&before), Some(&after)).unwrap();
+        assert_eq!((region.x, region.y), (10, 20));
+        assert!(region.width >= 300 && region.width < v.width);
+        assert!(region.height >= 110 && region.height < v.height);
+        assert_eq!(dirty_shape_region(v, (1000, 500), None, None), None);
+        let text = Shape::new(ShapeKind::Text {
+            location: Point::new(1.0, 1.0),
+            text: "text".into(),
+        });
+        assert_eq!(
+            dirty_shape_region(v, (1000, 500), Some(&text), None),
+            Some(v)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dirty_region_contains_every_changed_rendered_pixel() {
+        use crate::{
+            alpha_document::render_document,
+            shapes::{Point, Shape, ShapeKind},
+            stitch::Image,
+        };
+        let image = Image::new(
+            180,
+            140,
+            (0..180 * 140)
+                .flat_map(|i| [i as u8, (i / 180) as u8, 90, 255])
+                .collect(),
+        )
+        .unwrap();
+        let view = View {
+            x: 0,
+            y: 0,
+            width: 180,
+            height: 140,
+        };
+        let a = Point::new(30.0, 35.0);
+        let b = Point::new(90.0, 80.0);
+        let kinds = [
+            ShapeKind::Line { start: a, end: b },
+            ShapeKind::Arrow { start: a, end: b },
+            ShapeKind::Rectangle { start: a, end: b },
+            ShapeKind::Ellipse { start: a, end: b },
+            ShapeKind::Highlight { start: a, end: b },
+            ShapeKind::Blur { start: a, end: b },
+            ShapeKind::Freehand {
+                points: vec![a, Point::new(48.0, 70.0), b],
+            },
+            ShapeKind::Step {
+                center: a,
+                number: 2,
+            },
+        ];
+        for kind in kinds {
+            let before = Shape::new(kind);
+            let mut after = before.clone();
+            after.offset(27.0, 12.0);
+            let old = render_document(&image, std::slice::from_ref(&before)).unwrap();
+            let new = render_document(&image, std::slice::from_ref(&after)).unwrap();
+            let area = dirty_shape_region(view, (180, 140), Some(&before), Some(&after)).unwrap();
+            for (index, (left, right)) in old
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(new.pixels.as_chunks::<4>().0.iter())
+                .enumerate()
+            {
+                if left != right {
+                    let x = (index % 180) as i32;
+                    let y = (index / 180) as i32;
+                    assert!(
+                        x >= area.x
+                            && x < area.x + area.width
+                            && y >= area.y
+                            && y < area.y + area.height,
+                        "changed pixel ({x},{y}) outside dirty area for {:?}",
+                        before.kind
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn fits_preserving_aspect() {
         assert_eq!(

@@ -99,27 +99,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     // translucent annotations are displayed using the same source-over math
     // as the document renderer. Export continues to use the original alpha.
     let display_image = if preview {
-        let mut pixels = Vec::new();
-        pixels
-            .try_reserve_exact(rendered.pixels.len())
-            .map_err(|_| "Nicht genug Speicher für die Bildvorschau.".to_owned())?;
-        for (index, src) in rendered.pixels.chunks_exact(4).enumerate() {
-            let x = index % rendered.width;
-            let y = index / rendered.width;
-            let gray = if ((x / 12) + (y / 12)) % 2 == 0 {
-                236
-            } else {
-                196
-            };
-            let background = [gray, gray, gray, 255];
-            let pixel = shotkit::alpha_composite::source_over(
-                background,
-                [src[0], src[1], src[2], src[3]],
-                255,
-            );
-            pixels.extend_from_slice(&pixel);
-        }
-        Image::new(rendered.width, rendered.height, pixels).map_err(str::to_owned)?
+        shotkit::alpha_composite::flatten_checkerboard(&rendered)?
     } else {
         rendered
     };

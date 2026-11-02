@@ -1,6 +1,54 @@
 use super::*;
 
 // SAFETY CONTRACT:
+// Voraussetzung: h ist ein gültiges Editorfenster mit initialisiertem Zustand.
+// Warum erfüllt: Aufruf nur aus dessen Maus-Handler; das Rechteck ist lokal und
+// lebt bis zur Rückkehr von InvalidateRect, ohne gehaltenen STATE-Borrow.
+// Nachrichten: InvalidateRect markiert den Bereich und sendet hier keine Nachricht.
+unsafe fn invalidate_image_view(h: H) {
+    let (x, y, width, height) = image_view(h);
+    let rect = Rect {
+        left: x,
+        top: y,
+        right: x.saturating_add(width),
+        bottom: y.saturating_add(height),
+    };
+    InvalidateRect(h, &rect, 0);
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein gültiges Editorfenster; vor und nach sind besessene
+// Schnappschüsse der Vorschau und bleiben während der Berechnung gültig.
+// Warum erfüllt: Der Maus-Handler kopiert beide Formen und beendet Zustandszugriffe
+// vor InvalidateRect; unsichere Textgrenzen fallen auf die Bildfläche zurück.
+// Nachrichten: InvalidateRect markiert den Bereich und sendet hier keine Nachricht.
+unsafe fn invalidate_preview_change(
+    h: H,
+    before: Option<&shotkit::shapes::Shape>,
+    after: Option<&shotkit::shapes::Shape>,
+) {
+    let (x, y, width, height) = image_view(h);
+    let view = view::View {
+        x,
+        y,
+        width,
+        height,
+    };
+    let image = (
+        window_state(h).width.max(1) as u32,
+        window_state(h).height.max(1) as u32,
+    );
+    let region = view::dirty_shape_region(view, image, before, after).unwrap_or(view);
+    let rect = Rect {
+        left: region.x,
+        top: region.y,
+        right: region.x.saturating_add(region.width),
+        bottom: region.y.saturating_add(region.height),
+    };
+    InvalidateRect(h, &rect, 0);
+}
+
+// SAFETY CONTRACT:
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
@@ -22,7 +70,7 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 }
             }
             report_editor_error(h);
-            InvalidateRect(h, std::ptr::null(), 0);
+            invalidate_image_view(h);
             0
         }
         0x0201 if !window_state(h).bitmap.is_null() => {
@@ -69,7 +117,7 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                         }
                     }
                     report_editor_error(h);
-                    InvalidateRect(h, std::ptr::null(), 0);
+                    invalidate_image_view(h);
                     return Some(0);
                 }
             }
@@ -78,12 +126,12 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 window_state(h).crop_start = Some((x, y));
                 window_state(h).crop_end = Some((x, y));
                 SetCapture(h);
-                InvalidateRect(h, std::ptr::null(), 0);
+                invalidate_image_view(h);
                 return Some(0);
             }
             editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
             SetCapture(h);
-            InvalidateRect(h, std::ptr::null(), 0);
+            invalidate_image_view(h);
             0
         }
         _ => return None,
@@ -101,12 +149,14 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
             let (x, y) = point(h, l);
             if matches!(window_state(h).crop_start, Some(_)) {
                 window_state(h).crop_end = Some((x, y));
-                InvalidateRect(h, std::ptr::null(), 0);
+                invalidate_image_view(h);
                 return Some(0);
             }
+            let before = editor(h).preview();
             editor(h)
                 .mouse_move_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
-            InvalidateRect(h, std::ptr::null(), 0);
+            let after = editor(h).preview();
+            invalidate_preview_change(h, before.as_ref(), after.as_ref());
             0
         }
         0x0202 if window_state(h).drawing => {
@@ -114,9 +164,21 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
             if let Some(start) = std::ptr::replace(&mut window_state(h).crop_start, None) {
                 window_state(h).crop_end = None;
                 window_state(h).drawing = false;
+                let (old_x, old_y, old_width, old_height) = image_view(h);
                 ReleaseCapture();
                 apply_crop(h, start, (x, y));
-                InvalidateRect(h, std::ptr::null(), 1);
+                let (new_x, new_y, new_width, new_height) = image_view(h);
+                let rect = Rect {
+                    left: old_x.min(new_x),
+                    top: old_y.min(new_y),
+                    right: old_x
+                        .saturating_add(old_width)
+                        .max(new_x.saturating_add(new_width)),
+                    bottom: old_y
+                        .saturating_add(old_height)
+                        .max(new_y.saturating_add(new_height)),
+                };
+                InvalidateRect(h, &rect, 1);
                 return Some(0);
             }
             let before = editor(h).shapes().to_vec();
@@ -128,7 +190,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
             window_state(h).drawing = false;
             ReleaseCapture();
             report_editor_error(h);
-            InvalidateRect(h, std::ptr::null(), 0);
+            invalidate_image_view(h);
             0
         }
         0x0215 if window_state(h).drawing => {
@@ -136,7 +198,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
             window_state(h).crop_start = None;
             window_state(h).crop_end = None;
             editor(h).cancel_drag();
-            InvalidateRect(h, std::ptr::null(), 0);
+            invalidate_image_view(h);
             0
         }
         _ => return None,
