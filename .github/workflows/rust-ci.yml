@@ -27,22 +27,26 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo build --locked --release
       - name: Interactive Windows capture smoke test
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows scroll capture smoke test
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows horizontal scroll smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-horizontal-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows single-instance smoke test
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-instance-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows hover suggestion smoke test
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Edge browser hover smoke test
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
