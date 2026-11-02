@@ -453,7 +453,7 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
         Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
     }
     $editor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor after capture' -OwnedProcess $shotKit -Condition {
-        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible -and $_.Title -like '*speichern*' } | Select-Object -First 1
+        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*speichern*' } | Select-Object -First 1
     }
 
     Add-Type -AssemblyName System.Drawing

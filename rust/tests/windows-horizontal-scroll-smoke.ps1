@@ -597,7 +597,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
 
         $editor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor window' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
             Get-ProcessWindows $shotKit | Where-Object {
-                $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible -and $_.Title -like '*speichern*'
+                $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*speichern*'
             } | Select-Object -First 1
         }
         Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')

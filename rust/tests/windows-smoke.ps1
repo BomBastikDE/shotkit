@@ -254,7 +254,7 @@ try {
 
     $editor = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'a visible editor window after area capture' -OwnedProcess $process -Condition {
         $window = Get-OwnWindows $process | Where-Object {
-            $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible -and $_.Title -like '*speichern*'
+            $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*speichern*'
         } | Select-Object -First 1
         if ($null -ne $window) { $window }
     }

@@ -193,6 +193,7 @@ $profile = Join-Path $root 'profile'
 $localProfile = Join-Path $root 'local-profile'
 $tempFiles = Join-Path $root 'temp'
 $probeFile = Join-Path $root 'second-instance-probe.txt'
+$initialImage = Join-Path $root 'first-editor.png'
 $primary = $null
 $secondActivate = $null
 $secondFile = $null
@@ -224,7 +225,11 @@ try {
     New-Item -ItemType Directory -Path $profile, $localProfile, $tempFiles -Force | Out-Null
     Set-Content -LiteralPath $probeFile -Value 'ShotKit single-instance smoke probe; safe to discard.' -Encoding ASCII
 
-    $primary = New-ShotKitProcess @()
+    Add-Type -AssemblyName System.Drawing
+    $fixture = [Drawing.Bitmap]::new(32, 24)
+    try { $fixture.Save($initialImage, [Drawing.Imaging.ImageFormat]::Png) }
+    finally { $fixture.Dispose() }
+    $primary = New-ShotKitProcess @($initialImage)
     $welcomeTitle = '*Prototyp*'
     Wait-ForCondition {
         -not $primary.HasExited -and $null -ne (Get-Dialog $primary $welcomeTitle)
@@ -248,7 +253,7 @@ try {
     }
     Wait-ForCondition {
         -not $primary.HasExited -and @((Get-ProcessWindows $primary | Where-Object {
-            $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible
+            $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible
         })).Count -gt 0
     } $TimeoutSeconds 'ACTIVATION_NOT_VISIBLE: Die primäre ShotKit-Instanz wurde nicht sichtbar aktiviert.'
 

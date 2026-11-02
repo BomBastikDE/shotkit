@@ -272,7 +272,7 @@ function Dismiss-OwnedDialog {
     throw "DIALOG_CLOSE_TIMEOUT: $Description HWND=$handle remains live=$([ShotKitEditorSmoke.Native]::IsLiveWindow($handle)) after $clickAttempts BM_CLICK attempts. Last original-dialog buttons=[$lastButtonText]. Current owned dialogs=$currentDialogs"
 }
 function Get-MainWindow {
-    Get-OwnedWindows | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible } | Select-Object -First 1
+    Get-OwnedWindows | Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible } | Select-Object -First 1
 }
 function Get-ImagePixels {
     param([string] $Path)

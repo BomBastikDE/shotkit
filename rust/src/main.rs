@@ -7,6 +7,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
+    rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 mod autostart;
@@ -23,6 +24,7 @@ mod uia_picker;
 
 use shotkit_rust_prototype::{
     capture_output::{Advance, CaptureAction, CaptureOutputState},
+    delayed_capture::{BeginError, DelayedCaptureState, Ticket as CaptureTicket},
     editor::EditorController,
     image_edit::{CropRect, FrameOptions, ShadowOptions},
     image_io, output_windows,
@@ -136,6 +138,8 @@ extern "system" {
         inst: H,
         p: H,
     ) -> H;
+    fn GetWindowLongPtrW(h: H, index: i32) -> isize;
+    fn SetWindowLongPtrW(h: H, index: i32, value: isize) -> isize;
     fn DefWindowProcW(h: H, m: u32, w: W, l: L) -> L;
     fn ShowWindow(h: H, n: i32) -> i32;
     fn GetMessageW(m: *mut Msg, h: H, min: u32, max: u32) -> i32;
@@ -236,6 +240,7 @@ const INSTANCE_MUTEX_NAME: &str = r"Local\ShotKitRustPrototype.RustOnly.SingleIn
 const INSTANCE_CLASS_NAME: &str = "ShotKitRustPrototype";
 const WM_COPYDATA: u32 = 0x004a;
 const WM_INSTANCE_ACTIVATE: u32 = 0x8004;
+const WM_FINISH_QUIT: u32 = 0x8005;
 const INSTANCE_COPYDATA_TAG: usize = 0x534b_5255;
 const MAX_IPC_PATH_UNITS: usize = 32_768;
 static INSTANCE_FILE_BUSY: AtomicBool = AtomicBool::new(false);
@@ -380,7 +385,6 @@ unsafe fn handle_instance_file(h: H, l: L) -> L {
     if MessageBoxW(h, wide(&prompt).as_ptr(), wide("Datei aus zweiter Instanz").as_ptr(), 0x24) != 6 {
         return 2;
     }
-    if !confirm_replace(h) { return 2; }
     match open_image_path(h, path) {
         Ok(()) => 1,
         Err(error) => {
@@ -393,7 +397,10 @@ const COPY: u32 = 0x00cc0020;
 const TRAY: u32 = 0x8001;
 const SCROLL_DONE: u32 = 0x8002;
 const DELAYED_CAPTURE: u32 = 0x8003;
-static DELAYED_CAPTURE_PENDING: AtomicBool = AtomicBool::new(false);
+static DELAYED_CAPTURE_STATE: Mutex<DelayedCaptureState> = Mutex::new(DelayedCaptureState::new());
+fn delayed_capture_pending() -> bool {
+    DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_pending()
+}
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
 static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
 static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
@@ -408,28 +415,105 @@ impl Drop for BusyGuard {
         }
     }
 }
-static mut TOOLBAR: Option<toolbar::Toolbar> = None;
-unsafe fn toolbar_height() -> i32 {
-    (&*std::ptr::addr_of!(TOOLBAR))
-        .as_ref()
-        .map_or(0, |b| b.height())
+// UI-thread-only state. Each editor HWND owns a separate allocation in
+// GWLP_USERDATA; no active-window swapping is used, including during modal loops.
+struct WindowState {
+    toolbar: Option<Rc<toolbar::Toolbar>>,
+    editor: Option<EditorController>,
+    bitmap: H,
+    current_path: Option<PathBuf>,
+    dirty: bool,
+    zoom: f64,
+    pan_x: i32,
+    pan_y: i32,
+    width: i32,
+    height: i32,
+    drawing: bool,
+    crop_start: Option<(i32, i32)>,
+    crop_end: Option<(i32, i32)>,
+    modal_depth: usize,
 }
-static mut EDITOR: Option<EditorController> = None;
-unsafe fn editor() -> &'static mut EditorController {
-    let state = &mut *std::ptr::addr_of_mut!(EDITOR);
-    state.get_or_insert_with(EditorController::new)
+impl WindowState {
+    fn new() -> Self {
+        Self { toolbar: None, editor: None, bitmap: null_mut(), current_path: None,
+            dirty: false, zoom: 1.0, pan_x: 0, pan_y: 0, width: 0, height: 0,
+            drawing: false, crop_start: None, crop_end: None, modal_depth: 0 }
+    }
 }
-static mut BITMAP: H = null_mut();
-static mut CURRENT_PATH: Option<PathBuf> = None;
-static mut DIRTY: bool = false;
-static mut ZOOM: f64 = 1.0;
-static mut PAN_X: i32 = 0;
-static mut PAN_Y: i32 = 0;
-static mut BW: i32 = 0;
-static mut BH: i32 = 0;
-static mut DRAW: bool = false;
-static mut CROP_START: Option<(i32, i32)> = None;
-static mut CROP_END: Option<(i32, i32)> = None;
+static mut PRIMARY: H = null_mut();
+static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
+static QUITTING: AtomicBool = AtomicBool::new(false);
+unsafe fn window_state(h: H) -> &'static mut WindowState {
+    &mut *(GetWindowLongPtrW(h, -21) as *mut WindowState)
+}
+unsafe fn editor(h: H) -> &'static mut EditorController {
+    window_state(h).editor.get_or_insert_with(EditorController::new)
+}
+unsafe fn toolbar_height(h: H) -> i32 {
+    window_state(h).toolbar.as_ref().map_or(0, |bar| bar.height())
+}
+// Do not retain a Rust borrow across a Win32 dialog/message pump.
+struct ModalGuard(H);
+impl ModalGuard {
+    unsafe fn new(h: H) -> Self {
+        window_state(h).modal_depth += 1;
+        Self(h)
+    }
+}
+impl Drop for ModalGuard {
+    fn drop(&mut self) {
+        unsafe { window_state(self.0).modal_depth -= 1; }
+    }
+}
+unsafe fn editor_windows() -> Vec<H> {
+    (&*std::ptr::addr_of!(EDITOR_WINDOWS)).clone()
+}
+unsafe fn refresh_title(h: H) {
+    let state = window_state(h);
+    let name = state.current_path.as_ref().map(|p| p.display().to_string())
+        .unwrap_or_else(|| if state.bitmap.is_null() { "Bild öffnen oder einfügen".into() } else { "Neue Aufnahme".into() });
+    let tool = state.editor.as_ref().map(|editor| format!(" · Werkzeug {:?}", editor.tool())).unwrap_or_default();
+    let title = format!("{}{} – ShotKit Rust{} · Strg+S speichern", if state.dirty { "* " } else { "" }, name, tool);
+    SetWindowTextW(h, wide(&title).as_ptr());
+}
+unsafe fn show_editors() {
+    if QUITTING.load(Ordering::SeqCst) { return; }
+    let mut windows = editor_windows();
+    if windows.is_empty() {
+        match create_editor_window() {
+            Ok(h) => {
+                (&mut *std::ptr::addr_of_mut!(EDITOR_WINDOWS)).push(h);
+                refresh_title(h);
+                windows.push(h);
+            }
+            Err(error) => {
+                MessageBoxW(PRIMARY, wide(&error).as_ptr(), wide("Editor öffnen").as_ptr(), 0x10);
+                return;
+            }
+        }
+    }
+    for h in &windows { ShowWindow(*h, 9); } // SW_RESTORE also restores minimized editors
+    if let Some(h) = windows.last() { SetForegroundWindow(*h); }
+}
+unsafe fn quit_application(h: H) {
+    if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
+        MessageBoxW(h, wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
+        return;
+    }
+    if QUITTING.swap(true, Ordering::SeqCst) { return; }
+    let windows = editor_windows();
+    // Confirm all documents before destroying any. A cancelled save or close
+    // preserves every window, including previously confirmed discard choices.
+    let approved = windows.iter().all(|w| window_state(*w).modal_depth == 0)
+        && resolve_recovery(h)
+        && windows.iter().all(|w| confirm_replace(*w));
+    if approved {
+        for window in windows { DestroyWindow(window); }
+        PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0);
+    } else {
+        QUITTING.store(false, Ordering::SeqCst);
+    }
+}
 fn active_settings() -> Settings {
     SETTINGS
         .lock()
@@ -476,12 +560,12 @@ unsafe fn save_settings(h: H, new: Settings) -> bool {
         }
     }
 }
-unsafe fn cancel_gesture() {
-    let had_capture = DRAW;
-    DRAW = false;
-    CROP_START = None;
-    CROP_END = None;
-    if let Some(state) = (&mut *std::ptr::addr_of_mut!(EDITOR)).as_mut() {
+unsafe fn cancel_gesture(h: H) {
+    let had_capture = window_state(h).drawing;
+    window_state(h).drawing = false;
+    window_state(h).crop_start = None;
+    window_state(h).crop_end = None;
+    if let Some(state) = (&mut window_state(h).editor).as_mut() {
         state.cancel_drag();
     }
     if had_capture {
@@ -499,14 +583,19 @@ unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Result<(), St
             CaptureAction::OpenEditor => {
                 let owned = image.take().ok_or("Aufnahme ist nicht mehr verfügbar")?;
                 let result = display_image(h, owned);
-                if result.is_ok() {
-                    opened = true;
-                    if let Some(path) = saved.take() {
-                        *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
-                        DIRTY = false;
+                match result {
+                    Ok(window) => {
+                        opened = true;
+                        if let Some(path) = saved.take() {
+                            window_state(window).current_path = Some(path);
+                            window_state(window).dirty = false;
+                            refresh_title(window);
+                        }
+                        if was_visible { ShowWindow(h, 5); }
+                        Ok(())
                     }
+                    Err(error) => Err(error),
                 }
-                result
             }
             _ => {
                 let result = output_windows::execute_action(
@@ -586,9 +675,6 @@ unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>
         return;
     }
     let _busy = BusyGuard(true);
-    if !confirm_replace(h) {
-        return;
-    }
     let rect = match target {
         Ok(r) => r,
         Err(e) => {
@@ -626,18 +712,31 @@ unsafe fn capture(h: H) {
     capture_rect(h, capture_targets::monitor_under_cursor());
 }
 unsafe fn schedule_capture(h: H, seconds: u64) {
-    if DELAYED_CAPTURE_PENDING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        MessageBoxW(h, wide("Eine verzögerte Aufnahme läuft bereits.").as_ptr(), wide("Aufnahme").as_ptr(), 0x30);
-        return;
-    }
+    let request = DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).begin();
+    let ticket = match request {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            let message = match error {
+                BeginError::Busy => "Eine verzögerte Aufnahme läuft bereits.",
+                BeginError::Exhausted => "Keine weitere verzögerte Aufnahme möglich. Bitte ShotKit neu starten.",
+            };
+            MessageBoxW(h, wide(message).as_ptr(), wide("Aufnahme").as_ptr(), 0x30);
+            return;
+        }
+    };
+    post_capture_after(h, ticket, std::time::Duration::from_secs(seconds));
+}
+fn post_capture_after(h: H, ticket: CaptureTicket, delay: std::time::Duration) {
     let hwnd = h as isize;
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(seconds));
-        if unsafe { PostMessageW(hwnd as H, DELAYED_CAPTURE, 0, 0) } == 0 {
-            DELAYED_CAPTURE_PENDING.store(false, Ordering::SeqCst);
+        std::thread::sleep(delay);
+        if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_waiting(ticket) {
+            return;
+        }
+        // Completion can race with this PostMessage. The receiver therefore
+        // checks the same generation and claims Waiting -> Running exactly once.
+        if unsafe { PostMessageW(hwnd as H, DELAYED_CAPTURE, ticket.to_wire(), 0) } == 0 {
+            DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).cancel_waiting(ticket);
         }
     });
 }
@@ -656,12 +755,12 @@ unsafe fn capture_active(h: H, window: H) {
 unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     let mut r: Rect = zeroed();
     GetClientRect(h, &mut r);
-    let top = toolbar_height();
+    let top = toolbar_height(h);
     let v = view::layout(
-        (BW.max(1) as u32, BH.max(1) as u32),
+        (window_state(h).width.max(1) as u32, window_state(h).height.max(1) as u32),
         (0, top, r.right - r.left, r.bottom - r.top - top),
-        ZOOM,
-        (PAN_X, PAN_Y),
+        window_state(h).zoom,
+        (window_state(h).pan_x, window_state(h).pan_y),
     );
     (v.x, v.y, v.width, v.height)
 }
@@ -676,17 +775,18 @@ unsafe fn point(h: H, l: L) -> (i32, i32) {
             width: w,
             height,
         },
-        (BW.max(1) as u32, BH.max(1) as u32),
+        (window_state(h).width.max(1) as u32, window_state(h).height.max(1) as u32),
         (px, py),
     )
 }
 // Build a temporary composited bitmap. The base image remains unchanged so
 // annotation objects can be selected and undone. Caller owns the returned HBITMAP.
-unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
-    if BITMAP.is_null() {
+unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String> {
+    if window_state(h).bitmap.is_null() {
         return Err("Kein Bild geöffnet.".into());
     }
-    let state = editor();
+    let (crop_start, crop_end) = (window_state(h).crop_start, window_state(h).crop_end);
+    let state = editor(h);
     let mut draft = if preview { state.preview() } else { None };
     let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
     for (i, shape) in state.shapes().iter().enumerate() {
@@ -749,7 +849,7 @@ unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
         return Err("Bild konnte nicht ausgewählt werden.".into());
     }
     if preview && state.tool() == Tool::Crop {
-        if let (Some(a), Some(b)) = (CROP_START, CROP_END) {
+        if let (Some(a), Some(b)) = (crop_start, crop_end) {
             let pen = CreatePen(0, 2, 0x00ffffff);
             let previous_pen = SelectObject(out_dc, pen);
             let previous_brush = SelectObject(out_dc, GetStockObject(5));
@@ -781,11 +881,11 @@ unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
     Ok(output)
 }
 
-unsafe fn bitmap_image() -> Result<Image, String> {
-    if BITMAP.is_null() || BW <= 0 || BH <= 0 {
+unsafe fn bitmap_image(h: H) -> Result<Image, String> {
+    if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0 {
         return Err("Kein Bild geöffnet.".into());
     }
-    let state = editor();
+    let state = editor(h);
     shotkit_rust_prototype::alpha_document::render_document(&state.image_arc(), state.shapes())
 }
 
@@ -827,10 +927,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 unsafe fn save(h: H, save_as: bool) -> bool {
-    if BITMAP.is_null() {
+    let _modal = ModalGuard::new(h);
+    cancel_gesture(h);
+    if window_state(h).bitmap.is_null() {
         return false;
     }
-    let previous = (&*std::ptr::addr_of!(CURRENT_PATH)).clone();
+    let previous = (&window_state(h).current_path).clone();
     let path = if save_as || previous.is_none() {
         match file_dialog::save(h, previous.as_deref()) {
             Ok(Some(p)) => p,
@@ -845,14 +947,15 @@ unsafe fn save(h: H, save_as: bool) -> bool {
     };
     let result = (|| -> Result<(), String> {
         let format = image_io::format_from_path(&path)?;
-        let image = bitmap_image()?;
+        let image = bitmap_image(h)?;
         let bytes = image_io::encode(&image, format)?;
         write_atomic(&path, &bytes)
     })();
     match result {
         Ok(()) => {
-            *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
-            DIRTY = false;
+            window_state(h).current_path = Some(path);
+            window_state(h).dirty = false;
+            refresh_title(h);
             true
         }
         Err(e) => {
@@ -920,10 +1023,9 @@ unsafe fn resolve_recovery(h: H) -> bool {
     }
 }
 unsafe fn confirm_replace(h: H) -> bool {
-    if !resolve_recovery(h) {
-        return false;
-    }
-    if !DIRTY || BITMAP.is_null() {
+    let _modal = ModalGuard::new(h);
+    cancel_gesture(h);
+    if !window_state(h).dirty || window_state(h).bitmap.is_null() {
         return true;
     }
     match MessageBoxW(
@@ -938,9 +1040,6 @@ unsafe fn confirm_replace(h: H) -> bool {
     }
 }
 unsafe fn paste_image(h: H) {
-    if !confirm_replace(h) {
-        return;
-    }
     match clipboard::read_image(h) {
         Ok(Some(image)) => {
             if let Err(e) = display_image(h, image) {
@@ -961,9 +1060,6 @@ unsafe fn paste_image(h: H) {
     }
 }
 unsafe fn open_image(h: H) {
-    if !confirm_replace(h) {
-        return;
-    }
     let path = match file_dialog::open(h) {
         Ok(Some(p)) => p,
         Ok(None) => return,
@@ -987,9 +1083,10 @@ unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
     })();
     match result {
         Ok(image) => match display_image(h, image) {
-            Ok(()) => {
-                *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
-                DIRTY = false;
+            Ok(window) => {
+                window_state(window).current_path = Some(path);
+                window_state(window).dirty = false;
+                refresh_title(window);
                 Ok(())
             }
             Err(e) => Err(e),
@@ -1032,15 +1129,55 @@ unsafe fn create_bitmap(image: &Image) -> Result<H, String> {
     std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), bits.cast::<u8>(), image.pixels.len());
     Ok(bmp)
 }
-unsafe fn install_bitmap(bmp: H, image: &Image) {
-    if !BITMAP.is_null() {
-        DeleteObject(BITMAP);
+unsafe fn install_bitmap(h: H, bmp: H, image: &Image) {
+    if !window_state(h).bitmap.is_null() {
+        DeleteObject(window_state(h).bitmap);
     }
-    BITMAP = bmp;
-    BW = image.width as i32;
-    BH = image.height as i32;
+    window_state(h).bitmap = bmp;
+    window_state(h).width = image.width as i32;
+    window_state(h).height = image.height as i32;
 }
-unsafe fn display_image(h: H, image: Image) -> Result<(), String> {
+// Return a hidden, initialized editor shell. Register it in EDITOR_WINDOWS only
+// after its optional image has been installed successfully.
+unsafe fn create_editor_window() -> Result<H, String> {
+    let class = wide("ShotKitRustEditor");
+    let h = CreateWindowExW(0, class.as_ptr(), wide("ShotKit Rust").as_ptr(),
+        0x00cf0000, 0x80000000u32 as i32, 0x80000000u32 as i32, 1000, 700,
+        null_mut(), null_mut(), GetModuleHandleW(std::ptr::null()), null_mut());
+    if h.is_null() { return Err("Editorfenster konnte nicht erstellt werden.".into()); }
+    let bar = match toolbar::create(h) {
+        Ok(bar) => Rc::new(bar),
+        Err(error) => { DestroyWindow(h); return Err(error); }
+    };
+    // Drop replaced native objects only after the mutable state borrow ends.
+    let previous = window_state(h).toolbar.replace(bar);
+    drop(previous);
+    Ok(h)
+}
+unsafe fn display_image(_owner: H, image: Image) -> Result<H, String> {
+    if QUITTING.load(Ordering::SeqCst) {
+        RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).push(image);
+        return Err("ShotKit wird gerade beendet. Die Aufnahme bleibt im Speicher.".into());
+    }
+    let h = match create_editor_window() {
+        Ok(h) => h,
+        Err(error) => {
+            RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).push(image);
+            return Err(format!("{error} Die Aufnahme bleibt im Speicher."));
+        }
+    };
+    match initialize_image(h, image) {
+        Ok(()) => {
+            (&mut *std::ptr::addr_of_mut!(EDITOR_WINDOWS)).push(h);
+            refresh_title(h);
+            ShowWindow(h, 5);
+            SetForegroundWindow(h);
+            Ok(h)
+        }
+        Err(error) => { DestroyWindow(h); Err(error) }
+    }
+}
+unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> {
     let bmp = match create_bitmap(&image) {
         Ok(bmp) => bmp,
         Err(error) => {
@@ -1065,20 +1202,18 @@ unsafe fn display_image(h: H, image: Image) -> Result<(), String> {
         }
     };
     let image = state.image_arc();
-    cancel_gesture();
-    install_bitmap(bmp, &image);
-    *std::ptr::addr_of_mut!(EDITOR) = Some(state);
-    *std::ptr::addr_of_mut!(CURRENT_PATH) = None;
-    DIRTY = true;
-    ZOOM = 1.0;
-    PAN_X = 0;
-    PAN_Y = 0;
+    cancel_gesture(h);
+    install_bitmap(h, bmp, &image);
+    window_state(h).editor = Some(state);
+    window_state(h).current_path = None;
+    window_state(h).dirty = true;
+    window_state(h).zoom = 1.0;
+    window_state(h).pan_x = 0;
+    window_state(h).pan_y = 0;
     SetWindowTextW(
         h,
         wide("ShotKit Rust – Strg+S speichern · F10 Scroll-Aufnahme").as_ptr(),
     );
-    ShowWindow(h, 5);
-    SetForegroundWindow(h);
     InvalidateRect(h, std::ptr::null(), 1);
     Ok(())
 }
@@ -1097,32 +1232,32 @@ unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         height: height as usize,
     };
     let result = (|| -> Result<(), String> {
-        editor()
+        editor(h)
             .document_mut()
             .begin_edit()
             .map_err(|e| format!("{e:?}"))?;
-        if let Err(e) = editor().crop(rect) {
-            let _ = editor().document_mut().abort_edit();
+        if let Err(e) = editor(h).crop(rect) {
+            let _ = editor(h).document_mut().abort_edit();
             return Err(format!("{e:?}"));
         }
-        let output = editor().image_arc();
+        let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
             Ok(bmp) => bmp,
             Err(e) => {
-                let _ = editor().document_mut().abort_edit();
+                let _ = editor(h).document_mut().abort_edit();
                 return Err(e);
             }
         };
-        if let Err(e) = editor().document_mut().commit_edit() {
+        if let Err(e) = editor(h).document_mut().commit_edit() {
             DeleteObject(bitmap);
-            let _ = editor().document_mut().abort_edit();
+            let _ = editor(h).document_mut().abort_edit();
             return Err(format!("{e:?}"));
         }
-        install_bitmap(bitmap, &output);
-        DIRTY = true;
-        ZOOM = 1.0;
-        PAN_X = 0;
-        PAN_Y = 0;
+        install_bitmap(h, bitmap, &output);
+        window_state(h).dirty = true;
+        window_state(h).zoom = 1.0;
+        window_state(h).pan_x = 0;
+        window_state(h).pan_y = 0;
         Ok(())
     })();
     if let Err(e) = result {
@@ -1135,12 +1270,12 @@ unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
     }
 }
 unsafe fn history(h: H, redo: bool) {
-    cancel_gesture();
-    let before = editor().image_arc();
+    cancel_gesture(h);
+    let before = editor(h).image_arc();
     let next = if redo {
-        editor().document().redo_image_arc()
+        editor(h).document().redo_image_arc()
     } else {
-        editor().document().undo_image_arc()
+        editor(h).document().undo_image_arc()
     };
     let Some(next) = next else {
         return;
@@ -1164,15 +1299,15 @@ unsafe fn history(h: H, redo: bool) {
         }
     };
     let changed = if redo {
-        editor().redo()
+        editor(h).redo()
     } else {
-        editor().undo()
+        editor(h).undo()
     };
     if changed {
         if let Some(bitmap) = replacement {
-            install_bitmap(bitmap, &next);
+            install_bitmap(h, bitmap, &next);
         }
-        DIRTY = true;
+        window_state(h).dirty = true;
         InvalidateRect(h, std::ptr::null(), 1);
     } else if let Some(bitmap) = replacement {
         DeleteObject(bitmap);
@@ -1186,9 +1321,6 @@ unsafe fn capture_region(h: H) {
         return;
     }
     let _busy = BusyGuard(true);
-    if !confirm_replace(h) {
-        return;
-    }
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, w, height)) = selection::select() else {
@@ -1224,9 +1356,6 @@ unsafe fn start_scroll(h: H) {
         return;
     }
     let mut busy = BusyGuard(true);
-    if !confirm_replace(h) {
-        return;
-    }
     let previous_direction = active_settings().scroll_direction;
     let previous_label = match previous_direction {
         settings::ScrollDirection::Down => "nach unten",
@@ -1353,7 +1482,7 @@ unsafe fn start_scroll(h: H) {
 }
 
 unsafe fn report_editor_error(h: H) {
-    if let Some(error) = editor().take_error() {
+    if let Some(error) = editor(h).take_error() {
         MessageBoxW(
             h,
             wide(&format!(
@@ -1366,11 +1495,11 @@ unsafe fn report_editor_error(h: H) {
     }
 }
 unsafe fn copy_current(h: H) {
-    if BITMAP.is_null() {
+    if window_state(h).bitmap.is_null() {
         return;
     }
-    let copied = composited_bitmap(false).and_then(|bmp| {
-        let result = clipboard::copy_bitmap(h, bmp, BW, BH);
+    let copied = composited_bitmap(h, false).and_then(|bmp| {
+        let result = clipboard::copy_bitmap(h, bmp, window_state(h).width, window_state(h).height);
         DeleteObject(bmp);
         result
     });
@@ -1395,7 +1524,7 @@ extern "system" {
     fn ChooseColorW(cc: *mut ChooseColor) -> i32;
 }
 unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes::Color> {
-    let current = editor().current_style().color;
+    let current = editor(h).current_style().color;
     let mut custom = [0u32; 16];
     let mut cc = ChooseColor {
         size: size_of::<ChooseColor>() as u32,
@@ -1488,34 +1617,34 @@ unsafe fn apply_frame(h: H, action: u32) {
             opacity: 112,
         }),
     };
-    cancel_gesture();
+    cancel_gesture(h);
     let result = (|| -> Result<(), String> {
-        editor()
+        editor(h)
             .document_mut()
             .begin_edit()
             .map_err(|e| format!("{e:?}"))?;
-        if let Err(error) = editor().add_frame(options) {
-            let _ = editor().document_mut().abort_edit();
+        if let Err(error) = editor(h).add_frame(options) {
+            let _ = editor(h).document_mut().abort_edit();
             return Err(format!("{error:?}"));
         }
-        let output = editor().image_arc();
+        let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
             Ok(bitmap) => bitmap,
             Err(error) => {
-                let _ = editor().document_mut().abort_edit();
+                let _ = editor(h).document_mut().abort_edit();
                 return Err(error);
             }
         };
-        if let Err(error) = editor().document_mut().commit_edit() {
+        if let Err(error) = editor(h).document_mut().commit_edit() {
             DeleteObject(bitmap);
-            let _ = editor().document_mut().abort_edit();
+            let _ = editor(h).document_mut().abort_edit();
             return Err(format!("{error:?}"));
         }
-        install_bitmap(bitmap, &output);
-        DIRTY = true;
-        ZOOM = 1.0;
-        PAN_X = 0;
-        PAN_Y = 0;
+        install_bitmap(h, bitmap, &output);
+        window_state(h).dirty = true;
+        window_state(h).zoom = 1.0;
+        window_state(h).pan_x = 0;
+        window_state(h).pan_y = 0;
         Ok(())
     })();
     if let Err(error) = result {
@@ -1529,32 +1658,32 @@ unsafe fn apply_frame(h: H, action: u32) {
 }
 
 unsafe fn edit_style(h: H, id: usize) {
-    let selected = editor().selection().map(|s| s.style.clone());
-    let mut replacement = selected.unwrap_or_else(|| editor().current_style().clone());
+    let selected = editor(h).selection().map(|s| s.style.clone());
+    let mut replacement = selected.unwrap_or_else(|| editor(h).current_style().clone());
     match id {
         toolbar::ID_COLOR => {
             let Some(color) = choose_color(h) else { return };
-            editor().set_current_color(color);
+            editor(h).set_current_color(color);
             replacement.color = color;
         }
         toolbar::ID_LINE_WIDTH => {
             let Some(width) = choose_number(h, &[1, 2, 3, 4, 6, 8, 12, 16]) else {
                 return;
             };
-            editor().set_current_width(width);
+            editor(h).set_current_width(width);
             replacement.width = width;
         }
         toolbar::ID_FONT_SIZE => {
             let Some(size) = choose_number(h, &[14, 18, 24, 28, 36, 48, 64, 96]) else {
                 return;
             };
-            editor().set_current_font_size(size);
+            editor(h).set_current_font_size(size);
             replacement.font_size = size;
         }
         _ => return,
     }
-    if editor().set_selected_style(replacement) {
-        DIRTY = true;
+    if editor(h).set_selected_style(replacement) {
+        window_state(h).dirty = true;
     }
 }
 
@@ -1574,8 +1703,8 @@ unsafe fn toolbar_action(h: H, id: usize) {
         _ => None,
     };
     if let Some(tool) = tool {
-        cancel_gesture();
-        editor().set_tool(tool);
+        cancel_gesture(h);
+        editor(h).set_tool(tool);
         SetWindowTextW(
             h,
             wide(&format!(
@@ -1587,7 +1716,7 @@ unsafe fn toolbar_action(h: H, id: usize) {
         match id {
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {
-                if BITMAP.is_null() {
+                if window_state(h).bitmap.is_null() {
                     MessageBoxW(h, wide("Öffne zuerst ein Bild.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
                 } else if let Some(action) = choose_frame_action(h) {
                     apply_frame(h, action);
@@ -1686,10 +1815,7 @@ unsafe fn tray_menu(h: H) {
         2 => capture_region(h),
         3 => start_scroll(h),
         7 => capture_rect(h, capture_targets::virtual_desktop()),
-        4 => {
-            ShowWindow(h, 5);
-            SetForegroundWindow(h);
-        }
+        4 => show_editors(),
         5 => open_image(h),
         12 => paste_image(h),
         8 => {
@@ -1739,30 +1865,57 @@ unsafe fn tray_menu(h: H) {
                 MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherordner").as_ptr(), 0x10);
             }
         },
-        6 => {
-            if SCROLL_BUSY.load(Ordering::SeqCst) {
-                MessageBoxW(
-                    h,
-                    wide("Bitte die laufende Aufnahme zuerst mit Esc beenden.").as_ptr(),
-                    wide("ShotKit Rust").as_ptr(),
-                    0x30,
-                );
-            } else if confirm_replace(h) {
-                DestroyWindow(h);
-            }
-        }
+        6 => quit_application(h),
         _ => {}
     }
 }
 
 unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
-    match m {
-        WM_COPYDATA => handle_instance_file(h, l),
-        WM_INSTANCE_ACTIVATE => {
-            ShowWindow(h, 5);
-            SetForegroundWindow(h);
-            1
+    if m == 0x0081 { // WM_NCCREATE
+        let state = Box::into_raw(Box::new(WindowState::new()));
+        SetWindowLongPtrW(h, -21, state as isize);
+    }
+    if GetWindowLongPtrW(h, -21) == 0 { return DefWindowProcW(h, m, w, l); }
+    if m == 0x0082 { // WM_NCDESTROY, after child controls and WM_DESTROY
+        let state = GetWindowLongPtrW(h, -21) as *mut WindowState;
+        SetWindowLongPtrW(h, -21, 0);
+        drop(Box::from_raw(state));
+        return DefWindowProcW(h, m, w, l);
+    }
+    let input = m == toolbar::WM_COMMAND || (0x0100..=0x0109).contains(&m)
+        || (0x0200..=0x020e).contains(&m);
+    let starts_operation = input || m == TRAY || m == 0x0312 || m == DELAYED_CAPTURE;
+    if m == DELAYED_CAPTURE {
+        let Some(ticket) = CaptureTicket::from_wire(w) else { return 0; };
+        if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_waiting(ticket) {
+            return 0;
         }
+        if window_state(h).modal_depth > 0 || SCROLL_BUSY.load(Ordering::SeqCst)
+            || QUITTING.load(Ordering::SeqCst) {
+            // Retry only this still-waiting generation. Stale or duplicate
+            // wakeups cannot start a new selection or a newer request early.
+            post_capture_after(h, ticket, std::time::Duration::from_millis(250));
+            return 0;
+        }
+    }
+    if m == WM_COPYDATA && (window_state(h).modal_depth > 0 || QUITTING.load(Ordering::SeqCst)) { return 3; }
+    if (window_state(h).modal_depth > 0 && (m == 0x0010 || starts_operation))
+        || (QUITTING.load(Ordering::SeqCst) && starts_operation) { return 0; }
+    let modal_event = input || m == WM_COPYDATA || m == TRAY || m == 0x0312
+        || m == SCROLL_DONE || m == DELAYED_CAPTURE;
+    // Keep windows alive while handlers run nested Win32 modal loops. Paint and
+    // resize remain available; another document can still be used normally.
+    let modal = modal_event.then(|| ModalGuard::new(h));
+    let result = dispatch_window(h, m, w, l);
+    drop(modal);
+    if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 { refresh_title(h); }
+    result
+}
+unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
+    match m {
+        WM_FINISH_QUIT if h == PRIMARY => { DestroyWindow(h); 0 }
+        WM_COPYDATA => handle_instance_file(h, l),
+        WM_INSTANCE_ACTIVATE => { show_editors(); 1 }
         0x0312 if w == 6 || w == 10 => {
             capture(h);
             0
@@ -1838,11 +1991,14 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         DELAYED_CAPTURE => {
+            let Some(ticket) = CaptureTicket::from_wire(w) else { return 0; };
+            if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).try_start(ticket) {
+                return 0;
+            }
+            // Running remains pending through accepted, cancelled and failed
+            // selections; duplicate messages are rejected during modal loops.
             capture_region(h);
-            // Keep the pending guard set while the confirmation and region
-            // selector run. Modal UI can pump another timer request before
-            // capture_region returns.
-            DELAYED_CAPTURE_PENDING.store(false, Ordering::SeqCst);
+            DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).finish(ticket);
             0
         }
         TRAY if l as u32 == 0x0205 => {
@@ -1866,40 +2022,40 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6b || w == 0xbb) => {
-            ZOOM = (ZOOM * 1.25).clamp(0.05, 64.0);
+            window_state(h).zoom = (window_state(h).zoom * 1.25).clamp(0.05, 64.0);
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6d || w == 0xbd) => {
-            ZOOM = (ZOOM * 0.8).clamp(0.05, 64.0);
+            window_state(h).zoom = (window_state(h).zoom * 0.8).clamp(0.05, 64.0);
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
-        0x020a if !BITMAP.is_null() => {
+        0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
             if GetKeyState(0x11) < 0 {
-                ZOOM = (ZOOM * if delta > 0 { 1.2 } else { 1.0 / 1.2 }).clamp(0.05, 64.0);
+                window_state(h).zoom = (window_state(h).zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 }).clamp(0.05, 64.0);
             } else if GetKeyState(0x10) < 0 {
-                PAN_X = PAN_X.saturating_sub(delta);
+                window_state(h).pan_x = window_state(h).pan_x.saturating_sub(delta);
             } else {
-                PAN_Y = PAN_Y.saturating_sub(delta);
+                window_state(h).pan_y = window_state(h).pan_y.saturating_sub(delta);
             }
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && w == 0x30 => {
-            ZOOM = 1.0;
-            PAN_X = 0;
-            PAN_Y = 0;
+            window_state(h).zoom = 1.0;
+            window_state(h).pan_x = 0;
+            window_state(h).pan_y = 0;
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
-        0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !BITMAP.is_null() => {
+        0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !window_state(h).bitmap.is_null() => {
             let v = view::layout(
-                (BW as u32, BH as u32),
+                (window_state(h).width as u32, window_state(h).height as u32),
                 (
                     0,
-                    toolbar_height(),
+                    toolbar_height(h),
                     {
                         let mut r: Rect = zeroed();
                         GetClientRect(h, &mut r);
@@ -1908,15 +2064,15 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
                     {
                         let mut r: Rect = zeroed();
                         GetClientRect(h, &mut r);
-                        r.bottom - toolbar_height()
+                        r.bottom - toolbar_height(h)
                     },
                 ),
                 1.0,
                 (0, 0),
             );
-            ZOOM = (BW as f64 / v.width as f64).clamp(0.05, 64.0);
-            PAN_X = 0;
-            PAN_Y = 0;
+            window_state(h).zoom = (window_state(h).width as f64 / v.width as f64).clamp(0.05, 64.0);
+            window_state(h).pan_x = 0;
+            window_state(h).pan_y = 0;
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
@@ -1925,7 +2081,10 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         0x0005 => {
-            if let Some(bar) = (&*std::ptr::addr_of!(TOOLBAR)).as_ref() {
+            // Rc keeps native controls owned during synchronous SetWindowPos
+            // callbacks without retaining a borrow into the parent's state.
+            let bar = window_state(h).toolbar.clone();
+            if let Some(bar) = bar {
                 let mut rect: Rect = zeroed();
                 GetClientRect(h, &mut rect);
                 bar.resize(rect.right - rect.left);
@@ -1946,22 +2105,22 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             0
         }
         0x0100 if w == 0x2e || w == 0x08 => {
-            if editor().delete_selected() {
-                DIRTY = true;
+            if editor(h).delete_selected() {
+                window_state(h).dirty = true;
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
             0
         }
         0x0100 if w == 0x1b => {
-            if editor().selected_index().is_some() {
-                cancel_gesture();
-                editor().clear_selection();
-            } else if DRAW {
-                cancel_gesture();
-            } else if editor().tool() != Tool::Select {
-                cancel_gesture();
-                editor().set_tool(Tool::Select);
+            if editor(h).selected_index().is_some() {
+                cancel_gesture(h);
+                editor(h).clear_selection();
+            } else if window_state(h).drawing {
+                cancel_gesture(h);
+            } else if editor(h).tool() != Tool::Select {
+                cancel_gesture(h);
+                editor(h).set_tool(Tool::Select);
             } else {
                 return 0;
             }
@@ -1972,8 +2131,8 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
         0x0100 if matches!(w, 0x25..=0x28)
             && GetKeyState(0x11) >= 0
             && GetKeyState(0x12) >= 0
-            && !DRAW
-            && editor().selected_index().is_some() =>
+            && !window_state(h).drawing
+            && editor(h).selected_index().is_some() =>
         {
             let step = if GetKeyState(0x10) < 0 { 10.0 } else { 1.0 };
             let (dx, dy) = match w {
@@ -1982,8 +2141,8 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
                 0x27 => (step, 0.0),
                 _ => (0.0, step),
             };
-            if editor().nudge_selected(dx, dy) {
-                DIRTY = true;
+            if editor(h).nudge_selected(dx, dy) {
+                window_state(h).dirty = true;
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -2005,8 +2164,8 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
                 _ => None,
             };
             if let Some(tool) = tool {
-                cancel_gesture();
-                editor().set_tool(tool);
+                cancel_gesture(h);
+                editor(h).set_tool(tool);
                 SetWindowTextW(
                     h,
                     wide(&format!(
@@ -2018,16 +2177,16 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             }
             0
         }
-        0x0203 if !BITMAP.is_null() => {
+        0x0203 if !window_state(h).bitmap.is_null() => {
             let (x, y) = point(h, l);
-            editor().set_tool(Tool::Select);
-            editor().mouse_down(ShapePoint::new(x as f32, y as f32));
-            editor().mouse_up(ShapePoint::new(x as f32, y as f32));
-            let current = editor().selected_text().map(str::to_owned);
+            editor(h).set_tool(Tool::Select);
+            editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
+            editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
+            let current = editor(h).selected_text().map(str::to_owned);
             if let Some(text) = current {
                 if let Some(changed) = text_dialog::prompt(h, &text) {
-                    if editor().set_selected_text(changed) {
-                        DIRTY = true;
+                    if editor(h).set_selected_text(changed) {
+                        window_state(h).dirty = true;
                     }
                 }
             }
@@ -2035,90 +2194,90 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        0x0201 if !BITMAP.is_null() => {
+        0x0201 if !window_state(h).bitmap.is_null() => {
             let (vx, vy, vw, vh) = image_view(h);
             let sx = (l as u32 as u16 as i16) as i32;
             let sy = ((l as u32 >> 16) as u16 as i16) as i32;
             if sx < vx || sy < vy || sx >= vx + vw || sy >= vy + vh {
                 return 0;
             }
-            if editor().tool() == Tool::Text {
+            if editor(h).tool() == Tool::Text {
                 let (x, y) = point(h, l);
                 if let Some(text) = text_dialog::prompt(h, "") {
-                    if editor().place_text(ShapePoint::new(x as f32, y as f32), text) {
-                        DIRTY = true;
+                    if editor(h).place_text(ShapePoint::new(x as f32, y as f32), text) {
+                        window_state(h).dirty = true;
                         InvalidateRect(h, std::ptr::null(), 0);
                     }
                 }
                 report_editor_error(h);
                 return 0;
             }
-            DRAW = true;
+            window_state(h).drawing = true;
             let (x, y) = point(h, l);
-            if editor().tool() == Tool::Crop {
-                CROP_START = Some((x, y));
-                CROP_END = Some((x, y));
+            if editor(h).tool() == Tool::Crop {
+                window_state(h).crop_start = Some((x, y));
+                window_state(h).crop_end = Some((x, y));
                 SetCapture(h);
                 InvalidateRect(h, std::ptr::null(), 0);
                 return 0;
             }
-            editor().mouse_down(ShapePoint::new(x as f32, y as f32));
+            editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
             SetCapture(h);
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        0x0200 if DRAW && !BITMAP.is_null() => {
+        0x0200 if window_state(h).drawing && !window_state(h).bitmap.is_null() => {
             let (x, y) = point(h, l);
-            if matches!(CROP_START, Some(_)) {
-                CROP_END = Some((x, y));
+            if matches!(window_state(h).crop_start, Some(_)) {
+                window_state(h).crop_end = Some((x, y));
                 InvalidateRect(h, std::ptr::null(), 0);
                 return 0;
             }
-            editor().mouse_move(ShapePoint::new(x as f32, y as f32));
+            editor(h).mouse_move(ShapePoint::new(x as f32, y as f32));
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        0x0202 if DRAW => {
+        0x0202 if window_state(h).drawing => {
             let (x, y) = point(h, l);
-            if let Some(start) = std::ptr::replace(std::ptr::addr_of_mut!(CROP_START), None) {
-                CROP_END = None;
-                DRAW = false;
+            if let Some(start) = std::ptr::replace(&mut window_state(h).crop_start, None) {
+                window_state(h).crop_end = None;
+                window_state(h).drawing = false;
                 ReleaseCapture();
                 apply_crop(h, start, (x, y));
                 InvalidateRect(h, std::ptr::null(), 1);
                 return 0;
             }
-            let before = editor().shapes().to_vec();
-            editor().mouse_up(ShapePoint::new(x as f32, y as f32));
-            if before != editor().shapes() {
-                DIRTY = true;
+            let before = editor(h).shapes().to_vec();
+            editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
+            if before != editor(h).shapes() {
+                window_state(h).dirty = true;
             }
-            DRAW = false;
+            window_state(h).drawing = false;
             ReleaseCapture();
             report_editor_error(h);
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        0x0215 if DRAW => {
-            DRAW = false;
-            CROP_START = None;
-            CROP_END = None;
-            editor().cancel_drag();
+        0x0215 if window_state(h).drawing => {
+            window_state(h).drawing = false;
+            window_state(h).crop_start = None;
+            window_state(h).crop_end = None;
+            editor(h).cancel_drag();
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
         0x000f => {
             let mut ps: Paint = zeroed();
             let dc = BeginPaint(h, &mut ps);
-            if !BITMAP.is_null() && !dc.is_null() {
+            if !window_state(h).bitmap.is_null() && !dc.is_null() {
                 let mut ok = false;
-                if let Ok(flattened) = composited_bitmap(true) {
+                if let Ok(flattened) = composited_bitmap(h, true) {
                     let mem = CreateCompatibleDC(dc);
                     if !mem.is_null() {
                         let old = SelectObject(mem, flattened);
                         if !old.is_null() && old as isize != -1 {
                             let (x, y, w, height) = image_view(h);
-                            ok = StretchBlt(dc, x, y, w, height, mem, 0, 0, BW, BH, COPY) != 0;
+                            ok = StretchBlt(dc, x, y, w, height, mem, 0, 0, window_state(h).width, window_state(h).height, COPY) != 0;
                             SelectObject(mem, old);
                         }
                         DeleteDC(mem);
@@ -2130,39 +2289,39 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
                     TextOutW(
                         dc,
                         12,
-                        toolbar_height() + 15,
+                        toolbar_height(h) + 15,
                         message.as_ptr(),
                         (message.len() - 1) as i32,
                     );
                 }
             }
+            if window_state(h).bitmap.is_null() && !dc.is_null() {
+                let message = wide("Bild öffnen: Strg+O · Bild einfügen: Strg+V · Aufnahme: F9 oder F11");
+                TextOutW(dc, 12, toolbar_height(h) + 15, message.as_ptr(), (message.len() - 1) as i32);
+            }
             EndPaint(h, &ps);
             0
         }
         0x0010 => {
-            ShowWindow(h, 0);
+            if h == PRIMARY { quit_application(h); }
+            else if !QUITTING.load(Ordering::SeqCst) && confirm_replace(h) { DestroyWindow(h); }
             0
         }
         0x0002 => {
-            *std::ptr::addr_of_mut!(TOOLBAR) = None;
-            UnregisterHotKey(h, 1);
-            UnregisterHotKey(h, 2);
-            UnregisterHotKey(h, 3);
-            UnregisterHotKey(h, 4);
-            UnregisterHotKey(h, 5);
-            for id in 6..=12 {
-                UnregisterHotKey(h, id);
+            let toolbar = window_state(h).toolbar.take();
+            drop(toolbar); // DestroyWindow(child) may synchronously reenter this parent.
+            let bitmap = std::mem::replace(&mut window_state(h).bitmap, null_mut());
+            if !bitmap.is_null() { DeleteObject(bitmap); }
+            (&mut *std::ptr::addr_of_mut!(EDITOR_WINDOWS)).retain(|window| *window != h);
+            if h == PRIMARY {
+                for id in 1..=12 { UnregisterHotKey(h, id); }
+                let mut n: Notify = zeroed();
+                n.size = size_of::<Notify>() as u32;
+                n.hwnd = h;
+                n.id = 1;
+                Shell_NotifyIconW(2, &n);
+                PostQuitMessage(0);
             }
-            let mut n: Notify = zeroed();
-            n.size = size_of::<Notify>() as u32;
-            n.hwnd = h;
-            n.id = 1;
-            Shell_NotifyIconW(2, &n);
-            if !BITMAP.is_null() {
-                DeleteObject(BITMAP);
-                BITMAP = null_mut();
-            }
-            PostQuitMessage(0);
             0
         }
         _ => DefWindowProcW(h, m, w, l),
@@ -2201,6 +2360,9 @@ fn main() {
         if RegisterClassW(&wc) == 0 {
             return;
         }
+        let editor_class = wide("ShotKitRustEditor");
+        let editor_wc = WndClass { class: editor_class.as_ptr(), ..wc };
+        if RegisterClassW(&editor_wc) == 0 { return; }
         let h = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -2218,15 +2380,8 @@ fn main() {
         if h.is_null() {
             return;
         }
+        PRIMARY = h;
         load_settings(h);
-        match toolbar::create(h) {
-            Ok(bar) => *std::ptr::addr_of_mut!(TOOLBAR) = Some(bar),
-            Err(e) => {
-                MessageBoxW(h, wide(&e).as_ptr(), wide("Werkzeugleiste").as_ptr(), 0x10);
-                DestroyWindow(h);
-                return;
-            }
-        }
         let mut n: Notify = zeroed();
         n.size = size_of::<Notify>() as u32;
         n.hwnd = h;
@@ -2296,11 +2451,9 @@ fn main() {
                 0x30,
             );
         }
-        if let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) {
-            if confirm_replace(h) {
-                if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
-                    MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
-                }
+        for path in std::env::args_os().skip(1).map(PathBuf::from) {
+            if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
+                MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
             }
         }
         MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
