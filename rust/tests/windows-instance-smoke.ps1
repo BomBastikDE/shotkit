@@ -23,6 +23,7 @@ using System.Text;
 
 public static class ShotKitInstanceSmokeNative {
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr state);
+    public delegate bool EnumChildProc(IntPtr hwnd, IntPtr state);
 
     public sealed class WindowInfo {
         public IntPtr Handle;
@@ -30,6 +31,11 @@ public static class ShotKitInstanceSmokeNative {
         public string ClassName;
         public string Title;
         public bool Visible;
+    }
+    public sealed class ButtonInfo {
+        public IntPtr Handle;
+        public int ControlId;
+        public string Text;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -41,9 +47,11 @@ public static class ShotKitInstanceSmokeNative {
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr state);
     [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+    public static extern int GetDlgCtrlID(IntPtr hwnd);
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)]
@@ -84,10 +92,26 @@ public static class ShotKitInstanceSmokeNative {
         return true;
     }
 
-    public static void ClickButton(IntPtr dialog, int buttonId) {
+    public static ButtonInfo[] GetVisibleButtons(IntPtr dialog) {
+        var found = new List<ButtonInfo>();
+        EnumChildProc callback = delegate(IntPtr child, IntPtr state) {
+            if (!IsWindowVisible(child)) return true;
+            var className = new StringBuilder(128);
+            GetClassName(child, className, className.Capacity);
+            if (!String.Equals(className.ToString(), "Button", StringComparison.OrdinalIgnoreCase)) return true;
+            var title = new StringBuilder(256);
+            GetWindowText(child, title, title.Capacity);
+            found.Add(new ButtonInfo { Handle = child, ControlId = GetDlgCtrlID(child), Text = title.ToString() });
+            return true;
+        };
+        EnumChildWindows(dialog, callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return found.ToArray();
+    }
+
+    public static void ClickButton(IntPtr button) {
         const uint BM_CLICK = 0x00F5;
-        IntPtr button = GetDlgItem(dialog, buttonId);
-        if (button == IntPtr.Zero) throw new InvalidOperationException("Dialog-Schaltfläche wurde nicht gefunden: " + buttonId);
+        if (button == IntPtr.Zero) throw new InvalidOperationException("Dialog-Schaltfläche ist null.");
         SendMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
     }
 }
@@ -116,6 +140,43 @@ function Get-Dialog {
     return (Get-ProcessWindows $Process | Where-Object {
         $_.ClassName -eq '#32770' -and $_.Title -like $TitlePattern
     } | Select-Object -First 1)
+}
+
+function Wait-ForDialogButton {
+    param(
+        [Diagnostics.Process] $Process,
+        $Dialog,
+        [string[]] $ExpectedTexts,
+        [string] $Description
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $buttons = @()
+    while ([DateTime]::UtcNow -lt $deadline -and -not $Process.HasExited) {
+        $buttons = @([ShotKitInstanceSmokeNative]::GetVisibleButtons($Dialog.Handle))
+        $match = $buttons | Where-Object {
+            $caption = ($_.Text -replace '&', '').Trim()
+            $ExpectedTexts -contains $caption
+        } | Select-Object -First 1
+        if ($null -ne $match) {
+            [ShotKitInstanceSmokeNative]::ClickButton($match.Handle)
+            return $match
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $buttonDetails = ($buttons | ForEach-Object {
+        "HWND=0x$($_.Handle.ToInt64().ToString('X')) ID=$($_.ControlId) Text='$($_.Text)'"
+    }) -join '; '
+    if (-not $buttonDetails) { $buttonDetails = 'no visible Button-class children' }
+    $windowText = [ShotKitInstanceSmokeNative]::GetWindowText($Dialog.Handle)
+    $exitDetail = if ($Process.HasExited) { " Process exited with code $($Process.ExitCode)." } else { '' }
+    throw "BUTTON_TIMEOUT: $Description on dialog '$($Dialog.Title)' (HWND $($Dialog.Handle)); text='$windowText'; buttons=$buttonDetails.$exitDetail"
+}
+
+function Wait-ForDialogClosed {
+    param([Diagnostics.Process] $Process, $Dialog, [string] $Description)
+    $null = Wait-ForCondition {
+        $Process.HasExited -or $null -eq (Get-ProcessWindows $Process | Where-Object { $_.Handle -eq $Dialog.Handle })
+    } 5 $Description
 }
 
 if (-not [Environment]::UserInteractive -or -not [ShotKitInstanceSmokeNative]::HasInteractiveInputDesktop()) {
@@ -169,7 +230,8 @@ try {
         -not $primary.HasExited -and $null -ne (Get-Dialog $primary $welcomeTitle)
     } $TimeoutSeconds 'STARTUP_DIALOG_TIMEOUT: Startdialog der ersten Instanz wurde nicht gefunden.'
     $welcome = Get-Dialog $primary $welcomeTitle
-    [ShotKitInstanceSmokeNative]::ClickButton($welcome.Handle, 1)
+    $welcomeButton = Wait-ForDialogButton $primary $welcome @('OK') 'IDOK'
+    Wait-ForDialogClosed $primary $welcome 'STARTUP_DIALOG_CLOSE_TIMEOUT: Startdialog blieb nach IDOK geöffnet.'
 
     Wait-ForCondition {
         -not $primary.HasExited -and @((Get-ProcessWindows $primary | Where-Object {
@@ -196,15 +258,17 @@ try {
         -not $primary.HasExited -and $null -ne (Get-Dialog $primary $confirmTitle)
     } $TimeoutSeconds 'FILE_PROMPT_TIMEOUT: Der Dateibestätigungsdialog der ersten Instanz wurde nicht ausgelöst.'
     $confirmation = Get-Dialog $primary $confirmTitle
-    # IDNO=7. Decline the probe path to ensure the second process reports cancellation.
-    [ShotKitInstanceSmokeNative]::ClickButton($confirmation.Handle, 7)
+    # Select the visible localized No button to ensure the second process reports cancellation.
+    $declineButton = Wait-ForDialogButton $primary $confirmation @('No', 'Nein') 'IDNO'
+    Wait-ForDialogClosed $primary $confirmation 'FILE_PROMPT_CLOSE_TIMEOUT: Bestätigungsdialog blieb nach Ablehnung geöffnet.'
 
     $declinedTitle = '*Datei nicht geöffnet*'
     Wait-ForCondition {
         -not $secondFile.HasExited -and $null -ne (Get-Dialog $secondFile $declinedTitle)
     } $TimeoutSeconds 'DECLINE_RESULT_TIMEOUT: Zweitprozess hat die Ablehnung nicht sichtbar gemeldet.'
     $declined = Get-Dialog $secondFile $declinedTitle
-    [ShotKitInstanceSmokeNative]::ClickButton($declined.Handle, 1)
+    $declinedButton = Wait-ForDialogButton $secondFile $declined @('OK') 'IDOK'
+    Wait-ForDialogClosed $secondFile $declined 'DECLINE_DIALOG_CLOSE_TIMEOUT: Ablehnungsdialog blieb nach OK geöffnet.'
 
     if (-not $secondFile.WaitForExit($TimeoutSeconds * 1000)) {
         throw 'DECLINE_TIMEOUT: Zweitstart mit Dateipfad beendete sich nach Ablehnung nicht.'
