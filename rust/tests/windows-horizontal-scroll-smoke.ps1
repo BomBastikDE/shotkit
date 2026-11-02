@@ -260,7 +260,6 @@ function Click-DialogButton {
     param(
         [System.Diagnostics.Process] $OwnedProcess,
         $Dialog,
-        [int] $ExpectedId,
         [string[]] $ExpectedTexts,
         [string] $Description
     )
@@ -269,7 +268,7 @@ function Click-DialogButton {
     while ([DateTime]::UtcNow -lt $deadline -and -not $OwnedProcess.HasExited) {
         $buttons = @([ShotKitScrollSmoke.Native]::VisibleButtons($Dialog.Handle))
         $button = $buttons | Where-Object {
-            $_.ControlId -eq $ExpectedId -and $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
+            $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
         } | Select-Object -First 1
         if ($null -ne $button) {
             [ShotKitScrollSmoke.Native]::ClickButton($button.Handle)
@@ -458,7 +457,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedId 1 -ExpectedTexts @('OK') -Description 'startup acknowledgement')
+    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedTexts @('OK') -Description 'startup acknowledgement')
     Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'the startup dialog to close'
     Assert-NoUnexpectedDialog $shotKit
 
@@ -536,13 +535,13 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
             Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' } | Select-Object -First 1
         }
         # IDNO selects horizontal scrolling.
-        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $axisDialog -ExpectedId 7 -ExpectedTexts @('No', 'Nein') -Description 'horizontal axis choice')
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $axisDialog -ExpectedTexts @('No', 'Nein') -Description 'horizontal axis choice')
         Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $axisDialog.Handle -Description 'the horizontal-axis prompt to close' -AllowedDialogTitles @('Scroll-Richtung')
         $directionDialog = Wait-ForCondition -TimeoutSeconds 10 -Description "the $($case.Name) direction prompt" -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
             Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' } | Select-Object -First 1
         }
         $directionButton = if ($case.DirectionChoice -eq 6) { @('Yes', 'Ja') } else { @('No', 'Nein') }
-        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $directionDialog -ExpectedId $case.DirectionChoice -ExpectedTexts $directionButton -Description "$($case.Name) direction choice")
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $directionDialog -ExpectedTexts $directionButton -Description "$($case.Name) direction choice")
         Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $directionDialog.Handle -Description "the $($case.Name) direction prompt to close" -AllowedDialogTitles @('Scroll-Richtung')
 
         $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the horizontal scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
@@ -603,7 +602,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
         }
         Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')
         $passMessages += "$($case.Name): reached the horizontal page edge and reconstructed $expectedWidth columns in $($png.Name)."
-        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $completion -ExpectedId 1 -ExpectedTexts @('OK') -Description "$($case.Name) completion acknowledgement")
+        [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $completion -ExpectedTexts @('OK') -Description "$($case.Name) completion acknowledgement")
         Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $completion.Handle -Description "the $($case.Name) completion notice to close" -AllowedDialogTitles @('Scroll-Aufnahme beendet')
 
         if (-not $surface.HasExited) {

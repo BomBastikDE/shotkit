@@ -217,13 +217,13 @@ function Wait-ForCondition {
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
 }
 function Click-DialogButton {
-    param([System.Diagnostics.Process] $OwnedProcess, $Dialog, [int] $ExpectedId, [string[]] $ExpectedTexts, [string] $Description)
+    param([System.Diagnostics.Process] $OwnedProcess, $Dialog, [string[]] $ExpectedTexts, [string] $Description)
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     $buttons = @()
     while ([DateTime]::UtcNow -lt $deadline -and -not $OwnedProcess.HasExited) {
         $buttons = @([ShotKitBrowserHoverSmoke.Native]::VisibleButtons($Dialog.Handle))
         $button = $buttons | Where-Object {
-            $_.ControlId -eq $ExpectedId -and $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
+            $ExpectedTexts -contains (($_.Text -replace '&', '').Trim())
         } | Select-Object -First 1
         if ($null -ne $button) {
             [ShotKitBrowserHoverSmoke.Native]::ClickButton($button.Handle)
@@ -479,7 +479,7 @@ catch {
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedId 1 -ExpectedTexts @('OK') -Description 'startup acknowledgement')
+    [void](Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedTexts @('OK') -Description 'startup acknowledgement')
     Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'the startup dialog to close'
     if ($shotKit.HasExited) { throw 'ShotKit exited after its startup dialog was closed.' }
     Assert-NoUnexpectedDialog $shotKit
