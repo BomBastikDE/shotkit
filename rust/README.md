@@ -14,7 +14,7 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 Auf einem interaktiven Windows-CI-Runner wurden Bereichsaufnahme, vertikale und horizontale Scrollbilder, eine lokale Edge-Seite, Elementvorschläge, ein Editorablauf mit Transparenz und die unabhängige Bearbeitung mehrerer Bilder geprüft. Weitere Windows-Praxistests stehen aus. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Transparente Bilder können bearbeitet und in passenden Formaten gespeichert werden; die neuen Bild- und Editorfunktionen benötigen weitere Windows-Praxistests. Einige Originalfunktionen fehlen noch. Siehe [ROADMAP.md](ROADMAP.md).
 
-Die Ausgaben nach einer Aufnahme (Editor, Zwischenablage, automatisches PNG) und der optionale Autostart können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
+Beim ersten Start öffnet sich nach einer Aufnahme der Editor; automatisches Speichern und Kopieren in die Zwischenablage sind zunächst ausgeschaltet. Diese Ausgaben und der optionale Autostart können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 
 Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert und ausschließlich für Testzwecke gedacht. Im Entwicklungsstand nur mit Kopien wichtiger Bilder arbeiten.
 

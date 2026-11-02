@@ -1,6 +1,6 @@
 # Rust-Portierung: Funktionsstand
 
-Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Der Rust-Zweig ist ein Arbeitsstand, kein Ersatz und kein neues Release.
+Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0-alpha.3` veröffentlicht; die C#-Version bleibt die stabile Hauptversion.
 
 ## Bestehende ShotKit-Funktionen für die Portierung
 
@@ -13,10 +13,10 @@ Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Der Rust-Zweig ist ein Arbeitssta
 ## Stand
 
 - Experimenteller Windows-Editor: Werkzeugleiste, bearbeitbare Formen und Undo/Redo; native Dialoge und PNG/JPEG/BMP/GIF; Bildschirm- und Bereichsaufnahme, Scroll-Prototyp, Zoom/Pan und Zwischenablage sind implementiert. Start und Bereichsaufnahme wurden auf einem Windows-CI-Runner geprüft; umfangreiche Praxistests stehen aus.
-- Scroll-Algorithmus und Editorlogik sind synthetisch getestet. Die Anbindung an echte Browser, Fenster, DPI und Maus muss unter Windows überprüft werden.
-- Transparente Bilder werden mit Alpha-Pipeline bearbeitet und gespeichert; Vorschau, Export und Zwischenablage benötigen weitere interaktive Prüfung.
+- Scroll-Algorithmus und Editorlogik sind synthetisch getestet. Eine lokale Edge-Seite wurde auf Windows mit Maus und tatsächlichem Scrollbild geprüft; weitere Anwendungen, DPI-Konfigurationen und Webseiten bleiben offen.
+- Transparente Bilder werden mit Alpha-Pipeline bearbeitet und gespeichert. Ein interaktiver Windows-Test prüft Export und Undo; Zwischenablage und weitere Editorabläufe benötigen zusätzliche Prüfung.
 - Crop, Rahmen und Schatten sind in den Editor und die gemeinsame Bild- und Objekt-Historie integriert. Einstellungen, Öffnen aus Clipboard, verzögerte Aufnahme und Dateiargumente sind implementiert; weitere Originalfunktionen fehlen. Diese Abläufe benötigen weitere Windows-Praxistests.
-- Fenster- und UI-Automation-Vorschläge sind experimentell integriert; brauchbare Grenzen je Browser und Seitentyp sind noch nicht verifiziert.
+- Fenster- und UI-Automation-Vorschläge sind integriert und auf einer lokalen Edge-Testseite unter Windows geprüft; Grenzen je Browser und Seitentyp bleiben offen.
 
 ## Ideen nach funktionsgleicher Portierung
 
@@ -28,7 +28,7 @@ Auf Windows 10/11 mit normaler und gemischter DPI prüfen: Bereichs-/Fensterwahl
 
 ## Bereichsvorschläge unter dem Mauszeiger
 
-Gewünscht: Beim Bewegen der Maus Fenster und sinnvolle Bereiche optisch umranden und per Klick übernehmen; manuelles Aufziehen bleibt möglich. In Browsern sind Seitenelemente häufig keine einzelnen Win32-Fenster. Deshalb Windows UI Automation und die zugänglichen Elementgrenzen untersuchen; bei verschachtelten Elementen Größen- und Auswahlregeln vorsehen. Webseiten, Canvas, fehlende Accessibility-Daten, Zoom und gemischte DPI können die Erkennung begrenzen. Die Funktion soll lokal arbeiten und bei ungeeigneten Treffern zur manuellen Auswahl zurückfallen. Experimentell integriert, noch nicht unter Windows geprüft.
+Gewünscht: Beim Bewegen der Maus Fenster und sinnvolle Bereiche optisch umranden und per Klick übernehmen; manuelles Aufziehen bleibt möglich. In Browsern sind Seitenelemente häufig keine einzelnen Win32-Fenster. Deshalb Windows UI Automation und die zugänglichen Elementgrenzen untersuchen; bei verschachtelten Elementen Größen- und Auswahlregeln vorsehen. Webseiten, Canvas, fehlende Accessibility-Daten, Zoom und gemischte DPI können die Erkennung begrenzen. Die Funktion soll lokal arbeiten und bei ungeeigneten Treffern zur manuellen Auswahl zurückfallen. Auf einer lokalen Edge-Testseite unter Windows geprüft; weitere Webseiten und Browser bleiben offen.
 
 ## Windows-CI
 

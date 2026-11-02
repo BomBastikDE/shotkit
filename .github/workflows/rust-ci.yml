@@ -70,3 +70,7 @@ jobs:
           path: rust/target/release/shotkit-rust-prototype.exe
           if-no-files-found: error
           retention-days: 7
+      - name: Interactive Windows clipboard alpha round-trip smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-clipboard-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe

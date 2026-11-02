@@ -291,6 +291,8 @@ mod tests {
         width: usize,
         height: usize,
         page_len: usize,
+        sticky_header: usize,
+        sticky_footer: usize,
         offset: usize,
         horizontal: bool,
         cancel: bool,
@@ -309,6 +311,8 @@ mod tests {
                 width: 120,
                 height,
                 page_len,
+                sticky_header: 0,
+                sticky_footer: 0,
                 offset: 0,
                 horizontal: false,
                 cancel: false,
@@ -326,6 +330,8 @@ mod tests {
                 width,
                 height,
                 page_len,
+                sticky_header: 0,
+                sticky_footer: 0,
                 offset: 0,
                 horizontal: true,
                 cancel: false,
@@ -337,6 +343,18 @@ mod tests {
                 scroll_calls: 0,
                 progress: Vec::new(),
             }
+        }
+        fn vertical_with_sticky_bands(
+            height: usize,
+            content_len: usize,
+            header: usize,
+            footer: usize,
+        ) -> Self {
+            assert!(header + footer + 24 < height);
+            let mut io = Self::vertical(height, content_len);
+            io.sticky_header = header;
+            io.sticky_footer = footer;
+            io
         }
         fn horizontal_left(height: usize, width: usize, page_len: usize) -> Self {
             let mut io = Self::horizontal(height, width, page_len);
@@ -386,7 +404,18 @@ mod tests {
                     } else {
                         (y + self.offset, x)
                     };
-                    let v = Self::pixel(position, cross);
+                    let v = if !self.horizontal && y < self.sticky_header {
+                        // A stationary, textured site header, visible in every frame.
+                        Self::pixel(100_000 + y, x)
+                    } else if !self.horizontal && y >= self.height - self.sticky_footer {
+                        // A stationary, textured footer, also visible in every frame.
+                        Self::pixel(200_000 + y, x)
+                    } else if !self.horizontal && (self.sticky_header > 0 || self.sticky_footer > 0) {
+                        let body_y = self.offset + y - self.sticky_header;
+                        Self::pixel(300_000 + body_y, x)
+                    } else {
+                        Self::pixel(position, cross)
+                    };
                     pixels.extend_from_slice(&[v, v, v, 255]);
                 }
             }
@@ -402,7 +431,8 @@ mod tests {
             } else {
                 self.height
             };
-            let max = self.page_len.saturating_sub(viewport);
+            let visible_content = viewport.saturating_sub(self.sticky_header + self.sticky_footer);
+            let max = self.page_len.saturating_sub(visible_content);
             let signed_notches = match direction {
                 Direction::Left => notches.saturating_neg(),
                 _ => notches,
@@ -442,6 +472,46 @@ mod tests {
         );
         assert!(io.scroll_calls >= 3);
         assert!(!io.progress.is_empty());
+    }
+
+    #[test]
+    fn sticky_header_and_footer_are_not_duplicated_across_stitched_seams() {
+        const VIEW_H: usize = 300;
+        const WIDTH: usize = 120;
+        const HEADER: usize = 36;
+        const FOOTER: usize = 32;
+        const CONTENT: usize = 1_100;
+
+        let mut io = FakeScrollIo::vertical_with_sticky_bands(
+            VIEW_H, CONTENT, HEADER, FOOTER,
+        );
+        let out = run(&mut io, Direction::Down).unwrap();
+
+        // Exact full-image equality proves both seam pixels and that fixed bands
+        // occur only once: initial header, every body row, final footer.
+        let mut expected = Vec::with_capacity(WIDTH * (HEADER + CONTENT + FOOTER) * 4);
+        for y in 0..HEADER {
+            for x in 0..WIDTH {
+                let p = FakeScrollIo::pixel(100_000 + y, x);
+                expected.extend_from_slice(&[p, p, p, 255]);
+            }
+        }
+        for y in 0..CONTENT {
+            for x in 0..WIDTH {
+                let p = FakeScrollIo::pixel(300_000 + y, x);
+                expected.extend_from_slice(&[p, p, p, 255]);
+            }
+        }
+        for y in VIEW_H - FOOTER..VIEW_H {
+            for x in 0..WIDTH {
+                let p = FakeScrollIo::pixel(200_000 + y, x);
+                expected.extend_from_slice(&[p, p, p, 255]);
+            }
+        }
+        assert_eq!((out.image.width, out.image.height), (WIDTH, HEADER + CONTENT + FOOTER));
+        assert_eq!(out.image.pixels, expected, "pixel mismatch at a seam or fixed band");
+        assert!(io.scroll_calls > 0 && io.scroll_calls <= 150, "scroll loop must remain bounded");
+        assert!(out.reason.contains("Ende des scrollbaren Bereichs"), "{}", out.reason);
     }
 
     #[test]
