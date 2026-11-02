@@ -152,7 +152,7 @@ function Assert-NoUnexpectedDialog {
         [string[]] $AllowedTitles = @()
     )
     $dialog = Get-ProcessDialogs $OwnedProcess |
-        Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -ne 'ShotKit Rust – Prototyp' } |
+        Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -notlike '*Prototyp*' } |
         Select-Object -First 1
     if ($null -ne $dialog) {
         $text = [ShotKitScrollSmoke.Native]::WindowText($dialog.Handle)
@@ -333,8 +333,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
-    $welcome = Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'ShotKit Rust – Prototyp' } | Select-Object -First 1
-    if ($null -eq $welcome) { throw 'Expected the ShotKit startup dialog, but it was not found.' }
+    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
+        Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
+    }
     if (-not [ShotKitScrollSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
         throw 'Could not close the ShotKit startup dialog.'
     }

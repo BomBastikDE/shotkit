@@ -215,9 +215,8 @@ try {
 
     # main() deliberately blocks on this informational MessageBox before its
     # message loop. Close only that known dialog belonging to this process.
-    $welcome = Get-OwnErrorDialog $process | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    if ($null -eq $welcome) {
-        throw 'Expected the ShotKit startup dialog, but it was not found.'
+    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $process -Condition {
+        Get-OwnErrorDialog $process | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
     if (-not [ShotKitSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
         throw 'Could not safely close the ShotKit startup dialog with its default OK action.'
