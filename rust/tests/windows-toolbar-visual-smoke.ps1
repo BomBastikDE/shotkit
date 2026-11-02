@@ -72,8 +72,13 @@ try {
  if(-not $main){throw 'EDITOR_NOT_READY: visible owned ShotKitRustEditor window not found.'}
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H);Start-Sleep -Milliseconds 400
  # Acknowledge only the app-owned startup notice, if present.
- $welcome=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1
- if($welcome){$ok=[ShotKitToolbarVisual.Native]::Buttons($welcome.H)|Where-Object{$_.Text -eq 'OK'}|Select-Object -First 1;if(-not $ok){throw 'STARTUP_NOTICE_UNEXPECTED: owned prototype notice lacked exact OK button.'};[void][ShotKitToolbarVisual.Native]::SendMessageW($ok.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)}
+ $deadline=[DateTime]::UtcNow.AddSeconds(12);$welcome=$null
+ while([DateTime]::UtcNow -lt $deadline){$welcome=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1;if($welcome){break};Start-Sleep -Milliseconds 100}
+ if(-not $welcome){throw 'STARTUP_NOTICE_MISSING: owned prototype notice did not appear.'}
+ $ok=[ShotKitToolbarVisual.Native]::Buttons($welcome.H)|Where-Object{$_.Text -eq 'OK'}|Select-Object -First 1
+ if(-not $ok){throw 'STARTUP_NOTICE_UNEXPECTED: owned prototype notice lacked exact OK button.'}
+ [void][ShotKitToolbarVisual.Native]::SendMessageW($ok.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+ [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
  Start-Sleep -Milliseconds 500
  $toolbar=[ShotKitToolbarVisual.Native]::Children($main.H)|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}

@@ -416,7 +416,9 @@ function Stop-OwnedBrowserProcess {
     $processHandle = $null
     try { $processHandle = [Diagnostics.Process]::GetProcessById($ProcessId) }
     catch {
-        if ($null -eq (Get-BrowserProcessById $ProcessId)) { return }
+        # GetProcessById itself confirms the PID vanished, even if CIM still
+        # exposes a stale snapshot. The final profile scan remains mandatory.
+        if ($_.Exception.InnerException -is [System.ArgumentException] -or $null -eq (Get-BrowserProcessById $ProcessId)) { return }
         throw
     }
     try {

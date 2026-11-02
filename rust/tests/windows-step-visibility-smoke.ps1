@@ -248,10 +248,15 @@ try {
     $saved=Read-Png $inputPath
     try {Assert-StepPixels $saved $expected12 12 'REDO_PNG'} finally {$saved.Dispose();$expected12.Dispose()}
 
+    # Select an empty canvas point to give keyboard focus to the editor without
+    # adding a thirteenth marker; the following comparison still checks 12.
+    Click-Button $main.Handle 'Auswahl (V)'
+    Click-Canvas 610 455
     $sequence=[ShotKitStepSmoke.Native]::ClipboardSequence()
     [void][ShotKitStepSmoke.Native]::SetForegroundWindow($main.Handle);Start-Sleep -Milliseconds 100
     if([ShotKitStepSmoke.Native]::GetForegroundWindow() -ne $main.Handle){throw 'EDITOR_FOCUS_FAILED before the Ctrl+C assertion.'}
     [ShotKitStepSmoke.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 30
     [ShotKitStepSmoke.Native]::keybd_event(0x43,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 80
     [ShotKitStepSmoke.Native]::keybd_event(0x43,0,2,[UIntPtr]::Zero)
     [ShotKitStepSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero)
