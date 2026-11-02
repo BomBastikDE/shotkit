@@ -131,6 +131,8 @@ $localAppData = Join-Path $testRoot 'localappdata'
 $saveFolder = Join-Path $testRoot 'captures'
 $readyFile = Join-Path $testRoot 'surface.ready'
 $helperFile = Join-Path $testRoot 'surface.ps1'
+$surfaceStdout = Join-Path $testRoot 'surface.stdout.log'
+$surfaceStderr = Join-Path $testRoot 'surface.stderr.log'
 $shotKit = $null
 $surface = $null
 $oldAppData = $env:APPDATA
@@ -141,6 +143,14 @@ $cleanupFailures = @()
 function Get-ProcessWindows {
     param([System.Diagnostics.Process] $OwnedProcess)
     [ShotKitScrollSmoke.Native]::WindowsForProcess($OwnedProcess.Id)
+}
+function Get-ProcessOutput {
+    param([string] $Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $content = [IO.File]::ReadAllText($Path)
+        return $content.Trim()
+    }
+    return ''
 }
 function Get-ProcessDialogs {
     param([System.Diagnostics.Process] $OwnedProcess)
@@ -170,7 +180,9 @@ function Wait-ForCondition {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($OwnedProcess.HasExited) {
-            throw "Process '$($OwnedProcess.ProcessName)' exited before $Description (exit code $($OwnedProcess.ExitCode))."
+            $stdout = Get-ProcessOutput $surfaceStdout
+            $stderr = Get-ProcessOutput $surfaceStderr
+            throw "Process '$($OwnedProcess.ProcessName)' exited before $Description (exit code $($OwnedProcess.ExitCode)).`nstdout:`n$stdout`nstderr:`n$stderr"
         }
         Assert-NoUnexpectedDialog $OwnedProcess $AllowedDialogTitles
         $value = & $Condition
@@ -287,9 +299,15 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
 '@
     [IO.File]::WriteAllText($helperFile, $helperSource, [System.Text.UTF8Encoding]::new($false))
 
-    $powershellExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    # Run the WinForms helper under Windows PowerShell 5.1. The CI step may
+    # itself use pwsh; using that host for the .NET Framework WinForms helper
+    # can fail before the form is created, and previously hid the diagnostic.
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)) {
+        throw "Windows PowerShell 5.1 was not found at '$powershellExe'."
+    }
     $helperArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $helperFile, $readyFile
-    $surface = Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $testRoot -WindowStyle Hidden -PassThru
+    $surface = Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $testRoot -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
 
     $surfaceWindow = Wait-ForCondition -TimeoutSeconds 20 -Description 'the synthetic scroll surface' -OwnedProcess $surface -Condition {
         Get-ProcessWindows $surface | Where-Object { $_.Title -eq 'ShotKit Synthetic Scroll Surface' -and $_.Visible } | Select-Object -First 1
