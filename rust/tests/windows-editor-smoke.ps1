@@ -158,8 +158,8 @@ catch { throw "IMAGE_RUNTIME_UNAVAILABLE: $($_.Exception.Message)" }
 
 $desktopWidth = [ShotKitEditorSmoke.Native]::GetSystemMetrics(78)
 $desktopHeight = [ShotKitEditorSmoke.Native]::GetSystemMetrics(79)
-if ($desktopWidth -lt 1024 -or $desktopHeight -lt 800) {
-    throw "INTERACTIVE_DESKTOP_TOO_SMALL: ${desktopWidth}x${desktopHeight}; editor test requires at least 1024x800."
+if ($desktopWidth -lt 1024 -or $desktopHeight -lt 768) {
+    throw "INTERACTIVE_DESKTOP_TOO_SMALL: ${desktopWidth}x${desktopHeight}; editor test requires at least 1024x768."
 }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Editor-Smoke-' + [Guid]::NewGuid().ToString('N'))
@@ -357,6 +357,15 @@ try {
     $startClientY = Get-CoordinateForImagePoint -ImagePoint 24 -ImageLength 120 -ViewOrigin $viewY -ViewLength $displayHeight
     $endClientX = Get-CoordinateForImagePoint -ImagePoint 132 -ImageLength 160 -ViewOrigin $viewX -ViewLength $displayWidth
     $endClientY = Get-CoordinateForImagePoint -ImagePoint 94 -ImageLength 120 -ViewOrigin $viewY -ViewLength $displayHeight
+    if ($startClientX -lt $viewX -or $startClientX -ge ($viewX + $displayWidth) -or
+        $endClientX -lt $viewX -or $endClientX -ge ($viewX + $displayWidth) -or
+        $startClientY -lt $viewY -or $startClientY -ge ($viewY + $displayHeight) -or
+        $endClientY -lt $viewY -or $endClientY -ge ($viewY + $displayHeight) -or
+        $viewX -lt 0 -or $viewY -lt $toolbarHeight -or
+        ($viewX + $displayWidth) -gt $viewWidth -or
+        ($viewY + $displayHeight) -gt ($toolbarHeight + $viewHeight)) {
+        throw "EDITOR_LAYOUT_INVALID: visible canvas ${displayWidth}x${displayHeight} at ($viewX,$viewY) does not contain test drag points ($startClientX,$startClientY)-($endClientX,$endClientY)."
+    }
     $startScreenX = $clientOrigin.X + $startClientX
     $startScreenY = $clientOrigin.Y + $startClientY
     $endScreenX = $clientOrigin.X + $endClientX
@@ -380,6 +389,15 @@ try {
     $mouseDown = $true
     Start-Sleep -Milliseconds 120
     if (-not [ShotKitEditorSmoke.Native]::SetCursorPos($endScreenX, $endScreenY)) { throw 'Could not position the pointer at rectangle end.' }
+    $actualCursor = [Activator]::CreateInstance([ShotKitEditorSmoke.Point])
+    if (-not [ShotKitEditorSmoke.Native]::GetCursorPos([ref]$actualCursor) -or
+        $actualCursor.X -ne $endScreenX -or $actualCursor.Y -ne $endScreenY) {
+        throw "CURSOR_POSITION_MISMATCH: requested rectangle end ($endScreenX,$endScreenY), actual ($($actualCursor.X),$($actualCursor.Y))."
+    }
+    $underPointer = [ShotKitEditorSmoke.Native]::WindowFromPoint($actualCursor)
+    if ([ShotKitEditorSmoke.Native]::OwnerPid($underPointer) -ne [uint32]$process.Id) {
+        throw "INPUT_TARGET_MISMATCH: rectangle end is over HWND $underPointer not owned by the test editor."
+    }
     Start-Sleep -Milliseconds 250
     [ShotKitEditorSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $mouseDown = $false
