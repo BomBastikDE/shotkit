@@ -2,6 +2,10 @@
 
 Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Das ursprüngliche C#-ShotKit bleibt die stabile Version.
 
+## Umstieg von C#
+
+Die C#-Version bleibt bis zur Freigabe der Rust-Beta die stabile Hauptversion. Zum Testen die C#-Instanz beenden, das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung und der geplante Weg zur 2.0 stehen in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
+
 ## Bisherige Funktionen
 
 - Tray-Menü mit „Über ShotKit“ (Oliver Muenk und Website); Bildschirm unter dem Mauszeiger mit `F9` oder `Strg+Druck`, alle Bildschirme mit `Strg+Umschalt+Druck`, aktives Fenster mit `Umschalt+Druck` und Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen; eine Lupe zeigt Bildschirmkoordinaten und den Pixelwert. `Strg` wählt das größere Fenster.

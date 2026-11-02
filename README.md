@@ -6,6 +6,16 @@ C# / WinForms / .NET 8, eine einzige EXE, keine Installation nötig.
 > **Status: Beta.** Hobbyprojekt, bisher nur auf wenigen Rechnern getestet. Besonders die Scroll-Aufnahme
 > kann bei komplexen Seiten Fehler machen. Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 
+## Rust-Version testen und später umsteigen
+
+ShotKit wird zusätzlich in Rust entwickelt. Die **C#-Version v1.2.0 bleibt die stabile Hauptversion**; die Rust-Version ist eine Alpha und ihre Funktionsgleichheit ist noch nicht vollständig belegt. Entwicklungsstand, Tests und bekannte Grenzen stehen in der [Rust-Anleitung](rust/README.md), die einzelnen Funktionen in der [Paritätstabelle](rust/PARITY.md).
+
+Zum Testen ein Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden, EXE und SHA256-Prüfsumme prüfen und die EXE starten. Die unsignierte EXE kann eine SmartScreen-Warnung auslösen; nach eigener Prüfung stehen dort „Weitere Informationen“ und „Trotzdem ausführen“ zur Verfügung. Die Prüfsumme lässt sich in PowerShell mit `Get-FileHash .\shotkit-*.exe -Algorithm SHA256` berechnen und mit der zugehörigen `.sha256`-Datei vergleichen. Vor dem Start eine laufende C#-Instanz beenden, damit sich globale Tastenkürzel nicht gegenseitig belegen.
+
+Rust liest seine Einstellungen getrennt unter `%APPDATA%\ShotKitRust\settings.json`; die C#-Einstellungen unter `%APPDATA%\ShotKit\settings.json` werden nicht übernommen oder verändert. Ausgabeoptionen und Autostart deshalb im Rust-Tray-Menü bewusst neu einstellen; beim Umstieg gegebenenfalls den C#-Autostart ausschalten, da beide Versionen getrennte Autostart-Einträge haben: Beim ersten Start sind automatisches Kopieren und Speichern ausgeschaltet, der Editor öffnet sich nach einer Aufnahme. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Einstellungen und vorhandene Bilder bleiben dabei erhalten.
+
+Über den späteren Wechsel des Hauptzweigs auf Rust und eine mögliche Verschiebung der C#-Quellen nach `legacy/` entscheidet der Owner nach Freigabe der Beta. Bis dahin bleiben Hauptzweig und C#-Version erhalten; die freigegebene Version ist über den bestehenden Tag `v1.2.0` erreichbar.
+
 ## Screenshots
 
 ![Editor mit Werkzeugleiste und Aktionsleiste rechts](docs/editor.png)
