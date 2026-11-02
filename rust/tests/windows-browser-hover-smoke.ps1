@@ -219,14 +219,27 @@ $ErrorActionPreference = 'Stop'
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
-    $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]([Int64]$args[0]))
-    if ($null -eq $root) { throw 'UIA ElementFromHandle returned null.' }
+    $windowHandle = [IntPtr]([Int64]$args[0])
     $condition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::NameProperty,
         'ShotKit UIA hover target'
     )
-    $target = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($null -eq $target) { throw 'Named target is absent from Edge UIA Control View.' }
+    # Accessibility is requested on Edge's command line, but its renderer and
+    # UIA provider can become available after the top-level HWND. Retry only
+    # this transient absence; the parent process enforces the hard 15s limit.
+    $deadline = [DateTime]::UtcNow.AddSeconds(12)
+    $target = $null
+    do {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($windowHandle)
+        if ($null -ne $root) {
+            $target = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        }
+        if ($null -eq $target -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 200
+        }
+    } while ($null -eq $target -and [DateTime]::UtcNow -lt $deadline)
+    if ($null -eq $root) { throw 'UIA ElementFromHandle returned null throughout provider initialization.' }
+    if ($null -eq $target) { throw 'Named target remained absent from Edge UIA Control View after provider initialization wait.' }
     $current = $target.Current
     $bounds = $current.BoundingRectangle
     if ($current.IsOffscreen) { throw 'Named target is marked offscreen.' }
@@ -268,6 +281,7 @@ catch {
         '--disable-extensions',
         '--disable-component-update',
         '--disable-features=msEdgeSidebarV2,msEdgeDiscover,msSmartScreenProtection',
+        '--force-renderer-accessibility',
         '--force-device-scale-factor=1',
         "--app=`"$fileUri`"",
         '--window-size=1000,720'
