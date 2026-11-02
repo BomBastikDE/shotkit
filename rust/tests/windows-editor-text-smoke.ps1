@@ -89,19 +89,20 @@ function Canvas-Click([int]$ImageX,[int]$ImageY) {
     $cursor=[Activator]::CreateInstance([ShotKitTextSmoke.Point]);[void][ShotKitTextSmoke.Native]::GetCursorPos([ref]$cursor)
     $targetRect=[Activator]::CreateInstance([ShotKitTextSmoke.Rect]);$rectOk=[ShotKitTextSmoke.Native]::WindowRect($target,[ref]$targetRect)
     if($targetPid -ne $proc.Id){throw "INPUT_TARGET_MISMATCH before click: requested screen=($sx,$sy), cursor=($($cursor.X),$($cursor.Y)), HWND=$target, class='$([ShotKitTextSmoke.Native]::ClassName($target))', title='$([ShotKitTextSmoke.Native]::Title($target))', owner PID=$targetPid, expected test PID=$($proc.Id), target rect valid=$rectOk ($($targetRect.Left),$($targetRect.Top))-($($targetRect.Right),$($targetRect.Bottom)), editor HWND=$($main.Handle), image point=($ImageX,$ImageY), view=($viewX,$viewY ${shownW}x${shownH})."}
+    $script:lastCanvasClick="screen=($sx,$sy), cursor=($($cursor.X),$($cursor.Y)), target HWND=$target class='$([ShotKitTextSmoke.Native]::ClassName($target))' title='$([ShotKitTextSmoke.Native]::Title($target))' PID=$targetPid; requested image=($ImageX,$ImageY); test view origin=($viewX,$viewY), size=${shownW}x${shownH}"
     [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true;Start-Sleep -Milliseconds 80
     [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
 }
 function Text-Dialog([string]$Description) {
     Wait-For { Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustTextEntryDialog' -and $_.Title -eq 'Text eingeben'} | Select-Object -First 1 } 8 $Description
 }
-function Check-DialogText([string]$Expected) {
+function Check-DialogText([string]$Expected,[string]$Stage) {
     $d=Text-Dialog 'owned text entry dialog';
     if([ShotKitTextSmoke.Native]::Owner($d.Handle) -ne $proc.Id){throw 'TEXT_DIALOG_OWNER_MISMATCH.'}
     $edit=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'Edit'} | Select-Object -First 1
     if($null -eq $edit){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
     $actual=[ShotKitTextSmoke.Native]::EditText($edit.Handle)
-    if($actual -cne $Expected){throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG: expected '$Expected', got '$actual'."}
+    if($actual -cne $Expected){throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at $Stage: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."}
     return $d
 }
 
@@ -133,19 +134,21 @@ try {
     [void](Wait-For {@(@(Owned-Windows | Where-Object {$_.ClassName -eq 'ShotKitRustTextEntryDialog'}).Count -eq 0)} 2 'text creation dialog close')
 
     # Keep Text selected and click within the new object's hit bounds.
-    Canvas-Click 32 31
-    $d=Check-DialogText $original
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Text*'} | Select-Object -First 1} 5 'Text tool remaining active after creation')
+    # Click well inside the text bounds rather than near the top-left tolerance edge.
+    Canvas-Click 40 40
+    $d=Check-DialogText $original 'first reopen after creation'
     $e=[ShotKitTextSmoke.Native]::Children($d.Handle) | Where-Object {$_.ClassName -eq 'Edit'} | Select-Object -First 1
     [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$changed);Button $d.Handle 'OK'
     Start-Sleep -Milliseconds 250
-    Canvas-Click 32 31
-    $d=Check-DialogText $changed
+    Canvas-Click 40 40
+    $d=Check-DialogText $changed 'reopen after saved text edit'
     Button $d.Handle 'Abbrechen'
 
     Button $main.Handle 'Zurück'
     Start-Sleep -Milliseconds 250
-    Canvas-Click 32 31
-    $d=Check-DialogText $original
+    Canvas-Click 40 40
+    $d=Check-DialogText $original 'reopen after Undo'
     Button $d.Handle 'Abbrechen'
     Write-Output 'PASS: created a text object, reopened it with the Text tool and verified initial text, saved an edit, reopened the edited content, and verified Undo restored the original text.'
 }
