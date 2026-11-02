@@ -22,7 +22,8 @@ fn msvc_resource_compilers() -> Vec<PathBuf> {
             } else if variable == "WindowsSdkDir" {
                 let bin = path.join("bin");
                 if let Ok(versions) = fs::read_dir(&bin) {
-                    let mut versions: Vec<_> = versions.flatten().map(|entry| entry.path()).collect();
+                    let mut versions: Vec<_> =
+                        versions.flatten().map(|entry| entry.path()).collect();
                     versions.sort();
                     for version in versions.into_iter().rev() {
                         for arch in ["x64", "x86"] {
@@ -68,7 +69,12 @@ fn run_compiler(program: &Path, args: &[OsString], resource_dir: &Path) -> Resul
 fn main() {
     println!("cargo:rerun-if-changed=resources/shotkit.rc");
     println!("cargo:rerun-if-changed=resources/shotkit.ico");
-    for variable in ["RC", "WindowsSdkDir", "WindowsSDKVersion", "VCToolsInstallDir"] {
+    for variable in [
+        "RC",
+        "WindowsSdkDir",
+        "WindowsSDKVersion",
+        "VCToolsInstallDir",
+    ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
 
@@ -77,7 +83,9 @@ fn main() {
         return;
     }
 
-    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo did not provide CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo did not provide CARGO_MANIFEST_DIR"),
+    );
     let resource_dir = manifest_dir
         .join("resources")
         .canonicalize()
@@ -95,9 +103,18 @@ fn main() {
         compilers.extend([PathBuf::from("rc.exe"), PathBuf::from("llvm-rc")]);
         for compiler in compilers {
             let args = if compiler.file_name().is_some_and(|name| name == "llvm-rc") {
-                vec![OsString::from("/nologo"), OsString::from("/FO"), output.as_os_str().to_owned(), rc_file.as_os_str().to_owned()]
+                vec![
+                    OsString::from("/nologo"),
+                    OsString::from("/FO"),
+                    output.as_os_str().to_owned(),
+                    rc_file.as_os_str().to_owned(),
+                ]
             } else {
-                vec![OsString::from("/nologo"), OsString::from(format!("/fo{}", output.display())), rc_file.as_os_str().to_owned()]
+                vec![
+                    OsString::from("/nologo"),
+                    OsString::from(format!("/fo{}", output.display())),
+                    rc_file.as_os_str().to_owned(),
+                ]
             };
             match run_compiler(&compiler, &args, &resource_dir) {
                 Ok(()) => {
