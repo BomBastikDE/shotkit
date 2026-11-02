@@ -30,6 +30,22 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-about-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows toolbar and icon visual smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-toolbar-visual-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -ScreenshotPath target/shotkit-toolbar-test.png
+      - name: Upload toolbar test screenshot
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shotkit-toolbar-test-screenshot
+          path: rust/target/shotkit-toolbar-test.png
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Interactive Windows step number visibility smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-step-visibility-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows clipboard alpha round-trip smoke test
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh

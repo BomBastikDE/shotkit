@@ -160,6 +160,7 @@ extern "system" {
     fn GdipGetImageGraphicsContext(image: *mut c_void, graphics: *mut *mut c_void) -> i32;
     fn GdipDeleteGraphics(graphics: *mut c_void) -> i32;
     fn GdipSetSmoothingMode(graphics: *mut c_void, mode: i32) -> i32;
+    fn GdipSetTextRenderingHint(graphics: *mut c_void, mode: i32) -> i32;
     fn GdipFlush(graphics: *mut c_void, intention: i32) -> i32;
     fn GdipCreatePen1(color: u32, width: f32, unit: i32, pen: *mut *mut c_void) -> i32;
     fn GdipDeletePen(pen: *mut c_void) -> i32;
@@ -195,6 +196,18 @@ extern "system" {
         w: f32,
         h: f32,
     ) -> i32;
+    fn GdipFillEllipse(
+        graphics: *mut c_void,
+        brush: *mut c_void,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) -> i32;
+    fn GdipCreateStringFormat(flags: i32, language: u16, format: *mut *mut c_void) -> i32;
+    fn GdipDeleteStringFormat(format: *mut c_void) -> i32;
+    fn GdipSetStringFormatAlign(format: *mut c_void, align: i32) -> i32;
+    fn GdipSetStringFormatLineAlign(format: *mut c_void, align: i32) -> i32;
     fn GdipFillRectangle(
         graphics: *mut c_void,
         brush: *mut c_void,
@@ -300,7 +313,7 @@ unsafe fn render_started(
 
 #[cfg(windows)]
 unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
-    use crate::shapes::{Point, ShapeKind};
+    use crate::shapes::ShapeKind;
     let width = shape.style.width.max(1.0).min(256.0);
     let pen_color = argb(shape.style.color, 255);
     let mut pen_raw = ptr::null_mut();
@@ -383,19 +396,33 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
         ShapeKind::Step { center, number } => {
             let radius = (10.0 + width * 2.2).max(1.0);
             let brush = create_brush(pen_color)?;
-            let circle = circle_points(*center, radius);
-            status(GdipFillPolygon(g, brush.as_ptr(), circle.as_ptr(), 32, 0))?;
-            let white = crate::shapes::Color::rgba(255, 255, 255, 255);
-            draw_text(
+            let x = center.x - radius;
+            let y = center.y - radius;
+            status(GdipFillEllipse(
                 g,
-                Point {
-                    x: center.x - radius * 0.35,
-                    y: center.y - radius * 0.45,
-                },
-                &number.to_string(),
-                radius,
-                argb(white, 255),
-            )
+                brush.as_ptr(),
+                x,
+                y,
+                radius * 2.0,
+                radius * 2.0,
+            ))?;
+
+            // Match StepShape: a crisp white ring and centered, bold, contrasting
+            // numeral. A bounded layout rect avoids the old fixed left/top offset,
+            // which pushed multi-digit labels off center and out of the marker.
+            let white = argb(crate::shapes::Color::rgba(255, 255, 255, 255), 255);
+            let ring = create_pen(white, (radius / 8.0).max(2.0))?;
+            status(GdipDrawEllipse(
+                g,
+                ring.as_ptr(),
+                x,
+                y,
+                radius * 2.0,
+                radius * 2.0,
+            ))?;
+            let text = number.to_string();
+            let text_color = step_text_color(shape.style.color);
+            draw_centered_text(g, *center, radius, &text, text_color)
         }
         ShapeKind::Blur { .. } => Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
@@ -419,15 +446,85 @@ fn rect(a: crate::shapes::Point, b: crate::shapes::Point) -> (f32, f32, f32, f32
         (a.y - b.y).abs().max(1.0),
     )
 }
-#[cfg(windows)]
-fn circle_points(c: crate::shapes::Point, r: f32) -> [PointF; 32] {
-    std::array::from_fn(|i| {
-        let a = (i as f32) * (std::f32::consts::TAU / 32.0);
-        PointF {
-            x: c.x + a.cos() * r,
-            y: c.y + a.sin() * r,
+fn step_text_color(color: crate::shapes::Color) -> u32 {
+    let luminance =
+        f32::from(color.r) * 0.299 + f32::from(color.g) * 0.587 + f32::from(color.b) * 0.114;
+    let (r, g, b) = if luminance > 150.0 {
+        (40, 40, 40)
+    } else {
+        (255, 255, 255)
+    };
+    (255u32 << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
+}
+
+fn step_font_size(radius: f32, digits: usize) -> f32 {
+    let digits = digits.max(1) as f32;
+    radius
+        * if digits == 1.0 {
+            1.05
+        } else {
+            // Roughly 0.65 em per digit. Keep the full label within the circle's
+            // inner area as step numbers grow beyond two digits.
+            1.7f32.min(1.8 / digits)
         }
-    })
+}
+
+#[cfg(windows)]
+unsafe fn create_pen(color: u32, width: f32) -> Result<GdiResource, RenderError> {
+    let mut raw = ptr::null_mut();
+    status(GdipCreatePen1(color, width, UNIT_PIXEL, &mut raw))?;
+    GdiResource::new(raw, GdipDeletePen)
+}
+
+#[cfg(windows)]
+unsafe fn draw_centered_text(
+    g: *mut c_void,
+    center: crate::shapes::Point,
+    radius: f32,
+    text: &str,
+    color: u32,
+) -> Result<(), RenderError> {
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let mut family_raw = ptr::null_mut();
+    let name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
+    status(GdipCreateFontFamilyFromName(
+        name.as_ptr(),
+        ptr::null_mut(),
+        &mut family_raw,
+    ))?;
+    let family = GdiResource::new(family_raw, GdipDeleteFontFamily)?;
+    let mut font_raw = ptr::null_mut();
+    status(GdipCreateFont(
+        family.as_ptr(),
+        step_font_size(radius, text.chars().count()).max(1.0),
+        1,
+        UNIT_PIXEL,
+        &mut font_raw,
+    ))?;
+    let font = GdiResource::new(font_raw, GdipDeleteFont)?;
+    let brush = create_brush(color)?;
+    let mut format_raw = ptr::null_mut();
+    status(GdipCreateStringFormat(0, 0, &mut format_raw))?;
+    let format = GdiResource::new(format_raw, GdipDeleteStringFormat)?;
+    status(GdipSetStringFormatAlign(format.as_ptr(), 1))?;
+    status(GdipSetStringFormatLineAlign(format.as_ptr(), 1))?;
+    // Text anti-aliasing is independent of the graphics smoothing mode.
+    status(GdipSetTextRenderingHint(g, 4))?;
+    let layout = RectF {
+        x: center.x - radius,
+        y: center.y - radius,
+        width: radius * 2.0,
+        height: radius * 2.0,
+    };
+    status(GdipDrawString(
+        g,
+        wide.as_ptr(),
+        wide.len() as i32,
+        font.as_ptr(),
+        &layout,
+        format.as_ptr(),
+        brush.as_ptr(),
+    ))
 }
 #[cfg(windows)]
 unsafe fn draw_text(
@@ -513,6 +610,26 @@ mod tests {
             Err(RenderError::InvalidDimensions)
         );
     }
+
+    #[test]
+    fn step_labels_scale_for_multiple_digits_and_use_contrast_color() {
+        assert_eq!(step_font_size(20.0, 1), 21.0);
+        assert_eq!(step_font_size(20.0, 2), 18.0);
+        assert!((step_font_size(20.0, 3) - 12.0).abs() < 0.001);
+        assert_eq!(step_font_size(20.0, 4), 9.0);
+        assert_eq!(
+            step_text_color(crate::shapes::Color::rgba(0, 0, 0, 255)),
+            0xffff_ffff
+        );
+        assert_eq!(
+            step_text_color(crate::shapes::Color::rgba(255, 255, 255, 255)),
+            0xff28_2828
+        );
+        assert_eq!(
+            step_text_color(crate::shapes::Color::rgba(100, 100, 100, 20)),
+            0xffff_ffff
+        );
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -546,5 +663,63 @@ mod windows_pixel_tests {
             [0, 0, 255, 105],
             "marker keeps its intended translucency"
         );
+    }
+
+    #[test]
+    fn step_marker_is_centered_legible_and_keeps_transparent_layer() {
+        for color in [
+            crate::shapes::Color::rgba(0, 0, 0, 255),
+            crate::shapes::Color::rgba(255, 255, 255, 255),
+        ] {
+            for number in [1, 9, 10, 100, 999, 1000] {
+                let mut shape = Shape::new(ShapeKind::Step {
+                    center: Point::new(48.0, 48.0),
+                    number,
+                });
+                shape.style.color = color;
+                let image = render_shape(96, 96, &shape).expect("GDI+ step render");
+                let pixel = |x: usize, y: usize| {
+                    let i = (y * image.width + x) * 4;
+                    [
+                        image.pixels[i],
+                        image.pixels[i + 1],
+                        image.pixels[i + 2],
+                        image.pixels[i + 3],
+                    ]
+                };
+                assert_eq!(pixel(0, 0), [0, 0, 0, 0]);
+                let mut glyph = Vec::new();
+                for y in 30..=66 {
+                    for x in 30..=66 {
+                        let p = pixel(x, y);
+                        let visible = if color.r == 0 {
+                            p[0] > 235 && p[1] > 235 && p[2] > 235
+                        } else {
+                            p[0] < 80 && p[1] < 80 && p[2] < 80
+                        };
+                        if visible {
+                            glyph.push((x, y));
+                        }
+                    }
+                }
+                assert!(!glyph.is_empty(), "{number} has visible contrasting glyphs");
+                let min_x = glyph.iter().map(|p| p.0).min().unwrap();
+                let max_x = glyph.iter().map(|p| p.0).max().unwrap();
+                let min_y = glyph.iter().map(|p| p.1).min().unwrap();
+                let max_y = glyph.iter().map(|p| p.1).max().unwrap();
+                assert!(
+                    (min_x + max_x) / 2 >= 45 && (min_x + max_x) / 2 <= 51,
+                    "{number} centered horizontally: {min_x}..{max_x}"
+                );
+                assert!(
+                    (min_y + max_y) / 2 >= 45 && (min_y + max_y) / 2 <= 51,
+                    "{number} centered vertically: {min_y}..{max_y}"
+                );
+                assert!(
+                    max_x - min_x < 32,
+                    "{number} fits within the marker interior"
+                );
+            }
+        }
     }
 }

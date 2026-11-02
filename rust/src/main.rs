@@ -1406,6 +1406,7 @@ unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
         editor(h).set_tool(Tool::Select);
+        toolbar::set_active(h, toolbar::ID_SELECT);
         refresh_title(h);
         Ok(())
     })();
@@ -1932,6 +1933,7 @@ unsafe fn edit_style(h: H, id: usize) {
         toolbar::ID_COLOR => {
             let Some(color) = choose_color(h) else { return };
             editor(h).set_current_color(color);
+            toolbar::set_color(h, color.r, color.g, color.b);
             replacement.color = color;
         }
         toolbar::ID_LINE_WIDTH => {
@@ -1955,6 +1957,22 @@ unsafe fn edit_style(h: H, id: usize) {
     }
 }
 
+fn toolbar_id_for_tool(tool: Tool) -> usize {
+    match tool {
+        Tool::Select => toolbar::ID_SELECT,
+        Tool::Arrow => toolbar::ID_ARROW,
+        Tool::Line => toolbar::ID_LINE,
+        Tool::Rectangle => toolbar::ID_RECTANGLE,
+        Tool::Ellipse => toolbar::ID_ELLIPSE,
+        Tool::Text => toolbar::ID_TEXT,
+        Tool::Highlight => toolbar::ID_MARKER,
+        Tool::Blur => toolbar::ID_BLUR,
+        Tool::Step => toolbar::ID_STEP,
+        Tool::Pen => toolbar::ID_PEN,
+        Tool::Crop => toolbar::ID_CROP,
+    }
+}
+
 unsafe fn toolbar_action(h: H, id: usize) {
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
@@ -1973,6 +1991,7 @@ unsafe fn toolbar_action(h: H, id: usize) {
     if let Some(tool) = tool {
         cancel_gesture(h);
         editor(h).set_tool(tool);
+        toolbar::set_active(h, toolbar_id_for_tool(tool));
         SetWindowTextW(
             h,
             wide(&format!(
@@ -1982,6 +2001,23 @@ unsafe fn toolbar_action(h: H, id: usize) {
         );
     } else {
         match id {
+            toolbar::ID_SWATCH_RED | toolbar::ID_SWATCH_BLACK | toolbar::ID_SWATCH_YELLOW | toolbar::ID_SWATCH_BLUE => {
+                let (r, g, b) = match id {
+                    toolbar::ID_SWATCH_RED => (230, 40, 40),
+                    toolbar::ID_SWATCH_BLACK => (0, 0, 0),
+                    toolbar::ID_SWATCH_YELLOW => (255, 214, 0),
+                    _ => (0, 120, 215),
+                };
+                let color = shotkit_rust_prototype::shapes::Color::rgba(r, g, b, 255);
+                let mut replacement = editor(h).selection().map(|shape| shape.style.clone())
+                    .unwrap_or_else(|| editor(h).current_style().clone());
+                editor(h).set_current_color(color);
+                toolbar::set_color(h, r, g, b);
+                replacement.color = color;
+                if editor(h).set_selected_style(replacement) {
+                    window_state(h).dirty = true;
+                }
+            }
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {
                 if window_state(h).bitmap.is_null() {
@@ -1990,6 +2026,7 @@ unsafe fn toolbar_action(h: H, id: usize) {
                     apply_frame(h, action);
                 }
             }
+            toolbar::ID_CAPTURE => capture_region(h),
             toolbar::ID_SAVE => {
                 save(h, false);
             }
@@ -2405,6 +2442,7 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             } else if editor(h).tool() != Tool::Select {
                 cancel_gesture(h);
                 editor(h).set_tool(Tool::Select);
+                toolbar::set_active(h, toolbar::ID_SELECT);
             } else {
                 return 0;
             }
@@ -2450,6 +2488,7 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             if let Some(tool) = tool {
                 cancel_gesture(h);
                 editor(h).set_tool(tool);
+                toolbar::set_active(h, toolbar_id_for_tool(tool));
                 SetWindowTextW(
                     h,
                     wide(&format!(
@@ -2464,6 +2503,7 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
         0x0203 if !window_state(h).bitmap.is_null() => {
             let (x, y) = point(h, l);
             editor(h).set_tool(Tool::Select);
+            toolbar::set_active(h, toolbar::ID_SELECT);
             editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
             editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
             let current = editor(h).selected_text().map(str::to_owned);
@@ -2670,7 +2710,7 @@ fn main() {
             cls_extra: 0,
             wnd_extra: 0,
             instance: inst,
-            icon: LoadIconW(null_mut(), 32512usize as *const u16),
+            icon: LoadIconW(inst, 1usize as *const u16),
             cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
             background: (6usize as H),
             menu: std::ptr::null(),
@@ -2707,7 +2747,7 @@ fn main() {
         n.id = 1;
         n.flags = 1 | 2 | 4;
         n.callback = TRAY;
-        n.icon = LoadIconW(null_mut(), 32512usize as *const u16);
+        n.icon = LoadIconW(inst, 1usize as *const u16);
         let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
         n.tip[..tip.len()].copy_from_slice(&tip);
         if Shell_NotifyIconW(0, &n) == 0 {
