@@ -54,6 +54,10 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows scroll cancellation smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-scroll-abort-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows horizontal scroll smoke test
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
