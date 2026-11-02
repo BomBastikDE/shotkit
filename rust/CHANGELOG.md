@@ -33,3 +33,26 @@ Crate und ausführbare Datei heißen `shotkit`. Neue Release-Dateien verwenden d
 ## Alpha 14
 
 Die Release-Erstellung für Alpha-Tags läuft nach erfolgreichen Linux- und Windows-Prüfungen automatisch; EXE und SHA256-Datei werden als Pre-Release veröffentlicht. [Tag-Lauf 41530450285](https://github.com/BomBastikDE/shotkit/actions/runs/41530450285).
+
+## Alpha 16
+
+Die Editorvorschau verwendet einen Cache für unveränderte Formen, begrenzt Neuzeichnungen auf betroffene Bereiche und berechnet das Schachbrett nur für transparente Pixel. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41537579633) maß bei vier Formen und drei Durchläufen für 1920 × 1080 Pixel 83,59 → 25,24 ms und für 1200 × 10.000 Pixel 435,56 → 127,93 ms je Vorschau-Berechnung. Diese Messung umfasst Rendering und Vorschau-Aufbereitung, nicht die abschließende Windows-Bildschirmausgabe. Der Owner meldete eine deutlich flüssigere Bedienung; schnelles Freihandzeichnen blieb auffällig.
+
+## Alpha 17
+
+Die vorhandenen ShotKit-Symbole werden höher aufgelöst gezeichnet und geglättet ausgegeben. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41539042247) bestand mit 23 von 23 Smoke-Szenarien, einschließlich eines Bildtests auf Zwischenstufen an Symbolkanten. Die EXE ist 1.135.616 Bytes groß, 1.536 Bytes mehr als Alpha 16; neue Abhängigkeiten wurden nicht hinzugefügt. Die visuelle Abnahme durch den Owner steht aus.
+
+## Alpha 18
+
+Freihandstriche werden auf einen begrenzten Bildbereich gerendert; eindeutig zuordenbare Zwischenpunkte aus der begrenzten Windows-Maushistorie werden übernommen. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41541041605) maß für einen Strich mit 600 Punkten und drei Durchläufen 28,15 → 18,05 ms bei 1920 × 1080 und 146,04 → 79,12 ms bei 1200 × 10.000 Pixeln. Die verglichenen Vorschaubilder waren pixelgleich; abschließende Windows-Bildschirmausgabe und realer Schnellzeichentest sind darin nicht enthalten. Alle 23 Smoke-Szenarien bestanden. EXE und SHA256-Datei sind im [Pre-Release](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.18) enthalten.
+
+## Übergabe 2. November 2026
+
+- Erledigt: Alpha 16, 17 und 18 nach grüner Linux-/Windows-CI veröffentlicht; C# bleibt stabile Hauptversion.
+- Erledigt: Die Textleisten-Meldung war eine noch laufende alte EXE; der Owner bestätigte die Symbolleiste nach Neustart.
+- Offen: Owner testet Alpha 18 auf schnelles Freihandzeichnen und beurteilt die geglätteten Symbole.
+- Offen: Die Maushistorie umfasst höchstens 64 Punkte; abgelaufene oder nicht eindeutige Verläufe werden nicht ergänzt.
+- Nächster Schritt: Die fünf als „fehlt“ markierten Funktionen in [PARITY.md](PARITY.md) bearbeiten, einschließlich schmaler Aktionsleiste.
+- Danach: Die 20 Zeilen „implementiert, nicht belegt“ priorisiert testen und den Symbolleisten-Test wieder verbindlich machen.
+- Bei der nächsten ohnehin nötigen CI-Änderung checkout und upload-artifact auf aktuelle Hauptversionen prüfen und aktualisieren.
+- Reale Tests mit gemischter DPI, mehreren Monitoren und weiteren Browsern sowie Entscheidungen zu main, legacy und Code-Signing bleiben beim Owner.

@@ -1,6 +1,6 @@
 # ShotKit Rust: Windows-Praxistest
 
-Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile C#-Version. Aktuelle Vorabversion: [v2.0.0-alpha.9](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.9); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
+Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile C#-Version. Aktuelle Vorabversion: [v2.0.0-alpha.18](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.18); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
 
 ## Ausgangslage notieren
 
@@ -43,8 +43,8 @@ Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2
 
 ## Gemeldeter Fehler: Symbolleiste wirkt unscharf
 
-**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15, dass die Symbole der Werkzeugleiste zwar erkennbar, aber unscharf und optisch unbefriedigend wirken. Die Symbole werden derzeit mit Win32-GDI anhand eines festen 20×20-Koordinatenrasters gezeichnet. Ob und wie Windows-Skalierung zur Darstellung auf dem Rechner beiträgt, ist nicht geprüft. Eine Korrektur benötigt eine visuelle Prüfung durch den Owner; die bestehende CI belegt die Bedienbarkeit, nicht die gewünschte Bildqualität.
+**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15, dass die Symbole der Werkzeugleiste zwar erkennbar, aber unscharf und optisch unbefriedigend wirken. Die Symbole werden derzeit mit Win32-GDI anhand eines festen 20×20-Koordinatenrasters gezeichnet. Ob und wie Windows-Skalierung zur Darstellung auf dem Rechner beiträgt, ist nicht geprüft. Alpha 17 und Alpha 18 enthalten eine Glättung; ihre Darstellung auf dem Rechner des Owners ist noch zu beurteilen. Die CI belegt den Kantentest und die Bedienbarkeit, nicht die gewünschte Bildqualität.
 
 ## Gemeldeter Fehler: schnelles Freihandzeichnen
 
-**Status: offen.** Nach dem Test von Alpha 16 meldete der Owner, dass die allgemeine Bedienung deutlich flüssiger sei. Beim schnellen Zeichnen freier Linien ruckelt es aber weiterhin und Bewegungen werden nicht vollständig erfasst. Ein erneuter Test auf seinem Rechner ist nach der Korrektur erforderlich.
+**Status: offen.** Nach dem Test von Alpha 16 meldete der Owner, dass die allgemeine Bedienung deutlich flüssiger sei. Beim schnellen Zeichnen freier Linien ruckelt es aber weiterhin und Bewegungen werden nicht vollständig erfasst. Alpha 18 enthält eine begrenzte Renderfläche und die Übernahme eindeutig zuordenbarer Zwischenpunkte aus der Windows-Maushistorie. Ein erneuter Schnellzeichentest auf seinem Rechner ist erforderlich.
