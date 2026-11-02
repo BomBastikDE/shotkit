@@ -36,6 +36,7 @@ pub const ID_REDO: usize = 0x5113;
 pub const ID_COLOR: usize = 0x5120;
 pub const ID_LINE_WIDTH: usize = 0x5121;
 pub const ID_FONT_SIZE: usize = 0x5122;
+pub const ID_FRAME: usize = 0x5123;
 
 const CLASS_NAME: &str = "ShotKitRustEditorToolbar";
 const WM_NCCREATE: u32 = 0x0081;
@@ -129,7 +130,7 @@ struct Action {
     id: usize,
     label: &'static str,
 }
-const ACTIONS: [Action; 18] = [
+const ACTIONS: [Action; 19] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -185,6 +186,10 @@ const ACTIONS: [Action; 18] = [
     Action {
         id: ID_FONT_SIZE,
         label: "Schriftgröße…",
+    },
+    Action {
+        id: ID_FRAME,
+        label: "Rahmen / Schatten…",
     },
     Action {
         id: ID_SAVE,
@@ -337,7 +342,7 @@ impl Drop for Toolbar {
 /// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
 /// | `ID_MARKER` / `ID_BLUR` / `ID_STEP` / `ID_PEN` | Marker / Verpixeln / Nummer / Stift |
 /// | `ID_CROP` | Zuschneiden |
-/// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` | Farbe / Linienbreite / Schriftgröße |
+/// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` / `ID_FRAME` | Farbe / Linienbreite / Schriftgröße / Rahmen und Schatten |
 /// | `ID_SAVE` / `ID_COPY` / `ID_UNDO` / `ID_REDO` | Speichern / Kopieren / Zurück / Wiederholen |
 ///
 /// `WM_COMMAND.wParam` contains the ID in its low word and `BN_CLICKED` in its

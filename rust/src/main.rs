@@ -24,8 +24,8 @@ mod uia_picker;
 use shotkit_rust_prototype::{
     capture_output::{Advance, CaptureAction, CaptureOutputState},
     editor::EditorController,
-    image_edit::CropRect,
-    image_io, output_windows, render,
+    image_edit::{CropRect, FrameOptions, ShadowOptions},
+    image_io, output_windows,
     scroll_capture::{self, Direction, Outcome, ScrollIo},
     settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
@@ -191,11 +191,9 @@ extern "system" {
         offset: u32,
     ) -> H;
     fn CreateCompatibleDC(dc: H) -> H;
-    fn CreateCompatibleBitmap(dc: H, w: i32, h: i32) -> H;
     fn SelectObject(dc: H, obj: H) -> H;
     fn DeleteDC(dc: H) -> i32;
     fn DeleteObject(obj: H) -> i32;
-    fn BitBlt(d: H, x: i32, y: i32, w: i32, h: i32, s: H, sx: i32, sy: i32, rop: u32) -> i32;
     fn StretchBlt(
         d: H,
         x: i32,
@@ -213,15 +211,6 @@ extern "system" {
     fn Rectangle(dc: H, l: i32, t: i32, r: i32, b: i32) -> i32;
     fn TextOutW(dc: H, x: i32, y: i32, text: *const u16, len: i32) -> i32;
     fn GetStockObject(index: i32) -> H;
-    fn GetDIBits(
-        dc: H,
-        bmp: H,
-        start: u32,
-        lines: u32,
-        bits: *mut c_void,
-        info: *mut c_void,
-        usage: u32,
-    ) -> i32;
 }
 #[link(name = "shell32")]
 extern "system" {
@@ -238,6 +227,8 @@ fn wide(s: &str) -> Vec<u16> {
 const COPY: u32 = 0x00cc0020;
 const TRAY: u32 = 0x8001;
 const SCROLL_DONE: u32 = 0x8002;
+const DELAYED_CAPTURE: u32 = 0x8003;
+static DELAYED_CAPTURE_PENDING: AtomicBool = AtomicBool::new(false);
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
 static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
 static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
@@ -469,6 +460,22 @@ unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>
 unsafe fn capture(h: H) {
     capture_rect(h, capture_targets::monitor_under_cursor());
 }
+unsafe fn schedule_capture(h: H, seconds: u64) {
+    if DELAYED_CAPTURE_PENDING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        MessageBoxW(h, wide("Eine verzögerte Aufnahme läuft bereits.").as_ptr(), wide("Aufnahme").as_ptr(), 0x30);
+        return;
+    }
+    let hwnd = h as isize;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(seconds));
+        if unsafe { PostMessageW(hwnd as H, DELAYED_CAPTURE, 0, 0) } == 0 {
+            DELAYED_CAPTURE_PENDING.store(false, Ordering::SeqCst);
+        }
+    });
+}
 unsafe fn capture_active(h: H, window: H) {
     if window == h || window.is_null() {
         MessageBoxW(
@@ -514,66 +521,74 @@ unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
     if BITMAP.is_null() {
         return Err("Kein Bild geöffnet.".into());
     }
-    let screen = GetDC(null_mut());
-    if screen.is_null() {
-        return Err("Bildschirm konnte nicht geöffnet werden.".into());
-    }
-    let base_dc = CreateCompatibleDC(screen);
-    let out_dc = CreateCompatibleDC(screen);
-    let output = CreateCompatibleBitmap(screen, BW, BH);
-    if base_dc.is_null() || out_dc.is_null() || output.is_null() {
-        if !output.is_null() {
-            DeleteObject(output);
-        }
-        if !base_dc.is_null() {
-            DeleteDC(base_dc);
-        }
-        if !out_dc.is_null() {
-            DeleteDC(out_dc);
-        }
-        ReleaseDC(null_mut(), screen);
-        return Err("Bild konnte nicht zusammengesetzt werden.".into());
-    }
-    let old_base = SelectObject(base_dc, BITMAP);
-    let old_out = SelectObject(out_dc, output);
-    if old_base.is_null() || old_out.is_null() || old_base as isize == -1 || old_out as isize == -1
-    {
-        if !old_base.is_null() && old_base as isize != -1 {
-            SelectObject(base_dc, old_base);
-        }
-        if !old_out.is_null() && old_out as isize != -1 {
-            SelectObject(out_dc, old_out);
-        }
-        DeleteObject(output);
-        DeleteDC(base_dc);
-        DeleteDC(out_dc);
-        ReleaseDC(null_mut(), screen);
-        return Err("Bild konnte nicht ausgewählt werden.".into());
-    }
-    let mut success = BitBlt(out_dc, 0, 0, BW, BH, base_dc, 0, 0, COPY) != 0;
     let state = editor();
-    let draft = if preview { state.preview() } else { None };
+    let mut draft = if preview { state.preview() } else { None };
+    let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
     for (i, shape) in state.shapes().iter().enumerate() {
         if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i) {
-            continue;
+            shapes.push(draft.take().expect("draft checked above"));
+        } else {
+            shapes.push(shape.clone());
         }
-        success &= render::draw_shape(out_dc, shape, Some(base_dc));
     }
     if let Some(shape) = draft {
-        success &= render::draw_shape(out_dc, &shape, Some(base_dc));
+        shapes.push(shape);
+    }
+    let source = state.image_arc();
+    let rendered = shotkit_rust_prototype::alpha_document::render_document(&source, &shapes)?;
+    // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
+    // preview against a checkerboard so transparent source pixels and
+    // translucent annotations are displayed using the same source-over math
+    // as the document renderer. Export continues to use the original alpha.
+    let display_image = if preview {
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(rendered.pixels.len())
+            .map_err(|_| "Nicht genug Speicher für die Bildvorschau.".to_owned())?;
+        for (index, src) in rendered.pixels.chunks_exact(4).enumerate() {
+            let x = index % rendered.width;
+            let y = index / rendered.width;
+            let gray = if ((x / 12) + (y / 12)) % 2 == 0 { 236 } else { 196 };
+            let background = [gray, gray, gray, 255];
+            let pixel = shotkit_rust_prototype::alpha_composite::source_over(
+                background,
+                [src[0], src[1], src[2], src[3]],
+                255,
+            );
+            pixels.extend_from_slice(&pixel);
+        }
+        Image::new(rendered.width, rendered.height, pixels).map_err(str::to_owned)?
+    } else {
+        rendered
+    };
+    let output = create_bitmap(&display_image)?;
+    if !preview || (state.tool() != Tool::Crop && state.tool() != Tool::Select) {
+        return Ok(output);
+    }
+    let screen = GetDC(null_mut());
+    if screen.is_null() {
+        DeleteObject(output);
+        return Err("Bildschirm konnte nicht geöffnet werden.".into());
+    }
+    let out_dc = CreateCompatibleDC(screen);
+    if out_dc.is_null() {
+        ReleaseDC(null_mut(), screen);
+        DeleteObject(output);
+        return Err("Bild konnte nicht zusammengesetzt werden.".into());
+    }
+    let old_out = SelectObject(out_dc, output);
+    if old_out.is_null() || old_out as isize == -1 {
+        DeleteDC(out_dc);
+        ReleaseDC(null_mut(), screen);
+        DeleteObject(output);
+        return Err("Bild konnte nicht ausgewählt werden.".into());
     }
     if preview && state.tool() == Tool::Crop {
         if let (Some(a), Some(b)) = (CROP_START, CROP_END) {
             let pen = CreatePen(0, 2, 0x00ffffff);
             let previous_pen = SelectObject(out_dc, pen);
             let previous_brush = SelectObject(out_dc, GetStockObject(5));
-            Rectangle(
-                out_dc,
-                a.0.min(b.0),
-                a.1.min(b.1),
-                a.0.max(b.0),
-                a.1.max(b.1),
-            );
+            Rectangle(out_dc, a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1));
             SelectObject(out_dc, previous_brush);
             SelectObject(out_dc, previous_pen);
             DeleteObject(pen);
@@ -585,21 +600,10 @@ unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
             let pen = CreatePen(0, 1, 0x00d77800);
             let old_pen = SelectObject(out_dc, pen);
             let old_brush = SelectObject(out_dc, GetStockObject(5));
-            Rectangle(
-                out_dc,
-                b.x as i32 - 3,
-                b.y as i32 - 3,
-                (b.x + b.width) as i32 + 3,
-                (b.y + b.height) as i32 + 3,
-            );
+            Rectangle(out_dc, b.x as i32 - 3, b.y as i32 - 3,
+                (b.x + b.width) as i32 + 3, (b.y + b.height) as i32 + 3);
             for p in shape.handles() {
-                Rectangle(
-                    out_dc,
-                    p.x as i32 - 4,
-                    p.y as i32 - 4,
-                    p.x as i32 + 5,
-                    p.y as i32 + 5,
-                );
+                Rectangle(out_dc, p.x as i32 - 4, p.y as i32 - 4, p.x as i32 + 5, p.y as i32 + 5);
             }
             SelectObject(out_dc, old_brush);
             SelectObject(out_dc, old_pen);
@@ -607,14 +611,8 @@ unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
         }
     }
     SelectObject(out_dc, old_out);
-    SelectObject(base_dc, old_base);
     DeleteDC(out_dc);
-    DeleteDC(base_dc);
     ReleaseDC(null_mut(), screen);
-    if !success {
-        DeleteObject(output);
-        return Err("Bild konnte nicht vollständig gezeichnet werden.".into());
-    }
     Ok(output)
 }
 
@@ -622,74 +620,10 @@ unsafe fn bitmap_image() -> Result<Image, String> {
     if BITMAP.is_null() || BW <= 0 || BH <= 0 {
         return Err("Kein Bild geöffnet.".into());
     }
-    let size = (BW as usize)
-        .checked_mul(BH as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or("Bildgröße zu groß.")?;
-    if size > 512 * 1024 * 1024 {
-        return Err("Bildgröße zu groß.".into());
-    }
-    let mut pixels = vec![0u8; size];
-    let mut info = Bmi {
-        header: BmiHeader {
-            size: 40,
-            width: BW,
-            height: -BH,
-            planes: 1,
-            bits: 32,
-            compression: 0,
-            image_size: size as u32,
-            xppm: 0,
-            yppm: 0,
-            used: 0,
-            important: 0,
-        },
-        colors: [0],
-    };
-    let composed = composited_bitmap(false)?;
-    let dc = GetDC(null_mut());
-    if dc.is_null() {
-        DeleteObject(composed);
-        return Err("Bildschirm konnte nicht geöffnet werden.".into());
-    }
-    let rows = GetDIBits(
-        dc,
-        composed,
-        0,
-        BH as u32,
-        pixels.as_mut_ptr().cast(),
-        &mut info as *mut _ as *mut c_void,
-        0,
-    );
-    ReleaseDC(null_mut(), dc);
-    DeleteObject(composed);
-    if rows != BH {
-        return Err("Bild konnte nicht vollständig gelesen werden.".into());
-    }
-    // GDI does not preserve the alpha channel while drawing. Restore alpha from
-    // unchanged source pixels; newly drawn pixels are treated as opaque.
-    let original = editor().image_arc();
-    if DIRTY && original.pixels.chunks_exact(4).any(|px| px[3] != 255) {
-        return Err("Das Speichern bearbeiteter transparenter Bilder ist in diesem Entwicklungsstand noch nicht zuverlässig möglich.".into());
-    }
-    if original.pixels.len() == pixels.len() {
-        for (pixel, base) in pixels
-            .chunks_exact_mut(4)
-            .zip(original.pixels.chunks_exact(4))
-        {
-            pixel[3] = if pixel[..3] == base[..3] {
-                base[3]
-            } else {
-                255
-            };
-        }
-    } else {
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel[3] = 255;
-        }
-    }
-    Image::new(BW as usize, BH as usize, pixels).map_err(str::to_owned)
+    let state = editor();
+    shotkit_rust_prototype::alpha_document::render_document(&state.image_arc(), state.shapes())
 }
+
 fn path_wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
@@ -873,6 +807,9 @@ unsafe fn open_image(h: H) {
             return;
         }
     };
+    open_image_path(h, path);
+}
+unsafe fn open_image_path(h: H, path: PathBuf) {
     let result = (|| -> Result<Image, String> {
         let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
         if metadata.len() > 512 * 1024 * 1024 {
@@ -1302,6 +1239,97 @@ unsafe fn choose_number(h: H, values: &[u32]) -> Option<f32> {
         .get(selected.wrapping_sub(1) as usize)
         .map(|v| *v as f32)
 }
+
+unsafe fn choose_frame_action(h: H) -> Option<u32> {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return None;
+    }
+    for (id, label) in [
+        (1, "Rahmen hinzufügen"),
+        (2, "Schlagschatten hinzufügen"),
+        (3, "Rahmen und Schlagschatten hinzufügen"),
+    ] {
+        AppendMenuW(menu, 0, id, wide(label).as_ptr());
+    }
+    let mut p = Point { x: 0, y: 0 };
+    if GetCursorPos(&mut p) == 0 {
+        DestroyMenu(menu);
+        return None;
+    }
+    SetForegroundWindow(h);
+    let selected = TrackPopupMenu(menu, 0x0100 | 0x0002, p.x, p.y, 0, h, std::ptr::null());
+    DestroyMenu(menu);
+    (1..=3).contains(&selected).then_some(selected)
+}
+
+unsafe fn apply_frame(h: H, action: u32) {
+    let width = if action == 2 {
+        0
+    } else {
+        let Some(width) = choose_number(h, &[4, 8, 12, 16, 24, 32]) else {
+            return;
+        };
+        width as usize
+    };
+    let color = if width == 0 {
+        shotkit_rust_prototype::shapes::Color::rgba(0, 0, 0, 0)
+    } else {
+        let Some(color) = choose_color(h) else {
+            return;
+        };
+        color
+    };
+    let options = FrameOptions {
+        width,
+        color,
+        shadow: (action != 1).then_some(ShadowOptions {
+            offset_x: 8,
+            offset_y: 8,
+            blur_radius: 12,
+            opacity: 112,
+        }),
+    };
+    cancel_gesture();
+    let result = (|| -> Result<(), String> {
+        editor()
+            .document_mut()
+            .begin_edit()
+            .map_err(|e| format!("{e:?}"))?;
+        if let Err(error) = editor().add_frame(options) {
+            let _ = editor().document_mut().abort_edit();
+            return Err(format!("{error:?}"));
+        }
+        let output = editor().image_arc();
+        let bitmap = match create_bitmap(&output) {
+            Ok(bitmap) => bitmap,
+            Err(error) => {
+                let _ = editor().document_mut().abort_edit();
+                return Err(error);
+            }
+        };
+        if let Err(error) = editor().document_mut().commit_edit() {
+            DeleteObject(bitmap);
+            let _ = editor().document_mut().abort_edit();
+            return Err(format!("{error:?}"));
+        }
+        install_bitmap(bitmap, &output);
+        DIRTY = true;
+        ZOOM = 1.0;
+        PAN_X = 0;
+        PAN_Y = 0;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        MessageBoxW(
+            h,
+            wide(&format!("Rahmen/Schlagschatten fehlgeschlagen: {error}")).as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x10,
+        );
+    }
+}
+
 unsafe fn edit_style(h: H, id: usize) {
     let selected = editor().selection().map(|s| s.style.clone());
     let mut replacement = selected.unwrap_or_else(|| editor().current_style().clone());
@@ -1360,6 +1388,13 @@ unsafe fn toolbar_action(h: H, id: usize) {
     } else {
         match id {
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
+            toolbar::ID_FRAME => {
+                if BITMAP.is_null() {
+                    MessageBoxW(h, wide("Öffne zuerst ein Bild.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
+                } else if let Some(action) = choose_frame_action(h) {
+                    apply_frame(h, action);
+                }
+            }
             toolbar::ID_SAVE => {
                 save(h, false);
             }
@@ -1381,11 +1416,15 @@ unsafe fn tray_menu(h: H) {
     }
     for (id, label) in [
         (1, "Bildschirm aufnehmen (F9)"),
+        (9, "Bildschirmaufnahme in 3 Sekunden"),
+        (10, "Bildschirmaufnahme in 5 Sekunden"),
+        (11, "Bildschirmaufnahme in 10 Sekunden"),
         (2, "Bereich aufnehmen (F11)"),
         (3, "Scroll-Aufnahme (F10)"),
         (7, "Alle Bildschirme aufnehmen"),
         (4, "Editor anzeigen"),
         (5, "Bild öffnen …"),
+        (12, "Bild aus Zwischenablage öffnen"),
         (8, "Ungesicherte Aufnahme speichern …"),
         (6, "Beenden"),
     ] {
@@ -1443,6 +1482,9 @@ unsafe fn tray_menu(h: H) {
     DestroyMenu(menu);
     match choice {
         1 => capture(h),
+        9 => schedule_capture(h, 3),
+        10 => schedule_capture(h, 5),
+        11 => schedule_capture(h, 10),
         2 => capture_region(h),
         3 => start_scroll(h),
         7 => capture_rect(h, capture_targets::virtual_desktop()),
@@ -1451,6 +1493,7 @@ unsafe fn tray_menu(h: H) {
             SetForegroundWindow(h);
         }
         5 => open_image(h),
+        12 => paste_image(h),
         8 => {
             resolve_recovery(h);
         }
@@ -1588,6 +1631,11 @@ unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
                     );
                 }
             }
+            0
+        }
+        DELAYED_CAPTURE => {
+            DELAYED_CAPTURE_PENDING.store(false, Ordering::SeqCst);
+            capture(h);
             0
         }
         TRAY if l as u32 == 0x0205 => {
@@ -1983,6 +2031,11 @@ fn main() {
                 wide("Tastenkürzel").as_ptr(),
                 0x30,
             );
+        }
+        if let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) {
+            if confirm_replace(h) {
+                open_image_path(h, path);
+            }
         }
         MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
         let mut msg: Msg = zeroed();

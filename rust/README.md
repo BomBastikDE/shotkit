@@ -6,13 +6,13 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 - Tray-Menü; Bildschirm unter dem Mauszeiger mit `F9` oder `Strg+Druck`, alle Bildschirme mit `Strg+Umschalt+Druck`, aktives Fenster mit `Umschalt+Druck` und Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen. `Strg` wählt das größere Fenster.
 - Experimentelle Scroll-Aufnahme mit `F10`: Bereich auswählen, nach unten/rechts/links scrollen, Abbruch mit Esc oder Mausbewegung. Der bisher gesicherte Teil bleibt erhalten.
-- Editor-Werkzeuge über die Leiste: Auswahl, Pfeil, Linie, Rechteck, Ellipse, Text, Marker, Verpixeln, Nummer, Stift und Zuschneiden. Objekte können ausgewählt, verschoben, geändert und mit `Strg+Z`/`Strg+Y` zurückgenommen/wiederholt werden.
-- `Strg+O` öffnet Bilder, `Strg+S` speichert, `Strg+Umschalt+S` speichert unter; PNG/JPEG/BMP/GIF stehen zur Verfügung. `Strg+C` kopiert ein Bitmap in die Zwischenablage; `Strg+V` öffnet ein Bild daraus. Die aktuelle Einfüge-Variante übernimmt keine Transparenz. Vor dem Ersetzen ungesicherter Bilder wird nachgefragt.
+- Editor-Werkzeuge über die Leiste: Auswahl, Pfeil, Linie, Rechteck, Ellipse, Text, Marker, Verpixeln, Nummer, Stift und Zuschneiden. Objekte können ausgewählt, verschoben, geändert und mit `Strg+Z`/`Strg+Y` zurückgenommen/wiederholt werden. Rahmen und Schlagschatten sind über die Werkzeugleiste verfügbar.
+- `Strg+O` öffnet Bilder, `Strg+S` speichert, `Strg+Umschalt+S` speichert unter; PNG/JPEG/BMP/GIF stehen zur Verfügung. `Strg+C` kopiert ein Bitmap in die Zwischenablage; `Strg+V` öffnet ein Bild daraus. Vor dem Ersetzen ungesicherter Bilder wird nachgefragt.
 - `Strg+Mausrad` ändert den Zoom, `Strg+0` passt das Bild ein, `Strg+9` zeigt es in Originalgröße. Mausrad verschiebt vertikal, Umschalt+Mausrad horizontal.
 
 ## Bekannte Grenzen
 
-Windows-Laufzeittests fehlen noch. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Bearbeitete Bilder mit Transparenz lassen sich momentan aus Sicherheitsgründen nicht speichern. Einstellungen, einige Bild- und Editorfunktionen sowie weitere Originalfunktionen fehlen noch. Siehe [ROADMAP.md](ROADMAP.md).
+Der Start und eine Bereichsaufnahme wurden auf einem interaktiven Windows-CI-Runner geprüft; weitere Windows-Laufzeittests stehen aus. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Transparente Bilder können bearbeitet und in passenden Formaten gespeichert werden; die neuen Bild- und Editorfunktionen benötigen weitere Windows-Praxistests. Einige Originalfunktionen fehlen noch. Siehe [ROADMAP.md](ROADMAP.md).
 
 Die Ausgaben nach einer Aufnahme (Editor, Zwischenablage, automatisches PNG) und der optionale Autostart können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 

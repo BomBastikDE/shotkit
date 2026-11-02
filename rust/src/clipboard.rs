@@ -1,5 +1,5 @@
-//! Win32 clipboard support for transferring a GDI bitmap as a CF_DIB and
-//! reading clipboard-owned CF_BITMAP data into the application's BGRA image.
+//! Win32 clipboard interop. Alpha-capable PNG/CF_DIBV5 formats are preferred;
+//! CF_DIB and CF_BITMAP remain opaque compatibility fallbacks.
 use std::{ffi::c_void, ptr::null_mut};
 
 type H = *mut c_void;
@@ -38,27 +38,25 @@ extern "system" {
     fn ReleaseDC(hwnd: H, dc: H) -> i32;
     fn OpenClipboard(owner: H) -> i32;
     fn CloseClipboard() -> i32;
-    fn EmptyClipboard() -> i32;
-    fn SetClipboardData(format: u32, memory: H) -> H;
     fn GetClipboardData(format: u32) -> H;
     fn IsClipboardFormatAvailable(format: u32) -> i32;
+    fn RegisterClipboardFormatW(name: *const u16) -> u32;
 }
 #[link(name = "kernel32")]
 extern "system" {
-    fn GlobalAlloc(flags: u32, bytes: usize) -> H;
     fn GlobalLock(memory: H) -> *mut c_void;
     fn GlobalUnlock(memory: H) -> i32;
-    fn GlobalFree(memory: H) -> H;
+    fn GlobalSize(memory: H) -> usize;
 }
 
 const CF_DIB: u32 = 8;
 const CF_BITMAP: u32 = 2;
-const GMEM_MOVEABLE: u32 = 0x0002;
-const GMEM_ZEROINIT: u32 = 0x0040;
+const CF_DIBV5: u32 = 17;
 const BI_RGB: u32 = 0;
 const DIB_RGB_COLORS: u32 = 0;
 const MAX_IMAGE_DIMENSION: usize = 30_000;
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_DDB_COPY_BYTES: usize = 64 * 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -72,21 +70,20 @@ struct Bitmap {
     bits: *mut c_void,
 }
 
+#[repr(C)]
+struct DibSection {
+    bitmap: Bitmap,
+    header: BitmapInfoHeader,
+    bitfields: [u32; 3],
+    section: H,
+    offset: u32,
+}
+
 #[link(name = "gdi32")]
 extern "system" {
     fn GetObjectW(object: H, bytes: i32, out: *mut c_void) -> i32;
 }
 
-struct GlobalMemory(H);
-impl Drop for GlobalMemory {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                GlobalFree(self.0);
-            }
-        }
-    }
-}
 struct ScreenDc(H);
 impl Drop for ScreenDc {
     fn drop(&mut self) {
@@ -98,103 +95,83 @@ impl Drop for ScreenDc {
     }
 }
 
-/// Copies an existing, unselected GDI bitmap to the Windows clipboard as CF_DIB.
-/// The caller retains ownership of `bitmap`; successful `SetClipboardData` transfers
-/// ownership of the allocated DIB block to Windows.
+/// Copies the editor's GDI bitmap to the clipboard. DIB sections produced by
+/// ShotKit are read directly so their straight-alpha BGRA bytes are preserved.
+/// PNG and CF_DIBV5 carry alpha; CF_DIB is an opaque white
+/// compatibility fallback. The caller retains ownership of `bitmap`.
 pub unsafe fn copy_bitmap(
     owner: *mut c_void,
     bitmap: *mut c_void,
     width: i32,
     height: i32,
 ) -> Result<(), String> {
-    if bitmap.is_null() {
-        return Err("bitmap handle is null".into());
-    }
-    if width <= 0 || height <= 0 {
-        return Err("bitmap dimensions must be positive".into());
+    if bitmap.is_null() { return Err("bitmap handle is null".into()); }
+    if width <= 0 || height <= 0 { return Err("bitmap dimensions must be positive".into()); }
+    let w = usize::try_from(width).map_err(|_| "bitmap width is invalid")?;
+    let h = usize::try_from(height).map_err(|_| "bitmap height is invalid")?;
+    if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION { return Err("bitmap exceeds the 30000-pixel dimension limit".into()); }
+    let pixel_bytes = w.checked_mul(h).and_then(|n| n.checked_mul(4)).ok_or("bitmap size overflow")?;
+    if pixel_bytes > MAX_IMAGE_BYTES { return Err("bitmap exceeds the 512 MiB image limit".into()); }
+
+    let mut section = std::mem::MaybeUninit::<DibSection>::zeroed();
+    let section_size = i32::try_from(std::mem::size_of::<DibSection>()).map_err(|_| "DIBSECTION size overflow")?;
+    let got = GetObjectW(bitmap, section_size, section.as_mut_ptr().cast());
+    if got == section_size {
+        let section = section.assume_init();
+        if section.bitmap.width != width || section.header.width != width
+            || section.header.height.unsigned_abs() != height as u32
+        {
+            return Err("DIBSECTION dimensions do not match the requested bitmap".into());
+        }
+        if section.header.bit_count == 32 && section.header.compression == BI_RGB
+            && !section.bitmap.bits.is_null()
+        {
+            let row_bytes = w.checked_mul(4).ok_or("bitmap row size overflow")?;
+            let source_stride = usize::try_from(section.bitmap.width_bytes.unsigned_abs())
+                .map_err(|_| "DIBSECTION row stride is invalid")?;
+            if source_stride != row_bytes { return Err("DIBSECTION row stride is unexpected".into()); }
+            return shotkit_rust_prototype::output_windows::copy_dib_section_to_clipboard(
+                owner,
+                section.bitmap.bits.cast(),
+                w,
+                h,
+                source_stride,
+                section.header.height < 0,
+            );
+        }
     }
 
-    let row_bytes = (width as usize)
-        .checked_mul(4)
-        .ok_or_else(|| "bitmap row size overflow".to_string())?;
-    let pixel_bytes = row_bytes
-        .checked_mul(height as usize)
-        .ok_or_else(|| "bitmap pixel size overflow".to_string())?;
-    let pixel_bytes_u32 =
-        u32::try_from(pixel_bytes).map_err(|_| "bitmap is too large for a CF_DIB".to_string())?;
-    let total_bytes = std::mem::size_of::<BitmapInfoHeader>()
-        .checked_add(pixel_bytes)
-        .ok_or_else(|| "DIB allocation size overflow".to_string())?;
-
-    let memory = GlobalMemory(GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total_bytes));
-    if memory.0.is_null() {
-        return Err("GlobalAlloc failed for CF_DIB".into());
+    // DDB/unsupported DIBSECTION fallback. GetDIBits does not define alpha for
+    // BI_RGB, so explicitly mark these pixels opaque. A temporary DDB conversion
+    // is capped at 64 MiB to bound the extra Rust buffer plus clipboard block.
+    if pixel_bytes > MAX_DDB_COPY_BYTES {
+        return Err("DDB clipboard fallback is limited to 64 MiB; larger DIB sections use the direct path".into());
     }
-    let base = GlobalLock(memory.0).cast::<u8>();
-    if base.is_null() {
-        return Err("GlobalLock failed for CF_DIB".into());
-    }
-
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(pixel_bytes).map_err(|e| format!("Could not allocate DDB clipboard pixels: {e}"))?;
+    pixels.resize(pixel_bytes, 0);
     let mut header = BitmapInfoHeader {
         size: std::mem::size_of::<BitmapInfoHeader>() as u32,
         width,
-        height, // positive height: bottom-up DIB rows
+        height: -(height as i32),
         planes: 1,
         bit_count: 32,
         compression: BI_RGB,
-        size_image: pixel_bytes_u32,
+        size_image: u32::try_from(pixel_bytes).map_err(|_| "bitmap too large for DIB")?,
         x_pels_per_meter: 0,
         y_pels_per_meter: 0,
         clr_used: 0,
         clr_important: 0,
     };
-    std::ptr::write(base.cast::<BitmapInfoHeader>(), header);
-    let bits = base
-        .add(std::mem::size_of::<BitmapInfoHeader>())
-        .cast::<c_void>();
     let dc = ScreenDc(GetDC(null_mut()));
-    if dc.0.is_null() {
-        GlobalUnlock(memory.0);
-        return Err("GetDC failed while reading bitmap".into());
-    }
-    let lines = GetDIBits(
-        dc.0,
-        bitmap,
-        0,
-        height as u32,
-        bits,
-        &mut header as *mut _ as *mut c_void,
-        0,
-    );
-    if lines != height {
-        GlobalUnlock(memory.0);
-        return Err(format!("GetDIBits returned {lines} of {height} scan lines"));
-    }
-    // Ensure the serialized header matches the requested CF_DIB layout.
-    std::ptr::write(base.cast::<BitmapInfoHeader>(), header);
-    GlobalUnlock(memory.0);
+    if dc.0.is_null() { return Err("GetDC failed while reading bitmap".into()); }
+    let lines = GetDIBits(dc.0, bitmap, 0, height as u32, pixels.as_mut_ptr().cast(),
+        (&mut header as *mut BitmapInfoHeader).cast(), DIB_RGB_COLORS);
+    if lines != height { return Err(format!("GetDIBits returned {lines} of {height} scan lines")); }
+    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
     drop(dc);
-
-    if OpenClipboard(owner) == 0 {
-        return Err("OpenClipboard failed".into());
-    }
-    if EmptyClipboard() == 0 {
-        CloseClipboard();
-        return Err("EmptyClipboard failed".into());
-    }
-    if SetClipboardData(CF_DIB, memory.0).is_null() {
-        CloseClipboard();
-        return Err("SetClipboardData(CF_DIB) failed".into());
-    }
-    // Windows owns the movable block after a successful SetClipboardData.
-    let transferred = memory.0;
-    std::mem::forget(memory);
-    if CloseClipboard() == 0 {
-        // Clipboard data has already been transferred and must not be freed here.
-        let _ = transferred;
-        return Err("CloseClipboard failed after transferring CF_DIB".into());
-    }
-    Ok(())
+    let image = shotkit_rust_prototype::stitch::Image::new(w, h, pixels).map_err(str::to_owned)?;
+    shotkit_rust_prototype::output_windows::copy_image_to_clipboard(owner, &image)
 }
 
 struct ClipboardGuard(bool);
@@ -226,66 +203,116 @@ impl Drop for ClipboardGuard {
     }
 }
 
-/// Reads clipboard-owned `CF_BITMAP` data as a top-row-first BGRA image.
-///
-/// Returns `Ok(None)` when the clipboard has no `CF_BITMAP` format. The
-/// clipboard remains open while its handle is queried and copied. The returned
-/// HBITMAP belongs to the clipboard and is never deleted/freed here.
-/// `CF_BITMAP` does not provide dependable alpha data, so every output pixel
-/// gets A=255; transparent edges are neither preserved nor trimmed. The B, G,
-/// and R bytes from the 32-bit `BI_RGB` conversion are kept in BGRA order.
-///
-/// Each dimension is limited to 30,000 pixels and decoded storage to 512 MiB.
-/// The caller must pass a valid owner HWND or null. Invalid metadata and GDI
-/// failures are returned as errors instead of panicking.
+/// Reads clipboard images, preferring alpha-preserving registered PNG and
+/// CF_DIBV5, then legacy CF_DIB and CF_BITMAP (which is necessarily opaque).
+/// DIB paths accept only 24/32-bit uncompressed layouts within 30000 pixels per
+/// dimension and 512 MiB decoded size. The clipboard remains open while its
+/// global-memory handles are copied; Windows retains ownership of those handles.
 pub unsafe fn read_image(
     owner: *mut c_void,
 ) -> Result<Option<shotkit_rust_prototype::stitch::Image>, String> {
     let mut clipboard = ClipboardGuard::open(owner)?;
-    if IsClipboardFormatAvailable(CF_BITMAP) == 0 {
+    let png_name: Vec<u16> = "PNG".encode_utf16().chain(Some(0)).collect();
+    let png_format = RegisterClipboardFormatW(png_name.as_ptr());
+    let formats = [
+        (png_format, "PNG"),
+        (CF_DIBV5, "CF_DIBV5"),
+        (CF_DIB, "CF_DIB"),
+        (CF_BITMAP, "CF_BITMAP"),
+    ];
+    let available = formats.iter().any(|(format, _)| *format != 0 && IsClipboardFormatAvailable(*format) != 0);
+    if !available {
         clipboard.close()?;
         return Ok(None);
     }
-    let bitmap = GetClipboardData(CF_BITMAP);
-    if bitmap.is_null() {
-        return Err("GetClipboardData(CF_BITMAP) failed".into());
-    }
 
+    let mut failures = Vec::new();
+    if png_format != 0 && IsClipboardFormatAvailable(png_format) != 0 {
+        match read_png_format(png_format) {
+            Ok(image) => { clipboard.close()?; return Ok(Some(image)); }
+            Err(e) => failures.push(format!("PNG: {e}")),
+        }
+    }
+    if IsClipboardFormatAvailable(CF_DIBV5) != 0 {
+        match read_dib_format(CF_DIBV5, true) {
+            Ok(image) => { clipboard.close()?; return Ok(Some(image)); }
+            Err(e) => failures.push(format!("CF_DIBV5: {e}")),
+        }
+    }
+    if IsClipboardFormatAvailable(CF_DIB) != 0 {
+        match read_dib_format(CF_DIB, false) {
+            Ok(image) => { clipboard.close()?; return Ok(Some(image)); }
+            Err(e) => failures.push(format!("CF_DIB: {e}")),
+        }
+    }
+    if IsClipboardFormatAvailable(CF_BITMAP) != 0 {
+        match read_bitmap(GetClipboardData(CF_BITMAP)) {
+            Ok(image) => { clipboard.close()?; return Ok(Some(image)); }
+            Err(e) => failures.push(format!("CF_BITMAP: {e}")),
+        }
+    }
+    clipboard.close()?;
+    Err(format!("Clipboard image formats were present but unreadable: {}", failures.join("; ")))
+}
+
+struct LockedGlobal(H);
+impl Drop for LockedGlobal {
+    fn drop(&mut self) {
+        unsafe { GlobalUnlock(self.0); }
+    }
+}
+
+unsafe fn with_global_bytes<T>(handle: H, decode: impl FnOnce(&[u8]) -> Result<T, String>) -> Result<T, String> {
+    if handle.is_null() { return Err("GetClipboardData returned a null handle".into()); }
+    let size = GlobalSize(handle);
+    if size == 0 || size > MAX_IMAGE_BYTES + 1024 * 1024 {
+        return Err("clipboard global-memory size is zero or exceeds the supported limit".into());
+    }
+    let base = GlobalLock(handle).cast::<u8>();
+    if base.is_null() { return Err("GlobalLock failed while reading clipboard data".into()); }
+    let _lock = LockedGlobal(handle);
+    let bytes = std::slice::from_raw_parts(base, size);
+    decode(bytes)
+}
+
+unsafe fn read_png_format(format: u32) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+    with_global_bytes(GetClipboardData(format), |bytes| {
+        shotkit_rust_prototype::image_io::decode(bytes).map_err(|e| format!("PNG decode failed: {e}"))
+    })
+}
+
+unsafe fn read_dib_format(format: u32, require_v5: bool) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+    with_global_bytes(GetClipboardData(format), |bytes| {
+        shotkit_rust_prototype::output_windows::decode_dib(bytes, require_v5)
+    })
+}
+
+unsafe fn read_bitmap(bitmap: H) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+    if bitmap.is_null() { return Err("GetClipboardData(CF_BITMAP) returned null".into()); }
     let mut metadata = Bitmap::default();
-    let object_bytes = i32::try_from(std::mem::size_of::<Bitmap>())
-        .map_err(|_| "BITMAP metadata size overflow".to_string())?;
+    let object_bytes = i32::try_from(std::mem::size_of::<Bitmap>()).map_err(|_| "BITMAP metadata size overflow")?;
     if GetObjectW(bitmap, object_bytes, (&mut metadata as *mut Bitmap).cast()) != object_bytes {
         return Err("GetObjectW(CF_BITMAP) returned invalid metadata".into());
     }
     if metadata.width <= 0 || metadata.height == 0 || metadata.height == i32::MIN {
         return Err("CF_BITMAP has invalid dimensions".into());
     }
-    let width =
-        usize::try_from(metadata.width).map_err(|_| "CF_BITMAP width is invalid".to_string())?;
-    let height = usize::try_from(metadata.height.unsigned_abs())
-        .map_err(|_| "CF_BITMAP height is invalid".to_string())?;
+    let width = usize::try_from(metadata.width).map_err(|_| "CF_BITMAP width is invalid")?;
+    let height = usize::try_from(metadata.height.unsigned_abs()).map_err(|_| "CF_BITMAP height is invalid")?;
     if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
         return Err("CF_BITMAP exceeds the 30000-pixel dimension limit".into());
     }
-    let row_bytes = width
-        .checked_mul(4)
-        .ok_or_else(|| "CF_BITMAP row size overflow".to_string())?;
-    let pixel_bytes = row_bytes
-        .checked_mul(height)
-        .ok_or_else(|| "CF_BITMAP pixel size overflow".to_string())?;
+    let pixel_bytes = width.checked_mul(height).and_then(|n| n.checked_mul(4)).ok_or("CF_BITMAP size overflow")?;
     if pixel_bytes > MAX_IMAGE_BYTES || pixel_bytes > u32::MAX as usize {
         return Err("CF_BITMAP exceeds the 512 MiB image limit".into());
     }
     let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(pixel_bytes)
-        .map_err(|e| format!("Could not allocate CF_BITMAP pixels: {e}"))?;
+    pixels.try_reserve_exact(pixel_bytes).map_err(|e| format!("Could not allocate CF_BITMAP pixels: {e}"))?;
     pixels.resize(pixel_bytes, 0);
-
     let mut header = BitmapInfoHeader {
         size: std::mem::size_of::<BitmapInfoHeader>() as u32,
         width: metadata.width,
-        height: -(height as i32), // top-down rows match Image's row order
+        height: -(height as i32),
         planes: 1,
         bit_count: 32,
         compression: BI_RGB,
@@ -296,29 +323,11 @@ pub unsafe fn read_image(
         clr_important: 0,
     };
     let dc = ScreenDc(GetDC(null_mut()));
-    if dc.0.is_null() {
-        return Err("GetDC failed while reading CF_BITMAP".into());
-    }
-    let lines = GetDIBits(
-        dc.0,
-        bitmap,
-        0,
-        height as u32,
-        pixels.as_mut_ptr().cast(),
-        (&mut header as *mut BitmapInfoHeader).cast(),
-        DIB_RGB_COLORS,
-    );
-    if lines != height as i32 {
-        return Err(format!("GetDIBits returned {lines} of {height} scan lines"));
-    }
-    // BI_RGB does not define alpha for this source format.
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
+    if dc.0.is_null() { return Err("GetDC failed while reading CF_BITMAP".into()); }
+    let lines = GetDIBits(dc.0, bitmap, 0, height as u32, pixels.as_mut_ptr().cast(),
+        (&mut header as *mut BitmapInfoHeader).cast(), DIB_RGB_COLORS);
+    if lines != height as i32 { return Err(format!("GetDIBits returned {lines} of {height} scan lines")); }
+    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
     drop(dc);
-    clipboard.close()?;
-
-    let image = shotkit_rust_prototype::stitch::Image::new(width, height, pixels)
-        .map_err(|e| format!("Invalid CF_BITMAP image: {e}"))?;
-    Ok(Some(image))
+    shotkit_rust_prototype::stitch::Image::new(width, height, pixels).map_err(str::to_owned)
 }

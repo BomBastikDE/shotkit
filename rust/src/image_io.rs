@@ -1,6 +1,6 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
 use crate::stitch::Image;
-use image::{DynamicImage, ImageFormat, ImageReader, Limits, RgbaImage};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits, RgbImage, RgbaImage};
 use std::{
     io::{BufReader, Cursor},
     path::Path,
@@ -33,7 +33,10 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
     }
     let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
     let output = if format == ImageFormat::Jpeg {
-        DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(rgba).to_rgb8())
+        DynamicImage::ImageRgb8(
+            RgbImage::from_raw(w, h, jpeg_rgb_on_white(rgba.into_raw()))
+                .ok_or("Ungültige Bildgröße")?,
+        )
     } else {
         DynamicImage::ImageRgba8(rgba)
     };
@@ -42,6 +45,20 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
         .write_to(&mut bytes, format)
         .map_err(|e| e.to_string())?;
     Ok(bytes.into_inner())
+}
+
+/// Flatten RGBA pixels onto white before JPEG encoding, which cannot store alpha.
+/// Channels are rounded to the nearest integer to match ordinary source-over.
+fn jpeg_rgb_on_white(rgba: Vec<u8>) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for pixel in rgba.chunks_exact(4) {
+        let alpha = u16::from(pixel[3]);
+        for channel in &pixel[..3] {
+            let value = u16::from(*channel) * alpha + 255 * (255 - alpha);
+            rgb.push(((value + 127) / 255) as u8);
+        }
+    }
+    rgb
 }
 
 pub fn format_from_path(path: &Path) -> Result<ImageFormat, String> {
@@ -87,6 +104,28 @@ mod tests {
             assert_eq!((image.width, image.height), (2, 2));
         }
     }
+
+    #[test]
+    fn jpeg_pixels_flatten_transparent_and_semitransparent_rgba_onto_white() {
+        let rgba = vec![
+            12, 34, 56, 0, // Hidden RGB must not leak through a fully transparent pixel.
+            20, 100, 200, 128,
+            7, 8, 9, 255,
+        ];
+        assert_eq!(
+            jpeg_rgb_on_white(rgba),
+            vec![255, 255, 255, 137, 177, 227, 7, 8, 9]
+        );
+    }
+
+    #[test]
+    fn jpeg_encoding_of_transparent_image_decodes_as_white() {
+        let transparent = Image::new(1, 1, vec![56, 34, 12, 0]).unwrap();
+        let bytes = encode(&transparent, ImageFormat::Jpeg).unwrap();
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(decoded.pixels, vec![255, 255, 255, 255]);
+    }
+
     #[test]
     fn invalid_data_is_rejected() {
         assert!(decode(b"not an image").is_err());

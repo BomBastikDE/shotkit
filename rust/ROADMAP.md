@@ -12,10 +12,10 @@ Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Der Rust-Zweig ist ein Arbeitssta
 
 ## Stand
 
-- Experimenteller Windows-Editor: Werkzeugleiste, bearbeitbare Formen und Undo/Redo; native Dialoge und PNG/JPEG/BMP/GIF; Bildschirm- und Bereichsaufnahme, Scroll-Prototyp, Zoom/Pan und Zwischenablage sind implementiert. Windows-Laufzeittest ausstehend.
+- Experimenteller Windows-Editor: Werkzeugleiste, bearbeitbare Formen und Undo/Redo; native Dialoge und PNG/JPEG/BMP/GIF; Bildschirm- und Bereichsaufnahme, Scroll-Prototyp, Zoom/Pan und Zwischenablage sind implementiert. Start und Bereichsaufnahme wurden auf einem Windows-CI-Runner geprüft; umfangreiche Praxistests stehen aus.
 - Scroll-Algorithmus und Editorlogik sind synthetisch getestet. Die Anbindung an echte Browser, Fenster, DPI und Maus muss unter Windows überprüft werden.
-- Transparente Bilder werden nach Bearbeitung vorsorglich nicht gespeichert; verlustfreie Bearbeitung und Export müssen ergänzt werden.
-- Crop ist mit der gemeinsamen Bild- und Objekt-Historie integriert; Rahmen und Schatten haben getestete Bildoperationen, sind aber noch nicht in den Editor integriert. Einstellungen und Öffnen aus Clipboard sind experimentell integriert; weitere Originalfunktionen fehlen. Farb-/Breitenwahl und Textänderungen sind implementiert, aber unter Windows noch ungeprüft.
+- Transparente Bilder werden mit Alpha-Pipeline bearbeitet und gespeichert; Vorschau, Export und Zwischenablage benötigen weitere interaktive Prüfung.
+- Crop, Rahmen und Schatten sind in den Editor und die gemeinsame Bild- und Objekt-Historie integriert. Einstellungen, Öffnen aus Clipboard, verzögerte Aufnahme und Dateiargumente sind implementiert; weitere Originalfunktionen fehlen. Diese Abläufe benötigen weitere Windows-Praxistests.
 - Fenster- und UI-Automation-Vorschläge sind experimentell integriert; brauchbare Grenzen je Browser und Seitentyp sind noch nicht verifiziert.
 
 ## Ideen nach funktionsgleicher Portierung
@@ -32,4 +32,4 @@ Gewünscht: Beim Bewegen der Maus Fenster und sinnvolle Bereiche optisch umrande
 
 ## Windows-CI
 
-Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sowie einen Windows-Release-Build aus. Die Läufe für Commits `fe34bc9`, `1a342e3`, `6534b8d` und `5fa325a` waren auf beiden Plattformen erfolgreich; sie umfassen Windows-GDI-Pixeltests. Die CI verifiziert keine interaktive Windows-Oberfläche und keine realen Browser-Scrollaufnahmen.
+Der separate GitHub-Zweig `rust/development` führt Linux- und Windows-Tests sowie einen Windows-Release-Build aus. Die Läufe für Commits `fe34bc9`, `1a342e3`, `6534b8d` und `5fa325a` waren auf beiden Plattformen erfolgreich; sie umfassen Windows-GDI-Pixeltests. Die CI enthält einen interaktiven Bereichstest und einen neu hinzugefügten Test mit einer synthetischen Scrolloberfläche. Reale Browser-Scrollaufnahmen und die komplette Editorbedienung sind dadurch nicht verifiziert.
