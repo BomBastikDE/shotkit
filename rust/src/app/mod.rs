@@ -1,6 +1,6 @@
+mod region;
 mod window_commands;
 mod window_mouse;
-mod region;
 use region::*;
 mod config;
 use config::*;
@@ -17,7 +17,10 @@ use actions::*;
 mod hotkeys;
 mod tray;
 mod window;
-use crate::{autostart, about_dialog, capture_targets, clipboard, file_dialog, folder_dialog, last_region, scroll_windows, overlay, text_dialog, toolbar};
+use crate::{
+    about_dialog, autostart, capture_targets, clipboard, file_dialog, folder_dialog, last_region,
+    overlay, scroll_windows, text_dialog, toolbar,
+};
 use std::{
     ffi::c_void,
     fs::OpenOptions,
@@ -203,7 +206,15 @@ extern "system" {
     fn WindowFromPoint(p: Point) -> H;
     fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
-    fn SendMessageTimeoutW(h: H, msg: u32, w: W, l: L, flags: u32, timeout: u32, result: *mut W) -> i32;
+    fn SendMessageTimeoutW(
+        h: H,
+        msg: u32,
+        w: W,
+        l: L,
+        flags: u32,
+        timeout: u32,
+        result: *mut W,
+    ) -> i32;
 }
 
 #[repr(C)]
@@ -280,7 +291,10 @@ const SCROLL_DONE: u32 = 0x8002;
 const DELAYED_CAPTURE: u32 = 0x8003;
 static DELAYED_CAPTURE_STATE: Mutex<DelayedCaptureState> = Mutex::new(DelayedCaptureState::new());
 fn delayed_capture_pending() -> bool {
-    DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_pending()
+    DELAYED_CAPTURE_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_pending()
 }
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
 static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
@@ -317,9 +331,22 @@ struct WindowState {
 }
 impl WindowState {
     fn new() -> Self {
-        Self { toolbar: None, editor: None, bitmap: null_mut(), current_path: None,
-            dirty: false, zoom: 1.0, pan_x: 0, pan_y: 0, width: 0, height: 0,
-            drawing: false, crop_start: None, crop_end: None, modal_depth: 0 }
+        Self {
+            toolbar: None,
+            editor: None,
+            bitmap: null_mut(),
+            current_path: None,
+            dirty: false,
+            zoom: 1.0,
+            pan_x: 0,
+            pan_y: 0,
+            width: 0,
+            height: 0,
+            drawing: false,
+            crop_start: None,
+            crop_end: None,
+            modal_depth: 0,
+        }
     }
 }
 static mut PRIMARY: H = null_mut();
@@ -340,14 +367,19 @@ unsafe fn window_state(h: H) -> &'static mut WindowState {
 // Warum noch nicht belegt: Reentranz und alle Aufrufer sind nicht vollständig geprüft.
 // Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn editor(h: H) -> &'static mut EditorController {
-    window_state(h).editor.get_or_insert_with(EditorController::new)
+    window_state(h)
+        .editor
+        .get_or_insert_with(EditorController::new)
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h besitzt einen lebenden WindowState auf dem UI-Thread.
 // Warum erfüllt: Aufruf aus der Bearbeitung eines eigenen Fensters; Borrow bleibt kurz.
 // Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
 unsafe fn toolbar_height(h: H) -> i32 {
-    window_state(h).toolbar.as_ref().map_or(0, |bar| bar.height())
+    window_state(h)
+        .toolbar
+        .as_ref()
+        .map_or(0, |bar| bar.height())
 }
 // Do not retain a Rust borrow across a Win32 dialog/message pump.
 struct ModalGuard(H);
@@ -363,7 +395,9 @@ impl ModalGuard {
 }
 impl Drop for ModalGuard {
     fn drop(&mut self) {
-        unsafe { window_state(self.0).modal_depth -= 1; }
+        unsafe {
+            window_state(self.0).modal_depth -= 1;
+        }
     }
 }
 // SAFETY CONTRACT:
@@ -379,10 +413,28 @@ unsafe fn editor_windows() -> Vec<H> {
 // Nachrichten: SetWindowTextW kann synchron WM_SETTEXT auslösen; der aus dem State erzeugte Titel ist besitzend und der Borrow endet vorher.
 unsafe fn refresh_title(h: H) {
     let state = window_state(h);
-    let name = state.current_path.as_ref().map(|p| p.display().to_string())
-        .unwrap_or_else(|| if state.bitmap.is_null() { "Bild öffnen oder einfügen".into() } else { "Neue Aufnahme".into() });
-    let tool = state.editor.as_ref().map(|editor| format!(" · Werkzeug {:?}", editor.tool())).unwrap_or_default();
-    let title = format!("{}{} – ShotKit Rust{} · Strg+S speichern", if state.dirty { "* " } else { "" }, name, tool);
+    let name = state
+        .current_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| {
+            if state.bitmap.is_null() {
+                "Bild öffnen oder einfügen".into()
+            } else {
+                "Neue Aufnahme".into()
+            }
+        });
+    let tool = state
+        .editor
+        .as_ref()
+        .map(|editor| format!(" · Werkzeug {:?}", editor.tool()))
+        .unwrap_or_default();
+    let title = format!(
+        "{}{} – ShotKit Rust{} · Strg+S speichern",
+        if state.dirty { "* " } else { "" },
+        name,
+        tool
+    );
     SetWindowTextW(h, wide(&title).as_ptr());
 }
 // SAFETY CONTRACT:
@@ -390,7 +442,9 @@ unsafe fn refresh_title(h: H) {
 // Warum erfüllt: der Aufruf erfolgt aus der Nachrichtenbehandlung der Anwendung.
 // Nachrichten: Fensteranlage, ShowWindow und Dialoge können reentrieren; die Fensterliste ist eine Kopie und kein State-Borrow bleibt aktiv.
 unsafe fn show_editors() {
-    if QUITTING.load(Ordering::SeqCst) { return; }
+    if QUITTING.load(Ordering::SeqCst) {
+        return;
+    }
     let mut windows = editor_windows();
     if windows.is_empty() {
         match create_editor_window() {
@@ -400,13 +454,22 @@ unsafe fn show_editors() {
                 windows.push(h);
             }
             Err(error) => {
-                MessageBoxW(PRIMARY, wide(&error).as_ptr(), wide("Editor öffnen").as_ptr(), 0x10);
+                MessageBoxW(
+                    PRIMARY,
+                    wide(&error).as_ptr(),
+                    wide("Editor öffnen").as_ptr(),
+                    0x10,
+                );
                 return;
             }
         }
     }
-    for h in &windows { ShowWindow(*h, 9); } // SW_RESTORE also restores minimized editors
-    if let Some(h) = windows.last() { SetForegroundWindow(*h); }
+    for h in &windows {
+        ShowWindow(*h, 9);
+    } // SW_RESTORE also restores minimized editors
+    if let Some(h) = windows.last() {
+        SetForegroundWindow(*h);
+    }
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h und alle gelisteten Fenster gehören zum UI-Thread.
@@ -414,10 +477,17 @@ unsafe fn show_editors() {
 // Nachrichten: Dialoge und DestroyWindow können reentrieren; Fensterliste und Modal-Tiefe werden vor den Aufrufen als Werte übernommen.
 unsafe fn quit_application(h: H) {
     if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
-        MessageBoxW(h, wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
+        MessageBoxW(
+            h,
+            wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x30,
+        );
         return;
     }
-    if QUITTING.swap(true, Ordering::SeqCst) { return; }
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let windows = editor_windows();
     // Confirm all documents before destroying any. A cancelled save or close
     // preserves every window, including previously confirmed discard choices.
@@ -425,7 +495,9 @@ unsafe fn quit_application(h: H) {
         && resolve_recovery(h)
         && windows.iter().all(|w| confirm_replace(*w));
     if approved {
-        for window in windows { DestroyWindow(window); }
+        for window in windows {
+            DestroyWindow(window);
+        }
         PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0);
     } else {
         QUITTING.store(false, Ordering::SeqCst);
@@ -434,7 +506,9 @@ unsafe fn quit_application(h: H) {
 pub(crate) fn run() {
     // SAFETY: startup runs once on the entrypoint thread; run_application
     // owns the Win32 handles and message loop until their teardown.
-    unsafe { run_application(); }
+    unsafe {
+        run_application();
+    }
 }
 
 // SAFETY CONTRACT:
@@ -443,73 +517,88 @@ pub(crate) fn run() {
 // hier erzeugt und auf demselben Thread verarbeitet. Callback-Panikfreiheit ist offen.
 // Nachrichten: Fenstererstellung, Dialoge und die Nachrichtenpumpe können reentrieren.
 unsafe fn run_application() {
-        let (_instance_handle, already_running) = match create_instance_mutex() {
-            Ok(result) => result,
-            Err(error) => {
-                MessageBoxW(null_mut(), wide(&error).as_ptr(), wide("ShotKit Rust").as_ptr(), 0x10);
-                return;
-            }
-        };
-        if already_running {
-            if let Err(error) = forward_second_instance() {
-                MessageBoxW(null_mut(), wide(&error).as_ptr(), wide("ShotKit Rust – Datei nicht geöffnet").as_ptr(), 0x30);
-            }
+    let (_instance_handle, already_running) = match create_instance_mutex() {
+        Ok(result) => result,
+        Err(error) => {
+            MessageBoxW(
+                null_mut(),
+                wide(&error).as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
             return;
         }
-        SetProcessDpiAwarenessContext(-4isize as H);
-        let inst = GetModuleHandleW(std::ptr::null());
-        let class = wide("ShotKitRustPrototype");
-        let wc = WndClass {
-            style: 0x0008,
-            proc: Some(window::proc),
-            cls_extra: 0,
-            wnd_extra: 0,
-            instance: inst,
-            icon: LoadIconW(inst, 1usize as *const u16),
-            cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
-            background: (6usize as H),
-            menu: std::ptr::null(),
-            class: class.as_ptr(),
-        };
-        if RegisterClassW(&wc) == 0 {
-            return;
+    };
+    if already_running {
+        if let Err(error) = forward_second_instance() {
+            MessageBoxW(
+                null_mut(),
+                wide(&error).as_ptr(),
+                wide("ShotKit Rust – Datei nicht geöffnet").as_ptr(),
+                0x30,
+            );
         }
-        let editor_class = wide("ShotKitRustEditor");
-        let editor_wc = WndClass { class: editor_class.as_ptr(), ..wc };
-        if RegisterClassW(&editor_wc) == 0 { return; }
-        let h = CreateWindowExW(
-            0,
-            class.as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
-            0x00cf0000,
-            0x80000000u32 as i32,
-            0x80000000u32 as i32,
-            1000,
-            700,
-            null_mut(),
-            null_mut(),
-            inst,
-            null_mut(),
-        );
-        if h.is_null() {
-            return;
+        return;
+    }
+    SetProcessDpiAwarenessContext(-4isize as H);
+    let inst = GetModuleHandleW(std::ptr::null());
+    let class = wide("ShotKitRustPrototype");
+    let wc = WndClass {
+        style: 0x0008,
+        proc: Some(window::proc),
+        cls_extra: 0,
+        wnd_extra: 0,
+        instance: inst,
+        icon: LoadIconW(inst, 1usize as *const u16),
+        cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
+        background: (6usize as H),
+        menu: std::ptr::null(),
+        class: class.as_ptr(),
+    };
+    if RegisterClassW(&wc) == 0 {
+        return;
+    }
+    let editor_class = wide("ShotKitRustEditor");
+    let editor_wc = WndClass {
+        class: editor_class.as_ptr(),
+        ..wc
+    };
+    if RegisterClassW(&editor_wc) == 0 {
+        return;
+    }
+    let h = CreateWindowExW(
+        0,
+        class.as_ptr(),
+        wide("ShotKit Rust").as_ptr(),
+        0x00cf0000,
+        0x80000000u32 as i32,
+        0x80000000u32 as i32,
+        1000,
+        700,
+        null_mut(),
+        null_mut(),
+        inst,
+        null_mut(),
+    );
+    if h.is_null() {
+        return;
+    }
+    PRIMARY = h;
+    load_settings(h);
+    if !tray::install(h, inst) {
+        DestroyWindow(h);
+        return;
+    }
+    hotkeys::register(h);
+    for path in std::env::args_os().skip(1).map(PathBuf::from) {
+        if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
+            MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
         }
-        PRIMARY = h;
-        load_settings(h);
-        if !tray::install(h, inst) {
-            DestroyWindow(h);
-            return;
-        }
-        hotkeys::register(h);
-        for path in std::env::args_os().skip(1).map(PathBuf::from) {
-            if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
-                MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
-            }
-        }
-        MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
-        let mut msg: Msg = zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+    }
+    MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
+    let mut msg: Msg = zeroed();
+    while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
 }

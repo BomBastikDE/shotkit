@@ -283,7 +283,10 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         );
     } else {
         match id {
-            toolbar::ID_SWATCH_RED | toolbar::ID_SWATCH_BLACK | toolbar::ID_SWATCH_YELLOW | toolbar::ID_SWATCH_BLUE => {
+            toolbar::ID_SWATCH_RED
+            | toolbar::ID_SWATCH_BLACK
+            | toolbar::ID_SWATCH_YELLOW
+            | toolbar::ID_SWATCH_BLUE => {
                 let (r, g, b) = match id {
                     toolbar::ID_SWATCH_RED => (230, 40, 40),
                     toolbar::ID_SWATCH_BLACK => (0, 0, 0),
@@ -291,7 +294,9 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     _ => (0, 120, 215),
                 };
                 let color = shotkit_rust_prototype::shapes::Color::rgba(r, g, b, 255);
-                let mut replacement = editor(h).selection().map(|shape| shape.style.clone())
+                let mut replacement = editor(h)
+                    .selection()
+                    .map(|shape| shape.style.clone())
                     .unwrap_or_else(|| editor(h).current_style().clone());
                 editor(h).set_current_color(color);
                 toolbar::set_color(h, r, g, b);
@@ -303,7 +308,12 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {
                 if window_state(h).bitmap.is_null() {
-                    MessageBoxW(h, wide("Öffne zuerst ein Bild.").as_ptr(), wide("ShotKit Rust").as_ptr(), 0x30);
+                    MessageBoxW(
+                        h,
+                        wide("Öffne zuerst ein Bild.").as_ptr(),
+                        wide("ShotKit Rust").as_ptr(),
+                        0x30,
+                    );
                 } else if let Some(action) = choose_frame_action(h) {
                     apply_frame(h, action);
                 }

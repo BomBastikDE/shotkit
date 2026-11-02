@@ -84,7 +84,12 @@ impl EditorController {
         changed
     }
 
-    pub(super) fn commit_replacement(&mut self, index: usize, original: Shape, replacement: Shape) -> bool {
+    pub(super) fn commit_replacement(
+        &mut self,
+        index: usize,
+        original: Shape,
+        replacement: Shape,
+    ) -> bool {
         if original != replacement {
             self.edit_shape(index, |shape| *shape = replacement)
         } else {

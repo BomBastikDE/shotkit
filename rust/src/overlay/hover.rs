@@ -8,7 +8,10 @@ pub(super) fn contains(rect: (i32, i32, i32, i32), p: Point) -> bool {
     p.x >= rect.0 && p.x < rect.2 && p.y >= rect.1 && p.y < rect.3
 }
 
-pub(super) fn intersection(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> Option<(i32, i32, i32, i32)> {
+pub(super) fn intersection(
+    a: (i32, i32, i32, i32),
+    b: (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
     let rect = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
     valid_rect(rect).then_some(rect)
 }
@@ -191,12 +194,7 @@ pub(super) unsafe fn choose_hover(state: *mut State) {
     s.hover_rect = rect.and_then(|r| intersection(r, desktop_rect(s)));
     crate::uia_picker::log_diagnostic(&format!(
         "selection hover point=({}, {}) ctrl={} uia_rect={:?} fallback_rect={:?} chosen_rect={:?}",
-        s.current.x,
-        s.current.y,
-        control_down,
-        accepted_uia,
-        fallback,
-        s.hover_rect
+        s.current.x, s.current.y, control_down, accepted_uia, fallback, s.hover_rect
     ));
 }
 

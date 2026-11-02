@@ -50,8 +50,10 @@ pub fn composite_layer(base: &Image, layer: &Image, opacity: u8) -> Result<Image
     pixels.resize(base_len, 0);
     for (i, (dst, src)) in base
         .pixels
-        .chunks_exact(4)
-        .zip(layer.pixels.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(layer.pixels.as_chunks::<4>().0.iter())
         .enumerate()
     {
         let result = source_over(

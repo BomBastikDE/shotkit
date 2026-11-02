@@ -23,9 +23,20 @@ struct WndClass {
 #[link(name = "user32")]
 extern "system" {
     fn RegisterClassW(class: *const WndClass) -> u16;
-    fn CreateWindowExW(ex: u32, class: *const u16, title: *const u16, style: u32,
-        x: i32, y: i32, width: i32, height: i32, parent: H, menu: H,
-        instance: H, parameter: H) -> H;
+    fn CreateWindowExW(
+        ex: u32,
+        class: *const u16,
+        title: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        parent: H,
+        menu: H,
+        instance: H,
+        parameter: H,
+    ) -> H;
     fn DefWindowProcW(hwnd: H, message: u32, wparam: W, lparam: L) -> L;
     fn ShowWindow(hwnd: H, command: i32) -> i32;
     fn UpdateWindow(hwnd: H) -> i32;
@@ -44,8 +55,14 @@ extern "system" {
 #[link(name = "shell32")]
 extern "system" {
     // Keep the return type identical to the application's existing Win32 binding.
-    fn ShellExecuteW(hwnd: H, operation: *const u16, file: *const u16,
-        parameters: *const u16, directory: *const u16, show: i32) -> H;
+    fn ShellExecuteW(
+        hwnd: H,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> H;
 }
 
 const CLASS_NAME: &str = "ShotKitRustAboutWindow";
@@ -72,11 +89,31 @@ fn wide(text: &str) -> Vec<u16> {
 // Voraussetzung: parent und instance sind gültige Handles auf dem UI-Thread.
 // Warum erfüllt bzw. offen: Die Stringpuffer leben während CreateWindowExW; Handle-Gültigkeit bleibt Aufruferpflicht.
 // Nachrichten: CreateWindowExW kann synchron Nachrichten auslösen.
-unsafe fn child(parent: H, class: &str, text: &str, style: u32,
-    x: i32, y: i32, width: i32, height: i32, id: usize, instance: H) -> H {
+unsafe fn child(
+    parent: H,
+    class: &str,
+    text: &str,
+    style: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    id: usize,
+    instance: H,
+) -> H {
     CreateWindowExW(
-        0, wide(class).as_ptr(), wide(text).as_ptr(), style,
-        x, y, width, height, parent, id as H, instance, null_mut(),
+        0,
+        wide(class).as_ptr(),
+        wide(text).as_ptr(),
+        style,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        id as H,
+        instance,
+        null_mut(),
     )
 }
 
@@ -88,18 +125,69 @@ unsafe extern "system" fn about_proc(hwnd: H, message: u32, wparam: W, lparam: L
     match message {
         WM_CREATE => {
             let instance = GetModuleHandleW(null_mut());
-            child(hwnd, "STATIC", "ShotKit Rust", WS_CHILD_VISIBLE,
-                24, 22, 340, 28, 0, instance);
-            child(hwnd, "STATIC", &format!("Version: {}", env!("CARGO_PKG_VERSION")),
-                WS_CHILD_VISIBLE, 24, 58, 340, 22, 0, instance);
-            child(hwnd, "STATIC", "Entwickler: Oliver Muenk", WS_CHILD_VISIBLE,
-                24, 84, 340, 22, 0, instance);
-            child(hwnd, "STATIC", "Lizenz: MIT", WS_CHILD_VISIBLE,
-                24, 110, 340, 22, 0, instance);
-            let button = child(hwnd, "BUTTON", "Website öffnen: alleswasbewegt.de",
+            child(
+                hwnd,
+                "STATIC",
+                "ShotKit Rust",
+                WS_CHILD_VISIBLE,
+                24,
+                22,
+                340,
+                28,
+                0,
+                instance,
+            );
+            child(
+                hwnd,
+                "STATIC",
+                &format!("Version: {}", env!("CARGO_PKG_VERSION")),
+                WS_CHILD_VISIBLE,
+                24,
+                58,
+                340,
+                22,
+                0,
+                instance,
+            );
+            child(
+                hwnd,
+                "STATIC",
+                "Entwickler: Oliver Muenk",
+                WS_CHILD_VISIBLE,
+                24,
+                84,
+                340,
+                22,
+                0,
+                instance,
+            );
+            child(
+                hwnd,
+                "STATIC",
+                "Lizenz: MIT",
+                WS_CHILD_VISIBLE,
+                24,
+                110,
+                340,
+                22,
+                0,
+                instance,
+            );
+            let button = child(
+                hwnd,
+                "BUTTON",
+                "Website öffnen: alleswasbewegt.de",
                 WS_CHILD_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                24, 146, 330, 30, LINK_BUTTON, instance);
-            if !button.is_null() { SetFocus(button); }
+                24,
+                146,
+                330,
+                30,
+                LINK_BUTTON,
+                instance,
+            );
+            if !button.is_null() {
+                SetFocus(button);
+            }
             0
         }
         WM_COMMAND if wparam & 0xffff == LINK_BUTTON => {
@@ -112,8 +200,12 @@ unsafe extern "system" fn about_proc(hwnd: H, message: u32, wparam: W, lparam: L
                 1,
             );
             if result as usize <= 32 {
-                MessageBoxW(hwnd, wide("Die Website konnte nicht geöffnet werden.").as_ptr(),
-                    wide("Über ShotKit").as_ptr(), 0x10);
+                MessageBoxW(
+                    hwnd,
+                    wide("Die Website konnte nicht geöffnet werden.").as_ptr(),
+                    wide("Über ShotKit").as_ptr(),
+                    0x10,
+                );
             }
             0
         }
@@ -139,7 +231,9 @@ extern "system" {
 // Warum erfüllt bzw. offen: Der Aufrufer verwendet GetModuleHandleW; Einthreadigkeit bleibt Aufruferpflicht.
 // Nachrichten: Kein expliziter Nachrichtendurchlauf im Funktionskörper.
 unsafe fn register_class(instance: H) -> bool {
-    if CLASS_REGISTERED { return true; }
+    if CLASS_REGISTERED {
+        return true;
+    }
     let class_name = wide(CLASS_NAME);
     let class = WndClass {
         style: 0,
@@ -149,11 +243,13 @@ unsafe fn register_class(instance: H) -> bool {
         instance,
         icon: null_mut(),
         cursor: LoadCursorW(null_mut(), 32512usize as *const u16), // IDC_ARROW
-        background: 6usize as H, // COLOR_WINDOW + 1
+        background: 6usize as H,                                   // COLOR_WINDOW + 1
         menu_name: null_mut(),
         class_name: class_name.as_ptr(),
     };
-    if RegisterClassW(&class) == 0 { return false; }
+    if RegisterClassW(&class) == 0 {
+        return false;
+    }
     CLASS_REGISTERED = true;
     true
 }
@@ -168,8 +264,12 @@ pub fn show(parent: *mut c_void) {
         }
         let instance = GetModuleHandleW(null_mut());
         if !register_class(instance) {
-            MessageBoxW(parent, wide("Das Infofenster konnte nicht vorbereitet werden.").as_ptr(),
-                wide("Über ShotKit").as_ptr(), 0x10);
+            MessageBoxW(
+                parent,
+                wide("Das Infofenster konnte nicht vorbereitet werden.").as_ptr(),
+                wide("Über ShotKit").as_ptr(),
+                0x10,
+            );
             return;
         }
         let window = CreateWindowExW(
@@ -177,13 +277,22 @@ pub fn show(parent: *mut c_void) {
             wide(CLASS_NAME).as_ptr(),
             wide("Über ShotKit").as_ptr(),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-            0x8000_0000u32 as i32, 0x8000_0000u32 as i32,
-            410, 230,
-            null_mut(), null_mut(), instance, null_mut(),
+            0x8000_0000u32 as i32,
+            0x8000_0000u32 as i32,
+            410,
+            230,
+            null_mut(),
+            null_mut(),
+            instance,
+            null_mut(),
         );
         if window.is_null() {
-            MessageBoxW(parent, wide("Das Infofenster konnte nicht angezeigt werden.").as_ptr(),
-                wide("Über ShotKit").as_ptr(), 0x10);
+            MessageBoxW(
+                parent,
+                wide("Das Infofenster konnte nicht angezeigt werden.").as_ptr(),
+                wide("Über ShotKit").as_ptr(),
+                0x10,
+            );
             return;
         }
         ABOUT_HWND = window;

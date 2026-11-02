@@ -89,7 +89,11 @@ pub(super) unsafe fn open_storage_folder(h: H) {
         Ok(_) => {
             MessageBoxW(
                 h,
-                wide(&format!("Der eingestellte Speicherpfad ist kein Ordner:\n{}", folder.display())).as_ptr(),
+                wide(&format!(
+                    "Der eingestellte Speicherpfad ist kein Ordner:\n{}",
+                    folder.display()
+                ))
+                .as_ptr(),
                 wide("Speicherordner öffnen").as_ptr(),
                 0x10,
             );
@@ -98,7 +102,11 @@ pub(super) unsafe fn open_storage_folder(h: H) {
         Err(error) => {
             MessageBoxW(
                 h,
-                wide(&format!("Der eingestellte Speicherordner ist nicht verfügbar:\n{}\n\n{error}", folder.display())).as_ptr(),
+                wide(&format!(
+                    "Der eingestellte Speicherordner ist nicht verfügbar:\n{}\n\n{error}",
+                    folder.display()
+                ))
+                .as_ptr(),
                 wide("Speicherordner öffnen").as_ptr(),
                 0x10,
             );

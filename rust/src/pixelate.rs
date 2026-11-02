@@ -74,9 +74,8 @@ pub fn pixelate_region(
                     let offset = (y * source.width + x) * 4;
                     let alpha = u64::from(source.pixels[offset + 3]);
                     alpha_sum += alpha;
-                    for channel in 0..3 {
-                        premultiplied_sum[channel] +=
-                            u64::from(source.pixels[offset + channel]) * alpha;
+                    for (channel, sum) in premultiplied_sum.iter_mut().enumerate() {
+                        *sum += u64::from(source.pixels[offset + channel]) * alpha;
                     }
                 }
             }

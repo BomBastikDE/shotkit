@@ -23,7 +23,9 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
                             window_state(window).dirty = false;
                             refresh_title(window);
                         }
-                        if was_visible { ShowWindow(h, 5); }
+                        if was_visible {
+                            ShowWindow(h, 5);
+                        }
                         Ok(())
                     }
                     Err(error) => Err(error),
@@ -156,13 +158,18 @@ pub(super) unsafe fn capture(h: H) {
 // Warum erfüllt: Die Nachrichtenbehandlung übergibt das eigene Fenster; der Worker postet nur eine Nachricht.
 // Nachrichten: MessageBoxW kann reentrieren; der DELAYED_CAPTURE_STATE-Guard endet vor dem Dialog, der Worker postet später eine Nachricht.
 pub(super) unsafe fn schedule_capture(h: H, seconds: u64) {
-    let request = DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).begin();
+    let request = DELAYED_CAPTURE_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .begin();
     let ticket = match request {
         Ok(ticket) => ticket,
         Err(error) => {
             let message = match error {
                 BeginError::Busy => "Eine verzögerte Aufnahme läuft bereits.",
-                BeginError::Exhausted => "Keine weitere verzögerte Aufnahme möglich. Bitte ShotKit neu starten.",
+                BeginError::Exhausted => {
+                    "Keine weitere verzögerte Aufnahme möglich. Bitte ShotKit neu starten."
+                }
             };
             MessageBoxW(h, wide(message).as_ptr(), wide("Aufnahme").as_ptr(), 0x30);
             return;
@@ -174,13 +181,20 @@ pub(super) fn post_capture_after(h: H, ticket: CaptureTicket, delay: std::time::
     let hwnd = h as isize;
     std::thread::spawn(move || {
         std::thread::sleep(delay);
-        if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_waiting(ticket) {
+        if !DELAYED_CAPTURE_STATE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_waiting(ticket)
+        {
             return;
         }
         // Completion can race with this PostMessage. The receiver therefore
         // checks the same generation and claims Waiting -> Running exactly once.
         if unsafe { PostMessageW(hwnd as H, DELAYED_CAPTURE, ticket.to_wire(), 0) } == 0 {
-            DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).cancel_waiting(ticket);
+            DELAYED_CAPTURE_STATE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .cancel_waiting(ticket);
         }
     });
 }
@@ -205,10 +219,7 @@ pub(super) struct ActiveWindowSnapshot {
 // Voraussetzung: h ist ein eigenes Fenster; window ist nur ein von Windows geliefertes Handle.
 // Warum erfüllt: IsWindow prüft window, alle Win32-Ausgabepuffer liegen für die Dauer des Aufrufs auf dem Stack.
 // Nachrichten: keine der geprüften synchronen Fenster-Nachrichten.
-pub(super) unsafe fn active_window_target(
-    h: H,
-    window: H,
-) -> Result<ActiveWindowSnapshot, String> {
+pub(super) unsafe fn active_window_target(h: H, window: H) -> Result<ActiveWindowSnapshot, String> {
     if window.is_null() || IsWindow(window) == 0 {
         return Err("Windows hat kein gültiges aktives Fenster geliefert.".into());
     }
@@ -241,7 +252,9 @@ pub(super) unsafe fn active_window_target(
     let mut process_id = 0;
     let thread_id = GetWindowThreadProcessId(root, &mut process_id);
     if thread_id == 0 || process_id == 0 {
-        return Err("Windows konnte Prozess und Thread des aktiven Fensters nicht bestimmen.".into());
+        return Err(
+            "Windows konnte Prozess und Thread des aktiven Fensters nicht bestimmen.".into(),
+        );
     }
     Ok(ActiveWindowSnapshot {
         hwnd: root,
@@ -259,10 +272,13 @@ pub(super) unsafe fn resolve_active_window_target(
     saved: &ActiveWindowSnapshot,
 ) -> Result<capture_targets::ScreenRect, String> {
     if IsWindow(saved.hwnd) == 0 {
-        return Err("Das zuvor aktive Fenster wurde geschlossen, bevor die Aufnahme startete.".into());
+        return Err(
+            "Das zuvor aktive Fenster wurde geschlossen, bevor die Aufnahme startete.".into(),
+        );
     }
     let current = active_window_target(h, saved.hwnd).map_err(|_| {
-        "Das zuvor aktive Fenster ist nicht mehr als dasselbe gültige Zielfenster verfügbar.".to_string()
+        "Das zuvor aktive Fenster ist nicht mehr als dasselbe gültige Zielfenster verfügbar."
+            .to_string()
     })?;
     if current.hwnd != saved.hwnd
         || current.process_id != saved.process_id

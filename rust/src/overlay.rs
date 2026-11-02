@@ -9,20 +9,20 @@
 //! hold Shift while releasing the drag, then use the same keys. Pointer motion
 //! resumes hover mode, a new mouse gesture starts the usual flow, and Esc cancels.
 
+mod hover;
 mod input;
 mod painting;
-mod hover;
 use hover::*;
 mod magnifier;
 use magnifier::*;
 mod window;
-use window::*;
 use std::{
     ffi::c_void,
     mem::{size_of, zeroed},
     ptr::{null, null_mut},
     sync::Mutex,
 };
+use window::*;
 
 use crate::{element_picker, uia_picker};
 use shotkit_rust_prototype::selection_rect;
@@ -152,8 +152,30 @@ extern "system" {
     fn CreateCompatibleBitmap(dc: H, width: i32, height: i32) -> H;
     fn SelectObject(dc: H, object: H) -> H;
     fn DeleteDC(dc: H) -> i32;
-    fn BitBlt(dst: H, x: i32, y: i32, width: i32, height: i32, src: H, sx: i32, sy: i32, rop: u32) -> i32;
-    fn StretchBlt(dst: H, x: i32, y: i32, width: i32, height: i32, src: H, sx: i32, sy: i32, sw: i32, sh: i32, rop: u32) -> i32;
+    fn BitBlt(
+        dst: H,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        src: H,
+        sx: i32,
+        sy: i32,
+        rop: u32,
+    ) -> i32;
+    fn StretchBlt(
+        dst: H,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        src: H,
+        sx: i32,
+        sy: i32,
+        sw: i32,
+        sh: i32,
+        rop: u32,
+    ) -> i32;
     fn SetStretchBltMode(dc: H, mode: i32) -> i32;
     fn CreatePen(style: i32, width: i32, color: u32) -> H;
     fn Rectangle(dc: H, left: i32, top: i32, right: i32, bottom: i32) -> i32;

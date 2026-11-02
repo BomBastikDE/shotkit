@@ -27,7 +27,16 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
         (15, "Über ShotKit"),
         (6, "Beenden"),
     ] {
-        let flags = if id == 16 && LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()).is_none() { 0x0003 } else { 0 };
+        let flags = if id == 16
+            && LAST_REGION
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none()
+        {
+            0x0003
+        } else {
+            0
+        };
         AppendMenuW(menu, flags, id, wide(label).as_ptr());
     }
     let prefs = active_settings();
@@ -150,30 +159,29 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
     }
 }
 
-
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle.
 // Warum erfüllt bzw. offen: run übergibt das neu erzeugte Fenster und GetModuleHandleW; lokale Notify-Daten leben während des Aufrufs.
 // Nachrichten: Shell-Aufruf und Fehlerdialog können Nachrichten auslösen.
 pub(super) unsafe fn install(h: H, inst: H) -> bool {
     let mut n: Notify = zeroed();
-        n.size = size_of::<Notify>() as u32;
-        n.hwnd = h;
-        n.id = 1;
-        n.flags = 1 | 2 | 4;
-        n.callback = TRAY;
-        n.icon = LoadIconW(inst, 1usize as *const u16);
-        let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
-        n.tip[..tip.len()].copy_from_slice(&tip);
-        if Shell_NotifyIconW(0, &n) == 0 {
-            MessageBoxW(
-                h,
-                wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
-                0x10,
-            );
-            return false;
-        }
+    n.size = size_of::<Notify>() as u32;
+    n.hwnd = h;
+    n.id = 1;
+    n.flags = 1 | 2 | 4;
+    n.callback = TRAY;
+    n.icon = LoadIconW(inst, 1usize as *const u16);
+    let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
+    n.tip[..tip.len()].copy_from_slice(&tip);
+    if Shell_NotifyIconW(0, &n) == 0 {
+        MessageBoxW(
+            h,
+            wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x10,
+        );
+        return false;
+    }
     true
 }
 

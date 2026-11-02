@@ -1,6 +1,7 @@
 use super::*;
 
-pub(super) const INSTANCE_MUTEX_NAME: &str = r"Local\ShotKitRustPrototype.RustOnly.SingleInstance.v1";
+pub(super) const INSTANCE_MUTEX_NAME: &str =
+    r"Local\ShotKitRustPrototype.RustOnly.SingleInstance.v1";
 pub(super) const INSTANCE_CLASS_NAME: &str = "ShotKitRustPrototype";
 pub(super) const WM_COPYDATA: u32 = 0x004a;
 pub(super) const WM_INSTANCE_ACTIVATE: u32 = 0x8004;
@@ -27,7 +28,9 @@ pub(super) struct InstanceHandle(H);
 impl Drop for InstanceHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { CloseHandle(self.0); }
+            unsafe {
+                CloseHandle(self.0);
+            }
         }
     }
 }
@@ -41,14 +44,21 @@ pub(super) unsafe fn create_instance_mutex() -> Result<(InstanceHandle, bool), S
     SetLastError(0);
     let handle = CreateMutexW(null_mut(), 0, name.as_ptr());
     if handle.is_null() {
-        return Err(format!("Einzelinstanz-Sperre konnte nicht erstellt werden (Win32 {})", GetLastError()));
+        return Err(format!(
+            "Einzelinstanz-Sperre konnte nicht erstellt werden (Win32 {})",
+            GetLastError()
+        ));
     }
     let already_exists = GetLastError() == 183; // ERROR_ALREADY_EXISTS
     Ok((InstanceHandle(handle), already_exists))
 }
 
 pub(super) fn absolute_argument_path(path: PathBuf) -> PathBuf {
-    if path.is_absolute() { path } else { std::env::current_dir().unwrap_or_default().join(path) }
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    }
 }
 
 // SAFETY CONTRACT:
@@ -60,7 +70,9 @@ pub(super) unsafe fn find_primary_window(timeout_ms: u32) -> H {
     let mut waited = 0;
     while waited <= timeout_ms {
         let window = FindWindowW(class.as_ptr(), std::ptr::null());
-        if !window.is_null() { return window; }
+        if !window.is_null() {
+            return window;
+        }
         Sleep(50);
         waited += 50;
     }
@@ -77,7 +89,11 @@ pub(super) unsafe fn send_to_primary(message: u32, path: Option<&Path>) -> Resul
         return Err("Die bereits gestartete ShotKit-Instanz hat ihr Fenster nicht rechtzeitig bereitgestellt.".into());
     }
     let mut result = 0usize;
-    let mut copy_data = CopyData { tag: INSTANCE_COPYDATA_TAG, bytes: 0, data: null_mut() };
+    let mut copy_data = CopyData {
+        tag: INSTANCE_COPYDATA_TAG,
+        bytes: 0,
+        data: null_mut(),
+    };
     // Keep the backing buffer alive through SendMessageTimeoutW: WM_COPYDATA
     // borrows this memory synchronously in the receiving window procedure.
     let mut units: Option<Vec<u16>> = None;
@@ -86,8 +102,13 @@ pub(super) unsafe fn send_to_primary(message: u32, path: Option<&Path>) -> Resul
         if encoded.len() > MAX_IPC_PATH_UNITS {
             return Err("Der Dateipfad ist zu lang, um an die laufende ShotKit-Instanz weitergegeben zu werden.".into());
         }
-        copy_data.bytes = u32::try_from(encoded.len().checked_mul(2).ok_or("Dateipfadgröße überläuft")?)
-            .map_err(|_| "Dateipfadgröße überläuft")?;
+        copy_data.bytes = u32::try_from(
+            encoded
+                .len()
+                .checked_mul(2)
+                .ok_or("Dateipfadgröße überläuft")?,
+        )
+        .map_err(|_| "Dateipfadgröße überläuft")?;
         copy_data.data = encoded.as_mut_ptr().cast();
         units = Some(encoded);
         (0usize, (&copy_data as *const CopyData) as isize)
@@ -141,7 +162,9 @@ pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
 // und Payload-Ausrichtung werden geprüft; Lesbarkeit und alle Aufrufer bleiben offen.
 // Nachrichten: Bestätigungs- und Fehlerdialoge verarbeiten Nachrichten.
 pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
-    if l == 0 { return 0; }
+    if l == 0 {
+        return 0;
+    }
     let packet = &*(l as *const CopyData);
     if packet.tag != INSTANCE_COPYDATA_TAG
         || packet.bytes < 2
@@ -169,7 +192,13 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
         "Eine zweite ShotKit-Instanz möchte diese Datei öffnen:\n\n{}\n\nSoll sie jetzt geöffnet werden?",
         path.display()
     );
-    if MessageBoxW(h, wide(&prompt).as_ptr(), wide("Datei aus zweiter Instanz").as_ptr(), 0x24) != 6 {
+    if MessageBoxW(
+        h,
+        wide(&prompt).as_ptr(),
+        wide("Datei aus zweiter Instanz").as_ptr(),
+        0x24,
+    ) != 6
+    {
         return 2;
     }
     match open_image_path(h, path) {

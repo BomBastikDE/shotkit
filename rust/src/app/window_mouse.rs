@@ -104,10 +104,8 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 InvalidateRect(h, std::ptr::null(), 0);
                 return Some(0);
             }
-            editor(h).mouse_move_with_shift(
-                ShapePoint::new(x as f32, y as f32),
-                GetKeyState(0x10) < 0,
-            );
+            editor(h)
+                .mouse_move_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
@@ -122,10 +120,8 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 return Some(0);
             }
             let before = editor(h).shapes().to_vec();
-            editor(h).mouse_up_with_shift(
-                ShapePoint::new(x as f32, y as f32),
-                GetKeyState(0x10) < 0,
-            );
+            editor(h)
+                .mouse_up_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
             if before != editor(h).shapes() {
                 window_state(h).dirty = true;
             }
@@ -165,7 +161,19 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
                         let old = SelectObject(mem, flattened);
                         if !old.is_null() && old as isize != -1 {
                             let (x, y, w, height) = image_view(h);
-                            ok = StretchBlt(dc, x, y, w, height, mem, 0, 0, window_state(h).width, window_state(h).height, COPY) != 0;
+                            ok = StretchBlt(
+                                dc,
+                                x,
+                                y,
+                                w,
+                                height,
+                                mem,
+                                0,
+                                0,
+                                window_state(h).width,
+                                window_state(h).height,
+                                COPY,
+                            ) != 0;
                             SelectObject(mem, old);
                         }
                         DeleteDC(mem);
@@ -184,22 +192,34 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
                 }
             }
             if window_state(h).bitmap.is_null() && !dc.is_null() {
-                let message = wide("Bild öffnen: Strg+O · Bild einfügen: Strg+V · Aufnahme: F9 oder F11");
-                TextOutW(dc, 12, toolbar_height(h) + 15, message.as_ptr(), (message.len() - 1) as i32);
+                let message =
+                    wide("Bild öffnen: Strg+O · Bild einfügen: Strg+V · Aufnahme: F9 oder F11");
+                TextOutW(
+                    dc,
+                    12,
+                    toolbar_height(h) + 15,
+                    message.as_ptr(),
+                    (message.len() - 1) as i32,
+                );
             }
             EndPaint(h, &ps);
             0
         }
         0x0010 => {
-            if h == PRIMARY { quit_application(h); }
-            else if !QUITTING.load(Ordering::SeqCst) && confirm_replace(h) { DestroyWindow(h); }
+            if h == PRIMARY {
+                quit_application(h);
+            } else if !QUITTING.load(Ordering::SeqCst) && confirm_replace(h) {
+                DestroyWindow(h);
+            }
             0
         }
         0x0002 => {
             let toolbar = window_state(h).toolbar.take();
             drop(toolbar); // DestroyWindow(child) may synchronously reenter this parent.
             let bitmap = std::mem::replace(&mut window_state(h).bitmap, null_mut());
-            if !bitmap.is_null() { DeleteObject(bitmap); }
+            if !bitmap.is_null() {
+                DeleteObject(bitmap);
+            }
             (&mut *std::ptr::addr_of_mut!(EDITOR_WINDOWS)).retain(|window| *window != h);
             if h == PRIMARY {
                 hotkeys::unregister(h);

@@ -9,7 +9,10 @@ pub(super) unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
     GetClientRect(h, &mut r);
     let top = toolbar_height(h);
     let v = view::layout(
-        (window_state(h).width.max(1) as u32, window_state(h).height.max(1) as u32),
+        (
+            window_state(h).width.max(1) as u32,
+            window_state(h).height.max(1) as u32,
+        ),
         (0, top, r.right - r.left, r.bottom - r.top - top),
         window_state(h).zoom,
         (window_state(h).pan_x, window_state(h).pan_y),
@@ -31,7 +34,10 @@ pub(super) unsafe fn point(h: H, l: L) -> (i32, i32) {
             width: w,
             height,
         },
-        (window_state(h).width.max(1) as u32, window_state(h).height.max(1) as u32),
+        (
+            window_state(h).width.max(1) as u32,
+            window_state(h).height.max(1) as u32,
+        ),
         (px, py),
     )
 }
@@ -53,7 +59,8 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         let mut draft = if preview { state.preview() } else { None };
         let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
         for (i, shape) in state.shapes().iter().enumerate() {
-            if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i) {
+            if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i)
+            {
                 shapes.push(draft.take().expect("draft checked above"));
             } else {
                 shapes.push(shape.clone());
@@ -62,7 +69,12 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         if let Some(shape) = draft {
             shapes.push(shape);
         }
-        (state.image_arc(), shapes, state.tool(), state.selection().cloned())
+        (
+            state.image_arc(),
+            shapes,
+            state.tool(),
+            state.selection().cloned(),
+        )
     };
     let rendered = shotkit_rust_prototype::alpha_document::render_document(&source, &shapes)?;
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
@@ -77,7 +89,11 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         for (index, src) in rendered.pixels.chunks_exact(4).enumerate() {
             let x = index % rendered.width;
             let y = index / rendered.width;
-            let gray = if ((x / 12) + (y / 12)) % 2 == 0 { 236 } else { 196 };
+            let gray = if ((x / 12) + (y / 12)) % 2 == 0 {
+                236
+            } else {
+                196
+            };
             let background = [gray, gray, gray, 255];
             let pixel = shotkit_rust_prototype::alpha_composite::source_over(
                 background,
@@ -117,7 +133,13 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             let pen = CreatePen(0, 2, 0x00ffffff);
             let previous_pen = SelectObject(out_dc, pen);
             let previous_brush = SelectObject(out_dc, GetStockObject(5));
-            Rectangle(out_dc, a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1));
+            Rectangle(
+                out_dc,
+                a.0.min(b.0),
+                a.1.min(b.1),
+                a.0.max(b.0),
+                a.1.max(b.1),
+            );
             SelectObject(out_dc, previous_brush);
             SelectObject(out_dc, previous_pen);
             DeleteObject(pen);
@@ -129,10 +151,21 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             let pen = CreatePen(0, 1, 0x00d77800);
             let old_pen = SelectObject(out_dc, pen);
             let old_brush = SelectObject(out_dc, GetStockObject(5));
-            Rectangle(out_dc, b.x as i32 - 3, b.y as i32 - 3,
-                (b.x + b.width) as i32 + 3, (b.y + b.height) as i32 + 3);
+            Rectangle(
+                out_dc,
+                b.x as i32 - 3,
+                b.y as i32 - 3,
+                (b.x + b.width) as i32 + 3,
+                (b.y + b.height) as i32 + 3,
+            );
             for p in shape.handles() {
-                Rectangle(out_dc, p.x as i32 - 4, p.y as i32 - 4, p.x as i32 + 5, p.y as i32 + 5);
+                Rectangle(
+                    out_dc,
+                    p.x as i32 - 4,
+                    p.y as i32 - 4,
+                    p.x as i32 + 5,
+                    p.y as i32 + 5,
+                );
             }
             SelectObject(out_dc, old_brush);
             SelectObject(out_dc, old_pen);
@@ -150,7 +183,8 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
 // Warum erfüllt bzw. offen: Arc und Formen werden vor dem Renderer kopiert.
 // Nachrichten: Native GDI-Aufrufe können Reentranz nicht pauschal ausschließen.
 pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
-    if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0 {
+    if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0
+    {
         return Err("Kein Bild geöffnet.".into());
     }
     // Do not retain a window-state borrow while the renderer calls GDI+.

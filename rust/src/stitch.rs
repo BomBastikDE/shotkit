@@ -11,13 +11,19 @@ pub struct Image {
 }
 impl Image {
     pub fn new(width: usize, height: usize, pixels: Vec<u8>) -> Result<Self, &'static str> {
-        let image = Self { width, height, pixels };
+        let image = Self {
+            width,
+            height,
+            pixels,
+        };
         image.validate()?;
         Ok(image)
     }
     /// Check public fields before using an image in an unsafe native buffer copy.
     pub fn validate(&self) -> Result<(), &'static str> {
-        let len = self.width.checked_mul(self.height)
+        let len = self
+            .width
+            .checked_mul(self.height)
             .and_then(|n| n.checked_mul(4))
             .ok_or("Bildgröße überläuft")?;
         if self.width == 0 || self.height == 0 || len != self.pixels.len() || len > MAX_BYTES {
@@ -136,11 +142,22 @@ impl Stitcher {
 mod tests {
     #[test]
     fn validates_public_image_fields_before_native_copy() {
-        let image = super::Image { width: 2, height: 2, pixels: vec![0; 15] };
+        let image = super::Image {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 15],
+        };
         assert!(image.validate().is_err());
-        let overflow = super::Image { width: usize::MAX, height: 2, pixels: vec![] };
+        let overflow = super::Image {
+            width: usize::MAX,
+            height: 2,
+            pixels: vec![],
+        };
         assert!(overflow.validate().is_err());
-        assert!(super::Image::new(2, 2, vec![0; 16]).unwrap().validate().is_ok());
+        assert!(super::Image::new(2, 2, vec![0; 16])
+            .unwrap()
+            .validate()
+            .is_ok());
     }
 
     use super::*;

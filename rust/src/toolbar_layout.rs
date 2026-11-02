@@ -3,7 +3,10 @@ const MARGIN: i32 = 4;
 const GAP: i32 = 3;
 const BUTTON_SIZE: i32 = 36;
 
-pub fn layout(width: i32, action_count: usize) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
+pub type ButtonRect = (i32, i32, i32, i32);
+pub type ToolbarLayout = (i32, i32, Vec<ButtonRect>);
+
+pub fn layout(width: i32, action_count: usize) -> ToolbarLayout {
     let width = width.max(1);
     let available = (width - 2 * MARGIN).max(1);
     let columns = ((available + GAP) / (BUTTON_SIZE + GAP)).max(1) as usize;

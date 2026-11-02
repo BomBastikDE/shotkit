@@ -7,44 +7,68 @@ use super::*;
 // entfernt ihn vor Freigabe; Panikfreiheit über die ABI-Grenze ist nicht belegt.
 // Nachrichten: Dispatch und DefWindowProcW können synchron Nachrichten auslösen.
 pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
-    if m == 0x0081 { // WM_NCCREATE
+    if m == 0x0081 {
+        // WM_NCCREATE
         let state = Box::into_raw(Box::new(WindowState::new()));
         SetWindowLongPtrW(h, -21, state as isize);
     }
-    if GetWindowLongPtrW(h, -21) == 0 { return DefWindowProcW(h, m, w, l); }
-    if m == 0x0082 { // WM_NCDESTROY, after child controls and WM_DESTROY
+    if GetWindowLongPtrW(h, -21) == 0 {
+        return DefWindowProcW(h, m, w, l);
+    }
+    if m == 0x0082 {
+        // WM_NCDESTROY, after child controls and WM_DESTROY
         let state = GetWindowLongPtrW(h, -21) as *mut WindowState;
         SetWindowLongPtrW(h, -21, 0);
         drop(Box::from_raw(state));
         return DefWindowProcW(h, m, w, l);
     }
-    let input = m == toolbar::WM_COMMAND || (0x0100..=0x0109).contains(&m)
+    let input = m == toolbar::WM_COMMAND
+        || (0x0100..=0x0109).contains(&m)
         || (0x0200..=0x020e).contains(&m);
     let starts_operation = input || m == TRAY || m == 0x0312 || m == DELAYED_CAPTURE;
     if m == DELAYED_CAPTURE {
-        let Some(ticket) = CaptureTicket::from_wire(w) else { return 0; };
-        if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).is_waiting(ticket) {
+        let Some(ticket) = CaptureTicket::from_wire(w) else {
+            return 0;
+        };
+        if !DELAYED_CAPTURE_STATE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_waiting(ticket)
+        {
             return 0;
         }
-        if window_state(h).modal_depth > 0 || SCROLL_BUSY.load(Ordering::SeqCst)
-            || QUITTING.load(Ordering::SeqCst) {
+        if window_state(h).modal_depth > 0
+            || SCROLL_BUSY.load(Ordering::SeqCst)
+            || QUITTING.load(Ordering::SeqCst)
+        {
             // Retry only this still-waiting generation. Stale or duplicate
             // wakeups cannot start a new selection or a newer request early.
             post_capture_after(h, ticket, std::time::Duration::from_millis(250));
             return 0;
         }
     }
-    if m == WM_COPYDATA && (window_state(h).modal_depth > 0 || QUITTING.load(Ordering::SeqCst)) { return 3; }
+    if m == WM_COPYDATA && (window_state(h).modal_depth > 0 || QUITTING.load(Ordering::SeqCst)) {
+        return 3;
+    }
     if (window_state(h).modal_depth > 0 && (m == 0x0010 || starts_operation))
-        || (QUITTING.load(Ordering::SeqCst) && starts_operation) { return 0; }
-    let modal_event = input || m == WM_COPYDATA || m == TRAY || m == 0x0312
-        || m == SCROLL_DONE || m == DELAYED_CAPTURE;
+        || (QUITTING.load(Ordering::SeqCst) && starts_operation)
+    {
+        return 0;
+    }
+    let modal_event = input
+        || m == WM_COPYDATA
+        || m == TRAY
+        || m == 0x0312
+        || m == SCROLL_DONE
+        || m == DELAYED_CAPTURE;
     // Keep windows alive while handlers run nested Win32 modal loops. Paint and
     // resize remain available; another document can still be used normally.
     let modal = modal_event.then(|| ModalGuard::new(h));
     let result = dispatch_window(h, m, w, l);
     drop(modal);
-    if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 { refresh_title(h); }
+    if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 {
+        refresh_title(h);
+    }
     result
 }
 // SAFETY CONTRACT:
@@ -57,11 +81,23 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
 // müssen den Zustands- und Reentranzvertrag einhalten.
 // Nachrichten: Unterhandler und DefWindowProcW können synchron reentrieren.
 unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
-    if let Some(result) = window_commands::dispatch_system(h, m, w, l) { return result; }
-    if let Some(result) = window_commands::dispatch_shortcuts(h, m, w, l) { return result; }
-    if let Some(result) = window_commands::dispatch_editor_keys(h, m, w, l) { return result; }
-    if let Some(result) = window_mouse::dispatch_mouse_begin(h, m, w, l) { return result; }
-    if let Some(result) = window_mouse::dispatch_mouse_continue(h, m, w, l) { return result; }
-    if let Some(result) = window_mouse::dispatch_paint_and_close(h, m, w, l) { return result; }
+    if let Some(result) = window_commands::dispatch_system(h, m, w, l) {
+        return result;
+    }
+    if let Some(result) = window_commands::dispatch_shortcuts(h, m, w, l) {
+        return result;
+    }
+    if let Some(result) = window_commands::dispatch_editor_keys(h, m, w, l) {
+        return result;
+    }
+    if let Some(result) = window_mouse::dispatch_mouse_begin(h, m, w, l) {
+        return result;
+    }
+    if let Some(result) = window_mouse::dispatch_mouse_continue(h, m, w, l) {
+        return result;
+    }
+    if let Some(result) = window_mouse::dispatch_paint_and_close(h, m, w, l) {
+        return result;
+    }
     DefWindowProcW(h, m, w, l)
 }

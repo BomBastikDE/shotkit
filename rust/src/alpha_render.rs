@@ -462,6 +462,7 @@ fn rect(a: crate::shapes::Point, b: crate::shapes::Point) -> (f32, f32, f32, f32
         (a.y - b.y).abs().max(1.0),
     )
 }
+#[cfg(any(windows, test))]
 fn step_text_color(color: crate::shapes::Color) -> u32 {
     let luminance =
         f32::from(color.r) * 0.299 + f32::from(color.g) * 0.587 + f32::from(color.b) * 0.114;
@@ -473,6 +474,7 @@ fn step_text_color(color: crate::shapes::Color) -> u32 {
     (255u32 << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
 
+#[cfg(any(windows, test))]
 fn step_font_size(radius: f32, digits: usize) -> f32 {
     let digits = digits.max(1) as f32;
     radius

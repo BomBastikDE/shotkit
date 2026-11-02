@@ -6,14 +6,16 @@
 //! owner drawing displays compact pictograms and native tooltips expose labels.
 //! This toolbar does not register or replace any keyboard shortcuts.
 
+mod actions;
+use actions::*;
 mod drawing;
 use drawing::*;
 
 use std::{
     cell::Cell,
+    collections::HashMap,
     ffi::c_void,
     ptr::{null, null_mut},
-    collections::HashMap,
     sync::{Mutex, OnceLock},
 };
 
@@ -87,16 +89,41 @@ struct NativeRect {
     bottom: i32,
 }
 #[repr(C)]
-struct DrawItem { control_type: u32, control_id: u32, item_id: u32, item_action: u32,
-    item_state: u32, hwnd_item: Hwnd, hdc: Hwnd, rect: NativeRect, item_data: usize }
+struct DrawItem {
+    control_type: u32,
+    control_id: u32,
+    item_id: u32,
+    item_action: u32,
+    item_state: u32,
+    hwnd_item: Hwnd,
+    hdc: Hwnd,
+    rect: NativeRect,
+    item_data: usize,
+}
 #[repr(C)]
-struct ToolInfoW { size: u32, flags: u32, hwnd: Hwnd, id: usize, rect: NativeRect,
-    instance: Hinstance, text: *mut u16, lparam: isize, reserved: *mut c_void }
+struct ToolInfoW {
+    size: u32,
+    flags: u32,
+    hwnd: Hwnd,
+    id: usize,
+    rect: NativeRect,
+    instance: Hinstance,
+    text: *mut u16,
+    lparam: isize,
+    reserved: *mut c_void,
+}
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct NativePoint { x: i32, y: i32 }
+struct NativePoint {
+    x: i32,
+    y: i32,
+}
 #[repr(C)]
-struct HighContrast { size: u32, flags: u32, default_scheme: *mut u16 }
+struct HighContrast {
+    size: u32,
+    flags: u32,
+    default_scheme: *mut u16,
+}
 
 #[link(name = "user32")]
 extern "system" {
@@ -137,7 +164,9 @@ extern "system" {
     fn SystemParametersInfoW(action: u32, param: u32, data: *mut c_void, flags: u32) -> i32;
 }
 #[link(name = "comctl32")]
-extern "system" { fn InitCommonControls(); }
+extern "system" {
+    fn InitCommonControls();
+}
 #[link(name = "gdi32")]
 extern "system" {
     fn GetStockObject(index: i32) -> Hwnd;
@@ -163,44 +192,6 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
-#[derive(Clone, Copy)]
-struct Action {
-    id: usize,
-    label: &'static str,
-    icon: Icon,
-    tool: bool,
-}
-#[derive(Clone, Copy)]
-enum Icon { Select, Arrow, Line, Rectangle, Ellipse, Text, Marker, Pixelate, Step, Pen,
-    Crop, Color, SwatchRed, SwatchBlack, SwatchYellow, SwatchBlue, LineWidth, FontSize,
-    Frame, Capture, Copy, Save, Undo, Redo }
-const ACTIONS: [Action; 24] = [
-    Action { id: ID_SELECT, label: "Auswahl (V)", icon: Icon::Select, tool: true },
-    Action { id: ID_ARROW, label: "Pfeil (A)", icon: Icon::Arrow, tool: true },
-    Action { id: ID_LINE, label: "Linie (L)", icon: Icon::Line, tool: true },
-    Action { id: ID_RECTANGLE, label: "Rechteck (R)", icon: Icon::Rectangle, tool: true },
-    Action { id: ID_ELLIPSE, label: "Ellipse (E)", icon: Icon::Ellipse, tool: true },
-    Action { id: ID_TEXT, label: "Text (T)", icon: Icon::Text, tool: true },
-    Action { id: ID_MARKER, label: "Marker (M)", icon: Icon::Marker, tool: true },
-    Action { id: ID_BLUR, label: "Verpixeln (B)", icon: Icon::Pixelate, tool: true },
-    Action { id: ID_STEP, label: "Nummer (N)", icon: Icon::Step, tool: true },
-    Action { id: ID_PEN, label: "Stift (P)", icon: Icon::Pen, tool: true },
-    Action { id: ID_CROP, label: "Zuschneiden (C)", icon: Icon::Crop, tool: true },
-    Action { id: ID_COLOR, label: "Farbe…", icon: Icon::Color, tool: false },
-    Action { id: ID_SWATCH_RED, label: "Rot", icon: Icon::SwatchRed, tool: false },
-    Action { id: ID_SWATCH_BLACK, label: "Schwarz", icon: Icon::SwatchBlack, tool: false },
-    Action { id: ID_SWATCH_YELLOW, label: "Gelb", icon: Icon::SwatchYellow, tool: false },
-    Action { id: ID_SWATCH_BLUE, label: "Blau", icon: Icon::SwatchBlue, tool: false },
-    Action { id: ID_LINE_WIDTH, label: "Linienbreite…", icon: Icon::LineWidth, tool: false },
-    Action { id: ID_FONT_SIZE, label: "Schriftgröße…", icon: Icon::FontSize, tool: false },
-    Action { id: ID_FRAME, label: "Rahmen / Schatten…", icon: Icon::Frame, tool: false },
-    Action { id: ID_CAPTURE, label: "Neue Aufnahme (Strg+N)", icon: Icon::Capture, tool: false },
-    Action { id: ID_COPY, label: "Kopieren", icon: Icon::Copy, tool: false },
-    Action { id: ID_SAVE, label: "Speichern", icon: Icon::Save, tool: false },
-    Action { id: ID_UNDO, label: "Zurück", icon: Icon::Undo, tool: false },
-    Action { id: ID_REDO, label: "Wiederholen", icon: Icon::Redo, tool: false },
-];
-
 fn layout(width: i32) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
     shotkit_rust_prototype::toolbar_layout::layout(width, ACTIONS.len())
 }
@@ -215,7 +206,9 @@ unsafe extern "system" fn toolbar_proc(
     wparam: Wparam,
     lparam: Lparam,
 ) -> Lresult {
-    extern "system" { fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize; }
+    extern "system" {
+        fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
+    }
     if message == WM_NCCREATE {
         #[repr(C)]
         struct CreateStruct {
@@ -238,12 +231,19 @@ unsafe extern "system" fn toolbar_proc(
         let cs = &*(lparam as *const CreateStruct);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.create_params as isize);
     }
-    if message == 0x0082 { // WM_NCDESTROY
+    if message == 0x0082 {
+        // WM_NCDESTROY
         let parent = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
-        if let Ok(mut active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        if let Ok(mut active) = ACTIVE_TOOLS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
             active.remove(&parent);
         }
-        if let Ok(mut colors) = CURRENT_COLORS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        if let Ok(mut colors) = CURRENT_COLORS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
             colors.remove(&parent);
         }
     }
@@ -251,7 +251,10 @@ unsafe extern "system" fn toolbar_proc(
         let parent = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as Hwnd;
         let id = wparam & 0xffff;
         if ACTIONS.iter().any(|a| a.id == id && a.tool) {
-            if let Ok(mut active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+            if let Ok(mut active) = ACTIVE_TOOLS
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+            {
                 active.insert(parent as usize, (hwnd as usize, id));
             }
             invalidate_tools(hwnd);
@@ -260,23 +263,49 @@ unsafe extern "system" fn toolbar_proc(
             return SendMessageW(parent, WM_COMMAND, wparam, lparam);
         }
     }
-    if message == 0x002B { // WM_DRAWITEM
+    if message == 0x002B {
+        // WM_DRAWITEM
         let item = &mut *(lparam as *mut DrawItem);
-        if item.control_type == 4 { // ODT_BUTTON
+        if item.control_type == 4 {
+            // ODT_BUTTON
             if let Some(action) = ACTIONS.iter().find(|a| a.id == item.control_id as usize) {
                 let selected = item.item_state & 0x0001 != 0;
-                let checked = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock()
-                    .ok().and_then(|active| active.get(&(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize)).map(|x| x.1))
-                    .unwrap_or(ID_SELECT) == action.id;
-                let current_color = CURRENT_COLORS.get_or_init(|| Mutex::new(HashMap::new())).lock()
-                    .ok().and_then(|colors| colors.get(&(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize)).copied())
+                let checked = ACTIVE_TOOLS
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .ok()
+                    .and_then(|active| {
+                        active
+                            .get(&(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize))
+                            .map(|x| x.1)
+                    })
+                    .unwrap_or(ID_SELECT)
+                    == action.id;
+                let current_color = CURRENT_COLORS
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .ok()
+                    .and_then(|colors| {
+                        colors
+                            .get(&(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize))
+                            .copied()
+                    })
                     .unwrap_or(0x000000FF);
-                let bg = if selected || checked { GetSysColor(13) } else { GetSysColor(15) };
+                let bg = if selected || checked {
+                    GetSysColor(13)
+                } else {
+                    GetSysColor(15)
+                };
                 let brush = CreateSolidBrush(bg);
                 FillRect(item.hdc, &item.rect, brush);
                 DeleteObject(brush);
-                draw_icon(item.hdc, item.rect, action.icon,
-                    GetSysColor(if checked { 14 } else { 18 }), current_color);
+                draw_icon(
+                    item.hdc,
+                    item.rect,
+                    action.icon,
+                    GetSysColor(if checked { 14 } else { 18 }),
+                    current_color,
+                );
                 if item.item_state & 0x0010 != 0 {
                     DrawFocusRect(item.hdc, &item.rect);
                 }
@@ -327,8 +356,13 @@ pub struct Toolbar {
 // Warum erfüllt bzw. offen: Einträge entstehen in create und werden bei WM_NCDESTROY entfernt; vollständige Handlelebensdauer bleibt offen.
 // Nachrichten: User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub unsafe fn set_active(parent: *mut c_void, id: usize) {
-    if !ACTIONS.iter().any(|a| a.id == id && a.tool) { return; }
-    if let Ok(mut active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if !ACTIONS.iter().any(|a| a.id == id && a.tool) {
+        return;
+    }
+    if let Ok(mut active) = ACTIVE_TOOLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         if let Some((toolbar, current)) = active.get_mut(&(parent as usize)) {
             *current = id;
             invalidate_tools(*toolbar as Hwnd);
@@ -343,13 +377,21 @@ pub unsafe fn set_active(parent: *mut c_void, id: usize) {
 // Nachrichten: User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 pub unsafe fn set_color(parent: *mut c_void, red: u8, green: u8, blue: u8) {
     let colorref = (red as u32) | ((green as u32) << 8) | ((blue as u32) << 16);
-    if let Ok(mut colors) = CURRENT_COLORS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if let Ok(mut colors) = CURRENT_COLORS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         colors.insert(parent as usize, colorref);
     }
-    if let Ok(active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if let Ok(active) = ACTIVE_TOOLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         if let Some((toolbar, _)) = active.get(&(parent as usize)) {
             let button = GetDlgItem(*toolbar as Hwnd, ID_COLOR as i32);
-            if !button.is_null() { InvalidateRect(button, null(), 1); }
+            if !button.is_null() {
+                InvalidateRect(button, null(), 1);
+            }
         }
     }
 }
@@ -450,8 +492,20 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
     let mut tip_text = Vec::with_capacity(ACTIONS.len());
     InitCommonControls();
     let tip_class = wide("tooltips_class32");
-    let tooltip = CreateWindowExW(0x00000008, tip_class.as_ptr(), null(), 0x80000000 | 0x00000001,
-        0, 0, 0, 0, hwnd, null_mut(), instance, null_mut());
+    let tooltip = CreateWindowExW(
+        0x00000008,
+        tip_class.as_ptr(),
+        null(),
+        0x80000000 | 0x00000001,
+        0,
+        0,
+        0,
+        0,
+        hwnd,
+        null_mut(),
+        instance,
+        null_mut(),
+    );
     if tooltip.is_null() {
         DestroyWindow(hwnd);
         return Err("Tooltip-Fenster konnte nicht erstellt werden".into());
@@ -490,23 +544,40 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
         }
         SendMessageW(button, 0x0030, font as usize, 1); // WM_SETFONT
         if index == 0 {
-            if let Ok(mut active) = ACTIVE_TOOLS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+            if let Ok(mut active) = ACTIVE_TOOLS
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+            {
                 active.insert(parent as usize, (hwnd as usize, ID_SELECT));
             }
-            if let Ok(mut colors) = CURRENT_COLORS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+            if let Ok(mut colors) = CURRENT_COLORS
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+            {
                 colors.insert(parent as usize, 0x000000FF); // Style::default() is red.
             }
         }
         if !tooltip.is_null() {
             // Version 5 common controls require the V2 size (without lpReserved).
-            let mut info = ToolInfoW { size: std::mem::offset_of!(ToolInfoW, reserved) as u32,
-                flags: TTF_IDISHWND | TTF_SUBCLASS, hwnd, id: button as usize,
-                rect: std::mem::zeroed(), instance, text: tooltip_label.as_mut_ptr(),
-                lparam: 0, reserved: null_mut() };
-            if SendMessageW(tooltip, 0x0432, 0, &mut info as *mut _ as isize) == 0 { // TTM_ADDTOOLW
+            let mut info = ToolInfoW {
+                size: std::mem::offset_of!(ToolInfoW, reserved) as u32,
+                flags: TTF_IDISHWND | TTF_SUBCLASS,
+                hwnd,
+                id: button as usize,
+                rect: std::mem::zeroed(),
+                instance,
+                text: tooltip_label.as_mut_ptr(),
+                lparam: 0,
+                reserved: null_mut(),
+            };
+            if SendMessageW(tooltip, 0x0432, 0, &mut info as *mut _ as isize) == 0 {
+                // TTM_ADDTOOLW
                 DestroyWindow(tooltip);
                 DestroyWindow(hwnd);
-                return Err(format!("Tooltip für {} konnte nicht registriert werden", action.label));
+                return Err(format!(
+                    "Tooltip für {} konnte nicht registriert werden",
+                    action.label
+                ));
             }
         }
         tip_text.push(tooltip_label);

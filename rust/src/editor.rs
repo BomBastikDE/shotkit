@@ -450,25 +450,32 @@ impl EditorController {
             return;
         }
         self.last_position = Some(at);
-        match self.drag.as_mut() {
-            Some(Drag::Create { shape, .. }) => match &mut shape.kind {
+        if let Some(Drag::Create { shape, .. }) = self.drag.as_mut() {
+            match &mut shape.kind {
                 ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
-                    *end = if shift { constrain_endpoint(*start, at, false) } else { at };
+                    *end = if shift {
+                        constrain_endpoint(*start, at, false)
+                    } else {
+                        at
+                    };
                 }
                 ShapeKind::Rectangle { start, end }
                 | ShapeKind::Ellipse { start, end }
                 | ShapeKind::Highlight { start, end }
                 | ShapeKind::Blur { start, end } => {
-                    *end = if shift { constrain_endpoint(*start, at, true) } else { at };
+                    *end = if shift {
+                        constrain_endpoint(*start, at, true)
+                    } else {
+                        at
+                    };
                 }
-                ShapeKind::Freehand { points } => {
-                    if points.last().map_or(true, |p| distance(*p, at) >= 1.0) {
-                        points.push(at);
-                    }
+                ShapeKind::Freehand { points }
+                    if points.last().is_none_or(|p| distance(*p, at) >= 1.0) =>
+                {
+                    points.push(at);
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 
@@ -527,7 +534,6 @@ impl EditorController {
         }
         self.last_position = None;
     }
-
 }
 
 fn distance(a: Point, b: Point) -> f32 {

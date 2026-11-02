@@ -230,8 +230,7 @@ pub fn find_offset(a: &Frame, b: &Frame, expected: usize) -> Option<MatchResult>
             if (vmax as f32) >= rows.len() as f32 * 0.6 {
                 let mut best = None;
                 for dy in 0..=last {
-                    if (cv[dy] as f32) >= vmax as f32 * 0.9
-                        && best.map_or(true, |bd| ce[dy] < ce[bd])
+                    if (cv[dy] as f32) >= vmax as f32 * 0.9 && best.is_none_or(|bd| ce[dy] < ce[bd])
                     {
                         best = Some(dy);
                     }

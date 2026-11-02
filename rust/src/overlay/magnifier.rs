@@ -77,7 +77,11 @@ pub(super) unsafe fn release_desktop(state: *mut State) {
 // Voraussetzung: Win32-Monitorabfragen erhalten korrekt initialisierte Ausgabestrukturen.
 // Warum erfüllt bzw. offen: Monitorhandle und MonitorInfo werden lokal erstellt und auf Fehler geprüft.
 // Nachrichten: Kein expliziter Fensternachrichtenversand.
-pub(super) unsafe fn monitor_local_rect(point: Point, origin: (i32, i32), desktop: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+pub(super) unsafe fn monitor_local_rect(
+    point: Point,
+    origin: (i32, i32),
+    desktop: (i32, i32, i32, i32),
+) -> (i32, i32, i32, i32) {
     let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
     if !monitor.is_null() {
         let mut info: MonitorInfo = zeroed();
@@ -111,10 +115,15 @@ pub(super) unsafe fn magnifier_rect(state: &State, point: Point) -> (i32, i32, i
         x = local_cursor.x.saturating_sub(24 + MAG_SIZE);
     }
     if y.saturating_add(MAG_SIZE + MAG_LABEL_HEIGHT + 2) > bounds.3 {
-        y = local_cursor.y.saturating_sub(24 + MAG_SIZE + MAG_LABEL_HEIGHT + 2);
+        y = local_cursor
+            .y
+            .saturating_sub(24 + MAG_SIZE + MAG_LABEL_HEIGHT + 2);
     }
     let max_x = bounds.2.saturating_sub(MAG_SIZE).max(bounds.0);
-    let max_y = bounds.3.saturating_sub(MAG_SIZE + MAG_LABEL_HEIGHT + 2).max(bounds.1);
+    let max_y = bounds
+        .3
+        .saturating_sub(MAG_SIZE + MAG_LABEL_HEIGHT + 2)
+        .max(bounds.1);
     x = x.clamp(bounds.0, max_x);
     y = y.clamp(bounds.1, max_y);
     (x, y, x.saturating_add(MAG_SIZE), y.saturating_add(MAG_SIZE))
@@ -150,7 +159,16 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     let top = 0;
     let right = MAG_SIZE;
     let bottom = MAG_SIZE;
-    let _ = FillRect(dc, &Rect { left, top, right, bottom }, GetStockObject(4)); // BLACK_BRUSH
+    let _ = FillRect(
+        dc,
+        &Rect {
+            left,
+            top,
+            right,
+            bottom,
+        },
+        GetStockObject(4),
+    ); // BLACK_BRUSH
     SetStretchBltMode(dc, COLORONCOLOR);
     StretchBlt(
         dc,
@@ -167,14 +185,30 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     );
 
     let white_pen = CreatePen(PS_SOLID, 1, 0x00ff_ffff);
-    let old_pen = if white_pen.is_null() { null_mut() } else { SelectObject(dc, white_pen) };
-    let marker_x = local_cursor.x.saturating_sub(source_x).clamp(0, source_width - 1);
-    let marker_y = local_cursor.y.saturating_sub(source_y).clamp(0, source_height - 1);
+    let old_pen = if white_pen.is_null() {
+        null_mut()
+    } else {
+        SelectObject(dc, white_pen)
+    };
+    let marker_x = local_cursor
+        .x
+        .saturating_sub(source_x)
+        .clamp(0, source_width - 1);
+    let marker_y = local_cursor
+        .y
+        .saturating_sub(source_y)
+        .clamp(0, source_height - 1);
     let center_x = marker_x * MAG_SIZE / source_width;
     let center_y = marker_y * MAG_SIZE / source_height;
     let marker_width = (MAG_SIZE / source_width).max(1);
     let marker_height = (MAG_SIZE / source_height).max(1);
-    Rectangle(dc, left + center_x, top + center_y, left + center_x + marker_width + 1, top + center_y + marker_height + 1);
+    Rectangle(
+        dc,
+        left + center_x,
+        top + center_y,
+        left + center_x + marker_width + 1,
+        top + center_y + marker_height + 1,
+    );
     let accent_pen = CreatePen(PS_SOLID, 2, 0x00ff_9600);
     if !accent_pen.is_null() {
         let previous_pen = SelectObject(dc, accent_pen);
@@ -195,21 +229,39 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     let label = if pixel == 0xffff_ffff {
         format!("{}, {}", point.x, point.y)
     } else {
-        format!("{}, {}  #{:02X}{:02X}{:02X}", point.x, point.y, pixel & 0xff, (pixel >> 8) & 0xff, (pixel >> 16) & 0xff)
+        format!(
+            "{}, {}  #{:02X}{:02X}{:02X}",
+            point.x,
+            point.y,
+            pixel & 0xff,
+            (pixel >> 8) & 0xff,
+            (pixel >> 16) & 0xff
+        )
     };
     let wide: Vec<u16> = label.encode_utf16().collect();
-    let text_rect = Rect { left, top: MAG_SIZE + 2, right: MAG_SIZE, bottom: MAG_WINDOW_HEIGHT };
+    let text_rect = Rect {
+        left,
+        top: MAG_SIZE + 2,
+        right: MAG_SIZE,
+        bottom: MAG_WINDOW_HEIGHT,
+    };
     let dark = CreateSolidBrush(0x0014_1414);
     if !dark.is_null() {
         FillRect(dc, &text_rect, dark);
         DeleteObject(dark);
     }
     let font = GetStockObject(DEFAULT_GUI_FONT);
-    let old_font = if !font.is_null() { SelectObject(dc, font) } else { null_mut() };
+    let old_font = if !font.is_null() {
+        SelectObject(dc, font)
+    } else {
+        null_mut()
+    };
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, 0x00ff_ffff);
     TextOutW(dc, 3, MAG_SIZE + 4, wide.as_ptr(), wide.len() as i32);
-    if !old_font.is_null() { SelectObject(dc, old_font); }
+    if !old_font.is_null() {
+        SelectObject(dc, old_font);
+    }
 }
 
 // SAFETY CONTRACT:
@@ -225,7 +277,11 @@ pub(super) unsafe fn move_magnifier(state: *mut State) {
             return;
         }
         let (left, top, _, _) = magnifier_rect(s, s.current);
-        (s.magnifier_hwnd, left.saturating_add(s.origin.0), top.saturating_add(s.origin.1))
+        (
+            s.magnifier_hwnd,
+            left.saturating_add(s.origin.0),
+            top.saturating_add(s.origin.1),
+        )
     };
     MoveWindow(hwnd, left, top, MAG_SIZE, MAG_WINDOW_HEIGHT, 0);
     InvalidateRect(hwnd, null(), 0);
@@ -258,7 +314,13 @@ pub(super) unsafe extern "system" fn magnifier_proc(hwnd: H, msg: u32, w: W, l: 
 // Warum erfüllt bzw. offen: select ruft nach erfolgreicher Fensteranlage auf;
 // Rückrufe dürfen die Lebensdauer der Handles während der Anlage nicht beenden.
 // Nachrichten: CreateWindowExW kann synchron Nachrichten auslösen.
-pub(super) unsafe fn setup_magnifier(instance: H, hwnd: H, origin: (i32, i32), cursor: Point, magnifier_class_name: &[u16]) {
+pub(super) unsafe fn setup_magnifier(
+    instance: H,
+    hwnd: H,
+    origin: (i32, i32),
+    cursor: Point,
+    magnifier_class_name: &[u16],
+) {
     let magnifier_class = WndClass {
         style: 0,
         proc: Some(magnifier_proc),

@@ -60,10 +60,22 @@ mod tests {
 
     #[test]
     fn movement_and_resize_clamp_to_negative_origin_virtual_desktop() {
-        assert_eq!(translate((-1920, -100, -1800, 0), -1, -1, DESKTOP), (-1920, -100, -1800, 0));
-        assert_eq!(translate((1800, 900, 1920, 980), 1, 1, DESKTOP), (1800, 900, 1920, 980));
-        assert_eq!(resize((1800, 900, 1920, 980), 1, 1, DESKTOP), (1800, 900, 1920, 980));
-        assert_eq!(resize((-1920, -100, -1800, 0), -1, -1, DESKTOP), (-1920, -100, -1801, -1));
+        assert_eq!(
+            translate((-1920, -100, -1800, 0), -1, -1, DESKTOP),
+            (-1920, -100, -1800, 0)
+        );
+        assert_eq!(
+            translate((1800, 900, 1920, 980), 1, 1, DESKTOP),
+            (1800, 900, 1920, 980)
+        );
+        assert_eq!(
+            resize((1800, 900, 1920, 980), 1, 1, DESKTOP),
+            (1800, 900, 1920, 980)
+        );
+        assert_eq!(
+            resize((-1920, -100, -1800, 0), -1, -1, DESKTOP),
+            (-1920, -100, -1801, -1)
+        );
     }
 
     #[test]

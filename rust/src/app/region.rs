@@ -21,8 +21,15 @@ pub(super) unsafe fn capture_region(h: H) {
         return;
     };
     let Some(rect) = last_region::Rect::from_origin_size(x, y, w, height) else {
-        if was_visible { ShowWindow(h, 5); }
-        MessageBoxW(h, wide("Die Auswahl hat ungültige Bildschirmgrenzen.").as_ptr(), wide("Bereichsaufnahme").as_ptr(), 0x10);
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Die Auswahl hat ungültige Bildschirmgrenzen.").as_ptr(),
+            wide("Bereichsaufnahme").as_ptr(),
+            0x10,
+        );
         return;
     };
     capture_region_rect(h, rect, true, was_visible);
@@ -144,7 +151,9 @@ pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, S
         &mut list as *mut _ as L,
     );
     if enumerated == 0 || list.failed || list.rects.is_empty() {
-        return Err("Die aktuellen Monitorgrenzen konnten nicht zuverlässig gelesen werden.".into());
+        return Err(
+            "Die aktuellen Monitorgrenzen konnten nicht zuverlässig gelesen werden.".into(),
+        );
     }
     Ok(list.rects)
 }
@@ -166,7 +175,8 @@ pub(super) unsafe fn repeat_last_region(h: H) {
     let Some(rect) = previous_region else {
         MessageBoxW(
             h,
-            wide("Es wurde in dieser Sitzung noch kein Aufnahmebereich erfolgreich aufgenommen.").as_ptr(),
+            wide("Es wurde in dieser Sitzung noch kein Aufnahmebereich erfolgreich aufgenommen.")
+                .as_ptr(),
             wide("Bereich erneut aufnehmen").as_ptr(),
             0x30,
         );

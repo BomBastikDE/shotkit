@@ -1,6 +1,12 @@
 //! Platform-independent mapping of registered hotkey IDs to capture actions.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Action { Screen, AllScreens, ActiveWindow, Scroll, Region }
+pub enum Action {
+    Screen,
+    AllScreens,
+    ActiveWindow,
+    Scroll,
+    Region,
+}
 
 pub fn action_for_id(id: usize) -> Option<Action> {
     match id {
@@ -18,9 +24,20 @@ mod tests {
     use super::*;
     #[test]
     fn registered_hotkeys_route_to_expected_capture_modes() {
-        let expected = [Action::Screen, Action::Scroll, Action::Region, Action::Region, Action::Region,
-            Action::Screen, Action::AllScreens, Action::ActiveWindow, Action::Scroll,
-            Action::Screen, Action::ActiveWindow, Action::Scroll];
+        let expected = [
+            Action::Screen,
+            Action::Scroll,
+            Action::Region,
+            Action::Region,
+            Action::Region,
+            Action::Screen,
+            Action::AllScreens,
+            Action::ActiveWindow,
+            Action::Scroll,
+            Action::Screen,
+            Action::ActiveWindow,
+            Action::Scroll,
+        ];
         for (index, action) in expected.into_iter().enumerate() {
             assert_eq!(action_for_id(index + 1), Some(action));
         }

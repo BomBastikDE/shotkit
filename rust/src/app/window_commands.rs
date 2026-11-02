@@ -7,9 +7,15 @@ use super::*;
 // Nachrichten: DestroyWindow, ShowWindow und Menü-/Aufnahmefunktionen können reentrieren; der Handler hält keine Zustandsreferenz über diese Aufrufe.
 pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
     Some(match m {
-        WM_FINISH_QUIT if h == PRIMARY => { DestroyWindow(h); 0 }
+        WM_FINISH_QUIT if h == PRIMARY => {
+            DestroyWindow(h);
+            0
+        }
         WM_COPYDATA => handle_instance_file(h, l),
-        WM_INSTANCE_ACTIVATE => { show_editors(); 1 }
+        WM_INSTANCE_ACTIVATE => {
+            show_editors();
+            1
+        }
         0x0312 if hotkeys::dispatch(h, w) => 0,
         TRAY if l as u32 == 0x0202 => {
             capture_region(h);
@@ -57,14 +63,23 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
             0
         }
         DELAYED_CAPTURE => {
-            let Some(ticket) = CaptureTicket::from_wire(w) else { return Some(0); };
-            if !DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).try_start(ticket) {
+            let Some(ticket) = CaptureTicket::from_wire(w) else {
+                return Some(0);
+            };
+            if !DELAYED_CAPTURE_STATE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .try_start(ticket)
+            {
                 return Some(0);
             }
             // Running remains pending through accepted, cancelled and failed
             // selections; duplicate messages are rejected during modal loops.
             capture_region(h);
-            DELAYED_CAPTURE_STATE.lock().unwrap_or_else(|p| p.into_inner()).finish(ticket);
+            DELAYED_CAPTURE_STATE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .finish(ticket);
             0
         }
         TRAY if l as u32 == 0x0205 => {
@@ -115,7 +130,9 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
         0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
             if GetKeyState(0x11) < 0 {
-                window_state(h).zoom = (window_state(h).zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 }).clamp(0.05, 64.0);
+                window_state(h).zoom = (window_state(h).zoom
+                    * if delta > 0 { 1.2 } else { 1.0 / 1.2 })
+                .clamp(0.05, 64.0);
             } else if GetKeyState(0x10) < 0 {
                 window_state(h).pan_x = window_state(h).pan_x.saturating_sub(delta);
             } else {
@@ -151,7 +168,8 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
                 1.0,
                 (0, 0),
             );
-            window_state(h).zoom = (window_state(h).width as f64 / v.width as f64).clamp(0.05, 64.0);
+            window_state(h).zoom =
+                (window_state(h).width as f64 / v.width as f64).clamp(0.05, 64.0);
             window_state(h).pan_x = 0;
             window_state(h).pan_y = 0;
             InvalidateRect(h, std::ptr::null(), 1);
@@ -221,11 +239,12 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        0x0100 if matches!(w, 0x25..=0x28)
-            && GetKeyState(0x11) >= 0
-            && GetKeyState(0x12) >= 0
-            && !window_state(h).drawing
-            && editor(h).selected_index().is_some() =>
+        0x0100
+            if matches!(w, 0x25..=0x28)
+                && GetKeyState(0x11) >= 0
+                && GetKeyState(0x12) >= 0
+                && !window_state(h).drawing
+                && editor(h).selected_index().is_some() =>
         {
             let step = if GetKeyState(0x10) < 0 { 10.0 } else { 1.0 };
             let (dx, dy) = match w {

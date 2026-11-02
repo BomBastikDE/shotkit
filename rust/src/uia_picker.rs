@@ -79,8 +79,12 @@ pub(crate) fn log_diagnostic(message: &str) {
         return;
     }
     let Some(parent) = path.parent() else { return };
-    let Ok(parent) = parent.canonicalize() else { return };
-    let Ok(temp) = std::env::temp_dir().canonicalize() else { return };
+    let Ok(parent) = parent.canonicalize() else {
+        return;
+    };
+    let Ok(temp) = std::env::temp_dir().canonicalize() else {
+        return;
+    };
     if !parent.starts_with(temp) || path.file_name().is_none() {
         return;
     }
@@ -266,11 +270,7 @@ fn worker_loop(
         };
         log_diagnostic(&format!(
             "uia response seq={} hwnd=0x{:X} rect={:?} issue={:?} visited={}",
-            result.sequence,
-            result.target_hwnd,
-            result.rect,
-            result.issue,
-            result.visited_nodes
+            result.sequence, result.target_hwnd, result.rect, result.issue, result.visited_nodes
         ));
         if shared.latest_sequence.load(Ordering::Acquire) == request.sequence {
             *lock(&shared.response) = Some(result);

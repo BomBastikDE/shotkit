@@ -7,9 +7,15 @@ use super::*;
 // über die Callback-ABI ist noch nicht vollständig belegt.
 // Nachrichten: Capture, Zerstörung und DefWindowProcW können reentrieren.
 pub(super) unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
-    if let Some(result) = input::handle_mouse(hwnd, msg, w, l) { return result; }
-    if let Some(result) = input::handle_keyboard(hwnd, msg, w, l) { return result; }
-    if let Some(result) = painting::handle_paint(hwnd, msg, w, l) { return result; }
+    if let Some(result) = input::handle_mouse(hwnd, msg, w, l) {
+        return result;
+    }
+    if let Some(result) = input::handle_keyboard(hwnd, msg, w, l) {
+        return result;
+    }
+    if let Some(result) = painting::handle_paint(hwnd, msg, w, l) {
+        return result;
+    }
     DefWindowProcW(hwnd, msg, w, l)
 }
 

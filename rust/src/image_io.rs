@@ -1,8 +1,7 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
 use crate::stitch::Image;
 use image::{
-    codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, ImageReader, Limits, RgbImage,
-    RgbaImage,
+    codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, ImageReader, Limits, RgbImage, RgbaImage,
 };
 use std::{
     io::{BufReader, Cursor},
@@ -21,7 +20,7 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     let rgba = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut pixels = rgba.into_raw();
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     Image::new(w as usize, h as usize, pixels).map_err(str::to_owned)
@@ -37,7 +36,7 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
     let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
     let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
     let mut pixels = image.pixels.clone();
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
@@ -62,7 +61,7 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
 /// Channels are rounded to the nearest integer to match ordinary source-over.
 fn jpeg_rgb_on_white(rgba: Vec<u8>) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         let alpha = u16::from(pixel[3]);
         for channel in &pixel[..3] {
             let value = u16::from(*channel) * alpha + 255 * (255 - alpha);
@@ -125,7 +124,9 @@ mod tests {
         }
         let tiff_image = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 2, rgba).unwrap());
         let mut fixture = Cursor::new(Vec::new());
-        tiff_image.write_to(&mut fixture, ImageFormat::Tiff).unwrap();
+        tiff_image
+            .write_to(&mut fixture, ImageFormat::Tiff)
+            .unwrap();
         assert_eq!(decode(&fixture.into_inner()).unwrap(), src);
         assert!(encode(&src, ImageFormat::Tiff).is_err());
         assert!(format_from_path(Path::new("capture.tif")).is_err());
@@ -161,10 +162,12 @@ mod tests {
             src.pixels
                 .chunks_exact(4)
                 .zip(decoded.pixels.chunks_exact(4))
-                .flat_map(|(a, b)| (0..3).map(move |channel| {
-                    let delta = i64::from(a[channel]) - i64::from(b[channel]);
-                    (delta * delta) as u64
-                }))
+                .flat_map(|(a, b)| {
+                    (0..3).map(move |channel| {
+                        let delta = i64::from(a[channel]) - i64::from(b[channel]);
+                        (delta * delta) as u64
+                    })
+                })
                 .sum()
         };
         assert!(
@@ -177,8 +180,7 @@ mod tests {
     fn jpeg_pixels_flatten_transparent_and_semitransparent_rgba_onto_white() {
         let rgba = vec![
             12, 34, 56, 0, // Hidden RGB must not leak through a fully transparent pixel.
-            20, 100, 200, 128,
-            7, 8, 9, 255,
+            20, 100, 200, 128, 7, 8, 9, 255,
         ];
         assert_eq!(
             jpeg_rgb_on_white(rgba),

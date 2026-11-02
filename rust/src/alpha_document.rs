@@ -52,8 +52,10 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
                     .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
                 validate_same_dimensions(source, &layer)?;
                 for (dst, src) in output_pixels
-                    .chunks_exact_mut(4)
-                    .zip(layer.pixels.chunks_exact(4))
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(layer.pixels.as_chunks::<4>().0.iter())
                 {
                     let result = source_over(
                         [dst[0], dst[1], dst[2], dst[3]],

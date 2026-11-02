@@ -235,13 +235,29 @@ pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> 
 // Nachrichten: CreateWindowExW, SendMessageW und DestroyWindow können reentrieren; die ersetzte Toolbar wird nach Ende des State-Borrows freigegeben.
 pub(super) unsafe fn create_editor_window() -> Result<H, String> {
     let class = wide("ShotKitRustEditor");
-    let h = CreateWindowExW(0, class.as_ptr(), wide("ShotKit Rust").as_ptr(),
-        0x00cf0000, 0x80000000u32 as i32, 0x80000000u32 as i32, 1000, 700,
-        null_mut(), null_mut(), GetModuleHandleW(std::ptr::null()), null_mut());
-    if h.is_null() { return Err("Editorfenster konnte nicht erstellt werden.".into()); }
+    let h = CreateWindowExW(
+        0,
+        class.as_ptr(),
+        wide("ShotKit Rust").as_ptr(),
+        0x00cf0000,
+        0x80000000u32 as i32,
+        0x80000000u32 as i32,
+        1000,
+        700,
+        null_mut(),
+        null_mut(),
+        GetModuleHandleW(std::ptr::null()),
+        null_mut(),
+    );
+    if h.is_null() {
+        return Err("Editorfenster konnte nicht erstellt werden.".into());
+    }
     let bar = match toolbar::create(h) {
         Ok(bar) => Rc::new(bar),
-        Err(error) => { DestroyWindow(h); return Err(error); }
+        Err(error) => {
+            DestroyWindow(h);
+            return Err(error);
+        }
     };
     // Drop replaced native objects only after the mutable state borrow ends.
     let previous = window_state(h).toolbar.replace(bar);
@@ -254,13 +270,19 @@ pub(super) unsafe fn create_editor_window() -> Result<H, String> {
 // Nachrichten: Fensteranlage, ShowWindow und DestroyWindow können reentrieren; RECOVERY- und Fensterlisten-Zugriffe enden vor diesen Aufrufen.
 pub(super) unsafe fn display_image(_owner: H, image: Image) -> Result<H, String> {
     if QUITTING.load(Ordering::SeqCst) {
-        RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).push(image);
+        RECOVERY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(image);
         return Err("ShotKit wird gerade beendet. Die Aufnahme bleibt im Speicher.".into());
     }
     let h = match create_editor_window() {
         Ok(h) => h,
         Err(error) => {
-            RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).push(image);
+            RECOVERY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(image);
             return Err(format!("{error} Die Aufnahme bleibt im Speicher."));
         }
     };
@@ -272,7 +294,10 @@ pub(super) unsafe fn display_image(_owner: H, image: Image) -> Result<H, String>
             SetForegroundWindow(h);
             Ok(h)
         }
-        Err(error) => { DestroyWindow(h); Err(error) }
+        Err(error) => {
+            DestroyWindow(h);
+            Err(error)
+        }
     }
 }
 // SAFETY CONTRACT:

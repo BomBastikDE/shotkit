@@ -40,9 +40,24 @@ pub(super) unsafe fn icon_fill_ellipse(hdc: Hwnd, rect: NativeRect, color: u32) 
 pub(super) unsafe fn draw_swatch(hdc: Hwnd, bounds: NativeRect, color: u32) {
     let left = bounds.left + ((bounds.right - bounds.left - 20) / 2);
     let top = bounds.top + ((bounds.bottom - bounds.top - 20) / 2);
-    icon_fill_rect(hdc, NativeRect { left: left + 3, top: top + 3, right: left + 17, bottom: top + 17 }, color);
+    icon_fill_rect(
+        hdc,
+        NativeRect {
+            left: left + 3,
+            top: top + 3,
+            right: left + 17,
+            bottom: top + 17,
+        },
+        color,
+    );
     let hc = high_contrast_enabled();
-    let outer = if hc { GetSysColor(18) } else if color == 0 { 0x00FFFFFF } else { 0x00000000 };
+    let outer = if hc {
+        GetSysColor(18)
+    } else if color == 0 {
+        0x00FFFFFF
+    } else {
+        0x00000000
+    };
     let pen = CreatePen(0, 2, outer);
     let previous = SelectObject(hdc, pen);
     Rectangle(hdc, left + 2, top + 2, left + 18, top + 18);
@@ -76,7 +91,9 @@ pub(super) unsafe fn icon_polygon(hdc: Hwnd, pts: &[NativePoint], color: u32) {
 pub(super) unsafe fn invalidate_tools(toolbar: Hwnd) {
     for action in ACTIONS.iter().filter(|action| action.tool) {
         let button = GetDlgItem(toolbar, action.id as i32);
-        if !button.is_null() { InvalidateRect(button, null(), 1); }
+        if !button.is_null() {
+            InvalidateRect(button, null(), 1);
+        }
     }
 }
 
@@ -90,7 +107,12 @@ pub(super) unsafe fn high_contrast_enabled() -> bool {
         flags: 0,
         default_scheme: null_mut(),
     };
-    SystemParametersInfoW(0x0042, settings.size, &mut settings as *mut _ as *mut c_void, 0) != 0
+    SystemParametersInfoW(
+        0x0042,
+        settings.size,
+        &mut settings as *mut _ as *mut c_void,
+        0,
+    ) != 0
         && settings.flags & 1 != 0
 }
 
@@ -99,20 +121,49 @@ pub(super) unsafe fn high_contrast_enabled() -> bool {
 // Voraussetzung: hdc und ausgewählte Objekte bleiben während der Zeichnung gültig.
 // Warum erfüllt bzw. offen: DC stammt aus WM_DRAWITEM; Objektanlage und Wiederherstellung bei allen Fehlern sind nicht vollständig geprüft.
 // Nachrichten: GDI-/User32-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
-pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color: u32, current_color: u32) {
+pub(super) unsafe fn draw_icon(
+    hdc: Hwnd,
+    bounds: NativeRect,
+    icon: Icon,
+    color: u32,
+    current_color: u32,
+) {
     let ox = bounds.left + ((bounds.right - bounds.left - 20) / 2);
     let oy = bounds.top + ((bounds.bottom - bounds.top - 20) / 2);
-    let p = |x, y| NativePoint { x: ox + x, y: oy + y };
-    let rect = |x, y, r, b| NativeRect { left: ox + x, top: oy + y, right: ox + r, bottom: oy + b };
+    let p = |x, y| NativePoint {
+        x: ox + x,
+        y: oy + y,
+    };
+    let rect = |x, y, r, b| NativeRect {
+        left: ox + x,
+        top: oy + y,
+        right: ox + r,
+        bottom: oy + b,
+    };
     let pen = CreatePen(0, 2, color);
     let old_pen = SelectObject(hdc, pen);
     let old_brush = SelectObject(hdc, GetStockObject(5)); // HOLLOW_BRUSH
 
     match icon {
-        Icon::Select => icon_polygon(hdc, &[p(4, 2), p(4, 16), p(8, 12), p(11, 18),
-            p(14, 17), p(11, 11), p(17, 11)], color),
+        Icon::Select => icon_polygon(
+            hdc,
+            &[
+                p(4, 2),
+                p(4, 16),
+                p(8, 12),
+                p(11, 18),
+                p(14, 17),
+                p(11, 11),
+                p(17, 11),
+            ],
+            color,
+        ),
         Icon::Arrow => {
-            let accent = if high_contrast_enabled() { color } else { 0x000000FF };
+            let accent = if high_contrast_enabled() {
+                color
+            } else {
+                0x000000FF
+            };
             let accent_pen = CreatePen(0, 2, accent);
             let previous = SelectObject(hdc, accent_pen);
             icon_line(hdc, ox + 4, oy + 16, ox + 12, oy + 8);
@@ -121,15 +172,22 @@ pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color:
             DeleteObject(accent_pen);
         }
         Icon::Line => icon_line(hdc, ox + 3, oy + 17, ox + 17, oy + 3),
-        Icon::Rectangle => { Rectangle(hdc, ox + 3, oy + 5, ox + 17, oy + 15); }
-        Icon::Ellipse => { Ellipse(hdc, ox + 3, oy + 4, ox + 18, oy + 16); }
+        Icon::Rectangle => {
+            Rectangle(hdc, ox + 3, oy + 5, ox + 17, oy + 15);
+        }
+        Icon::Ellipse => {
+            Ellipse(hdc, ox + 3, oy + 4, ox + 18, oy + 16);
+        }
         Icon::Text => {
             icon_line(hdc, ox + 4, oy + 4, ox + 16, oy + 4);
             icon_line(hdc, ox + 10, oy + 4, ox + 10, oy + 17);
         }
         Icon::Marker => {
-            let (fill, ink) = if high_contrast_enabled() { (GetSysColor(13), GetSysColor(14)) }
-                else { (0x0000D6FF, 0x00000000) }; // yellow marker, black edge
+            let (fill, ink) = if high_contrast_enabled() {
+                (GetSysColor(13), GetSysColor(14))
+            } else {
+                (0x0000D6FF, 0x00000000)
+            }; // yellow marker, black edge
             let marker_pen = CreatePen(0, 2, ink);
             let previous = SelectObject(hdc, marker_pen);
             icon_polygon(hdc, &[p(3, 14), p(12, 4), p(17, 9), p(8, 18)], fill);
@@ -138,10 +196,16 @@ pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color:
             DeleteObject(marker_pen);
         }
         Icon::Pixelate => {
-            for y in 0..3 { for x in 0..3 {
-                let shade = if (x + y) % 2 == 0 { GetSysColor(18) } else { GetSysColor(15) };
-                icon_fill_rect(hdc, rect(2 + x * 5, 2 + y * 5, 7 + x * 5, 7 + y * 5), shade);
-            }}
+            for y in 0..3 {
+                for x in 0..3 {
+                    let shade = if (x + y) % 2 == 0 {
+                        GetSysColor(18)
+                    } else {
+                        GetSysColor(15)
+                    };
+                    icon_fill_rect(hdc, rect(2 + x * 5, 2 + y * 5, 7 + x * 5, 7 + y * 5), shade);
+                }
+            }
         }
         Icon::Step => {
             let hc = high_contrast_enabled();
@@ -172,7 +236,7 @@ pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color:
         Icon::SwatchRed => draw_swatch(hdc, bounds, 0x002828E6), // RGB 230, 40, 40
         Icon::SwatchBlack => draw_swatch(hdc, bounds, 0x00000000),
         Icon::SwatchYellow => draw_swatch(hdc, bounds, 0x0000D6FF), // RGB 255, 214, 0
-        Icon::SwatchBlue => draw_swatch(hdc, bounds, 0x00D77800), // RGB 0, 120, 215
+        Icon::SwatchBlue => draw_swatch(hdc, bounds, 0x00D77800),   // RGB 0, 120, 215
         Icon::LineWidth => {
             icon_line(hdc, ox + 3, oy + 5, ox + 17, oy + 5);
             icon_line(hdc, ox + 3, oy + 10, ox + 17, oy + 10);
@@ -208,12 +272,26 @@ pub(super) unsafe fn draw_icon(hdc: Hwnd, bounds: NativeRect, icon: Icon, color:
             let mirror = matches!(icon, Icon::Redo);
             let x = |value| ox + if mirror { 20 - value } else { value };
             let curve = [p(15, 15), p(17, 6), p(9, 5), p(5, 8)];
-            let curve: Vec<_> = curve.iter().map(|pt| NativePoint {
-                x: if mirror { ox + 20 - (pt.x - ox) } else { pt.x }, y: pt.y
-            }).collect();
+            let curve: Vec<_> = curve
+                .iter()
+                .map(|pt| NativePoint {
+                    x: if mirror { ox + 20 - (pt.x - ox) } else { pt.x },
+                    y: pt.y,
+                })
+                .collect();
             PolyBezier(hdc, curve.as_ptr(), curve.len() as u32);
-            icon_polygon(hdc, &[NativePoint { x: x(3), y: oy + 8 },
-                NativePoint { x: x(9), y: oy + 4 }, NativePoint { x: x(9), y: oy + 11 }], color);
+            icon_polygon(
+                hdc,
+                &[
+                    NativePoint { x: x(3), y: oy + 8 },
+                    NativePoint { x: x(9), y: oy + 4 },
+                    NativePoint {
+                        x: x(9),
+                        y: oy + 11,
+                    },
+                ],
+                color,
+            );
         }
     }
 

@@ -34,13 +34,21 @@ impl Default for DelayedCaptureState {
 }
 impl DelayedCaptureState {
     pub const fn new() -> Self {
-        Self { last_generation: 0, current: None }
+        Self {
+            last_generation: 0,
+            current: None,
+        }
     }
     pub fn begin(&mut self) -> Result<Ticket, BeginError> {
-        if self.current.is_some() { return Err(BeginError::Busy); }
+        if self.current.is_some() {
+            return Err(BeginError::Busy);
+        }
         // Tokens cross WPARAM unchanged on both 32- and 64-bit Windows.
         // Exhaustion disables new requests instead of reusing an old token.
-        let generation = self.last_generation.checked_add(1).ok_or(BeginError::Exhausted)?;
+        let generation = self
+            .last_generation
+            .checked_add(1)
+            .ok_or(BeginError::Exhausted)?;
         let ticket = Ticket(generation);
         self.last_generation = generation;
         self.current = Some((ticket, Phase::Waiting));
@@ -53,17 +61,23 @@ impl DelayedCaptureState {
         self.current == Some((ticket, Phase::Waiting))
     }
     pub fn try_start(&mut self, ticket: Ticket) -> bool {
-        if !self.is_waiting(ticket) { return false; }
+        if !self.is_waiting(ticket) {
+            return false;
+        }
         self.current = Some((ticket, Phase::Running));
         true
     }
     pub fn finish(&mut self, ticket: Ticket) -> bool {
-        if self.current != Some((ticket, Phase::Running)) { return false; }
+        if self.current != Some((ticket, Phase::Running)) {
+            return false;
+        }
         self.current = None;
         true
     }
     pub fn cancel_waiting(&mut self, ticket: Ticket) -> bool {
-        if !self.is_waiting(ticket) { return false; }
+        if !self.is_waiting(ticket) {
+            return false;
+        }
         self.current = None;
         true
     }
@@ -137,7 +151,10 @@ mod tests {
 
     #[test]
     fn token_exhaustion_never_wraps_or_reuses_zero() {
-        let mut state = DelayedCaptureState { last_generation: usize::MAX - 1, current: None };
+        let mut state = DelayedCaptureState {
+            last_generation: usize::MAX - 1,
+            current: None,
+        };
         let last = state.begin().unwrap();
         assert_eq!(last.to_wire(), usize::MAX);
         assert!(state.cancel_waiting(last));

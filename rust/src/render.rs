@@ -492,7 +492,6 @@ unsafe fn draw_arrow(dc: Hdc, shape: &Shape, start: &Point, end: &Point) -> bool
     let pts = [wp(*end), wp(left), wp(right)];
     let polygon_ok = Polygon(dc, pts.as_ptr(), 3) != 0;
     shaft_ok && polygon_ok
-
 }
 
 // SAFETY CONTRACT:
@@ -567,7 +566,6 @@ unsafe fn draw_step(dc: Hdc, shape: &Shape, center: &Point, number: &i32) -> boo
         u.as_ptr(),
         u.len() as i32,
     ) != 0
-
 }
 
 /// Compatibility helper for a bitmap passed as a GDI device context.

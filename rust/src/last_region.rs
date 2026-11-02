@@ -83,26 +83,40 @@ mod tests {
     use super::{fully_covered_by_monitors, Rect};
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect { left, top, right, bottom }
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     #[test]
     fn accepts_negative_origin_and_adjacent_mixed_size_monitors() {
         let monitors = [rect(-1920, 0, 0, 1080), rect(0, -200, 2560, 1240)];
-        assert!(fully_covered_by_monitors(rect(-100, 50, 1200, 800), &monitors));
+        assert!(fully_covered_by_monitors(
+            rect(-100, 50, 1200, 800),
+            &monitors
+        ));
     }
 
     #[test]
     fn rejects_selection_outside_current_monitor_bounds() {
         let monitors = [rect(0, 0, 1920, 1080)];
-        assert!(!fully_covered_by_monitors(rect(1800, 900, 2000, 1100), &monitors));
+        assert!(!fully_covered_by_monitors(
+            rect(1800, 900, 2000, 1100),
+            &monitors
+        ));
         assert!(!fully_covered_by_monitors(rect(-1, 0, 10, 10), &monitors));
     }
 
     #[test]
     fn rejects_gaps_between_monitors_even_inside_virtual_bounds() {
         let monitors = [rect(-1000, 0, 0, 800), rect(100, 0, 1100, 800)];
-        assert!(!fully_covered_by_monitors(rect(-10, 100, 110, 200), &monitors));
+        assert!(!fully_covered_by_monitors(
+            rect(-10, 100, 110, 200),
+            &monitors
+        ));
     }
 
     #[test]
@@ -113,7 +127,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_selection_and_empty_monitor_set() {
-        assert!(!fully_covered_by_monitors(rect(10, 10, 10, 20), &[rect(0, 0, 30, 30)]));
+        assert!(!fully_covered_by_monitors(
+            rect(10, 10, 10, 20),
+            &[rect(0, 0, 30, 30)]
+        ));
         assert!(!fully_covered_by_monitors(rect(1, 1, 2, 2), &[]));
         assert_eq!(Rect::from_origin_size(1, 1, 0, 2), None);
     }
