@@ -1,0 +1,28 @@
+name: Rust checks
+on:
+  push:
+    branches: [main, 'rust/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test image and scroll logic
+        run: cargo test --locked --lib
+      - name: Test Windows-specific modules
+        if: runner.os == 'Windows'
+        run: cargo test --locked --all-targets
+      - name: Build Windows application
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release

@@ -1,0 +1,387 @@
+//! Non-destructive image operations over tightly packed BGRA [`Image`] pixels.
+//!
+//! Cropping validates a non-empty rectangle wholly inside the source and copies
+//! bytes exactly, including alpha. Framing returns a new image, preserving the
+//! original pixels exactly. An optional deterministic soft shadow is rendered
+//! into transparent padding beneath the frame; it uses separable box coverage,
+//! not a photo-realistic Gaussian blur.
+
+use crate::{shapes::Color, stitch::Image};
+use std::fmt;
+
+const MAX_SHADOW_RADIUS: usize = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CropRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowOptions {
+    /// Offset of the shadow from the framed image, in pixels.
+    pub offset_x: i32,
+    pub offset_y: i32,
+    /// Radius of the separable box blur; zero produces a hard-edged shadow.
+    pub blur_radius: usize,
+    pub opacity: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameOptions {
+    pub width: usize,
+    pub color: Color,
+    pub shadow: Option<ShadowOptions>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageEditError {
+    InvalidCrop,
+    InvalidShadow,
+    ImageTooLarge,
+}
+impl fmt::Display for ImageEditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidCrop => {
+                f.write_str("Der Ausschnitt liegt außerhalb des Bildes oder ist leer")
+            }
+            Self::InvalidShadow => f.write_str("Ungültige Schlagschatten-Einstellungen"),
+            Self::ImageTooLarge => f.write_str("Das bearbeitete Bild ist zu groß"),
+        }
+    }
+}
+impl std::error::Error for ImageEditError {}
+
+/// Return an exact pixel copy of a checked image-space crop.
+pub fn crop(source: &Image, rect: CropRect) -> Result<Image, ImageEditError> {
+    validate_source(source)?;
+    let right = rect
+        .x
+        .checked_add(rect.width)
+        .ok_or(ImageEditError::InvalidCrop)?;
+    let bottom = rect
+        .y
+        .checked_add(rect.height)
+        .ok_or(ImageEditError::InvalidCrop)?;
+    if rect.width == 0 || rect.height == 0 || right > source.width || bottom > source.height {
+        return Err(ImageEditError::InvalidCrop);
+    }
+    let len = rect
+        .width
+        .checked_mul(rect.height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let mut pixels = Vec::with_capacity(len);
+    let source_stride = source
+        .width
+        .checked_mul(4)
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let row_bytes = rect
+        .width
+        .checked_mul(4)
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    for y in rect.y..bottom {
+        let begin = y
+            .checked_mul(source_stride)
+            .and_then(|n| n.checked_add(rect.x * 4))
+            .ok_or(ImageEditError::InvalidCrop)?;
+        pixels.extend_from_slice(&source.pixels[begin..begin + row_bytes]);
+    }
+    Image::new(rect.width, rect.height, pixels).map_err(|_| ImageEditError::ImageTooLarge)
+}
+
+/// Add a colored frame and optional soft shadow without modifying `source`.
+/// `color` uses the crate's RGBA order; output storage is BGRA.
+pub fn add_frame(source: &Image, options: FrameOptions) -> Result<Image, ImageEditError> {
+    validate_source(source)?;
+    let shadow = options.shadow;
+    if shadow.is_some_and(|s| s.blur_radius > MAX_SHADOW_RADIUS) {
+        return Err(ImageEditError::InvalidShadow);
+    }
+    let radius = shadow.map_or(0, |s| s.blur_radius);
+    let (left_shadow, top_shadow, right_shadow, bottom_shadow) = if let Some(s) = shadow {
+        let left = radius
+            .checked_add(if s.offset_x < 0 {
+                s.offset_x.unsigned_abs() as usize
+            } else {
+                0
+            })
+            .ok_or(ImageEditError::ImageTooLarge)?;
+        let top = radius
+            .checked_add(if s.offset_y < 0 {
+                s.offset_y.unsigned_abs() as usize
+            } else {
+                0
+            })
+            .ok_or(ImageEditError::ImageTooLarge)?;
+        let right = radius
+            .checked_add(s.offset_x.max(0) as usize)
+            .ok_or(ImageEditError::ImageTooLarge)?;
+        let bottom = radius
+            .checked_add(s.offset_y.max(0) as usize)
+            .ok_or(ImageEditError::ImageTooLarge)?;
+        (left, top, right, bottom)
+    } else {
+        (0, 0, 0, 0)
+    };
+    let card_width = source
+        .width
+        .checked_add(
+            options
+                .width
+                .checked_mul(2)
+                .ok_or(ImageEditError::ImageTooLarge)?,
+        )
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let card_height = source
+        .height
+        .checked_add(
+            options
+                .width
+                .checked_mul(2)
+                .ok_or(ImageEditError::ImageTooLarge)?,
+        )
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let content_x = left_shadow
+        .checked_add(options.width)
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let content_y = top_shadow
+        .checked_add(options.width)
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let out_width = left_shadow
+        .checked_add(card_width)
+        .and_then(|n| n.checked_add(right_shadow))
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let out_height = top_shadow
+        .checked_add(card_height)
+        .and_then(|n| n.checked_add(bottom_shadow))
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    let byte_len = out_width
+        .checked_mul(out_height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    if byte_len > 512 * 1024 * 1024 {
+        return Err(ImageEditError::ImageTooLarge);
+    }
+
+    let mut pixels = vec![0u8; byte_len];
+    if let Some(shadow) = shadow {
+        if shadow.opacity > 0 {
+            let sx = content_x as i64 + shadow.offset_x as i64;
+            let sy = content_y as i64 + shadow.offset_y as i64;
+            let r = radius as i64;
+            let kernel = (2 * r + 1) as f64;
+            for y in 0..out_height {
+                let y = y as i64;
+                let y_overlap =
+                    interval_overlap(y - r, y + r, sy, sy + card_height as i64 - 1) as f64 / kernel;
+                if y_overlap == 0.0 {
+                    continue;
+                }
+                for x in 0..out_width {
+                    let x = x as i64;
+                    let x_overlap = interval_overlap(x - r, x + r, sx, sx + card_width as i64 - 1)
+                        as f64
+                        / kernel;
+                    let alpha = (shadow.opacity as f64 * x_overlap * y_overlap).round() as u8;
+                    if alpha > 0 {
+                        let offset = (y as usize * out_width + x as usize) * 4;
+                        pixels[offset + 3] = alpha;
+                    }
+                }
+            }
+        }
+    }
+
+    // The frame is opaque/colored according to the requested RGBA alpha. The
+    // original image is copied byte-for-byte on top, preserving its alpha.
+    let frame_bgra = [
+        options.color.b,
+        options.color.g,
+        options.color.r,
+        options.color.a,
+    ];
+    for y in top_shadow..top_shadow + card_height {
+        for x in left_shadow..left_shadow + card_width {
+            let offset = (y * out_width + x) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&frame_bgra);
+        }
+    }
+    let source_stride = source.width * 4;
+    let dest_stride = out_width * 4;
+    for y in 0..source.height {
+        let from = y * source_stride;
+        let to = (content_y + y) * dest_stride + content_x * 4;
+        pixels[to..to + source_stride].copy_from_slice(&source.pixels[from..from + source_stride]);
+    }
+    Image::new(out_width, out_height, pixels).map_err(|_| ImageEditError::ImageTooLarge)
+}
+
+fn interval_overlap(a0: i64, a1: i64, b0: i64, b1: i64) -> i64 {
+    (a1.min(b1) - a0.max(b0) + 1).max(0)
+}
+
+fn validate_source(source: &Image) -> Result<(), ImageEditError> {
+    let expected = source
+        .width
+        .checked_mul(source.height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(ImageEditError::ImageTooLarge)?;
+    if source.width == 0
+        || source.height == 0
+        || expected != source.pixels.len()
+        || expected > 512 * 1024 * 1024
+    {
+        return Err(ImageEditError::ImageTooLarge);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba_pixel(r: u8, g: u8, b: u8, a: u8) -> [u8; 4] {
+        [b, g, r, a]
+    }
+
+    #[test]
+    fn crop_copies_pixels_and_alpha_exactly() {
+        let source = Image::new(
+            3,
+            2,
+            vec![
+                1, 2, 3, 0, 4, 5, 6, 17, 7, 8, 9, 255, 10, 11, 12, 1, 13, 14, 15, 128, 16, 17, 18,
+                255,
+            ],
+        )
+        .unwrap();
+        let result = crop(
+            &source,
+            CropRect {
+                x: 1,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!((result.width, result.height), (2, 2));
+        assert_eq!(
+            result.pixels,
+            vec![4, 5, 6, 17, 7, 8, 9, 255, 13, 14, 15, 128, 16, 17, 18, 255]
+        );
+    }
+
+    #[test]
+    fn crop_rejects_empty_overflow_and_outside_rectangles() {
+        let source = Image::new(2, 2, vec![0; 16]).unwrap();
+        for rect in [
+            CropRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 1,
+            },
+            CropRect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1,
+            },
+            CropRect {
+                x: usize::MAX,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        ] {
+            assert_eq!(crop(&source, rect), Err(ImageEditError::InvalidCrop));
+        }
+    }
+
+    #[test]
+    fn frame_keeps_source_bytes_and_adds_bgra_border_around_transparent_edges() {
+        let source = Image::new(
+            2,
+            2,
+            vec![0, 0, 0, 0, 10, 20, 30, 255, 40, 50, 60, 77, 70, 80, 90, 255],
+        )
+        .unwrap();
+        let result = add_frame(
+            &source,
+            FrameOptions {
+                width: 1,
+                color: Color::rgba(200, 100, 50, 255),
+                shadow: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((result.width, result.height), (4, 4));
+        assert_eq!(&result.pixels[0..4], &rgba_pixel(200, 100, 50, 255));
+        assert_eq!(
+            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 8],
+            &source.pixels[..8]
+        );
+        assert_eq!(
+            &result.pixels[(2 * 4 + 1) * 4..(2 * 4 + 1) * 4 + 8],
+            &source.pixels[8..]
+        );
+        assert_eq!(
+            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 4],
+            &[0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn shadow_adds_transparent_padding_and_has_bounded_alpha() {
+        let source = Image::new(1, 1, vec![20, 30, 40, 255]).unwrap();
+        let result = add_frame(
+            &source,
+            FrameOptions {
+                width: 0,
+                color: Color::RED,
+                shadow: Some(ShadowOptions {
+                    offset_x: 1,
+                    offset_y: 0,
+                    blur_radius: 1,
+                    opacity: 128,
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!((result.width, result.height), (4, 3));
+        assert!(result
+            .pixels
+            .chunks_exact(4)
+            .any(|p| p[3] > 0 && p[3] < 128));
+        assert_eq!(
+            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 4],
+            &source.pixels[..]
+        );
+    }
+
+    #[test]
+    fn rejects_unreasonable_shadow_blur() {
+        let source = Image::new(1, 1, vec![0; 4]).unwrap();
+        assert_eq!(
+            add_frame(
+                &source,
+                FrameOptions {
+                    width: 0,
+                    color: Color::RED,
+                    shadow: Some(ShadowOptions {
+                        offset_x: 0,
+                        offset_y: 0,
+                        blur_radius: MAX_SHADOW_RADIUS + 1,
+                        opacity: 255
+                    })
+                }
+            ),
+            Err(ImageEditError::InvalidShadow)
+        );
+    }
+}

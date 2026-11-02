@@ -1,0 +1,1328 @@
+#![windows_subsystem = "windows"]
+use std::{
+    ffi::c_void,
+    fs::OpenOptions,
+    io::Write,
+    mem::{size_of, zeroed},
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    ptr::null_mut,
+    time::{SystemTime, UNIX_EPOCH},
+};
+mod clipboard;
+mod element_picker;
+mod file_dialog;
+mod scroll_windows;
+mod selection;
+mod text_dialog;
+mod toolbar;
+mod uia_picker;
+
+use shotkit_rust_prototype::{
+    editor::EditorController,
+    image_io, render,
+    scroll_capture::{self, Direction, Outcome, ScrollIo},
+    shapes::{Point as ShapePoint, Tool},
+    stitch::Image,
+    view,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+type H = *mut c_void;
+type W = usize;
+type L = isize;
+#[repr(C)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+#[repr(C)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+#[repr(C)]
+struct Msg {
+    hwnd: H,
+    msg: u32,
+    wparam: W,
+    lparam: L,
+    time: u32,
+    pt: Point,
+    private: u32,
+}
+#[repr(C)]
+struct WndClass {
+    style: u32,
+    proc: Option<unsafe extern "system" fn(H, u32, W, L) -> L>,
+    cls_extra: i32,
+    wnd_extra: i32,
+    instance: H,
+    icon: H,
+    cursor: H,
+    background: H,
+    menu: *const u16,
+    class: *const u16,
+}
+#[repr(C)]
+struct Paint {
+    dc: H,
+    erase: i32,
+    rect: Rect,
+    restore: i32,
+    inc: i32,
+    reserved: [u8; 32],
+}
+#[repr(C)]
+struct Notify {
+    size: u32,
+    hwnd: H,
+    id: u32,
+    flags: u32,
+    callback: u32,
+    icon: H,
+    tip: [u16; 128],
+    state: u32,
+    state_mask: u32,
+    info: [u16; 256],
+    timeout: u32,
+    info_title: [u16; 64],
+    info_flags: u32,
+    guid: [u8; 16],
+    balloon: H,
+}
+#[repr(C)]
+struct BmiHeader {
+    size: u32,
+    width: i32,
+    height: i32,
+    planes: u16,
+    bits: u16,
+    compression: u32,
+    image_size: u32,
+    xppm: i32,
+    yppm: i32,
+    used: u32,
+    important: u32,
+}
+#[repr(C)]
+struct Bmi {
+    header: BmiHeader,
+    colors: [u32; 1],
+}
+#[link(name = "user32")]
+extern "system" {
+    fn RegisterClassW(w: *const WndClass) -> u16;
+    fn CreateWindowExW(
+        ex: u32,
+        c: *const u16,
+        n: *const u16,
+        s: u32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        parent: H,
+        menu: H,
+        inst: H,
+        p: H,
+    ) -> H;
+    fn DefWindowProcW(h: H, m: u32, w: W, l: L) -> L;
+    fn ShowWindow(h: H, n: i32) -> i32;
+    fn GetMessageW(m: *mut Msg, h: H, min: u32, max: u32) -> i32;
+    fn TranslateMessage(m: *const Msg) -> i32;
+    fn DispatchMessageW(m: *const Msg) -> L;
+    fn PostQuitMessage(code: i32);
+    fn DestroyWindow(h: H) -> i32;
+    fn LoadIconW(h: H, n: *const u16) -> H;
+    fn LoadCursorW(h: H, n: *const u16) -> H;
+    fn MessageBoxW(h: H, t: *const u16, c: *const u16, k: u32) -> i32;
+    fn RegisterHotKey(h: H, id: i32, mods: u32, key: u32) -> i32;
+    fn UnregisterHotKey(h: H, id: i32) -> i32;
+    fn GetSystemMetrics(i: i32) -> i32;
+    fn GetDC(h: H) -> H;
+    fn ReleaseDC(h: H, dc: H) -> i32;
+    fn BeginPaint(h: H, p: *mut Paint) -> H;
+    fn EndPaint(h: H, p: *const Paint) -> i32;
+    fn GetClientRect(h: H, r: *mut Rect) -> i32;
+    fn InvalidateRect(h: H, r: *const Rect, erase: i32) -> i32;
+    fn SetWindowTextW(h: H, t: *const u16) -> i32;
+    fn SetCapture(h: H) -> H;
+    fn ReleaseCapture() -> i32;
+    fn SetForegroundWindow(h: H) -> i32;
+    fn SetFocus(h: H) -> H;
+    fn GetForegroundWindow() -> H;
+    fn GetKeyState(key: i32) -> i16;
+    fn GetCursorPos(point: *mut Point) -> i32;
+    fn CreatePopupMenu() -> H;
+    fn AppendMenuW(menu: H, flags: u32, id: usize, text: *const u16) -> i32;
+    fn TrackPopupMenu(
+        menu: H,
+        flags: u32,
+        x: i32,
+        y: i32,
+        reserved: i32,
+        owner: H,
+        rect: *const Rect,
+    ) -> u32;
+    fn DestroyMenu(menu: H) -> i32;
+    fn IsWindowVisible(h: H) -> i32;
+    fn SetProcessDpiAwarenessContext(context: H) -> i32;
+    fn WindowFromPoint(p: Point) -> H;
+    fn GetAncestor(h: H, flags: u32) -> H;
+    fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
+}
+#[link(name = "gdi32")]
+extern "system" {
+    fn CreateDIBSection(
+        dc: H,
+        info: *const Bmi,
+        usage: u32,
+        bits: *mut *mut c_void,
+        section: H,
+        offset: u32,
+    ) -> H;
+    fn CreateCompatibleDC(dc: H) -> H;
+    fn CreateCompatibleBitmap(dc: H, w: i32, h: i32) -> H;
+    fn SelectObject(dc: H, obj: H) -> H;
+    fn DeleteDC(dc: H) -> i32;
+    fn DeleteObject(obj: H) -> i32;
+    fn BitBlt(d: H, x: i32, y: i32, w: i32, h: i32, s: H, sx: i32, sy: i32, rop: u32) -> i32;
+    fn StretchBlt(
+        d: H,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        s: H,
+        sx: i32,
+        sy: i32,
+        sw: i32,
+        sh: i32,
+        rop: u32,
+    ) -> i32;
+    fn CreatePen(style: i32, width: i32, color: u32) -> H;
+    fn Rectangle(dc: H, l: i32, t: i32, r: i32, b: i32) -> i32;
+    fn GetStockObject(index: i32) -> H;
+    fn GetDIBits(
+        dc: H,
+        bmp: H,
+        start: u32,
+        lines: u32,
+        bits: *mut c_void,
+        info: *mut c_void,
+        usage: u32,
+    ) -> i32;
+}
+#[link(name = "shell32")]
+extern "system" {
+    fn Shell_NotifyIconW(msg: u32, data: *const Notify) -> i32;
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> H;
+    fn MoveFileExW(old: *const u16, new: *const u16, flags: u32) -> i32;
+}
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+const COPY: u32 = 0x00cc0020;
+const TRAY: u32 = 0x8001;
+const SCROLL_DONE: u32 = 0x8002;
+static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
+static RESTORE_EDITOR: AtomicBool = AtomicBool::new(false);
+struct BusyGuard(bool);
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            SCROLL_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+}
+static mut TOOLBAR: Option<toolbar::Toolbar> = None;
+unsafe fn toolbar_height() -> i32 {
+    (&*std::ptr::addr_of!(TOOLBAR))
+        .as_ref()
+        .map_or(0, |b| b.height())
+}
+static mut EDITOR: Option<EditorController> = None;
+unsafe fn editor() -> &'static mut EditorController {
+    let state = &mut *std::ptr::addr_of_mut!(EDITOR);
+    state.get_or_insert_with(EditorController::new)
+}
+static mut BITMAP: H = null_mut();
+static mut CURRENT_PATH: Option<PathBuf> = None;
+static mut DIRTY: bool = false;
+static mut ZOOM: f64 = 1.0;
+static mut PAN_X: i32 = 0;
+static mut PAN_Y: i32 = 0;
+static mut SOURCE_PIXELS: Option<Vec<u8>> = None;
+static mut BW: i32 = 0;
+static mut BH: i32 = 0;
+static mut DRAW: bool = false;
+unsafe fn capture(h: H) {
+    if SCROLL_BUSY.load(Ordering::SeqCst) {
+        return;
+    }
+    if !confirm_replace(h) {
+        return;
+    }
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let dc = GetDC(null_mut());
+    let mem = CreateCompatibleDC(dc);
+    let w = GetSystemMetrics(0);
+    let ht = GetSystemMetrics(1);
+    let bmp = CreateCompatibleBitmap(dc, w, ht);
+    if dc.is_null() || mem.is_null() || bmp.is_null() {
+        if !bmp.is_null() {
+            DeleteObject(bmp);
+        }
+        if !mem.is_null() {
+            DeleteDC(mem);
+        }
+        if !dc.is_null() {
+            ReleaseDC(null_mut(), dc);
+        }
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Bildschirmaufnahme fehlgeschlagen.").as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x10,
+        );
+        return;
+    }
+    let old = SelectObject(mem, bmp);
+    let ok = BitBlt(mem, 0, 0, w, ht, dc, 0, 0, COPY | 0x40000000);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    ReleaseDC(null_mut(), dc);
+    if ok == 0 {
+        DeleteObject(bmp);
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Bildschirmaufnahme fehlgeschlagen.").as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x10,
+        );
+        return;
+    }
+    if !BITMAP.is_null() {
+        DeleteObject(BITMAP);
+    }
+    BITMAP = bmp;
+    *std::ptr::addr_of_mut!(CURRENT_PATH) = None;
+    DIRTY = true;
+    *std::ptr::addr_of_mut!(SOURCE_PIXELS) = None;
+    *std::ptr::addr_of_mut!(EDITOR) = Some(EditorController::new());
+    ZOOM = 1.0;
+    PAN_X = 0;
+    PAN_Y = 0;
+    BW = w;
+    BH = ht;
+    SetWindowTextW(
+        h,
+        wide("ShotKit Rust – mit Maus zeichnen · S = BMP speichern · F9 = neue Aufnahme").as_ptr(),
+    );
+    ShowWindow(h, 5);
+    SetForegroundWindow(h);
+    InvalidateRect(h, std::ptr::null(), 1);
+}
+unsafe fn image_view(h: H) -> (i32, i32, i32, i32) {
+    let mut r: Rect = zeroed();
+    GetClientRect(h, &mut r);
+    let top = toolbar_height();
+    let v = view::layout(
+        (BW.max(1) as u32, BH.max(1) as u32),
+        (0, top, r.right - r.left, r.bottom - r.top - top),
+        ZOOM,
+        (PAN_X, PAN_Y),
+    );
+    (v.x, v.y, v.width, v.height)
+}
+unsafe fn point(h: H, l: L) -> (i32, i32) {
+    let (x, y, w, height) = image_view(h);
+    let px = (l as u32 as u16 as i16) as i32;
+    let py = ((l as u32 >> 16) as u16 as i16) as i32;
+    view::to_image(
+        view::View {
+            x,
+            y,
+            width: w,
+            height,
+        },
+        (BW.max(1) as u32, BH.max(1) as u32),
+        (px, py),
+    )
+}
+// Build a temporary composited bitmap. The base image remains unchanged so
+// annotation objects can be selected and undone. Caller owns the returned HBITMAP.
+unsafe fn composited_bitmap(preview: bool) -> Result<H, String> {
+    if BITMAP.is_null() {
+        return Err("Kein Bild geöffnet.".into());
+    }
+    let screen = GetDC(null_mut());
+    if screen.is_null() {
+        return Err("Bildschirm konnte nicht geöffnet werden.".into());
+    }
+    let base_dc = CreateCompatibleDC(screen);
+    let out_dc = CreateCompatibleDC(screen);
+    let output = CreateCompatibleBitmap(screen, BW, BH);
+    if base_dc.is_null() || out_dc.is_null() || output.is_null() {
+        if !output.is_null() {
+            DeleteObject(output);
+        }
+        if !base_dc.is_null() {
+            DeleteDC(base_dc);
+        }
+        if !out_dc.is_null() {
+            DeleteDC(out_dc);
+        }
+        ReleaseDC(null_mut(), screen);
+        return Err("Bild konnte nicht zusammengesetzt werden.".into());
+    }
+    let old_base = SelectObject(base_dc, BITMAP);
+    let old_out = SelectObject(out_dc, output);
+    if old_base.is_null() || old_out.is_null() || old_base as isize == -1 || old_out as isize == -1
+    {
+        if !old_base.is_null() && old_base as isize != -1 {
+            SelectObject(base_dc, old_base);
+        }
+        if !old_out.is_null() && old_out as isize != -1 {
+            SelectObject(out_dc, old_out);
+        }
+        DeleteObject(output);
+        DeleteDC(base_dc);
+        DeleteDC(out_dc);
+        ReleaseDC(null_mut(), screen);
+        return Err("Bild konnte nicht ausgewählt werden.".into());
+    }
+    let mut success = BitBlt(out_dc, 0, 0, BW, BH, base_dc, 0, 0, COPY) != 0;
+    let state = editor();
+    let draft = if preview { state.preview() } else { None };
+    for (i, shape) in state.shapes().iter().enumerate() {
+        if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i) {
+            continue;
+        }
+        success &= render::draw_shape(out_dc, shape, Some(base_dc));
+    }
+    if let Some(shape) = draft {
+        success &= render::draw_shape(out_dc, &shape, Some(base_dc));
+    }
+    if preview && state.tool() == Tool::Select {
+        if let Some(shape) = state.selection() {
+            let b = shape.bounds();
+            let pen = CreatePen(0, 1, 0x00d77800);
+            let old_pen = SelectObject(out_dc, pen);
+            let old_brush = SelectObject(out_dc, GetStockObject(5));
+            Rectangle(
+                out_dc,
+                b.x as i32 - 3,
+                b.y as i32 - 3,
+                (b.x + b.width) as i32 + 3,
+                (b.y + b.height) as i32 + 3,
+            );
+            for p in shape.handles() {
+                Rectangle(
+                    out_dc,
+                    p.x as i32 - 4,
+                    p.y as i32 - 4,
+                    p.x as i32 + 5,
+                    p.y as i32 + 5,
+                );
+            }
+            SelectObject(out_dc, old_brush);
+            SelectObject(out_dc, old_pen);
+            DeleteObject(pen);
+        }
+    }
+    SelectObject(out_dc, old_out);
+    SelectObject(base_dc, old_base);
+    DeleteDC(out_dc);
+    DeleteDC(base_dc);
+    ReleaseDC(null_mut(), screen);
+    if !success {
+        DeleteObject(output);
+        return Err("Bild konnte nicht vollständig gezeichnet werden.".into());
+    }
+    Ok(output)
+}
+
+unsafe fn bitmap_image() -> Result<Image, String> {
+    if BITMAP.is_null() || BW <= 0 || BH <= 0 {
+        return Err("Kein Bild geöffnet.".into());
+    }
+    let size = (BW as usize)
+        .checked_mul(BH as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("Bildgröße zu groß.")?;
+    if size > 512 * 1024 * 1024 {
+        return Err("Bildgröße zu groß.".into());
+    }
+    let mut pixels = vec![0u8; size];
+    let mut info = Bmi {
+        header: BmiHeader {
+            size: 40,
+            width: BW,
+            height: -BH,
+            planes: 1,
+            bits: 32,
+            compression: 0,
+            image_size: size as u32,
+            xppm: 0,
+            yppm: 0,
+            used: 0,
+            important: 0,
+        },
+        colors: [0],
+    };
+    let composed = composited_bitmap(false)?;
+    let dc = GetDC(null_mut());
+    if dc.is_null() {
+        DeleteObject(composed);
+        return Err("Bildschirm konnte nicht geöffnet werden.".into());
+    }
+    let rows = GetDIBits(
+        dc,
+        composed,
+        0,
+        BH as u32,
+        pixels.as_mut_ptr().cast(),
+        &mut info as *mut _ as *mut c_void,
+        0,
+    );
+    ReleaseDC(null_mut(), dc);
+    DeleteObject(composed);
+    if rows != BH {
+        return Err("Bild konnte nicht vollständig gelesen werden.".into());
+    }
+    // GDI does not preserve the alpha channel while drawing. Restore alpha from
+    // unchanged source pixels; newly drawn pixels are treated as opaque.
+    let source = &*std::ptr::addr_of!(SOURCE_PIXELS);
+    if DIRTY
+        && source
+            .as_ref()
+            .is_some_and(|p| p.chunks_exact(4).any(|px| px[3] != 255))
+    {
+        return Err("Das Speichern bearbeiteter transparenter Bilder ist in diesem Entwicklungsstand noch nicht zuverlässig möglich.".into());
+    }
+    if let Some(original) = source.as_ref().filter(|p| p.len() == pixels.len()) {
+        for (pixel, base) in pixels.chunks_exact_mut(4).zip(original.chunks_exact(4)) {
+            pixel[3] = if pixel[..3] == base[..3] {
+                base[3]
+            } else {
+                255
+            };
+        }
+    } else {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+    }
+    Image::new(BW as usize, BH as usize, pixels).map_err(str::to_owned)
+}
+fn path_wide(path: &Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let dir = path.parent().ok_or("Ungültiger Speicherordner.")?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = dir.join(format!(".shotkit-{}-{stamp}.tmp", std::process::id()));
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        drop(file);
+        if unsafe {
+            MoveFileExW(
+                path_wide(&temp).as_ptr(),
+                path_wide(path).as_ptr(),
+                0x1 | 0x8,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+unsafe fn save(h: H, save_as: bool) -> bool {
+    if BITMAP.is_null() {
+        return false;
+    }
+    let previous = (&*std::ptr::addr_of!(CURRENT_PATH)).clone();
+    let path = if save_as || previous.is_none() {
+        match file_dialog::save(h, previous.as_deref()) {
+            Ok(Some(p)) => p,
+            Ok(None) => return false,
+            Err(e) => {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
+                return false;
+            }
+        }
+    } else {
+        previous.unwrap()
+    };
+    let result = (|| -> Result<(), String> {
+        let format = image_io::format_from_path(&path)?;
+        let image = bitmap_image()?;
+        let bytes = image_io::encode(&image, format)?;
+        write_atomic(&path, &bytes)
+    })();
+    match result {
+        Ok(()) => {
+            *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
+            DIRTY = false;
+            true
+        }
+        Err(e) => {
+            MessageBoxW(
+                h,
+                wide(&format!("Speichern fehlgeschlagen:\n{e}")).as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
+            false
+        }
+    }
+}
+unsafe fn confirm_replace(h: H) -> bool {
+    if !DIRTY || BITMAP.is_null() {
+        return true;
+    }
+    match MessageBoxW(
+        h,
+        wide("Das Bild enthält ungespeicherte Änderungen. Jetzt speichern?").as_ptr(),
+        wide("ShotKit Rust").as_ptr(),
+        0x23,
+    ) {
+        6 => save(h, false),
+        7 => true,
+        _ => false,
+    }
+}
+unsafe fn open_image(h: H) {
+    if !confirm_replace(h) {
+        return;
+    }
+    let path = match file_dialog::open(h) {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(e) => {
+            MessageBoxW(h, wide(&e).as_ptr(), wide("Öffnen-Dialog").as_ptr(), 0x10);
+            return;
+        }
+    };
+    let result = (|| -> Result<Image, String> {
+        let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.len() > 512 * 1024 * 1024 {
+            return Err("Die Bilddatei ist zu groß.".into());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        image_io::decode(&bytes)
+    })();
+    match result {
+        Ok(image) => match display_image(h, image) {
+            Ok(()) => {
+                *std::ptr::addr_of_mut!(CURRENT_PATH) = Some(path);
+                DIRTY = false;
+            }
+            Err(e) => {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
+            }
+        },
+        Err(e) => {
+            MessageBoxW(h, wide(&e).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
+        }
+    }
+}
+unsafe fn display_image(h: H, image: Image) -> Result<(), String> {
+    let width = i32::try_from(image.width).map_err(|_| "Bild zu breit".to_owned())?;
+    let height = i32::try_from(image.height).map_err(|_| "Bild zu hoch".to_owned())?;
+    let info = Bmi {
+        header: BmiHeader {
+            size: 40,
+            width,
+            height: -height,
+            planes: 1,
+            bits: 32,
+            compression: 0,
+            image_size: image.pixels.len() as u32,
+            xppm: 0,
+            yppm: 0,
+            used: 0,
+            important: 0,
+        },
+        colors: [0],
+    };
+    let dc = GetDC(null_mut());
+    if dc.is_null() {
+        return Err("Bildschirm konnte nicht geöffnet werden.".into());
+    }
+    let mut bits: *mut c_void = null_mut();
+    let bmp = CreateDIBSection(dc, &info, 0, &mut bits, null_mut(), 0);
+    ReleaseDC(null_mut(), dc);
+    if bmp.is_null() || bits.is_null() {
+        if !bmp.is_null() {
+            DeleteObject(bmp);
+        }
+        return Err("Ausgabebild konnte nicht angelegt werden.".into());
+    }
+    std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), bits.cast::<u8>(), image.pixels.len());
+    *std::ptr::addr_of_mut!(SOURCE_PIXELS) = Some(image.pixels);
+    *std::ptr::addr_of_mut!(EDITOR) = Some(EditorController::new());
+    ZOOM = 1.0;
+    PAN_X = 0;
+    PAN_Y = 0;
+    if !BITMAP.is_null() {
+        DeleteObject(BITMAP);
+    }
+    BITMAP = bmp;
+    *std::ptr::addr_of_mut!(CURRENT_PATH) = None;
+    DIRTY = true;
+    BW = width;
+    BH = height;
+    SetWindowTextW(
+        h,
+        wide("ShotKit Rust – mit Maus zeichnen · S = BMP speichern · F10 = Scroll-Aufnahme")
+            .as_ptr(),
+    );
+    ShowWindow(h, 5);
+    SetForegroundWindow(h);
+    InvalidateRect(h, std::ptr::null(), 1);
+    Ok(())
+}
+
+unsafe fn capture_region(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let _busy = BusyGuard(true);
+    if !confirm_replace(h) {
+        return;
+    }
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    let Some((x, y, w, height)) = selection::select() else {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let image =
+        scroll_windows::WindowsScrollIo::new(x, y, w, height, 0).and_then(|mut io| io.capture());
+    match image.and_then(|image| display_image(h, image)) {
+        Ok(()) => {}
+        Err(e) => {
+            if was_visible {
+                ShowWindow(h, 5);
+            }
+            MessageBoxW(
+                h,
+                wide(&e).as_ptr(),
+                wide("Bereichsaufnahme").as_ptr(),
+                0x10,
+            );
+        }
+    }
+}
+
+unsafe fn start_scroll(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let mut busy = BusyGuard(true);
+    if !confirm_replace(h) {
+        return;
+    }
+    let choice = MessageBoxW(h, wide("Scroll-Aufnahme (experimentell):\nJa = nach unten, Nein = nach rechts oder links, Abbrechen = schließen.\nDanach den Inhaltsbereich mit der Maus aufziehen; Esc bricht ab.").as_ptr(), wide("Scroll-Richtung").as_ptr(), 0x23);
+    let direction = match choice {
+        6 => Direction::Down,
+        7 => match MessageBoxW(
+            h,
+            wide("Ja = nach rechts, Nein = nach links, Abbrechen = schließen.").as_ptr(),
+            wide("Scroll-Richtung").as_ptr(),
+            0x23,
+        ) {
+            6 => Direction::Right,
+            7 => Direction::Left,
+            _ => return,
+        },
+        _ => return,
+    };
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    let Some((x, y, width, height)) = selection::select() else {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        return;
+    };
+    if width < 100
+        || height < 100
+        || match direction {
+            Direction::Down => height < 200,
+            _ => width < 200,
+        }
+    {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(h, wide("Der Bereich muss mindestens 100 × 100 Pixel groß und in Scrollrichtung mindestens 200 Pixel lang sein.").as_ptr(), wide("Scroll-Aufnahme").as_ptr(), 0x30);
+        return;
+    }
+    let target = WindowFromPoint(Point {
+        x: x + width / 2,
+        y: y + height / 2,
+    });
+    let root = if target.is_null() {
+        null_mut()
+    } else {
+        GetAncestor(target, 2)
+    };
+    if root.is_null() {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Zielfenster konnte nicht ermittelt werden.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x30,
+        );
+        return;
+    }
+    SetForegroundWindow(root);
+    if GetForegroundWindow() != root {
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Zielfenster konnte nicht aktiviert werden. Bitte erneut versuchen.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x30,
+        );
+        return;
+    }
+    RESTORE_EDITOR.store(was_visible, Ordering::SeqCst);
+    busy.0 = false;
+    let hwnd = h as usize;
+    let target_window = root as usize;
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Outcome, String> {
+            let mut io = scroll_windows::WindowsScrollIo::new(x, y, width, height, target_window)?;
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            scroll_capture::run(&mut io, direction)
+        })();
+        let boxed = Box::into_raw(Box::new(result));
+        if PostMessageW(hwnd as H, SCROLL_DONE, 0, boxed as L) == 0 {
+            drop(Box::from_raw(boxed));
+            SCROLL_BUSY.store(false, Ordering::SeqCst);
+        }
+    });
+}
+
+unsafe fn copy_current(h: H) {
+    if BITMAP.is_null() {
+        return;
+    }
+    let copied = composited_bitmap(false).and_then(|bmp| {
+        let result = clipboard::copy_bitmap(h, bmp, BW, BH);
+        DeleteObject(bmp);
+        result
+    });
+    if let Err(e) = copied {
+        MessageBoxW(h, wide(&e).as_ptr(), wide("Zwischenablage").as_ptr(), 0x10);
+    }
+}
+unsafe fn toolbar_action(h: H, id: usize) {
+    let tool = match id {
+        toolbar::ID_SELECT => Some(Tool::Select),
+        toolbar::ID_ARROW => Some(Tool::Arrow),
+        toolbar::ID_LINE => Some(Tool::Line),
+        toolbar::ID_RECTANGLE => Some(Tool::Rectangle),
+        toolbar::ID_ELLIPSE => Some(Tool::Ellipse),
+        toolbar::ID_TEXT => Some(Tool::Text),
+        toolbar::ID_MARKER => Some(Tool::Highlight),
+        toolbar::ID_BLUR => Some(Tool::Blur),
+        toolbar::ID_STEP => Some(Tool::Step),
+        toolbar::ID_PEN => Some(Tool::Pen),
+        _ => None,
+    };
+    if let Some(tool) = tool {
+        editor().set_tool(tool);
+        SetWindowTextW(
+            h,
+            wide(&format!(
+                "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+            ))
+            .as_ptr(),
+        );
+    } else {
+        match id {
+            toolbar::ID_SAVE => {
+                save(h, false);
+            }
+            toolbar::ID_COPY => copy_current(h),
+            toolbar::ID_UNDO => {
+                if editor().undo() {
+                    DIRTY = true;
+                }
+            }
+            toolbar::ID_REDO => {
+                if editor().redo() {
+                    DIRTY = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    SetFocus(h);
+    InvalidateRect(h, std::ptr::null(), 0);
+}
+
+unsafe fn tray_menu(h: H) {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return;
+    }
+    for (id, label) in [
+        (1, "Bildschirm aufnehmen (F9)"),
+        (2, "Bereich aufnehmen (F11)"),
+        (3, "Scroll-Aufnahme (F10)"),
+        (4, "Editor anzeigen"),
+        (5, "Bild öffnen …"),
+        (6, "Beenden"),
+    ] {
+        AppendMenuW(menu, 0, id, wide(label).as_ptr());
+    }
+    let mut pos = Point { x: 0, y: 0 };
+    if GetCursorPos(&mut pos) == 0 {
+        DestroyMenu(menu);
+        return;
+    }
+    SetForegroundWindow(h);
+    let choice = TrackPopupMenu(menu, 0x0100 | 0x0002, pos.x, pos.y, 0, h, std::ptr::null());
+    DestroyMenu(menu);
+    match choice {
+        1 => capture(h),
+        2 => capture_region(h),
+        3 => start_scroll(h),
+        4 => {
+            ShowWindow(h, 5);
+            SetForegroundWindow(h);
+        }
+        5 => open_image(h),
+        6 => {
+            if SCROLL_BUSY.load(Ordering::SeqCst) {
+                MessageBoxW(
+                    h,
+                    wide("Bitte die laufende Aufnahme zuerst mit Esc beenden.").as_ptr(),
+                    wide("ShotKit Rust").as_ptr(),
+                    0x30,
+                );
+            } else if confirm_replace(h) {
+                DestroyWindow(h);
+            }
+        }
+        _ => {}
+    }
+}
+
+unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
+    match m {
+        0x0312 if w == 1 => {
+            capture(h);
+            0
+        }
+        TRAY if l as u32 == 0x0203 => {
+            capture(h);
+            0
+        }
+        0x0312 if w == 2 => {
+            start_scroll(h);
+            0
+        }
+        0x0312 if w == 3 || w == 4 || w == 5 => {
+            capture_region(h);
+            0
+        }
+        SCROLL_DONE => {
+            SCROLL_BUSY.store(false, Ordering::SeqCst);
+            let result: Box<Result<Outcome, String>> = Box::from_raw(l as *mut _);
+            match *result {
+                Ok(outcome) => {
+                    let message = outcome.reason;
+                    if let Err(e) = display_image(h, outcome.image) {
+                        if RESTORE_EDITOR.swap(false, Ordering::SeqCst) {
+                            ShowWindow(h, 5);
+                        }
+                        MessageBoxW(h, wide(&e).as_ptr(), wide("ShotKit Rust").as_ptr(), 0x10);
+                    } else {
+                        MessageBoxW(
+                            h,
+                            wide(&message).as_ptr(),
+                            wide("Scroll-Aufnahme beendet").as_ptr(),
+                            0,
+                        );
+                    }
+                }
+                Err(e) => {
+                    if RESTORE_EDITOR.swap(false, Ordering::SeqCst) {
+                        ShowWindow(h, 5);
+                    }
+                    MessageBoxW(
+                        h,
+                        wide(&e).as_ptr(),
+                        wide("Scroll-Aufnahme fehlgeschlagen").as_ptr(),
+                        0x10,
+                    );
+                }
+            }
+            0
+        }
+        TRAY if l as u32 == 0x0205 => {
+            tray_menu(h);
+            0
+        }
+        0x0100 if w == 0x4f && GetKeyState(0x11) < 0 => {
+            open_image(h);
+            0
+        }
+        0x020a if !BITMAP.is_null() => {
+            let delta = ((w >> 16) as u16 as i16) as i32;
+            if GetKeyState(0x11) < 0 {
+                ZOOM = (ZOOM * if delta > 0 { 1.2 } else { 1.0 / 1.2 }).clamp(0.05, 64.0);
+            } else if GetKeyState(0x10) < 0 {
+                PAN_X = PAN_X.saturating_sub(delta);
+            } else {
+                PAN_Y = PAN_Y.saturating_sub(delta);
+            }
+            InvalidateRect(h, std::ptr::null(), 1);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && w == 0x30 => {
+            ZOOM = 1.0;
+            PAN_X = 0;
+            PAN_Y = 0;
+            InvalidateRect(h, std::ptr::null(), 1);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !BITMAP.is_null() => {
+            let v = view::layout(
+                (BW as u32, BH as u32),
+                (
+                    0,
+                    toolbar_height(),
+                    {
+                        let mut r: Rect = zeroed();
+                        GetClientRect(h, &mut r);
+                        r.right
+                    },
+                    {
+                        let mut r: Rect = zeroed();
+                        GetClientRect(h, &mut r);
+                        r.bottom - toolbar_height()
+                    },
+                ),
+                1.0,
+                (0, 0),
+            );
+            ZOOM = (BW as f64 / v.width as f64).clamp(0.05, 64.0);
+            PAN_X = 0;
+            PAN_Y = 0;
+            InvalidateRect(h, std::ptr::null(), 1);
+            0
+        }
+        toolbar::WM_COMMAND => {
+            toolbar_action(h, w & 0xffff);
+            0
+        }
+        0x0005 => {
+            if let Some(bar) = (&*std::ptr::addr_of!(TOOLBAR)).as_ref() {
+                let mut rect: Rect = zeroed();
+                GetClientRect(h, &mut rect);
+                bar.resize(rect.right - rect.left);
+                InvalidateRect(h, std::ptr::null(), 1);
+            }
+            0
+        }
+        0x0100 if w == 0x43 && GetKeyState(0x11) < 0 => {
+            copy_current(h);
+            0
+        }
+        0x0100 if w == 0x53 && GetKeyState(0x11) < 0 => {
+            save(h, GetKeyState(0x10) < 0);
+            0
+        }
+        0x0100 if GetKeyState(0x11) < 0 && (w == 0x5a || w == 0x59) => {
+            let changed = if w == 0x5a {
+                editor().undo()
+            } else {
+                editor().redo()
+            };
+            if changed {
+                DIRTY = true;
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            0
+        }
+        0x0100 if w == 0x2e => {
+            if editor().delete_selected() {
+                DIRTY = true;
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            0
+        }
+        0x0100 if w == 0x1b && DRAW => {
+            editor().cancel_drag();
+            DRAW = false;
+            ReleaseCapture();
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        0x0100 if GetKeyState(0x11) >= 0 => {
+            let tool = match w {
+                0x56 => Some(Tool::Select),
+                0x41 => Some(Tool::Arrow),
+                0x4c => Some(Tool::Line),
+                0x52 => Some(Tool::Rectangle),
+                0x45 => Some(Tool::Ellipse),
+                0x54 => Some(Tool::Text),
+                0x4d => Some(Tool::Highlight),
+                0x42 => Some(Tool::Blur),
+                0x4e => Some(Tool::Step),
+                0x50 => Some(Tool::Pen),
+                _ => None,
+            };
+            if let Some(tool) = tool {
+                editor().set_tool(tool);
+                SetWindowTextW(
+                    h,
+                    wide(&format!(
+                        "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+                    ))
+                    .as_ptr(),
+                );
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            0
+        }
+        0x0201 if !BITMAP.is_null() => {
+            let (vx, vy, vw, vh) = image_view(h);
+            let sx = (l as u32 as u16 as i16) as i32;
+            let sy = ((l as u32 >> 16) as u16 as i16) as i32;
+            if sx < vx || sy < vy || sx >= vx + vw || sy >= vy + vh {
+                return 0;
+            }
+            if editor().tool() == Tool::Text {
+                let (x, y) = point(h, l);
+                if let Some(text) = text_dialog::prompt(h, "") {
+                    if editor().place_text(ShapePoint::new(x as f32, y as f32), text) {
+                        DIRTY = true;
+                        InvalidateRect(h, std::ptr::null(), 0);
+                    }
+                }
+                return 0;
+            }
+            DRAW = true;
+            let (x, y) = point(h, l);
+            editor().mouse_down(ShapePoint::new(x as f32, y as f32));
+            SetCapture(h);
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        0x0200 if DRAW && !BITMAP.is_null() => {
+            let (x, y) = point(h, l);
+            editor().mouse_move(ShapePoint::new(x as f32, y as f32));
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        0x0202 if DRAW => {
+            let (x, y) = point(h, l);
+            let before = editor().shapes().to_vec();
+            editor().mouse_up(ShapePoint::new(x as f32, y as f32));
+            if before != editor().shapes() {
+                DIRTY = true;
+            }
+            DRAW = false;
+            ReleaseCapture();
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        0x000f => {
+            let mut ps: Paint = zeroed();
+            let dc = BeginPaint(h, &mut ps);
+            if !BITMAP.is_null() {
+                let flattened = composited_bitmap(true).unwrap_or(null_mut());
+                let mem = CreateCompatibleDC(dc);
+                let old = SelectObject(
+                    mem,
+                    if flattened.is_null() {
+                        BITMAP
+                    } else {
+                        flattened
+                    },
+                );
+                let (x, y, w, height) = image_view(h);
+                StretchBlt(dc, x, y, w, height, mem, 0, 0, BW, BH, COPY);
+                SelectObject(mem, old);
+                DeleteDC(mem);
+                if !flattened.is_null() {
+                    DeleteObject(flattened);
+                }
+            }
+            EndPaint(h, &ps);
+            0
+        }
+        0x0010 => {
+            ShowWindow(h, 0);
+            0
+        }
+        0x0002 => {
+            *std::ptr::addr_of_mut!(TOOLBAR) = None;
+            UnregisterHotKey(h, 1);
+            UnregisterHotKey(h, 2);
+            UnregisterHotKey(h, 3);
+            UnregisterHotKey(h, 4);
+            UnregisterHotKey(h, 5);
+            let mut n: Notify = zeroed();
+            n.size = size_of::<Notify>() as u32;
+            n.hwnd = h;
+            n.id = 1;
+            Shell_NotifyIconW(2, &n);
+            if !BITMAP.is_null() {
+                DeleteObject(BITMAP);
+                BITMAP = null_mut();
+            }
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(h, m, w, l),
+    }
+}
+fn main() {
+    unsafe {
+        SetProcessDpiAwarenessContext(-4isize as H);
+        let inst = GetModuleHandleW(std::ptr::null());
+        let class = wide("ShotKitRustPrototype");
+        let wc = WndClass {
+            style: 0,
+            proc: Some(proc),
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance: inst,
+            icon: LoadIconW(null_mut(), 32512usize as *const u16),
+            cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
+            background: (6usize as H),
+            menu: std::ptr::null(),
+            class: class.as_ptr(),
+        };
+        if RegisterClassW(&wc) == 0 {
+            return;
+        }
+        let h = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            wide("ShotKit Rust").as_ptr(),
+            0x00cf0000,
+            0x80000000u32 as i32,
+            0x80000000u32 as i32,
+            1000,
+            700,
+            null_mut(),
+            null_mut(),
+            inst,
+            null_mut(),
+        );
+        if h.is_null() {
+            return;
+        }
+        match toolbar::create(h) {
+            Ok(bar) => *std::ptr::addr_of_mut!(TOOLBAR) = Some(bar),
+            Err(e) => {
+                MessageBoxW(h, wide(&e).as_ptr(), wide("Werkzeugleiste").as_ptr(), 0x10);
+                DestroyWindow(h);
+                return;
+            }
+        }
+        let mut n: Notify = zeroed();
+        n.size = size_of::<Notify>() as u32;
+        n.hwnd = h;
+        n.id = 1;
+        n.flags = 1 | 2 | 4;
+        n.callback = TRAY;
+        n.icon = LoadIconW(null_mut(), 32512usize as *const u16);
+        let tip = wide("ShotKit Rust: F9 oder Doppelklick = Aufnahme, Rechtsklick = Beenden");
+        n.tip[..tip.len()].copy_from_slice(&tip);
+        if Shell_NotifyIconW(0, &n) == 0 {
+            MessageBoxW(
+                h,
+                wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
+            DestroyWindow(h);
+            return;
+        }
+        if RegisterHotKey(h, 1, 0x4000, 0x78) == 0 {
+            MessageBoxW(
+                h,
+                wide("F9 ist belegt. Aufnahme über Doppelklick auf das Tray-Symbol.").as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x30,
+            );
+        }
+        if RegisterHotKey(h, 2, 0x4000, 0x79) == 0 {
+            MessageBoxW(h,wide("F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+        }
+        if RegisterHotKey(h, 3, 0x4000, 0x7a) == 0 {
+            MessageBoxW(
+                h,
+                wide("F11 ist belegt; Bereichsaufnahme ist derzeit nicht verfügbar.").as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x30,
+            );
+        }
+        let print_ok = RegisterHotKey(h, 4, 0x4000, 0x2c) != 0;
+        let alt_ok = RegisterHotKey(h, 5, 0x4000 | 0x0002 | 0x0004, 0x31) != 0;
+        if !print_ok && !alt_ok {
+            MessageBoxW(h,wide("Druck und Strg+Umschalt+1 sind belegt. Für Bereichsaufnahmen F11 oder das Tray-Menü verwenden.").as_ptr(),wide("Tastenkürzel" ).as_ptr(),0x30);
+        }
+        MessageBoxW(h,wide("Prototyp gestartet. F9 oder Doppelklick auf das Tray-Symbol: Bildschirm aufnehmen. F10 startet die experimentelle Scroll-Aufnahme. Im Editor mit der Maus zeichnen, S speichert als BMP. Rechtsklick auf das Tray-Symbol beendet das Programm.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
+        let mut msg: Msg = zeroed();
+        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
