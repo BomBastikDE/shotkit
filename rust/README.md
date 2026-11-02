@@ -4,7 +4,7 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 ## Bisherige Funktionen
 
-- Tray-Menü; Bildschirm unter dem Mauszeiger mit `F9` oder `Strg+Druck`, alle Bildschirme mit `Strg+Umschalt+Druck`, aktives Fenster mit `Umschalt+Druck` und Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen. `Strg` wählt das größere Fenster.
+- Tray-Menü; Bildschirm unter dem Mauszeiger mit `F9` oder `Strg+Druck`, alle Bildschirme mit `Strg+Umschalt+Druck`, aktives Fenster mit `Umschalt+Druck` und Bereich mit `F11` oder `Druck` aufnehmen. Beim Bereich lassen sich Vorschläge unter dem Mauszeiger anklicken oder Bereiche frei aufziehen; eine Lupe zeigt Bildschirmkoordinaten und den Pixelwert. `Strg` wählt das größere Fenster.
 - Experimentelle Scroll-Aufnahme mit `F10`: Bereich auswählen, nach unten/rechts/links scrollen, Abbruch mit Esc oder Mausbewegung. Der bisher gesicherte Teil bleibt erhalten.
 - Editor-Werkzeuge über die Leiste: Auswahl, Pfeil, Linie, Rechteck, Ellipse, Text, Marker, Verpixeln, Nummer, Stift und Zuschneiden. Objekte können ausgewählt, verschoben, geändert und mit `Strg+Z`/`Strg+Y` zurückgenommen/wiederholt werden. Rahmen und Schlagschatten sind über die Werkzeugleiste verfügbar.
 - `Strg+O` öffnet Bilder, `Strg+S` speichert, `Strg+Umschalt+S` speichert unter; PNG/JPEG/BMP/GIF stehen zur Verfügung. `Strg+C` kopiert ein Bitmap in die Zwischenablage; `Strg+V` öffnet ein Bild daraus. Vor dem Ersetzen ungesicherter Bilder wird nachgefragt.

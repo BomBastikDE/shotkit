@@ -6,7 +6,7 @@
 
 use std::{
     ffi::c_void,
-    mem::zeroed,
+    mem::{size_of, zeroed},
     ptr::{null, null_mut},
     sync::Mutex,
 };
@@ -63,6 +63,13 @@ struct Paint {
     inc: i32,
     reserved: [u8; 32],
 }
+#[repr(C)]
+struct MonitorInfo {
+    size: u32,
+    monitor: Rect,
+    work: Rect,
+    flags: u32,
+}
 
 #[link(name = "user32")]
 extern "system" {
@@ -85,8 +92,11 @@ extern "system" {
     fn DefWindowProcW(hwnd: H, msg: u32, w: W, l: L) -> L;
     fn DestroyWindow(hwnd: H) -> i32;
     fn ShowWindow(hwnd: H, cmd: i32) -> i32;
+    fn MoveWindow(hwnd: H, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
     fn UpdateWindow(hwnd: H) -> i32;
     fn GetClientRect(hwnd: H, rect: *mut Rect) -> i32;
+    fn GetDC(hwnd: H) -> H;
+    fn ReleaseDC(hwnd: H, dc: H) -> i32;
     fn SetForegroundWindow(hwnd: H) -> i32;
     fn SetFocus(hwnd: H) -> H;
     fn GetMessageW(msg: *mut Msg, hwnd: H, min: u32, max: u32) -> i32;
@@ -114,6 +124,8 @@ extern "system" {
     fn KillTimer(hwnd: H, id: W) -> i32;
     fn GetKeyState(key: i32) -> i16;
     fn GetCursorPos(point: *mut Point) -> i32;
+    fn MonitorFromPoint(point: Point, flags: u32) -> H;
+    fn GetMonitorInfoW(monitor: H, info: *mut MonitorInfo) -> i32;
 }
 #[link(name = "kernel32")]
 extern "system" {
@@ -122,6 +134,20 @@ extern "system" {
 #[link(name = "gdi32")]
 extern "system" {
     fn DeleteObject(object: H) -> i32;
+    fn CreateCompatibleDC(dc: H) -> H;
+    fn CreateCompatibleBitmap(dc: H, width: i32, height: i32) -> H;
+    fn SelectObject(dc: H, object: H) -> H;
+    fn DeleteDC(dc: H) -> i32;
+    fn BitBlt(dst: H, x: i32, y: i32, width: i32, height: i32, src: H, sx: i32, sy: i32, rop: u32) -> i32;
+    fn StretchBlt(dst: H, x: i32, y: i32, width: i32, height: i32, src: H, sx: i32, sy: i32, sw: i32, sh: i32, rop: u32) -> i32;
+    fn SetStretchBltMode(dc: H, mode: i32) -> i32;
+    fn CreatePen(style: i32, width: i32, color: u32) -> H;
+    fn Rectangle(dc: H, left: i32, top: i32, right: i32, bottom: i32) -> i32;
+    fn GetPixel(dc: H, x: i32, y: i32) -> u32;
+    fn SetTextColor(dc: H, color: u32) -> u32;
+    fn SetBkMode(dc: H, mode: i32) -> i32;
+    fn TextOutW(dc: H, x: i32, y: i32, text: *const u16, length: i32) -> i32;
+    fn GetStockObject(index: i32) -> H;
 }
 
 const WM_DESTROY: u32 = 0x0002;
@@ -139,13 +165,32 @@ const WS_POPUP: u32 = 0x8000_0000;
 const WS_EX_TOPMOST: u32 = 0x0000_0008;
 const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
 const WS_EX_LAYERED: u32 = 0x0008_0000;
+const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
 const LWA_ALPHA: u32 = 2;
 const SW_SHOW: i32 = 5;
+const SW_SHOWNOACTIVATE: i32 = 4;
 const IDC_CROSS: usize = 32515;
 const DPI_PER_MONITOR_AWARE_V2: isize = -4;
 const UIA_TIMER_ID: W = 0x534b;
 const UIA_TIMER_MS: u32 = 30;
 const CLICK_SLOP: i32 = 4;
+const MAG_PIXELS: i32 = 15;
+const MAG_ZOOM: i32 = 8;
+const MAG_SIZE: i32 = MAG_PIXELS * MAG_ZOOM;
+const MAG_LABEL_HEIGHT: i32 = 24;
+const MAG_WINDOW_HEIGHT: i32 = MAG_SIZE + MAG_LABEL_HEIGHT + 2;
+const MAX_MAGNIFIER_SNAPSHOT_BYTES: i64 = 256 * 1024 * 1024;
+const COLORONCOLOR: i32 = 3;
+const SRCCOPY: u32 = 0x00cc_0020;
+const CAPTUREBLT: u32 = 0x4000_0000;
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
+const DEFAULT_GUI_FONT: i32 = 17;
+const PS_SOLID: i32 = 0;
+const TRANSPARENT: i32 = 1;
+const WM_NCHITTEST: u32 = 0x0084;
+const WM_MOUSEACTIVATE: u32 = 0x0021;
+const HTTRANSPARENT: L = -1;
+const MA_NOACTIVATE: L = 3;
 const CLASS_NAME: [u16; 24] = [
     83, 104, 111, 116, 75, 105, 116, 83, 101, 108, 101, 99, 116, 105, 111, 110, 79, 118, 101, 114,
     108, 97, 121, 0,
@@ -154,8 +199,13 @@ const CLASS_NAME: [u16; 24] = [
 #[derive(Default)]
 struct State {
     hwnd: H,
+    magnifier_hwnd: H,
+    magnifier_class_registered: bool,
     origin: (i32, i32),
     size: (i32, i32),
+    source_dc: H,
+    source_bitmap: H,
+    source_original: H,
     down: bool,
     start: Point,
     current: Point,
@@ -186,8 +236,13 @@ struct PendingClick {
 
 static mut STATE: State = State {
     hwnd: null_mut(),
+    magnifier_hwnd: null_mut(),
+    magnifier_class_registered: false,
     origin: (0, 0),
     size: (0, 0),
+    source_dc: null_mut(),
+    source_bitmap: null_mut(),
+    source_original: null_mut(),
     down: false,
     start: Point { x: 0, y: 0 },
     current: Point { x: 0, y: 0 },
@@ -400,6 +455,231 @@ unsafe fn mark_finished(state: *mut State, result: Option<(i32, i32, i32, i32)>)
     hwnd
 }
 
+unsafe fn capture_desktop(origin: (i32, i32), size: (i32, i32)) -> (H, H, H) {
+    let estimated_bytes = i64::from(size.0)
+        .checked_mul(i64::from(size.1))
+        .and_then(|pixels| pixels.checked_mul(4));
+    if estimated_bytes.map_or(true, |bytes| bytes > MAX_MAGNIFIER_SNAPSHOT_BYTES) {
+        return (null_mut(), null_mut(), null_mut());
+    }
+    let screen_dc = GetDC(null_mut());
+    if screen_dc.is_null() {
+        return (null_mut(), null_mut(), null_mut());
+    }
+    let memory_dc = CreateCompatibleDC(screen_dc);
+    if memory_dc.is_null() {
+        ReleaseDC(null_mut(), screen_dc);
+        return (null_mut(), null_mut(), null_mut());
+    }
+    let bitmap = CreateCompatibleBitmap(screen_dc, size.0, size.1);
+    if bitmap.is_null() {
+        DeleteDC(memory_dc);
+        ReleaseDC(null_mut(), screen_dc);
+        return (null_mut(), null_mut(), null_mut());
+    }
+    let original = SelectObject(memory_dc, bitmap);
+    if original.is_null()
+        || original as isize == -1
+        || BitBlt(
+            memory_dc,
+            0,
+            0,
+            size.0,
+            size.1,
+            screen_dc,
+            origin.0,
+            origin.1,
+            SRCCOPY | CAPTUREBLT,
+        ) == 0
+    {
+        if !original.is_null() && original as isize != -1 {
+            SelectObject(memory_dc, original);
+        }
+        DeleteObject(bitmap);
+        DeleteDC(memory_dc);
+        ReleaseDC(null_mut(), screen_dc);
+        return (null_mut(), null_mut(), null_mut());
+    }
+    ReleaseDC(null_mut(), screen_dc);
+    (memory_dc, bitmap, original)
+}
+
+unsafe fn release_desktop(state: *mut State) {
+    let s = &mut *state;
+    if !s.source_dc.is_null() {
+        if !s.source_original.is_null() {
+            SelectObject(s.source_dc, s.source_original);
+        }
+        if !s.source_bitmap.is_null() {
+            DeleteObject(s.source_bitmap);
+        }
+        DeleteDC(s.source_dc);
+    }
+    s.source_dc = null_mut();
+    s.source_bitmap = null_mut();
+    s.source_original = null_mut();
+}
+
+unsafe fn monitor_local_rect(point: Point, origin: (i32, i32), desktop: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if !monitor.is_null() {
+        let mut info: MonitorInfo = zeroed();
+        info.size = size_of::<MonitorInfo>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) != 0 {
+            return (
+                info.monitor.left.saturating_sub(origin.0).max(desktop.0),
+                info.monitor.top.saturating_sub(origin.1).max(desktop.1),
+                info.monitor.right.saturating_sub(origin.0).min(desktop.2),
+                info.monitor.bottom.saturating_sub(origin.1).min(desktop.3),
+            );
+        }
+    }
+    desktop
+}
+
+unsafe fn magnifier_rect(state: &State, point: Point) -> (i32, i32, i32, i32) {
+    let desktop = desktop_rect(state);
+    let local_cursor = Point {
+        x: point.x.saturating_sub(state.origin.0),
+        y: point.y.saturating_sub(state.origin.1),
+    };
+    let bounds = monitor_local_rect(point, state.origin, desktop);
+    let mut x = local_cursor.x.saturating_add(24);
+    let mut y = local_cursor.y.saturating_add(24);
+    if x.saturating_add(MAG_SIZE) > bounds.2 {
+        x = local_cursor.x.saturating_sub(24 + MAG_SIZE);
+    }
+    if y.saturating_add(MAG_SIZE + MAG_LABEL_HEIGHT + 2) > bounds.3 {
+        y = local_cursor.y.saturating_sub(24 + MAG_SIZE + MAG_LABEL_HEIGHT + 2);
+    }
+    let max_x = bounds.2.saturating_sub(MAG_SIZE).max(bounds.0);
+    let max_y = bounds.3.saturating_sub(MAG_SIZE + MAG_LABEL_HEIGHT + 2).max(bounds.1);
+    x = x.clamp(bounds.0, max_x);
+    y = y.clamp(bounds.1, max_y);
+    (x, y, x.saturating_add(MAG_SIZE), y.saturating_add(MAG_SIZE))
+}
+
+fn magnifier_source_rect(state: &State, point: Point) -> (i32, i32, i32, i32) {
+    let local_x = point.x.saturating_sub(state.origin.0);
+    let local_y = point.y.saturating_sub(state.origin.1);
+    let width = state.size.0.min(MAG_PIXELS).max(1);
+    let height = state.size.1.min(MAG_PIXELS).max(1);
+    let max_x = state.size.0.saturating_sub(width).max(0);
+    let max_y = state.size.1.saturating_sub(height).max(0);
+    let left = local_x.saturating_sub(width / 2).clamp(0, max_x);
+    let top = local_y.saturating_sub(height / 2).clamp(0, max_y);
+    (left, top, width, height)
+}
+
+unsafe fn draw_magnifier(dc: H, state: &State) {
+    if state.source_dc.is_null() {
+        return;
+    }
+    let point = state.current;
+    let local_cursor = Point {
+        x: point.x.saturating_sub(state.origin.0),
+        y: point.y.saturating_sub(state.origin.1),
+    };
+    let (source_x, source_y, source_width, source_height) = magnifier_source_rect(state, point);
+    let left = 0;
+    let top = 0;
+    let right = MAG_SIZE;
+    let bottom = MAG_SIZE;
+    let _ = FillRect(dc, &Rect { left, top, right, bottom }, GetStockObject(4)); // BLACK_BRUSH
+    SetStretchBltMode(dc, COLORONCOLOR);
+    StretchBlt(
+        dc,
+        left,
+        top,
+        MAG_SIZE,
+        MAG_SIZE,
+        state.source_dc,
+        source_x,
+        source_y,
+        source_width,
+        source_height,
+        SRCCOPY,
+    );
+
+    let white_pen = CreatePen(PS_SOLID, 1, 0x00ff_ffff);
+    let old_pen = if white_pen.is_null() { null_mut() } else { SelectObject(dc, white_pen) };
+    let marker_x = local_cursor.x.saturating_sub(source_x).clamp(0, source_width - 1);
+    let marker_y = local_cursor.y.saturating_sub(source_y).clamp(0, source_height - 1);
+    let center_x = marker_x * MAG_SIZE / source_width;
+    let center_y = marker_y * MAG_SIZE / source_height;
+    let marker_width = (MAG_SIZE / source_width).max(1);
+    let marker_height = (MAG_SIZE / source_height).max(1);
+    Rectangle(dc, left + center_x, top + center_y, left + center_x + marker_width + 1, top + center_y + marker_height + 1);
+    let accent_pen = CreatePen(PS_SOLID, 2, 0x00ff_9600);
+    if !accent_pen.is_null() {
+        let previous_pen = SelectObject(dc, accent_pen);
+        Rectangle(dc, left, top, right, bottom);
+        if !previous_pen.is_null() && previous_pen as isize != -1 {
+            SelectObject(dc, previous_pen);
+        }
+        DeleteObject(accent_pen);
+    }
+    if !old_pen.is_null() && old_pen as isize != -1 {
+        SelectObject(dc, old_pen);
+    }
+    if !white_pen.is_null() {
+        DeleteObject(white_pen);
+    }
+
+    let pixel = GetPixel(state.source_dc, local_cursor.x, local_cursor.y);
+    let label = if pixel == 0xffff_ffff {
+        format!("{}, {}", point.x, point.y)
+    } else {
+        format!("{}, {}  #{:02X}{:02X}{:02X}", point.x, point.y, pixel & 0xff, (pixel >> 8) & 0xff, (pixel >> 16) & 0xff)
+    };
+    let wide: Vec<u16> = label.encode_utf16().collect();
+    let text_rect = Rect { left, top: MAG_SIZE + 2, right: MAG_SIZE, bottom: MAG_WINDOW_HEIGHT };
+    let dark = CreateSolidBrush(0x0014_1414);
+    if !dark.is_null() {
+        FillRect(dc, &text_rect, dark);
+        DeleteObject(dark);
+    }
+    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let old_font = if !font.is_null() { SelectObject(dc, font) } else { null_mut() };
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, 0x00ff_ffff);
+    TextOutW(dc, 3, MAG_SIZE + 4, wide.as_ptr(), wide.len() as i32);
+    if !old_font.is_null() { SelectObject(dc, old_font); }
+}
+
+unsafe fn move_magnifier(state: *mut State) {
+    let s = &*state;
+    if s.magnifier_hwnd.is_null() {
+        return;
+    }
+    let (left, top, _, _) = magnifier_rect(s, s.current);
+    MoveWindow(
+        s.magnifier_hwnd,
+        left.saturating_add(s.origin.0),
+        top.saturating_add(s.origin.1),
+        MAG_SIZE,
+        MAG_WINDOW_HEIGHT,
+        0,
+    );
+    InvalidateRect(s.magnifier_hwnd, null(), 0);
+}
+
+unsafe extern "system" fn magnifier_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
+    match msg {
+        WM_ERASEBKGND => 1,
+        WM_NCHITTEST => HTTRANSPARENT,
+        WM_MOUSEACTIVATE => MA_NOACTIVATE,
+        WM_PAINT => {
+            let mut paint: Paint = zeroed();
+            let dc = BeginPaint(hwnd, &mut paint);
+            draw_magnifier(dc, &*std::ptr::addr_of!(STATE));
+            EndPaint(hwnd, &paint);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, w, l),
+    }
+}
+
 unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
     let state = std::ptr::addr_of_mut!(STATE);
     match msg {
@@ -441,6 +721,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 SetCapture(hwnd);
             }
             InvalidateRect(hwnd, null(), 0);
+            move_magnifier(state);
             0
         }
         WM_MOUSEMOVE => {
@@ -452,6 +733,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 update_hover(state, point);
             }
             InvalidateRect(hwnd, null(), 0);
+            move_magnifier(state);
             0
         }
         WM_LBUTTONUP if (*state).down => {
@@ -496,6 +778,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 (result, pending, cancelled, root_hwnd)
             };
             ReleaseCapture();
+            move_magnifier(state);
             if !click_pending {
                 let final_result = if click_cancelled { None } else { result }
                     .and_then(|r| intersection(r, desktop_rect(&*state)));
@@ -584,15 +867,20 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
             0
         }
         WM_DESTROY => {
-            let timer_hwnd = {
+            let (timer_hwnd, magnifier) = {
                 let s = &mut *state;
                 s.done = true;
                 if s.hwnd == hwnd {
                     s.hwnd = null_mut();
                 }
-                hwnd
+                let magnifier = s.magnifier_hwnd;
+                s.magnifier_hwnd = null_mut();
+                (hwnd, magnifier)
             };
             let _ = KillTimer(timer_hwnd, UIA_TIMER_ID);
+            if !magnifier.is_null() {
+                DestroyWindow(magnifier);
+            }
             0
         }
         _ => DefWindowProcW(hwnd, msg, w, l),
@@ -644,10 +932,16 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         }
         return None;
     }
+    let (source_dc, source_bitmap, source_original) = capture_desktop(origin, (width, height));
     std::ptr::addr_of_mut!(STATE).write(State {
         hwnd: null_mut(),
+        magnifier_hwnd: null_mut(),
+        magnifier_class_registered: false,
         origin,
         size: (width, height),
+        source_dc,
+        source_bitmap,
+        source_original,
         down: false,
         start: Point::default(),
         current: Point::default(),
@@ -683,6 +977,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         null_mut(),
     );
     if hwnd.is_null() {
+        release_desktop(std::ptr::addr_of_mut!(STATE));
         let state = &mut *std::ptr::addr_of_mut!(STATE);
         drop(state.uia.take());
         std::ptr::addr_of_mut!(STATE).write(State::default());
@@ -694,15 +989,65 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
     }
     (*std::ptr::addr_of_mut!(STATE)).hwnd = hwnd;
     SetLayeredWindowAttributes(hwnd, 0, 118, LWA_ALPHA);
+    let mut cursor = Point::default();
+    let have_cursor = GetCursorPos(&mut cursor) != 0;
+    if have_cursor {
+        (*std::ptr::addr_of_mut!(STATE)).current = cursor;
+    }
+
+    let magnifier_class_name: Vec<u16> = "ShotKitSelectionMagnifier"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let magnifier_class = WndClass {
+        style: 0,
+        proc: Some(magnifier_proc),
+        cls_extra: 0,
+        wnd_extra: 0,
+        instance,
+        icon: null_mut(),
+        cursor: null_mut(),
+        background: null_mut(),
+        menu: null(),
+        class: magnifier_class_name.as_ptr(),
+    };
+    if !(*std::ptr::addr_of!(STATE)).source_dc.is_null() && RegisterClassW(&magnifier_class) != 0 {
+        (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = true;
+        let (left, top, _, _) = magnifier_rect(&*std::ptr::addr_of!(STATE), cursor);
+        let magnifier = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            magnifier_class_name.as_ptr(),
+            magnifier_class_name.as_ptr(),
+            WS_POPUP,
+            left.saturating_add(origin.0),
+            top.saturating_add(origin.1),
+            MAG_SIZE,
+            MAG_WINDOW_HEIGHT,
+            hwnd,
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        if !magnifier.is_null() {
+            (*std::ptr::addr_of_mut!(STATE)).magnifier_hwnd = magnifier;
+        } else {
+            UnregisterClassW(magnifier_class_name.as_ptr(), instance);
+            (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = false;
+        }
+    }
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
+    let magnifier = (*std::ptr::addr_of!(STATE)).magnifier_hwnd;
+    if !magnifier.is_null() {
+        ShowWindow(magnifier, SW_SHOWNOACTIVATE);
+    }
     UpdateWindow(hwnd);
     let _ = SetTimer(hwnd, UIA_TIMER_ID, UIA_TIMER_MS, None);
-    let mut cursor = Point::default();
-    if GetCursorPos(&mut cursor) != 0 {
+    if have_cursor {
         update_hover(std::ptr::addr_of_mut!(STATE), cursor);
         InvalidateRect(hwnd, null(), 0);
+        move_magnifier(std::ptr::addr_of_mut!(STATE));
     }
 
     let mut msg: Msg = zeroed();
@@ -728,12 +1073,22 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         let _ = KillTimer(active, UIA_TIMER_ID);
         DestroyWindow(active);
     }
+    let magnifier = (*std::ptr::addr_of!(STATE)).magnifier_hwnd;
+    if !magnifier.is_null() {
+        DestroyWindow(magnifier);
+        (*std::ptr::addr_of_mut!(STATE)).magnifier_hwnd = null_mut();
+    }
     ReleaseCapture();
     UnregisterClassW(CLASS_NAME.as_ptr(), instance);
+    if (*std::ptr::addr_of!(STATE)).magnifier_class_registered {
+        UnregisterClassW(magnifier_class_name.as_ptr(), instance);
+        (*std::ptr::addr_of_mut!(STATE)).magnifier_class_registered = false;
+    }
     let state = &mut *std::ptr::addr_of_mut!(STATE);
     let result = state.result;
     let picker = state.uia.take();
     drop(picker);
+    release_desktop(std::ptr::addr_of_mut!(STATE));
     std::ptr::addr_of_mut!(STATE).write(State::default());
     if !previous_dpi.is_null() {
         SetThreadDpiAwarenessContext(previous_dpi);
