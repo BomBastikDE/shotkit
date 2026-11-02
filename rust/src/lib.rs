@@ -14,6 +14,7 @@ pub mod pixelate;
 pub mod render;
 pub mod scroll_capture;
 pub mod scroll_match;
+pub mod selection_rect;
 pub mod settings;
 pub mod shapes;
 pub mod stitch;

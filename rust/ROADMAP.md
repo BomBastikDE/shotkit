@@ -20,7 +20,7 @@ Referenz: ShotKit C# v1.2.0, Commit `cd5fff3`. Rust ist als Vorabversion `v2.0.0
 
 ## Ideen nach funktionsgleicher Portierung
 
-Sprechblasen mit Pfeil, vergrößerter Bildausschnitt und vereinfachtes Hervorheben eines Details. Text aus Bildern/OCR ist ausdrücklich zurückgestellt. Zusätzliche Funktionen getrennt nach Nutzen, Paketgröße und Windows-Tests bewerten.
+Mögliche spätere Erweiterungen sind ein **vergrößerter Bildausschnitt im Editor** (Lupe für kleine Details) und **Bild anheften** (ein Screenshot bleibt als Referenz über anderen Fenstern sichtbar). Beide sind Ideen ohne festgelegten Umsetzungstermin; vor der Umsetzung werden Nutzen, Paketgröße, Bedienung und Windows-Tests bewertet und die Zustimmung eingeholt. Weitere Ideen sind Sprechblasen mit Pfeil und vereinfachtes Hervorheben eines Details. Text aus Bildern/OCR ist ausdrücklich zurückgestellt.
 
 ## Erforderliche Endprüfung
 

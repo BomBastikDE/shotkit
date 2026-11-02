@@ -17,6 +17,7 @@ mod clipboard;
 mod element_picker;
 mod file_dialog;
 mod folder_dialog;
+mod last_region;
 mod scroll_windows;
 mod selection;
 mod text_dialog;
@@ -172,6 +173,13 @@ extern "system" {
     fn GetWindowThreadProcessId(h: H, process_id: *mut u32) -> u32;
     fn GetKeyState(key: i32) -> i16;
     fn GetCursorPos(point: *mut Point) -> i32;
+    fn EnumDisplayMonitors(
+        dc: H,
+        clip: *const Rect,
+        callback: Option<unsafe extern "system" fn(H, H, *mut Rect, L) -> i32>,
+        data: L,
+    ) -> i32;
+    fn GetMonitorInfoW(monitor: H, info: *mut MonitorInfo) -> i32;
     fn CreatePopupMenu() -> H;
     fn AppendMenuW(menu: H, flags: u32, id: usize, text: *const u16) -> i32;
     fn TrackPopupMenu(
@@ -190,6 +198,14 @@ extern "system" {
     fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
     fn SendMessageTimeoutW(h: H, msg: u32, w: W, l: L, flags: u32, timeout: u32, result: *mut W) -> i32;
+}
+
+#[repr(C)]
+struct MonitorInfo {
+    size: u32,
+    monitor: Rect,
+    work: Rect,
+    flags: u32,
 }
 #[link(name = "shell32")]
 extern "system" {
@@ -422,6 +438,7 @@ static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
 static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
+static LAST_REGION: Mutex<Option<last_region::Rect>> = Mutex::new(None);
 static RESTORE_EDITOR: AtomicBool = AtomicBool::new(false);
 struct BusyGuard(bool);
 impl Drop for BusyGuard {
@@ -1459,11 +1476,64 @@ unsafe fn capture_region(h: H) {
         }
         return;
     };
+    let Some(rect) = last_region::Rect::from_origin_size(x, y, w, height) else {
+        if was_visible { ShowWindow(h, 5); }
+        MessageBoxW(h, wide("Die Auswahl hat ungültige Bildschirmgrenzen.").as_ptr(), wide("Bereichsaufnahme").as_ptr(), 0x10);
+        return;
+    };
+    capture_region_rect(h, rect, true, was_visible);
+}
+
+unsafe fn capture_region_rect(
+    h: H,
+    rect: last_region::Rect,
+    remember_on_success: bool,
+    was_visible: bool,
+) {
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let image =
-        scroll_windows::WindowsScrollIo::new(x, y, w, height, 0).and_then(|mut io| io.capture());
+    if !remember_on_success {
+        let monitors = match current_monitor_rects() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                if was_visible {
+                    ShowWindow(h, 5);
+                }
+                MessageBoxW(
+                    h,
+                    wide(&error).as_ptr(),
+                    wide("Bereich erneut aufnehmen").as_ptr(),
+                    0x10,
+                );
+                return;
+            }
+        };
+        if !last_region::fully_covered_by_monitors(rect, &monitors) {
+            if was_visible {
+                ShowWindow(h, 5);
+            }
+            MessageBoxW(
+                h,
+                wide("Der gespeicherte Bereich liegt nicht mehr vollständig auf den aktuell angeschlossenen Bildschirmen. Wähle den Bereich erneut aus.").as_ptr(),
+                wide("Bereich erneut aufnehmen").as_ptr(),
+                0x30,
+            );
+            return;
+        }
+    }
+    let image = scroll_windows::WindowsScrollIo::new(
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        0,
+    )
+    .and_then(|mut io| io.capture());
     match image.and_then(|image| handle_capture(h, image, was_visible)) {
-        Ok(()) => {}
+        Ok(()) => {
+            if remember_on_success {
+                *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);
+            }
+        }
         Err(e) => {
             if was_visible {
                 ShowWindow(h, 5);
@@ -1476,6 +1546,72 @@ unsafe fn capture_region(h: H) {
             );
         }
     }
+}
+
+struct MonitorList {
+    rects: Vec<last_region::Rect>,
+    failed: bool,
+}
+
+unsafe extern "system" fn collect_monitor(
+    monitor: H,
+    _dc: H,
+    _rect: *mut Rect,
+    data: L,
+) -> i32 {
+    let list = &mut *(data as *mut MonitorList);
+    let mut info: MonitorInfo = zeroed();
+    info.size = size_of::<MonitorInfo>() as u32;
+    if GetMonitorInfoW(monitor, &mut info) == 0 {
+        list.failed = true;
+        return 0;
+    }
+    list.rects.push(last_region::Rect {
+        left: info.monitor.left,
+        top: info.monitor.top,
+        right: info.monitor.right,
+        bottom: info.monitor.bottom,
+    });
+    1
+}
+
+unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, String> {
+    let mut list = MonitorList {
+        rects: Vec::new(),
+        failed: false,
+    };
+    let enumerated = EnumDisplayMonitors(
+        null_mut(),
+        std::ptr::null(),
+        Some(collect_monitor),
+        &mut list as *mut _ as L,
+    );
+    if enumerated == 0 || list.failed || list.rects.is_empty() {
+        return Err("Die aktuellen Monitorgrenzen konnten nicht zuverlässig gelesen werden.".into());
+    }
+    Ok(list.rects)
+}
+
+unsafe fn repeat_last_region(h: H) {
+    if SCROLL_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let _busy = BusyGuard(true);
+    let Some(rect) = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) else {
+        MessageBoxW(
+            h,
+            wide("Es wurde in dieser Sitzung noch kein Aufnahmebereich erfolgreich aufgenommen.").as_ptr(),
+            wide("Bereich erneut aufnehmen").as_ptr(),
+            0x30,
+        );
+        return;
+    };
+    let was_visible = IsWindowVisible(h) != 0;
+    ShowWindow(h, 0);
+    capture_region_rect(h, rect, false, was_visible);
 }
 
 unsafe fn start_scroll(h: H) {
@@ -1877,6 +2013,7 @@ unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
         (10, "Bereich nach 5 Sekunden auswählen"),
         (11, "Bereich nach 10 Sekunden auswählen"),
         (2, "Bereich aufnehmen (F11)"),
+        (16, "Letzten Bereich erneut aufnehmen"),
         (3, "Scroll-Aufnahme (F10)"),
         (7, "Alle Bildschirme aufnehmen"),
         (13, "Aktives Fenster aufnehmen"),
@@ -1888,7 +2025,8 @@ unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
         (15, "Über ShotKit"),
         (6, "Beenden"),
     ] {
-        AppendMenuW(menu, 0, id, wide(label).as_ptr());
+        let flags = if id == 16 && LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()).is_none() { 0x0003 } else { 0 };
+        AppendMenuW(menu, flags, id, wide(label).as_ptr());
     }
     let prefs = active_settings();
     let submenu = CreatePopupMenu();
@@ -1946,6 +2084,7 @@ unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
         10 => schedule_capture(h, 5),
         11 => schedule_capture(h, 10),
         2 => capture_region(h),
+        16 => repeat_last_region(h),
         3 => start_scroll(h),
         7 => capture_rect(h, capture_targets::virtual_desktop()),
         13 => {

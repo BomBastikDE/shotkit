@@ -3,6 +3,11 @@
 //! Suggestions are best effort. Win32 child HWNDs do not expose browser DOM;
 //! UI Automation providers may expose only a document/canvas or no useful
 //! descendants. Rectangle drag remains available for every screen region.
+//! For keyboard correction, hover a suggested target and press an arrow key;
+//! arrows move it by one screen pixel and Shift+arrows resize its right/bottom
+//! edge by one pixel. Enter accepts. To correct a manually drawn rectangle,
+//! hold Shift while releasing the drag, then use the same keys. Pointer motion
+//! resumes hover mode, a new mouse gesture starts the usual flow, and Esc cancels.
 
 use std::{
     ffi::c_void,
@@ -12,6 +17,7 @@ use std::{
 };
 
 use crate::{element_picker, uia_picker};
+use shotkit_rust_prototype::selection_rect;
 
 type H = *mut c_void;
 type W = usize;
@@ -160,7 +166,13 @@ const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const VK_ESCAPE: W = 0x1b;
+const VK_RETURN: W = 0x0d;
 const VK_CONTROL: i32 = 0x11;
+const VK_SHIFT: i32 = 0x10;
+const VK_LEFT: W = 0x25;
+const VK_UP: W = 0x26;
+const VK_RIGHT: W = 0x27;
+const VK_DOWN: W = 0x28;
 const WS_POPUP: u32 = 0x8000_0000;
 const WS_EX_TOPMOST: u32 = 0x0000_0008;
 const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
@@ -214,6 +226,8 @@ struct State {
     target_hwnd: isize,
     hover_rect: Option<(i32, i32, i32, i32)>,
     visible_hover_rect: Option<(i32, i32, i32, i32)>,
+    /// Keyboard edits are isolated from asynchronous hover/UIA updates.
+    keyboard_rect: Option<(i32, i32, i32, i32)>,
     uia_rect: Option<(i32, i32, i32, i32)>,
     request_sequence: u64,
     window_picker: Option<element_picker::WindowPicker>,
@@ -251,6 +265,7 @@ static mut STATE: State = State {
     target_hwnd: 0,
     hover_rect: None,
     visible_hover_rect: None,
+    keyboard_rect: None,
     uia_rect: None,
     request_sequence: 0,
     window_picker: None,
@@ -288,6 +303,10 @@ unsafe fn cursor_screen(l: L, origin: (i32, i32)) -> Point {
 
 unsafe fn is_control_down() -> bool {
     (GetKeyState(VK_CONTROL) as u16 & 0x8000) != 0
+}
+
+unsafe fn is_shift_down() -> bool {
+    (GetKeyState(VK_SHIFT) as u16 & 0x8000) != 0
 }
 
 unsafe fn desktop_rect(s: &State) -> (i32, i32, i32, i32) {
@@ -719,6 +738,9 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 if s.down {
                     false
                 } else {
+                    // Any new pointer gesture returns to the established
+                    // hover/click/drag flow and discards keyboard-only edits.
+                    s.keyboard_rect = None;
                     s.down = true;
                     s.start = point;
                     s.current = point;
@@ -761,7 +783,9 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
             let is_down = (*state).down;
             if is_down {
                 (*state).current = point;
-            } else {
+            } else if point.x != (*state).current.x || point.y != (*state).current.y {
+                // Pointer movement resumes hover selection after keyboard edit.
+                (*state).keyboard_rect = None;
                 update_hover(state, point);
             }
             InvalidateRect(hwnd, null(), 0);
@@ -770,7 +794,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
         }
         WM_LBUTTONUP if (*state).down => {
             let point = cursor_screen(l, (*state).origin);
-            let (result, click_pending, click_cancelled, root_hwnd) = {
+            let (result, click_pending, click_cancelled, root_hwnd, edit_manual_drag) = {
                 let s = &mut *state;
                 s.current = point;
                 let dx = (i64::from(s.start.x) - i64::from(s.current.x)).abs();
@@ -793,11 +817,19 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                     ))
                 };
                 s.down = false;
+                // Holding Shift while releasing a real drag freezes that
+                // manually drawn area for pixel correction. Without Shift,
+                // drags and hover clicks still finish immediately as before.
+                let editable = result.and_then(|r| intersection(r, desktop_rect(s)));
+                let edit_manual_drag = !click && is_shift_down() && editable.is_some();
+                if edit_manual_drag {
+                    s.keyboard_rect = editable;
+                }
                 let fresh_scan =
                     s.window_confirmed_sequence == s.window_sequence && s.window_sequence != 0;
                 let fresh = fresh_scan && s.window_confirmed_root == root_hwnd;
                 let valid_click = click && result.is_some_and(|r| contains(r, point));
-                let pending = valid_click && !fresh_scan && root_hwnd != 0;
+                let pending = !edit_manual_drag && valid_click && !fresh_scan && root_hwnd != 0;
                 let cancelled = click
                     && (!valid_click || (fresh_scan && !fresh) || (!fresh_scan && root_hwnd == 0));
                 if pending {
@@ -807,7 +839,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                         root_hwnd,
                     });
                 }
-                (result, pending, cancelled, root_hwnd)
+                (result, pending, cancelled, root_hwnd, edit_manual_drag)
             };
             ReleaseCapture();
             move_magnifier(state);
@@ -815,7 +847,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 "selection mouse_up point=({}, {}) click_pending={} cancelled={} result={:?}",
                 point.x, point.y, click_pending, click_cancelled, result
             ));
-            if !click_pending {
+            if !click_pending && !edit_manual_drag {
                 let final_result = if click_cancelled { None } else { result }
                     .and_then(|r| intersection(r, desktop_rect(&*state)));
                 let target = mark_finished(state, final_result);
@@ -823,6 +855,9 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                     let _ = KillTimer(target, UIA_TIMER_ID);
                     DestroyWindow(target);
                 }
+            }
+            if edit_manual_drag {
+                InvalidateRect(hwnd, null(), 0);
             }
             let _ = root_hwnd;
             0
@@ -832,6 +867,47 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
             if !target.is_null() {
                 let _ = KillTimer(target, UIA_TIMER_ID);
                 DestroyWindow(target);
+            }
+            0
+        }
+        WM_KEYDOWN if w == VK_RETURN => {
+            if (*state).down {
+                return 0;
+            }
+            let rect = {
+                let s = &*state;
+                s.keyboard_rect.or(s.visible_hover_rect).or(s.hover_rect)
+            };
+            let desktop = desktop_rect(&*state);
+            let target = mark_finished(state, rect.and_then(|r| intersection(r, desktop)));
+            if !target.is_null() {
+                let _ = KillTimer(target, UIA_TIMER_ID);
+                DestroyWindow(target);
+            }
+            0
+        }
+        WM_KEYDOWN if matches!(w, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN) => {
+            if !(*state).down {
+                let bounds = desktop_rect(&*state);
+                let current = (*state)
+                    .keyboard_rect
+                    .or((*state).visible_hover_rect)
+                    .or((*state).hover_rect);
+                if let Some(rect) = current {
+                    let (dx, dy) = match w {
+                        VK_LEFT => (-1, 0),
+                        VK_UP => (0, -1),
+                        VK_RIGHT => (1, 0),
+                        _ => (0, 1),
+                    };
+                    let edited = if is_shift_down() {
+                        selection_rect::resize(rect, dx, dy, bounds)
+                    } else {
+                        selection_rect::translate(rect, dx, dy, bounds)
+                    };
+                    (*state).keyboard_rect = Some(edited);
+                    InvalidateRect(hwnd, null(), 0);
+                }
             }
             0
         }
@@ -860,7 +936,9 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
         WM_PAINT => {
             let (screen_rect, desktop) = {
                 let s = &*state;
-                let screen_rect = if s.down {
+                let screen_rect = if let Some(rect) = s.keyboard_rect {
+                    Some(rect)
+                } else if s.down {
                     Some((
                         s.start.x.min(s.current.x),
                         s.start.y.min(s.current.y),
@@ -897,7 +975,7 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                 let _ = DeleteObject(brush);
             }
             let _ = EndPaint(hwnd, &paint);
-            if !(*state).down {
+            if !(*state).down && (*state).keyboard_rect.is_none() {
                 (*state).visible_hover_rect = screen_rect;
             }
             0
@@ -932,7 +1010,10 @@ unsafe fn unpack(l: L) -> (i32, i32) {
 
 /// Display the virtual-desktop overlay. Drag selects any rectangle. A click
 /// selects the current child/UIA suggestion; Ctrl-click selects the containing
-/// top-level window. Esc cancels. UI Automation queries run off the UI thread.
+/// top-level window. Hold Shift on drag release to pause for keyboard correction:
+/// arrows move by one pixel, Shift+arrows resize the right/bottom edge, Enter
+/// accepts, pointer motion resumes hover, and Esc cancels. UI Automation queries
+/// run off the UI thread.
 ///
 /// The returned rectangle is `(left, top, width, height)` in screen pixels.
 pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
@@ -994,6 +1075,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         window_confirmed_root: 0,
         pending_click: None,
         visible_hover_rect: None,
+        keyboard_rect: None,
         uia: uia_picker::UiaPicker::new().ok(),
         result: None,
         done: false,
