@@ -50,3 +50,7 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-browser-hover-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows editor alpha and undo smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-editor-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
