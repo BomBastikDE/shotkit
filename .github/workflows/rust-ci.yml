@@ -30,3 +30,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/windows-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows scroll capture smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe

@@ -14,6 +14,7 @@ use crate::{
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DIMENSION: usize = 30_000;
+#[cfg(all(test, windows))]
 const PIXELATE_BLOCK_SIZE: usize = 12;
 
 /// Render document shapes over `source`, leaving both inputs unchanged.
@@ -38,7 +39,11 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
                 else {
                     continue;
                 };
-                let pixelated = pixelate_region(source, region, PIXELATE_BLOCK_SIZE)
+                if !shape.style.width.is_finite() || shape.style.width <= 0.0 {
+                    return Err("Ungültige Pixelationsstärke.".into());
+                }
+                let block_size = ((shape.style.width * 3.0) as usize).clamp(6, 4096);
+                let pixelated = pixelate_region(source, region, block_size)
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
                 copy_region(&pixelated, &mut output_pixels, region)?;
             }
@@ -150,6 +155,27 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn pixelation_respects_line_width() {
+        use crate::shapes::Point;
+        let mut pixels = Vec::new();
+        for y in 0..24 {
+            for x in 0..24 {
+                pixels.extend_from_slice(&[(x * 9) as u8, (y * 9) as u8, 0, 255]);
+            }
+        }
+        let original = Image::new(24, 24, pixels).unwrap();
+        let mut blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(24.0, 24.0),
+        });
+        blur.style.width = 2.0;
+        let small = render_document(&original, &[blur.clone()]).unwrap();
+        blur.style.width = 8.0;
+        let large = render_document(&original, &[blur]).unwrap();
+        assert_ne!(small, large);
+    }
 
     #[cfg(windows)]
     fn point(x: f32, y: f32) -> Point {
