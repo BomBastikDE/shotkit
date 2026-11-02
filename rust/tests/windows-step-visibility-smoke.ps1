@@ -223,19 +223,19 @@ try {
     Click-Button $main.Handle 'Nummer (N)'
     for($i=0;$i -lt $centers.Count;$i++){Click-Canvas $centers[$i].X $centers[$i].Y}
 
-    Click-Button $main.Handle 'Speichern (Strg+S)'
+    Click-Button $main.Handle 'Speichern'
     $png=Wait-For {try {$b=Read-Png $inputPath;$b.Dispose();$true}catch{$null}} 10 'saved PNG'
     $expected12=New-ExpectedImage 12
     $saved=Read-Png $inputPath
     try {Assert-StepPixels $saved $expected12 12 'PNG'} finally {$saved.Dispose()}
 
-    Click-Button $main.Handle 'Zurück (Strg+Z)'
-    Click-Button $main.Handle 'Speichern (Strg+S)'
+    Click-Button $main.Handle 'Zurück'
+    Click-Button $main.Handle 'Speichern'
     $expected11=New-ExpectedImage 11
     $saved=Read-Png $inputPath
     try {Assert-StepPixels $saved $expected11 11 'UNDO_PNG'} finally {$saved.Dispose();$expected11.Dispose()}
-    Click-Button $main.Handle 'Wiederholen (Strg+Y)'
-    Click-Button $main.Handle 'Speichern (Strg+S)'
+    Click-Button $main.Handle 'Wiederholen'
+    Click-Button $main.Handle 'Speichern'
     $saved=Read-Png $inputPath
     try {Assert-StepPixels $saved $expected12 12 'REDO_PNG'} finally {$saved.Dispose();$expected12.Dispose()}
 

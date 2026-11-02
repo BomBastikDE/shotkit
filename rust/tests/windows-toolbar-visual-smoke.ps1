@@ -43,14 +43,13 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e);
   [DllImport("user32.dll")] public static extern IntPtr LoadIconW(IntPtr i,IntPtr name);
   [DllImport("shell32.dll",CharSet=CharSet.Unicode)] public static extern int Shell_NotifyIconGetRect(ref NotifyId id,out Rect rect);
-  [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr d,int x,int y,int w,int h,IntPtr s,int sx,int sy,int op);
-  [DllImport("user32.dll")] static extern IntPtr GetWindowDC(IntPtr h);
-  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h,IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d,int x,int y,int w,int h,IntPtr s,int sx,int sy,int op);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr h);
+  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h,IntPtr dc);
   public static Win[] Windows(int pid){var a=new List<Win>(); EnumWindows((h,p)=>{uint q;GetWindowThreadProcessId(h,out q);if(q==(uint)pid){var c=new StringBuilder(256);var t=new StringBuilder(512);GetClassNameW(h,c,c.Capacity);GetWindowTextW(h,t,t.Capacity);a.Add(new Win{H=h,ClassName=c.ToString(),Title=t.ToString(),Visible=IsWindowVisible(h)});}return true;},IntPtr.Zero);return a.ToArray();}
   public static Button[] Buttons(IntPtr parent){var a=new List<Button>();EnumChildWindows(parent,(h,p)=>{var c=new StringBuilder(128);GetClassNameW(h,c,c.Capacity);if(IsWindowVisible(h)&&IsWindowEnabled(h)&&String.Equals(c.ToString(),"Button",StringComparison.OrdinalIgnoreCase)){var t=new StringBuilder(512);GetWindowTextW(h,t,t.Capacity);a.Add(new Button{H=h,Id=GetDlgCtrlID(h),Text=t.ToString()});}return true;},IntPtr.Zero);return a.ToArray();}
   public static uint Owner(IntPtr h){uint p;GetWindowThreadProcessId(h,out p);return p;}
   public static IntPtr Icon(IntPtr h){var i=SendMessageW(h,0x7f,new IntPtr(1),IntPtr.Zero);if(i==IntPtr.Zero)i=SendMessageW(h,0x7f,IntPtr.Zero,IntPtr.Zero);if(i==IntPtr.Zero)i=GetClassLongPtrW(h,-14);return i;}
-  public static void Capture(IntPtr h,string path){Rect r;if(!GetWindowRect(h,out r))throw new Exception("GetWindowRect failed");int w=r.Right-r.Left,hh=r.Bottom-r.Top;using(var b=new System.Drawing.Bitmap(w,hh)){using(var g=System.Drawing.Graphics.FromImage(b)){IntPtr dc=GetWindowDC(h);try{if(!BitBlt(g.GetHdc(),0,0,w,hh,dc,0,0,0x00CC0020))throw new Exception("BitBlt failed");}finally{g.ReleaseHdc();ReleaseDC(h,dc);}}b.Save(path,System.Drawing.Imaging.ImageFormat.Png);}}
  }
 }
 '@ }
@@ -132,7 +131,9 @@ try {
  $nid=[Activator]::CreateInstance([ShotKitToolbarVisual.NotifyId]);$nid.Size=[Runtime.InteropServices.Marshal]::SizeOf([type][ShotKitToolbarVisual.NotifyId]);$nid.Hwnd=$p.MainWindowHandle;$nid.Id=1
  $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if([ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect) -ne 0){throw 'TRAY_ICON_NOT_REGISTERED: Shell_NotifyIconGetRect could not locate the test app icon.'}
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
- [ShotKitToolbarVisual.Native]::Capture($main.H,$ScreenshotPath);if(-not(Test-Path -LiteralPath $ScreenshotPath -PathType Leaf) -or (Get-Item $ScreenshotPath).Length -lt 10000){throw 'SCREENSHOT_INVALID: editor capture missing or implausibly small.'}
+ $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
+ $captureBitmap=[Drawing.Bitmap]::new(($captureRect.Right-$captureRect.Left),($captureRect.Bottom-$captureRect.Top))
+ try { $captureGraphics=[Drawing.Graphics]::FromImage($captureBitmap);try { $sourceDC=[ShotKitToolbarVisual.Native]::GetWindowDC($main.H);if($sourceDC -eq [IntPtr]::Zero){throw 'SCREENSHOT_DC_FAILED'};try {$targetDC=$captureGraphics.GetHdc();try {if(-not [ShotKitToolbarVisual.Native]::BitBlt($targetDC,0,0,$captureBitmap.Width,$captureBitmap.Height,$sourceDC,0,0,0x00CC0020)){throw 'SCREENSHOT_BITBLT_FAILED'}}finally{$captureGraphics.ReleaseHdc($targetDC)}}finally{[void][ShotKitToolbarVisual.Native]::ReleaseDC($main.H,$sourceDC)}}finally{$captureGraphics.Dispose()};$captureBitmap.Save($ScreenshotPath,[Drawing.Imaging.ImageFormat]::Png)}finally{$captureBitmap.Dispose()};if(-not(Test-Path -LiteralPath $ScreenshotPath -PathType Leaf) -or (Get-Item $ScreenshotPath).Length -lt 10000){throw 'SCREENSHOT_INVALID: editor capture missing or implausibly small.'}
  $pass="PASS: owned 24-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
 } catch {$failure=$_} finally {
  if($mouse){try{[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}
