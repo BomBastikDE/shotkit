@@ -294,30 +294,33 @@ impl EditorController {
             return;
         }
         self.cancel_drag();
-        if self.tool == Tool::Select {
-            let previous = self.selected;
-            if let Some(index) = self.selected {
-                if let Some(shape) = self.document.shapes().get(index) {
-                    if let Some((handle, _)) = shape
-                        .handles()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| (i, distance(*p, at)))
-                        .filter(|(_, d)| *d <= self.hit_tolerance + 4.0)
-                        .min_by(|a, b| a.1.total_cmp(&b.1))
-                    {
-                        let original = shape.clone();
-                        self.drag = Some(Drag::Handle {
-                            index,
-                            original,
-                            handle,
-                            selection_before: previous,
-                        });
-                        self.last_position = Some(at);
-                        return;
-                    }
+        // The original canvas checks the selected shape's handles before it
+        // dispatches to the active tool. Keep that priority so drawing tools
+        // can resize the current selection when the pointer starts on a handle.
+        if let Some(index) = self.selected {
+            if let Some(shape) = self.document.shapes().get(index) {
+                if let Some((handle, _)) = shape
+                    .handles()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (i, distance(*p, at)))
+                    .filter(|(_, d)| *d <= self.hit_tolerance + 4.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                {
+                    let original = shape.clone();
+                    self.drag = Some(Drag::Handle {
+                        index,
+                        original,
+                        handle,
+                        selection_before: self.selected,
+                    });
+                    self.last_position = Some(at);
+                    return;
                 }
             }
+        }
+        if self.tool == Tool::Select {
+            let previous = self.selected;
             let hit = self
                 .document
                 .shapes()
@@ -795,6 +798,39 @@ mod tests {
         assert_eq!(e.shapes()[0].bounds().x, 4.0);
         assert!(e.undo());
         assert_eq!(e.shapes()[0].bounds().x, 10.0);
+    }
+
+    #[test]
+    fn rectangle_tool_resizes_selected_handle_before_creating() {
+        let mut e = rect_editor();
+        assert_eq!(e.tool(), Tool::Rectangle);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_move(p(4.0, 5.0));
+        assert_eq!(e.shapes().len(), 1);
+        assert_eq!(e.preview().unwrap().bounds().x, 4.0);
+        e.mouse_up(p(4.0, 5.0));
+        assert_eq!(e.shapes().len(), 1);
+        assert_eq!(e.shapes()[0].bounds().x, 4.0);
+        assert!(e.undo());
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+        assert!(e.redo());
+        assert_eq!(e.shapes()[0].bounds().x, 4.0);
+    }
+
+    #[test]
+    fn rectangle_tool_still_creates_outside_selected_handles() {
+        let mut e = rect_editor();
+        e.mouse_down(p(70.0, 70.0));
+        e.mouse_move(p(90.0, 85.0));
+        assert_eq!(e.shapes().len(), 1);
+        assert!(matches!(e.preview().unwrap().kind, ShapeKind::Rectangle { .. }));
+        e.mouse_up(p(90.0, 85.0));
+        assert_eq!(e.shapes().len(), 2);
+        assert_eq!(e.selected_index(), Some(1));
+        assert!(e.undo());
+        assert_eq!(e.shapes().len(), 1);
+        assert!(e.redo());
+        assert_eq!(e.shapes().len(), 2);
     }
     #[test]
     fn cancellation_discards_draft_and_restores_selection() {

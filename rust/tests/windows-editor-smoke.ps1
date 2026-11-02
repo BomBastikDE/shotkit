@@ -563,7 +563,26 @@ try {
         Save-FromToolbar $main.Handle
         [void](Wait-ForImageState -Path $inputPath -Description "undo restoring image after Shift $($toolSpec.Name)" -Predicate { param($image) Test-OriginalImage $image })
     }
-    $passMessage = 'PASS: verified the saved Shift rectangle is square and saved Shift line and arrow pixels follow a 45-degree diagonal; undo restored the original image between gestures.'
+
+    # A too-small crop keeps Crop active; a committed crop switches to Select.
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zuschneiden (C)') -Description 'crop tool')
+    [void](Wait-ForValue -Seconds 5 -Description 'crop tool activation' -Probe {
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Crop*' } | Select-Object -First 1
+    })
+    Invoke-CanvasDrag 30 30 30 30 $false
+    [void](Wait-ForValue -Seconds 2 -Description 'small crop leaving Crop active' -Probe {
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Crop*' } | Select-Object -First 1
+    })
+    Invoke-CanvasDrag 30 20 130 100 $false
+    [void](Wait-ForValue -Seconds 5 -Description 'successful crop switching to Select' -Probe {
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Select*' } | Select-Object -First 1
+    })
+    Save-FromToolbar $main.Handle
+    [void](Wait-ForImageState -Path $inputPath -Description 'saved cropped image dimensions' -Predicate {
+        param($image)
+        return ($image.Width -eq 100 -and $image.Height -eq 80)
+    })
+    $passMessage = 'PASS: verified Shift-constrained rectangle, line, and arrow behavior with undo; a too-small crop kept Crop active, while a committed crop saved at 100x80 and switched to Select.'
 }
 catch {
     $testFailure = $_

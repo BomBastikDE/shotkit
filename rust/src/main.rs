@@ -1405,6 +1405,8 @@ unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         window_state(h).zoom = 1.0;
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
+        editor(h).set_tool(Tool::Select);
+        refresh_title(h);
         Ok(())
     })();
     if let Err(e) = result {

@@ -86,6 +86,10 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-editor-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Windows editor selected-handle parity smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-editor-handles-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Edge browser scroll smoke test
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
