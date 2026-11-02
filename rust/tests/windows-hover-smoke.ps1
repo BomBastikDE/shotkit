@@ -48,10 +48,6 @@ namespace ShotKitHoverSmoke {
         private static extern bool GetUserObjectInformationW(IntPtr handle, int index, StringBuilder info, uint length, out uint needed);
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-        private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
-        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-        private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
