@@ -33,6 +33,7 @@ namespace ShotKitBrowserScrollSmoke {
         public string Title;
         public bool Visible;
         public uint ProcessId;
+        public int[] ClientBounds;
     }
     public static class Native {
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -109,6 +110,23 @@ namespace ShotKitBrowserScrollSmoke {
             if (!ClientToScreen(hwnd, ref origin) || !ClientToScreen(hwnd, ref end))
                 throw new InvalidOperationException("ClientToScreen failed.");
             return new int[] { origin.X, origin.Y, end.X, end.Y };
+        }
+        public static WindowInfo[] ChildWindows(IntPtr parent) {
+            List<WindowInfo> windows = new List<WindowInfo>();
+            EnumChildProc callback = delegate(IntPtr hwnd, IntPtr ignored) {
+                try {
+                    uint owner; GetWindowThreadProcessId(hwnd, out owner);
+                    StringBuilder cls = new StringBuilder(256); GetClassNameW(hwnd, cls, cls.Capacity);
+                    windows.Add(new WindowInfo {
+                        Handle=hwnd, ClassName=cls.ToString(), Title=Text(hwnd),
+                        Visible=IsWindowVisible(hwnd), ProcessId=owner, ClientBounds=ClientBounds(hwnd)
+                    });
+                } catch { }
+                return true;
+            };
+            EnumChildWindows(parent, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            return windows.ToArray();
         }
     }
 }
@@ -281,10 +299,7 @@ try {
         [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()) -ne $browserWindow.ProcessId) {
         throw 'EDGE_FOCUS_MISMATCH: foreground window is not the owned browser surface.'
     }
-    $client = [ShotKitBrowserScrollSmoke.Native]::ClientBounds($browserWindow.Handle)
-    $clientWidth = $client[2] - $client[0]
-    $clientHeight = $client[3] - $client[1]
-    if ($clientWidth -lt 720 -or $clientHeight -lt 450) { throw "EDGE_CLIENT_TOO_SMALL: ${clientWidth}x${clientHeight}." }
+    $browserClient = [ShotKitBrowserScrollSmoke.Native]::ClientBounds($browserWindow.Handle)
     if ($browserWindow.Title -match 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') {
         $innerWidth = [int]$Matches[1]
         $innerHeight = [int]$Matches[2]
@@ -295,13 +310,46 @@ try {
     } else {
         throw "EDGE_PAGE_NOT_READY: unexpected title '$($browserWindow.Title)'."
     }
-    if ($innerWidth -ne $clientWidth -or $innerHeight -ne $clientHeight -or $scrollHeight -ne $pageHeight) {
-        throw "EDGE_GEOMETRY_MISMATCH: client=${clientWidth}x${clientHeight}, page=${innerWidth}x${innerHeight}, scrollHeight=$scrollHeight."
+    if ($innerWidth -ne 984 -or $innerHeight -ne 636) {
+        throw "EDGE_VIEWPORT_SIZE_MISMATCH: this runner contract expects an exact 984x636 web viewport, got ${innerWidth}x${innerHeight}."
     }
+    if ($scrollHeight -ne $pageHeight) { throw "EDGE_PAGE_GEOMETRY_MISMATCH: expected scrollHeight=$pageHeight, got $scrollHeight." }
     if ($deviceScale -ne 1.0 -or $initialScrollX -ne 0 -or $initialScrollY -ne 0) {
         throw "EDGE_COORDINATE_MISMATCH: deviceScale=$deviceScale initialScroll=($initialScrollX,$initialScrollY)."
     }
-    Write-Output "MILESTONE: local Edge canvas ready; viewport ${innerWidth}x${innerHeight}, document $pageWidth x $scrollHeight."
+    $profilePids = @((Get-ProfileEdgeProcesses | ForEach-Object { [uint]$_.ProcessId }))
+    $edgeChildWindows = @([ShotKitBrowserScrollSmoke.Native]::ChildWindows($browserWindow.Handle))
+    $rendererCandidates = @($edgeChildWindows |
+        Where-Object {
+            $_.Visible -and $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' -and
+            $profilePids -contains $_.ProcessId -and $_.ClientBounds -and
+            ($_.ClientBounds[2] - $_.ClientBounds[0]) -eq $innerWidth -and
+            ($_.ClientBounds[3] - $_.ClientBounds[1]) -eq $innerHeight
+        })
+    $rendererCandidateSummary = @($edgeChildWindows |
+        Where-Object { $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' } |
+        ForEach-Object {
+            $width = if ($_.ClientBounds) { $_.ClientBounds[2] - $_.ClientBounds[0] } else { -1 }
+            $height = if ($_.ClientBounds) { $_.ClientBounds[3] - $_.ClientBounds[1] } else { -1 }
+            "hwnd=0x$($_.Handle.ToInt64().ToString('X')) pid=$($_.ProcessId) visible=$($_.Visible) client=${width}x${height}"
+        })
+    if ($rendererCandidates.Count -ne 1) {
+        throw "EDGE_RENDERER_BOUNDS_UNVERIFIED: expected one visible profile-owned Chrome_RenderWidgetHostHWND at ${innerWidth}x${innerHeight}; found $($rendererCandidates.Count). Candidates: $($rendererCandidateSummary -join '; ')"
+    }
+    $rendererWindow = $rendererCandidates[0]
+    $client = $rendererWindow.ClientBounds
+    $clientWidth = $client[2] - $client[0]
+    $clientHeight = $client[3] - $client[1]
+    if ($clientWidth -ne $innerWidth -or $clientHeight -ne $innerHeight) {
+        throw "EDGE_RENDERER_BOUNDS_MISMATCH: child client ${clientWidth}x${clientHeight}, DOM viewport ${innerWidth}x${innerHeight}."
+    }
+    if ($client[0] -lt $browserClient[0] -or $client[1] -lt $browserClient[1] -or
+        $client[2] -gt $browserClient[2] -or $client[3] -gt $browserClient[3]) {
+        throw "EDGE_RENDERER_OUTSIDE_ROOT_CLIENT: child HWND client rect $($client -join ',') is outside root client rect $($browserClient -join ',')."
+    }
+    $contentOffsetX = $client[0] - $browserClient[0]
+    $contentOffsetY = $client[1] - $browserClient[1]
+    Write-Output "MILESTONE: verified Edge renderer HWND=0x$($rendererWindow.Handle.ToInt64().ToString('X')) PID=$($rendererWindow.ProcessId), content origin=($($client[0]),$($client[1])) root-client offset=($contentOffsetX,$contentOffsetY), viewport=984x636; root client is $($browserClient[2]-$browserClient[0])x$($browserClient[3]-$browserClient[1])."
 
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
