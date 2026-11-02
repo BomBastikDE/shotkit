@@ -77,7 +77,11 @@ try {
  if(-not $welcome){throw 'STARTUP_NOTICE_MISSING: owned prototype notice did not appear.'}
  $ok=[ShotKitToolbarVisual.Native]::Buttons($welcome.H)|Where-Object{$_.Text -eq 'OK'}|Select-Object -First 1
  if(-not $ok){throw 'STARTUP_NOTICE_UNEXPECTED: owned prototype notice lacked exact OK button.'}
+ [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($welcome.H)
  [void][ShotKitToolbarVisual.Native]::SendMessageW($ok.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+ $deadline=[DateTime]::UtcNow.AddSeconds(5)
+ while([DateTime]::UtcNow -lt $deadline){$still=Owned-Windows|Where-Object{$_.H -eq $welcome.H -and $_.Visible}|Select-Object -First 1;if(-not $still){break};Start-Sleep -Milliseconds 100}
+ if($still){throw 'STARTUP_NOTICE_CLOSE_FAILED: the owned notice remained visible after OK.'}
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
  Start-Sleep -Milliseconds 500
  $toolbar=[ShotKitToolbarVisual.Native]::Children($main.H)|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1
@@ -96,7 +100,7 @@ try {
   if($hit -ne $hover.H){throw "HOVER_TARGET_MISMATCH: expected '$tipLabel' handle $($hover.H), got $hit at $($actual.X),$($actual.Y)."}
   $deadline=[DateTime]::UtcNow.AddSeconds(5);$tip=$null
   while([DateTime]::UtcNow -lt $deadline){$tip=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'tooltips_class32'}|Select-Object -First 1;if($tip){break};Start-Sleep -Milliseconds 100}
-  if(-not $tip){$details=(Owned-Windows|ForEach-Object{"$($_.ClassName):visible=$($_.Visible)"}) -join ', ';throw "TOOLTIP_NOT_VISIBLE: native tooltip for '$tipLabel' did not appear after real hover. Owned windows: $details"}
+  if(-not $tip){$details=(Owned-Windows|ForEach-Object{"$($_.ClassName):visible=$($_.Visible):title=$($_.Title)"}) -join ', ';throw "TOOLTIP_NOT_VISIBLE: native tooltip for '$tipLabel' did not appear after real hover. Owned windows: $details"}
   $tooltipText=[Windows.Automation.AutomationElement]::FromHandle($tip.H).Current.Name
   if($tooltipText -cne $tipLabel){throw "TOOLTIP_TEXT_MISMATCH: expected exact '$tipLabel'; observed '$tooltipText'."}
  }

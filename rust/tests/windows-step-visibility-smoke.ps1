@@ -219,7 +219,9 @@ try {
     [void][ShotKitStepSmoke.Native]::ShowWindow($main.Handle,3)
     [void][ShotKitStepSmoke.Native]::SetForegroundWindow($main.Handle)
     $welcome=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
+    [void][ShotKitStepSmoke.Native]::SetForegroundWindow($welcome.Handle)
     $ok=Get-Button $welcome.Handle 'OK';[ShotKitStepSmoke.Native]::Click($ok.Handle)
+    [void](Wait-For {if(-not (Get-OwnedWindows | Where-Object {$_.Handle -eq $welcome.Handle -and $_.Visible})) {$true}} 5 'startup notice dismissal')
     $main=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'} | Select-Object -First 1} 10 'loaded editor'
     $client=[Activator]::CreateInstance([ShotKitStepSmoke.Rect]);if(-not [ShotKitStepSmoke.Native]::Client($main.Handle,[ref]$client)){throw 'GetClientRect failed.'}
     $toolbar=[ShotKitStepSmoke.Native]::Children($main.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'} | Select-Object -First 1
@@ -262,7 +264,7 @@ try {
     [ShotKitStepSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero)
     # EmptyClipboard can change the sequence before SetClipboardData completes.
     # Wait for the requested format itself, then still verify every pixel below.
-    $clipboard=Wait-For {
+    try { $clipboard=Wait-For {
         [uint32]$s=[ShotKitStepSmoke.Native]::ClipboardSequence()
         if($s -ne $sequence) {
             try { Read-ClipboardBitmap }
@@ -270,7 +272,11 @@ try {
                 if($_.Exception.Message -notmatch 'CF_DIBV5 missing after Ctrl\+C|OpenClipboard failed after Ctrl\+C') { throw }
             }
         }
-    } 5 'Ctrl+C CF_DIBV5 bitmap'
+    } 5 'Ctrl+C CF_DIBV5 bitmap' } catch {
+        $currentSequence=[ShotKitStepSmoke.Native]::ClipboardSequence()
+        $windows=(Get-OwnedWindows | ForEach-Object {"$($_.ClassName):visible=$($_.Visible):title=$($_.Title)"}) -join ', '
+        throw "CLIPBOARD_TIMEOUT: sequence before=$sequence after=$currentSequence; foreground=$([ShotKitStepSmoke.Native]::GetForegroundWindow()); owned windows=$windows; error=$($_.Exception.Message)"
+    }
     $expected=New-ExpectedImage 12
     try {Assert-StepPixels $clipboard $expected 12 'CLIPBOARD'} finally {$clipboard.Dispose();$expected.Dispose()}
     Write-Output 'PASS: real editor clicks created step numbers 1–12 on dark and light halves; PNG and Ctrl+C CF_DIBV5 pixels matched centered, contrasting Segoe UI Bold references, and Undo/Redo removed/restored number 12.'
