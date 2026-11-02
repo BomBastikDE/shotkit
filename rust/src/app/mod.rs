@@ -22,6 +22,7 @@ use crate::{
     overlay, scroll_windows, text_dialog, toolbar,
 };
 use std::{
+    cell::RefCell,
     ffi::c_void,
     fs::OpenOptions,
     io::Write,
@@ -316,6 +317,7 @@ impl Drop for BusyGuard {
 struct WindowState {
     toolbar: Option<Rc<toolbar::Toolbar>>,
     editor: Option<EditorController>,
+    preview_cache: Rc<RefCell<Option<shotkit::alpha_document::PreviewCache>>>,
     bitmap: H,
     current_path: Option<PathBuf>,
     dirty: bool,
@@ -334,6 +336,7 @@ impl WindowState {
         Self {
             toolbar: None,
             editor: None,
+            preview_cache: Rc::new(RefCell::new(None)),
             bitmap: null_mut(),
             current_path: None,
             dirty: false,

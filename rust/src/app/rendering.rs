@@ -54,9 +54,14 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     let (crop_start, crop_end) = (window_state(h).crop_start, window_state(h).crop_end);
     // Copy editor data before rendering or making Win32 calls, which may
     // synchronously dispatch messages and borrow this window state again.
-    let (source, shapes, tool, selection) = {
+    let (source, shapes, tool, selection, stable_count) = {
         let state = editor(h);
         let mut draft = if preview { state.preview() } else { None };
+        let stable_count = if draft.is_some() && state.tool() == Tool::Select {
+            state.selected_index().unwrap_or(state.shapes().len())
+        } else {
+            state.shapes().len()
+        };
         let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
         for (i, shape) in state.shapes().iter().enumerate() {
             if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i)
@@ -74,9 +79,21 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             shapes,
             state.tool(),
             state.selection().cloned(),
+            stable_count,
         )
     };
-    let rendered = shotkit::alpha_document::render_document(&source, &shapes)?;
+    let rendered = if preview {
+        // Take the cache out before GDI+ rendering: nested window messages may
+        // paint again, so no RefCell borrow or window-state reference may span it.
+        let shared = Rc::clone(&window_state(h).preview_cache);
+        let mut cache = shared.borrow_mut().take();
+        let result =
+            shotkit::alpha_document::render_preview(&source, &shapes, stable_count, &mut cache);
+        *shared.borrow_mut() = cache;
+        result?
+    } else {
+        shotkit::alpha_document::render_document(&source, &shapes)?
+    };
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
     // preview against a checkerboard so transparent source pixels and
     // translucent annotations are displayed using the same source-over math

@@ -4,6 +4,8 @@
 //! composited in document order. Pixelation samples the unchanged source image
 //! and replaces only its clipped region in the accumulated result.
 
+use std::sync::Arc;
+
 use crate::{
     alpha_composite::source_over,
     alpha_render,
@@ -23,13 +25,63 @@ const PIXELATE_BLOCK_SIZE: usize = 12;
 /// shape's floating-point endpoints using floor for the near edges and ceil
 /// for the far edges, then clamped to the image bounds.
 pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String> {
+    render_document_over(source, source, shapes)
+}
+
+/// Cached, fully rendered prefix of one image's annotation stack.
+/// The original image is retained because pixelation samples that image even
+/// when earlier annotations are already present in the accumulated output.
+pub struct PreviewCache {
+    source: Arc<Image>,
+    shapes: Vec<Shape>,
+    rendered: Image,
+}
+
+/// Render a preview while retaining the unchanged prefix across mouse moves.
+/// `stable_count` must identify the first potentially changing shape; later
+/// shapes are still rendered in order, including pixelation against `source`.
+pub fn render_preview(
+    source: &Arc<Image>,
+    shapes: &[Shape],
+    stable_count: usize,
+    cache: &mut Option<PreviewCache>,
+) -> Result<Image, String> {
+    let prefix = shapes
+        .get(..stable_count)
+        .ok_or("Ungültiger Vorschau-Präfix.")?;
+    // Bound retained memory for very large or scroll captures.
+    if source.pixels.len() > 128 * 1024 * 1024 {
+        *cache = None;
+        return render_document(source, shapes);
+    }
+    let reusable = cache
+        .as_ref()
+        .is_some_and(|entry| Arc::ptr_eq(&entry.source, source) && entry.shapes == prefix);
+    if !reusable {
+        let rendered = render_document(source, prefix)?;
+        *cache = Some(PreviewCache {
+            source: Arc::clone(source),
+            shapes: prefix.to_vec(),
+            rendered,
+        });
+    }
+    let entry = cache.as_ref().ok_or("Vorschau-Cache fehlt.")?;
+    render_document_over(source, &entry.rendered, &shapes[stable_count..])
+}
+
+fn render_document_over(
+    source: &Image,
+    initial: &Image,
+    shapes: &[Shape],
+) -> Result<Image, String> {
     validate_image(source)?;
+    validate_same_dimensions(source, initial)?;
 
     let mut output_pixels = Vec::new();
     output_pixels
-        .try_reserve_exact(source.pixels.len())
+        .try_reserve_exact(initial.pixels.len())
         .map_err(|_| "Nicht genug Speicher für das gerenderte Dokument.".to_owned())?;
-    output_pixels.extend_from_slice(&source.pixels);
+    output_pixels.extend_from_slice(&initial.pixels);
 
     for shape in shapes {
         match &shape.kind {
@@ -157,6 +209,77 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn preview_cache_preserves_pixelation_source_and_invalidates_changes() {
+        use crate::shapes::Point;
+        let pixels = (0..64 * 48)
+            .flat_map(|i| [(i % 251) as u8, ((i * 3) % 253) as u8, 42, 255])
+            .collect();
+        let source = Arc::new(Image::new(64, 48, pixels).unwrap());
+        let mut first = Shape::new(ShapeKind::Blur {
+            start: Point::new(2.0, 2.0),
+            end: Point::new(40.0, 30.0),
+        });
+        first.style.width = 3.0;
+        let mut second = Shape::new(ShapeKind::Blur {
+            start: Point::new(20.0, 10.0),
+            end: Point::new(62.0, 42.0),
+        });
+        second.style.width = 5.0;
+        let mut cache = None;
+        let shapes = vec![first.clone(), second.clone()];
+        let expected = render_document(&source, &shapes).unwrap();
+        assert_eq!(
+            render_preview(&source, &shapes, 1, &mut cache).unwrap(),
+            expected
+        );
+        let cached_pixels = cache.as_ref().unwrap().rendered.pixels.as_ptr();
+        second.style.width = 8.0;
+        let changed = vec![first.clone(), second];
+        assert_eq!(
+            render_preview(&source, &changed, 1, &mut cache).unwrap(),
+            render_document(&source, &changed).unwrap()
+        );
+        assert_eq!(
+            cache.as_ref().unwrap().rendered.pixels.as_ptr(),
+            cached_pixels
+        );
+        first.style.width = 7.0;
+        let changed_prefix = vec![first, changed[1].clone()];
+        assert_eq!(
+            render_preview(&source, &changed_prefix, 1, &mut cache).unwrap(),
+            render_document(&source, &changed_prefix).unwrap()
+        );
+        assert_eq!(cache.as_ref().unwrap().shapes, changed_prefix[..1]);
+        let replacement = Arc::new((*source).clone());
+        render_preview(&replacement, &changed_prefix, 1, &mut cache).unwrap();
+        assert!(Arc::ptr_eq(&cache.as_ref().unwrap().source, &replacement));
+        assert!(render_preview(&replacement, &changed_prefix, 3, &mut cache).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preview_cache_matches_document_for_transparent_shapes_and_pixelation() {
+        let source = Arc::new(Image::new(64, 48, vec![80; 64 * 48 * 4]).unwrap());
+        let mut arrow = Shape::new(ShapeKind::Line {
+            start: Point::new(2.0, 3.0),
+            end: Point::new(58.0, 39.0),
+        });
+        arrow.style.color = Color::rgba(230, 10, 10, 160);
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(10.0, 8.0),
+            end: Point::new(50.0, 35.0),
+        });
+        let shapes = vec![arrow, blur];
+        let mut cache = None;
+        for split in 0..=shapes.len() {
+            assert_eq!(
+                render_preview(&source, &shapes, split, &mut cache).unwrap(),
+                render_document(&source, &shapes).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn pixelation_respects_line_width() {
