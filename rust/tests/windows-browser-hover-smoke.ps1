@@ -346,6 +346,40 @@ function Wait-ForDialogClosed {
         @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
     } | Out-Null
 }
+function Get-LoggedSelectionRect {
+    param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Phase)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "SELECTION_DIAGNOSTICS_MISSING: no selection trace was written."
+    }
+    $lines = @(Get-Content -LiteralPath $Path)
+    if ($Phase -eq 'mouse_down') {
+        $line = $lines | Where-Object { $_ -match 'selection mouse_down point=' } | Select-Object -Last 1
+        $pattern = 'selection mouse_down point=\((?<x>-?\d+), (?<y>-?\d+)\).*?frozen_rect=Some\(\((?<left>-?\d+), (?<top>-?\d+), (?<right>-?\d+), (?<bottom>-?\d+)\)\)'
+    } elseif ($Phase -eq 'uia_response') {
+        $line = $lines | Where-Object { $_ -match 'selection uia_response ' } | Select-Object -Last 1
+        $pattern = 'selection uia_response .*?accepted_rect=Some\(\((?<left>-?\d+), (?<top>-?\d+), (?<right>-?\d+), (?<bottom>-?\d+)\)\)'
+    } else {
+        $line = $lines | Where-Object { $_ -match 'selection mouse_up point=' } | Select-Object -Last 1
+        $pattern = 'selection mouse_up point=\((?<x>-?\d+), (?<y>-?\d+)\).*?result=Some\(\((?<left>-?\d+), (?<top>-?\d+), (?<right>-?\d+), (?<bottom>-?\d+)\)\)'
+    }
+    $match = [Regex]::Match([string]$line, $pattern)
+    if (-not $match.Success) {
+        throw "SELECTION_DIAGNOSTICS_INVALID: could not read the $Phase point and selected rectangle."
+    }
+    $pointX = 0
+    $pointY = 0
+    if ($match.Groups['x'].Success) { $pointX = [int]$match.Groups['x'].Value }
+    if ($match.Groups['y'].Success) { $pointY = [int]$match.Groups['y'].Value }
+    return [pscustomobject]@{
+        X = $pointX
+        Y = $pointY
+        Left = [int]$match.Groups['left'].Value
+        Top = [int]$match.Groups['top'].Value
+        Right = [int]$match.Groups['right'].Value
+        Bottom = [int]$match.Groups['bottom'].Value
+    }
+}
 function Get-BrowserProcessById {
     param([int] $ProcessId)
     Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
@@ -544,17 +578,18 @@ catch {
     $targetBottom = [int][Math]::Ceiling($bounds.Y + $bounds.Height)
     $targetWidth = $targetRight - $targetLeft
     $targetHeight = $targetBottom - $targetTop
-    if ($targetWidth -ne 280 -or $targetHeight -ne 180) {
-        throw "UIA_PRECHECK_FAILED: rounded screen bounds are ${targetWidth}x${targetHeight}; strict test requires 280x180."
-    }
     if ($targetLeft -lt $desktopLeft -or $targetTop -lt $desktopTop -or
         $targetRight -gt $desktopLeft + $desktopWidth -or
         $targetBottom -gt $desktopTop + $desktopHeight) {
         throw 'UIA_PRECHECK_FAILED: target bounds extend outside the interactive desktop.'
     }
     Write-Output "MILESTONE: UIA named button confirmed at ${targetWidth}x${targetHeight} screen pixels."
-    $centerX = $targetLeft + [int]($targetWidth / 2)
-    $centerY = $targetTop + [int]($targetHeight / 2)
+    $centerX = [int][Math]::Floor($bounds.X + ($bounds.Width / 2))
+    $centerY = [int][Math]::Floor($bounds.Y + ($bounds.Height / 2))
+    if ($centerX -lt $bounds.X -or $centerX -ge ($bounds.X + $bounds.Width) -or
+        $centerY -lt $bounds.Y -or $centerY -ge ($bounds.Y + $bounds.Height)) {
+        throw 'UIA_PRECHECK_FAILED: integer pointer center falls outside the fractional UIA target bounds.'
+    }
 
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
@@ -660,14 +695,38 @@ catch {
 
     $bitmap = [Drawing.Bitmap]::new($png.FullName)
     try {
-        if ($bitmap.Width -ne $targetWidth -or $bitmap.Height -ne $targetHeight) {
-            throw "CAPTURE_BOUNDS_MISMATCH: got $($bitmap.Width)x$($bitmap.Height), UIA target is ${targetWidth}x${targetHeight}."
+        $mouseDownSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_down'
+        $mouseUpSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_up'
+        $uiaSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'uia_response'
+        if ($mouseDownSelection.X -ne $centerX -or $mouseDownSelection.Y -ne $centerY -or
+            $mouseUpSelection.X -ne $centerX -or $mouseUpSelection.Y -ne $centerY) {
+            throw "SELECTION_COORDINATE_MISMATCH: logged down/up points were ($($mouseDownSelection.X),$($mouseDownSelection.Y)) / ($($mouseUpSelection.X),$($mouseUpSelection.Y)); expected ($centerX,$centerY)."
+        }
+        if ($mouseDownSelection.Left -ne $mouseUpSelection.Left -or $mouseDownSelection.Top -ne $mouseUpSelection.Top -or
+            $mouseDownSelection.Right -ne $mouseUpSelection.Right -or $mouseDownSelection.Bottom -ne $mouseUpSelection.Bottom) {
+            throw 'SELECTION_RECT_MISMATCH: the rectangle frozen on mouse-down changed before mouse-up.'
+        }
+        if ($uiaSelection.Left -ne $mouseDownSelection.Left -or $uiaSelection.Top -ne $mouseDownSelection.Top -or
+            $uiaSelection.Right -ne $mouseDownSelection.Right -or $uiaSelection.Bottom -ne $mouseDownSelection.Bottom) {
+            throw 'SELECTION_UIA_MISMATCH: the frozen selection differs from the latest accepted UIA rectangle.'
+        }
+        $selectionWidth = $mouseUpSelection.Right - $mouseUpSelection.Left
+        $selectionHeight = $mouseUpSelection.Bottom - $mouseUpSelection.Top
+        if ([Math]::Abs($selectionWidth - 280) -gt 1 -or [Math]::Abs($selectionHeight - 180) -gt 1 -or
+            [Math]::Abs($mouseUpSelection.Left - $bounds.X) -gt 1 -or
+            [Math]::Abs($mouseUpSelection.Top - $bounds.Y) -gt 1 -or
+            [Math]::Abs($mouseUpSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
+            [Math]::Abs($mouseUpSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
+            throw "SELECTION_BOUNDS_MISMATCH: selected RECT ($($mouseUpSelection.Left),$($mouseUpSelection.Top),$($mouseUpSelection.Right),$($mouseUpSelection.Bottom)) does not match the fractional UIA target within one pixel."
+        }
+        if ($bitmap.Width -ne $selectionWidth -or $bitmap.Height -ne $selectionHeight) {
+            throw "CAPTURE_BOUNDS_MISMATCH: PNG is $($bitmap.Width)x$($bitmap.Height), logged selection is ${selectionWidth}x${selectionHeight}."
         }
         $samples = @(
-            @{ X = 70; Y = 45; R = 220; G = 35; B = 45; Name = 'top-left red' },
-            @{ X = 210; Y = 45; R = 30; G = 190; B = 65; Name = 'top-right green' },
-            @{ X = 70; Y = 135; R = 35; G = 70; B = 220; Name = 'bottom-left blue' },
-            @{ X = 210; Y = 135; R = 235; G = 205; B = 35; Name = 'bottom-right yellow' }
+            @{ X = [int][Math]::Floor($bitmap.Width * 0.25); Y = [int][Math]::Floor($bitmap.Height * 0.25); R = 220; G = 35; B = 45; Name = 'top-left red' },
+            @{ X = [int][Math]::Floor($bitmap.Width * 0.75); Y = [int][Math]::Floor($bitmap.Height * 0.25); R = 30; G = 190; B = 65; Name = 'top-right green' },
+            @{ X = [int][Math]::Floor($bitmap.Width * 0.25); Y = [int][Math]::Floor($bitmap.Height * 0.75); R = 35; G = 70; B = 220; Name = 'bottom-left blue' },
+            @{ X = [int][Math]::Floor($bitmap.Width * 0.75); Y = [int][Math]::Floor($bitmap.Height * 0.75); R = 235; G = 205; B = 35; Name = 'bottom-right yellow' }
         )
         foreach ($sample in $samples) {
             $actual = $bitmap.GetPixel($sample.X, $sample.Y)
