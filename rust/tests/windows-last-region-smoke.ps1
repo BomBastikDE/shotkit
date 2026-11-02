@@ -107,6 +107,15 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
     throw "Timed out waiting for $Description."
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitLastRegionSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
+function Test-PngReady([IO.FileInfo] $File) {
+    if($null -eq $File){return $false}
+    try {$bitmap=[Drawing.Bitmap]::new($File.FullName);try {[void]$bitmap.GetPixel(0,0);return $true} finally {$bitmap.Dispose()}}
+    catch {
+        $cause=$_.Exception.InnerException
+        if($cause -is [System.ArgumentException] -or $cause -is [System.Runtime.InteropServices.ExternalException] -or $cause -is [System.IO.IOException]){return $false}
+        throw
+    }
+}
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
     $bitmap=[Drawing.Bitmap]::new($File.FullName)
     try {
@@ -186,8 +195,8 @@ namespace ShotKitLastRegionSurface {
     [ShotKitLastRegionSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
     [void][ShotKitLastRegionSmoke.Native]::SetCursorPos(($g[0]+280),($g[1]+210)); Start-Sleep -Milliseconds 150
     [ShotKitLastRegionSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
-    $first=Wait-ForCondition -Seconds $CaptureTimeoutSeconds -Description 'the first manually selected PNG' -OwnedProcess $shotKit -Condition {Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1}
     Add-Type -AssemblyName System.Drawing
+    $first=Wait-ForCondition -Seconds $CaptureTimeoutSeconds -Description 'the first manually selected complete PNG' -OwnedProcess $shotKit -Condition {$file=Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1;if(Test-PngReady $file){$file}}
     Assert-PatternPng -File $first -Width 200 -Height 150 -SourceX 80 -SourceY 60 -Description 'First manual capture'
 
     # Optional abort check: beginning and cancelling another manual selection
@@ -213,7 +222,8 @@ namespace ShotKitLastRegionSurface {
     $menuEvidence=[ShotKitLastRegionSmoke.Native]::VerifyAndClickLastRegion($popup.Handle)
     $allPngs=Wait-ForCondition -Seconds $CaptureTimeoutSeconds -Description 'the second PNG from the remembered area' -OwnedProcess $shotKit -Condition {
         $files=@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)
-        if(@($files | Where-Object {$_.FullName -ne $first.FullName}).Count -ge 1){$files}
+        $newFile=$files | Where-Object {$_.FullName -ne $first.FullName} | Select-Object -First 1
+        if(Test-PngReady $newFile){$files}
     }
     $second=@($allPngs | Where-Object {$_.FullName -ne $first.FullName}) | Select-Object -First 1
     if($null -eq $second){throw 'The tray repeat command did not create a separate second PNG.'}

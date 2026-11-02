@@ -151,7 +151,7 @@ try {
  $trayHost=Owned-Windows|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1
  if(-not $trayHost -or [ShotKitToolbarVisual.Native]::Owner($trayHost.H) -ne [uint32]$p.Id){throw 'TRAY_HOST_MISSING_OR_WRONG_OWNER'}
  $nid=[Activator]::CreateInstance([ShotKitToolbarVisual.NotifyId]);$nid.Size=[Runtime.InteropServices.Marshal]::SizeOf([type][ShotKitToolbarVisual.NotifyId]);$nid.Hwnd=$trayHost.H;$nid.Id=1
- $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if([ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect) -ne 0){throw 'TRAY_ICON_NOT_REGISTERED: Shell_NotifyIconGetRect could not locate the test app icon.'}
+ $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$trayStatus=[ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect);if($trayStatus -ne 0){throw ('TRAY_ICON_NOT_REGISTERED: Shell_NotifyIconGetRect failed with HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
  $captureBitmap=[Drawing.Bitmap]::new(($captureRect.Right-$captureRect.Left),($captureRect.Bottom-$captureRect.Top))
