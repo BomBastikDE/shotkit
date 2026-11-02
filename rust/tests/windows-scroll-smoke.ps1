@@ -431,7 +431,15 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     finally { $bitmap.Dispose() }
 
     # Close only the expected completion MessageBox, then prove the editor opened.
-    [void][ShotKitScrollSmoke.Native]::PostMessageW($completion.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+    if (-not [ShotKitScrollSmoke.Native]::PostMessageW($completion.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
+        throw 'Could not close the verified scroll-completion dialog.'
+    }
+    # The editor window is already visible behind MessageBox. Do not treat that
+    # as completion until the asynchronous WM_COMMAND has actually dismissed
+    # the modal dialog; otherwise the editor wait can race Assert-NoUnexpectedDialog.
+    $dialogDismissed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the scroll-completion dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
+        -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' })
+    }
     $editor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object {
             $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible -and $_.Title -like '*speichern*'
