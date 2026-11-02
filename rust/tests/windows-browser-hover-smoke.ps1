@@ -7,6 +7,8 @@ param(
     [ValidateSet('Edge', 'Chrome')]
     [string] $Browser = 'Edge',
 
+    [switch] $KeyboardAdjustment,
+
     [ValidateRange(10, 120)]
     [int] $StartupTimeoutSeconds = 30,
 
@@ -439,8 +441,11 @@ try {
   #target {
     display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
     width: 280px; height: 180px; margin: 0; padding: 0; border: 0;
-    border-radius: 0; appearance: none; background: transparent;
+    border-radius: 0; appearance: none; background: transparent; position: relative;
   }
+  #target::before, #target::after { content: ""; position: absolute; pointer-events: none; }
+  #target::before { left: 0; right: 0; bottom: 0; height: 1px; background: rgb(0,255,255); }
+  #target::after { top: 0; right: 0; bottom: 0; width: 1px; background: rgb(255,0,255); }
   #target > span { display: block; width: 100%; height: 100%; }
 </style>
 </head>
@@ -662,11 +667,28 @@ catch {
         throw "TEST_FOCUS_MISMATCH: foreground PID is $foregroundPid at click time, expected ShotKit PID $($shotKit.Id)."
     }
     Write-Output "MILESTONE: cursor=$actualX,$actualY and foreground PID=$foregroundPid verified before hover click."
-    [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    $mouseDown = $true
-    Start-Sleep -Milliseconds 120
-    [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    $mouseDown = $false
+    if ($KeyboardAdjustment) {
+        # Preserve the real browser hover suggestion, then exercise the public
+        # keyboard path: Right translates one pixel, Shift+Down extends the
+        # bottom edge one pixel, and Enter accepts that exact edited rectangle.
+        Start-Sleep -Milliseconds 900
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0x0002, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0x0002, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 250
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero)
+        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0x0002, [UIntPtr]::Zero)
+    }
+    else {
+        [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        $mouseDown = $true
+        Start-Sleep -Milliseconds 120
+        [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        $mouseDown = $false
+    }
 
     $script:lastPngReadinessError = 'PNG file not present yet'
     try {
@@ -695,29 +717,90 @@ catch {
 
     $bitmap = [Drawing.Bitmap]::new($png.FullName)
     try {
-        $mouseDownSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_down'
-        $mouseUpSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_up'
         $uiaSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'uia_response'
-        if ($mouseDownSelection.X -ne $centerX -or $mouseDownSelection.Y -ne $centerY -or
-            $mouseUpSelection.X -ne $centerX -or $mouseUpSelection.Y -ne $centerY) {
-            throw "SELECTION_COORDINATE_MISMATCH: logged down/up points were ($($mouseDownSelection.X),$($mouseDownSelection.Y)) / ($($mouseUpSelection.X),$($mouseUpSelection.Y)); expected ($centerX,$centerY)."
+        if ($KeyboardAdjustment) {
+            $expectedLeft = $uiaSelection.Left + 1
+            $expectedTop = $uiaSelection.Top
+            $expectedRight = $uiaSelection.Right + 1
+            $expectedBottom = $uiaSelection.Bottom + 1
+            $keyboardRect = [pscustomobject]@{ Left=$expectedLeft; Top=$expectedTop; Right=$expectedRight; Bottom=$expectedBottom }
+            $baseWidth = $uiaSelection.Right - $uiaSelection.Left
+            $baseHeight = $uiaSelection.Bottom - $uiaSelection.Top
+            if ([Math]::Abs($baseWidth - 280) -gt 1 -or [Math]::Abs($baseHeight - 180) -gt 1 -or
+                [Math]::Abs($uiaSelection.Left - $bounds.X) -gt 1 -or
+                [Math]::Abs($uiaSelection.Top - $bounds.Y) -gt 1 -or
+                [Math]::Abs($uiaSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
+                [Math]::Abs($uiaSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
+                throw "UIA_BASE_BOUNDS_MISMATCH: UIA suggestion $($baseWidth)x$($baseHeight) at ($($uiaSelection.Left),$($uiaSelection.Top),$($uiaSelection.Right),$($uiaSelection.Bottom)) does not match fractional bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height)) within one pixel."
+            }
+            $trace = [IO.File]::ReadAllText($diagnosticsFile)
+            if ($trace -match 'selection mouse_(down|up)') {
+                throw 'KEYBOARD_PATH_MOUSE_GESTURE: keyboard adjustment unexpectedly recorded a mouse selection gesture.'
+            }
+            $selectionWidth = $keyboardRect.Right - $keyboardRect.Left
+            $selectionHeight = $keyboardRect.Bottom - $keyboardRect.Top
+            if ($selectionWidth -ne $baseWidth -or $selectionHeight -ne ($baseHeight + 1)) {
+                throw "KEYBOARD_BOUNDS_MISMATCH: Right must preserve the UIA width ($baseWidth) and Shift+Down must add one pixel to its height ($($baseHeight + 1)); got ${selectionWidth}x${selectionHeight}."
+            }
+            if ([Math]::Abs($keyboardRect.Left - ($bounds.X + 1)) -gt 1 -or
+                [Math]::Abs($keyboardRect.Top - $bounds.Y) -gt 1 -or
+                [Math]::Abs($keyboardRect.Right - ($bounds.X + $bounds.Width + 1)) -gt 1 -or
+                [Math]::Abs($keyboardRect.Bottom - ($bounds.Y + $bounds.Height + 1)) -gt 1) {
+                throw "KEYBOARD_RECT_MISMATCH: expected UIA rectangle translated +1 X and resized +1 bottom, got ($($keyboardRect.Left),$($keyboardRect.Top),$($keyboardRect.Right),$($keyboardRect.Bottom))."
+            }
+            # UIA screen bounds are fractional while the accepted selection is
+            # integer, half-open physical pixels. Derive landmark indices from
+            # the measured bounds and accepted crop origin instead of assuming
+            # the fractional edge always rounds in the same direction.
+            $rightMarkerX = [int][Math]::Floor($bounds.X + $bounds.Width) - 1 - $keyboardRect.Left
+            $bottomMarkerY = [int][Math]::Floor($bounds.Y + $bounds.Height) - 1 - $keyboardRect.Top
+            $sampleX = [int][Math]::Floor($bitmap.Width / 2.0)
+            $sampleY = [int][Math]::Floor($bitmap.Height / 2.0)
+            if ($rightMarkerX -lt 0 -or $rightMarkerX -ge $bitmap.Width - 1 -or
+                $bottomMarkerY -lt 0 -or $bottomMarkerY -ge $bitmap.Height - 1) {
+                throw "KEYBOARD_PIXEL_INDEX_MISMATCH: fractional UIA edges map outside the expected marker samples (right=$rightMarkerX, bottom=$bottomMarkerY, PNG=$($bitmap.Width)x$($bitmap.Height))."
+            }
+            $rightMarker = $bitmap.GetPixel($rightMarkerX, $sampleY)
+            $outsideTarget = $bitmap.GetPixel($rightMarkerX + 1, $sampleY)
+            $bottomMarker = $bitmap.GetPixel($sampleX, $bottomMarkerY)
+            $outsideBottom = $bitmap.GetPixel($sampleX, $bottomMarkerY + 1)
+            if ($rightMarker.R -lt 250 -or $rightMarker.G -gt 5 -or $rightMarker.B -lt 250 -or
+                $outsideTarget.R -lt 230 -or $outsideTarget.R -gt 245 -or
+                $outsideTarget.G -lt 230 -or $outsideTarget.G -gt 245 -or
+                $outsideTarget.B -lt 230 -or $outsideTarget.B -gt 245 -or
+                $bottomMarker.R -gt 5 -or $bottomMarker.G -lt 250 -or $bottomMarker.B -lt 250 -or
+                $outsideBottom.R -lt 230 -or $outsideBottom.R -gt 245 -or
+                $outsideBottom.G -lt 230 -or $outsideBottom.G -gt 245 -or
+                $outsideBottom.B -lt 230 -or $outsideBottom.B -gt 245) {
+                throw "KEYBOARD_PIXEL_POSITION_MISMATCH: expected magenta right-edge marker at ($rightMarkerX,$sampleY), page background after it, cyan bottom marker at ($sampleX,$bottomMarkerY), and page background after it; got RGB right=$($rightMarker.R),$($rightMarker.G),$($rightMarker.B) rightOutside=$($outsideTarget.R),$($outsideTarget.G),$($outsideTarget.B) bottom=$($bottomMarker.R),$($bottomMarker.G),$($bottomMarker.B) bottomOutside=$($outsideBottom.R),$($outsideBottom.G),$($outsideBottom.B)."
+            }
+            $finalRect = $keyboardRect
         }
-        if ($mouseDownSelection.Left -ne $mouseUpSelection.Left -or $mouseDownSelection.Top -ne $mouseUpSelection.Top -or
-            $mouseDownSelection.Right -ne $mouseUpSelection.Right -or $mouseDownSelection.Bottom -ne $mouseUpSelection.Bottom) {
-            throw 'SELECTION_RECT_MISMATCH: the rectangle frozen on mouse-down changed before mouse-up.'
-        }
-        if ($uiaSelection.Left -ne $mouseDownSelection.Left -or $uiaSelection.Top -ne $mouseDownSelection.Top -or
-            $uiaSelection.Right -ne $mouseDownSelection.Right -or $uiaSelection.Bottom -ne $mouseDownSelection.Bottom) {
-            throw 'SELECTION_UIA_MISMATCH: the frozen selection differs from the latest accepted UIA rectangle.'
-        }
-        $selectionWidth = $mouseUpSelection.Right - $mouseUpSelection.Left
-        $selectionHeight = $mouseUpSelection.Bottom - $mouseUpSelection.Top
-        if ([Math]::Abs($selectionWidth - 280) -gt 1 -or [Math]::Abs($selectionHeight - 180) -gt 1 -or
-            [Math]::Abs($mouseUpSelection.Left - $bounds.X) -gt 1 -or
-            [Math]::Abs($mouseUpSelection.Top - $bounds.Y) -gt 1 -or
-            [Math]::Abs($mouseUpSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
-            [Math]::Abs($mouseUpSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
-            throw "SELECTION_BOUNDS_MISMATCH: selected RECT ($($mouseUpSelection.Left),$($mouseUpSelection.Top),$($mouseUpSelection.Right),$($mouseUpSelection.Bottom)) does not match the fractional UIA target within one pixel."
+        else {
+            $mouseDownSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_down'
+            $mouseUpSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'mouse_up'
+            if ($mouseDownSelection.X -ne $centerX -or $mouseDownSelection.Y -ne $centerY -or
+                $mouseUpSelection.X -ne $centerX -or $mouseUpSelection.Y -ne $centerY) {
+                throw "SELECTION_COORDINATE_MISMATCH: logged down/up points were ($($mouseDownSelection.X),$($mouseDownSelection.Y)) / ($($mouseUpSelection.X),$($mouseUpSelection.Y)); expected ($centerX,$centerY)."
+            }
+            if ($mouseDownSelection.Left -ne $mouseUpSelection.Left -or $mouseDownSelection.Top -ne $mouseUpSelection.Top -or
+                $mouseDownSelection.Right -ne $mouseUpSelection.Right -or $mouseDownSelection.Bottom -ne $mouseUpSelection.Bottom) {
+                throw 'SELECTION_RECT_MISMATCH: the rectangle frozen on mouse-down changed before mouse-up.'
+            }
+            if ($uiaSelection.Left -ne $mouseDownSelection.Left -or $uiaSelection.Top -ne $mouseDownSelection.Top -or
+                $uiaSelection.Right -ne $mouseDownSelection.Right -or $uiaSelection.Bottom -ne $mouseDownSelection.Bottom) {
+                throw 'SELECTION_UIA_MISMATCH: the frozen selection differs from the latest accepted UIA rectangle.'
+            }
+            $selectionWidth = $mouseUpSelection.Right - $mouseUpSelection.Left
+            $selectionHeight = $mouseUpSelection.Bottom - $mouseUpSelection.Top
+            if ([Math]::Abs($selectionWidth - 280) -gt 1 -or [Math]::Abs($selectionHeight - 180) -gt 1 -or
+                [Math]::Abs($mouseUpSelection.Left - $bounds.X) -gt 1 -or
+                [Math]::Abs($mouseUpSelection.Top - $bounds.Y) -gt 1 -or
+                [Math]::Abs($mouseUpSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
+                [Math]::Abs($mouseUpSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
+                throw "SELECTION_BOUNDS_MISMATCH: selected RECT ($($mouseUpSelection.Left),$($mouseUpSelection.Top),$($mouseUpSelection.Right),$($mouseUpSelection.Bottom)) does not match the fractional UIA target within one pixel."
+            }
+            $finalRect = $mouseUpSelection
         }
         if ($bitmap.Width -ne $selectionWidth -or $bitmap.Height -ne $selectionHeight) {
             throw "CAPTURE_BOUNDS_MISMATCH: PNG is $($bitmap.Width)x$($bitmap.Height), logged selection is ${selectionWidth}x${selectionHeight}."
@@ -741,7 +824,8 @@ catch {
     Write-Output 'MILESTONE: capture dimensions and all four expected pixels validated.'
 
     Assert-NoUnexpectedDialog $shotKit
-    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($targetLeft,$targetTop,${targetWidth}x${targetHeight}); real hover-click captured exact dimensions and four expected pixels."
+    $interaction = if ($KeyboardAdjustment) { 'hover + Right + Shift+Down + Enter' } else { 'hover-click' }
+    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top)); $interaction captured exact dimensions and four expected pixels."
 }
 catch {
     $testFailure = $_
