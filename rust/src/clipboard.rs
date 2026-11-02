@@ -150,7 +150,7 @@ pub unsafe fn copy_bitmap(
             if source_stride != row_bytes {
                 return Err("DIBSECTION row stride is unexpected".into());
             }
-            return shotkit_rust_prototype::output_windows::copy_dib_section_to_clipboard(
+            return shotkit::output_windows::copy_dib_section_to_clipboard(
                 owner,
                 section.bitmap.bits.cast(),
                 w,
@@ -213,8 +213,8 @@ pub unsafe fn copy_bitmap(
         pixel[3] = 255;
     }
     drop(dc);
-    let image = shotkit_rust_prototype::stitch::Image::new(w, h, pixels).map_err(str::to_owned)?;
-    shotkit_rust_prototype::output_windows::copy_image_to_clipboard(owner, &image)
+    let image = shotkit::stitch::Image::new(w, h, pixels).map_err(str::to_owned)?;
+    shotkit::output_windows::copy_image_to_clipboard(owner, &image)
 }
 
 struct ClipboardGuard(bool);
@@ -263,9 +263,7 @@ impl Drop for ClipboardGuard {
 // Voraussetzung: owner ist null oder ein gültiges Fenster; Clipboard bleibt beim Lesen geöffnet.
 // Warum erfüllt bzw. offen: Ein Guard verwaltet die Sitzung; Formate und Decoderergebnisse werden geprüft.
 // Nachrichten: GetClipboardData kann verzögertes Rendering und Nachrichten auslösen.
-pub unsafe fn read_image(
-    owner: *mut c_void,
-) -> Result<Option<shotkit_rust_prototype::stitch::Image>, String> {
+pub unsafe fn read_image(owner: *mut c_void) -> Result<Option<shotkit::stitch::Image>, String> {
     let mut clipboard = ClipboardGuard::open(owner)?;
     let png_name: Vec<u16> = "PNG".encode_utf16().chain(Some(0)).collect();
     let png_format = RegisterClipboardFormatW(png_name.as_ptr());
@@ -364,10 +362,9 @@ unsafe fn with_global_bytes<T>(
 // Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-Speicher.
 // Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
 // Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
-unsafe fn read_png_format(format: u32) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+unsafe fn read_png_format(format: u32) -> Result<shotkit::stitch::Image, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
-        shotkit_rust_prototype::image_io::decode(bytes)
-            .map_err(|e| format!("PNG decode failed: {e}"))
+        shotkit::image_io::decode(bytes).map_err(|e| format!("PNG decode failed: {e}"))
     })
 }
 
@@ -375,12 +372,9 @@ unsafe fn read_png_format(format: u32) -> Result<shotkit_rust_prototype::stitch:
 // Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-DIB-Speicher.
 // Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
 // Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
-unsafe fn read_dib_format(
-    format: u32,
-    require_v5: bool,
-) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+unsafe fn read_dib_format(format: u32, require_v5: bool) -> Result<shotkit::stitch::Image, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
-        shotkit_rust_prototype::output_windows::decode_dib(bytes, require_v5)
+        shotkit::output_windows::decode_dib(bytes, require_v5)
     })
 }
 
@@ -388,7 +382,7 @@ unsafe fn read_dib_format(
 // Voraussetzung: bitmap bleibt gültig und ist für GetDIBits geeignet.
 // Warum erfüllt bzw. offen: Das Handle stammt aus dem geöffneten Clipboard; der DC-Auswahlzustand ist nicht vollständig geprüft.
 // Nachrichten: Kein expliziter Fensternachrichtenversand im Funktionskörper.
-unsafe fn read_bitmap(bitmap: H) -> Result<shotkit_rust_prototype::stitch::Image, String> {
+unsafe fn read_bitmap(bitmap: H) -> Result<shotkit::stitch::Image, String> {
     if bitmap.is_null() {
         return Err("GetClipboardData(CF_BITMAP) returned null".into());
     }
@@ -452,5 +446,5 @@ unsafe fn read_bitmap(bitmap: H) -> Result<shotkit_rust_prototype::stitch::Image
         pixel[3] = 255;
     }
     drop(dc);
-    shotkit_rust_prototype::stitch::Image::new(width, height, pixels).map_err(str::to_owned)
+    shotkit::stitch::Image::new(width, height, pixels).map_err(str::to_owned)
 }

@@ -48,7 +48,7 @@ jobs:
         timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
-        run: ./tests/run-all.ps1 -ExePath target/release/shotkit-rust-prototype.exe -ScreenshotPath target/shotkit-toolbar-test.png -AllowToolbarFailure
+        run: ./tests/run-all.ps1 -ExePath target/release/shotkit.exe -ScreenshotPath target/shotkit-toolbar-test.png -AllowToolbarFailure
       - name: Upload toolbar test screenshot
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4
@@ -61,7 +61,7 @@ jobs:
         if: ${{ success() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4
         with:
-          name: shotkit-rust-windows-x64
-          path: rust/target/release/shotkit-rust-prototype.exe
+          name: shotkit-windows-x64
+          path: rust/target/release/shotkit.exe
           if-no-files-found: error
           retention-days: 7

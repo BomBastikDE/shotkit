@@ -33,7 +33,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use shotkit_rust_prototype::{
+use shotkit::{
     capture_output::{Advance, CaptureAction, CaptureOutputState},
     delayed_capture::{BeginError, DelayedCaptureState, Ticket as CaptureTicket},
     editor::EditorController,

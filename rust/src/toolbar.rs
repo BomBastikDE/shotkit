@@ -193,7 +193,7 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 fn layout(width: i32) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
-    shotkit_rust_prototype::toolbar_layout::layout(width, ACTIONS.len())
+    shotkit::toolbar_layout::layout(width, ACTIONS.len())
 }
 
 // SAFETY CONTRACT:

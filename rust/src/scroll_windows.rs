@@ -5,7 +5,7 @@
 
 use std::{ffi::c_void, mem::size_of, ptr::null_mut, thread, time::Duration};
 
-use shotkit_rust_prototype::{
+use shotkit::{
     scroll_capture::{Direction, ScrollIo},
     stitch::Image,
 };

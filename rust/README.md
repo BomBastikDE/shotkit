@@ -32,7 +32,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e CARGO_HOME=/work/target/cargo-home
 docker run --rm --user "$(id -u):$(id -g)" -e CARGO_HOME=/work/target/cargo-home -v "$PWD:/work" shotkit-rust-build:local cargo build --locked --release --target x86_64-pc-windows-gnu
 ```
 
-Ergebnis: `target/x86_64-pc-windows-gnu/release/shotkit-rust-prototype.exe`. Docker und MinGW sind nur für den Linux-Cross-Build erforderlich. Ein erfolgreicher Build und synthetische Tests ersetzen keine interaktiven Windows-Tests.
+Ergebnis: `target/x86_64-pc-windows-gnu/release/shotkit.exe`. Docker und MinGW sind nur für den Linux-Cross-Build erforderlich. Ein erfolgreicher Build und synthetische Tests ersetzen keine interaktiven Windows-Tests.
 
 ### Interaktive Windows-Smoke-Tests
 
@@ -40,7 +40,7 @@ Die vollständige Testreihe benötigt PowerShell 7, einen interaktiven Windows-D
 
 ```powershell
 cargo build --locked --release
-pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit-rust-prototype.exe -AllowLocalInteractive
+pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit.exe -AllowLocalInteractive
 ```
 
 Das Skript führt alle 23 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.

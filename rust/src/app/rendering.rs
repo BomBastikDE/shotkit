@@ -76,7 +76,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             state.selection().cloned(),
         )
     };
-    let rendered = shotkit_rust_prototype::alpha_document::render_document(&source, &shapes)?;
+    let rendered = shotkit::alpha_document::render_document(&source, &shapes)?;
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
     // preview against a checkerboard so transparent source pixels and
     // translucent annotations are displayed using the same source-over math
@@ -95,7 +95,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
                 196
             };
             let background = [gray, gray, gray, 255];
-            let pixel = shotkit_rust_prototype::alpha_composite::source_over(
+            let pixel = shotkit::alpha_composite::source_over(
                 background,
                 [src[0], src[1], src[2], src[3]],
                 255,
@@ -192,7 +192,7 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
         let state = editor(h);
         (state.image_arc(), state.shapes().to_vec())
     };
-    shotkit_rust_prototype::alpha_document::render_document(&image, &shapes)
+    shotkit::alpha_document::render_document(&image, &shapes)
 }
 
 // SAFETY CONTRACT:

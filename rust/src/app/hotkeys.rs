@@ -78,7 +78,7 @@ pub(super) unsafe fn unregister(h: H) {
 // Warum erfüllt bzw. offen: Der eigene Fensterhandler übergibt h; unbekannte IDs werden verworfen.
 // Nachrichten: Aufnahmeaktionen und Dialoge können Nachrichten auslösen.
 pub(super) unsafe fn dispatch(h: H, id: W) -> bool {
-    use shotkit_rust_prototype::hotkey_action::{action_for_id, Action};
+    use shotkit::hotkey_action::{action_for_id, Action};
     match action_for_id(id) {
         Some(Action::Screen) => capture(h),
         Some(Action::AllScreens) => capture_rect(h, capture_targets::virtual_desktop()),

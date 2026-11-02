@@ -25,7 +25,7 @@ use std::{
 use window::*;
 
 use crate::{element_picker, uia_picker};
-use shotkit_rust_prototype::selection_rect;
+use shotkit::selection_rect;
 
 type H = *mut c_void;
 type W = usize;

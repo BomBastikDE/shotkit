@@ -54,7 +54,7 @@ extern "system" {
 // Voraussetzung: h bleibt als Dialogbesitzer gültig.
 // Warum erfüllt bzw. offen: Farbe und Farbarray sind eigene Werte, die bis zur Rückkehr leben.
 // Nachrichten: ChooseColorW verarbeitet Nachrichten.
-pub(super) unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes::Color> {
+pub(super) unsafe fn choose_color(h: H) -> Option<shotkit::shapes::Color> {
     let current = editor(h).current_style().color;
     let mut custom = [0u32; 16];
     let mut cc = ChooseColor {
@@ -71,7 +71,7 @@ pub(super) unsafe fn choose_color(h: H) -> Option<shotkit_rust_prototype::shapes
     if ChooseColorW(&mut cc) == 0 {
         return None;
     }
-    Some(shotkit_rust_prototype::shapes::Color::rgba(
+    Some(shotkit::shapes::Color::rgba(
         cc.color as u8,
         (cc.color >> 8) as u8,
         (cc.color >> 16) as u8,
@@ -143,7 +143,7 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
         width as usize
     };
     let color = if width == 0 {
-        shotkit_rust_prototype::shapes::Color::rgba(0, 0, 0, 0)
+        shotkit::shapes::Color::rgba(0, 0, 0, 0)
     } else {
         let Some(color) = choose_color(h) else {
             return;
@@ -293,7 +293,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     toolbar::ID_SWATCH_YELLOW => (255, 214, 0),
                     _ => (0, 120, 215),
                 };
-                let color = shotkit_rust_prototype::shapes::Color::rgba(r, g, b, 255);
+                let color = shotkit::shapes::Color::rgba(r, g, b, 255);
                 let mut replacement = editor(h)
                     .selection()
                     .map(|shape| shape.style.clone())
