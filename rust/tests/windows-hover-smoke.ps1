@@ -60,6 +60,8 @@ namespace ShotKitHoverSmoke {
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll", SetLastError=true)]
         public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError=true)]
+        public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")]
@@ -336,17 +338,15 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    if (-not [ShotKitHoverSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the ShotKit startup dialog.'
+    $okButton = [ShotKitHoverSmoke.Native]::GetDlgItem($welcome.Handle, 1)
+    if ($okButton -eq [IntPtr]::Zero) {
+        throw 'Could not find the IDOK button in the ShotKit startup dialog.'
     }
-    # Match the established area smoke test: allow the asynchronous button
-    # command to be dispatched before enumerating the owned modal windows.
-    Start-Sleep -Milliseconds 300
-    if ($shotKit.HasExited) {
-        throw "ShotKit exited after closing its startup dialog (exit code $($shotKit.ExitCode))."
+    if (-not [ShotKitHoverSmoke.Native]::PostMessageW($okButton, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw 'Could not post BM_CLICK to the startup dialog IDOK button.'
     }
-    if (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle }) {
-        throw 'The ShotKit startup dialog remained open after its default OK command was posted.'
+    $welcomeClosed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the ShotKit startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
+        -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
     }
     Assert-NoUnexpectedDialog $shotKit
 
