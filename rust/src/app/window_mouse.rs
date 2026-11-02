@@ -81,6 +81,7 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 return Some(0);
             }
             let (x, y) = point(h, l);
+            window_state(h).pen_history = None;
             let image_point = ShapePoint::new(x as f32, y as f32);
             let text_tool = editor(h).tool() == Tool::Text;
             let handle_hit = text_tool && editor(h).selected_handle_hit(image_point);
@@ -153,13 +154,23 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 return Some(0);
             }
             let before = editor(h).preview();
-            editor(h)
-                .mouse_move_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
+            let pen = editor(h).tool() == Tool::Pen;
+            let (positions, anchor) = if pen {
+                mouse_history::pen_samples(h, l)
+            } else {
+                (vec![ShapePoint::new(x as f32, y as f32)], None)
+            };
+            window_state(h).pen_history = anchor;
+            let shift = GetKeyState(0x10) < 0;
+            for position in positions {
+                editor(h).mouse_move_with_shift(position, shift);
+            }
             let after = editor(h).preview();
             invalidate_preview_change(h, before.as_ref(), after.as_ref());
             0
         }
         0x0202 if window_state(h).drawing => {
+            window_state(h).pen_history = None;
             let (x, y) = point(h, l);
             if let Some(start) = std::ptr::replace(&mut window_state(h).crop_start, None) {
                 window_state(h).crop_end = None;
@@ -195,6 +206,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
         }
         0x0215 if window_state(h).drawing => {
             window_state(h).drawing = false;
+            window_state(h).pen_history = None;
             window_state(h).crop_start = None;
             window_state(h).crop_end = None;
             editor(h).cancel_drag();

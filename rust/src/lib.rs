@@ -9,6 +9,7 @@ pub mod editor;
 pub mod hotkey_action;
 pub mod image_edit;
 pub mod image_io;
+pub mod mouse_history;
 pub mod output_windows;
 pub mod pixelate;
 #[cfg(windows)]

@@ -99,6 +99,52 @@ fn render_document_over(
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
                 copy_region(&pixelated, &mut output_pixels, region)?;
             }
+            ShapeKind::Freehand { points }
+                if points.len() >= 2
+                    && points.len() <= 1_000_000
+                    && shape.style.width.is_finite()
+                    && shape.style.width > 0.0
+                    && points.iter().all(|point| {
+                        point.x.is_finite()
+                            && point.y.is_finite()
+                            && point.x.abs() < 1_000_000.0
+                            && point.y.abs() < 1_000_000.0
+                    }) =>
+            {
+                // Restrict the temporary layer to the stroke's conservative
+                // bounds. Integer translation preserves the pixel grid.
+                let bounds = shape.bounds();
+                let margin = shape.style.width.clamp(1.0, 256.0) * 12.0 + 16.0;
+                let Some(region) = clipped_region(
+                    source.width,
+                    source.height,
+                    bounds.x - margin,
+                    bounds.y - margin,
+                    bounds.x + bounds.width + margin,
+                    bounds.y + bounds.height + margin,
+                )?
+                else {
+                    continue;
+                };
+                let mut local = shape.clone();
+                local.offset(-(region.x as f32), -(region.y as f32));
+                let layer = alpha_render::render_shape(region.width, region.height, &local)
+                    .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
+                for y in 0..region.height {
+                    let start = ((region.y + y) * source.width + region.x) * 4;
+                    let output = &mut output_pixels[start..start + region.width * 4];
+                    let input = &layer.pixels[y * region.width * 4..(y + 1) * region.width * 4];
+                    for (dst, src) in output
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(input.as_chunks::<4>().0.iter())
+                    {
+                        let result = source_over(*dst, *src, 255);
+                        dst.copy_from_slice(&result);
+                    }
+                }
+            }
             _ => {
                 let layer = alpha_render::render_shape(source.width, source.height, shape)
                     .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
@@ -277,6 +323,69 @@ mod tests {
             assert_eq!(
                 render_preview(&source, &shapes, split, &mut cache).unwrap(),
                 render_document(&source, &shapes).unwrap()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bounded_freehand_matches_full_image_render_pixel_for_pixel() {
+        let image = Image::new(
+            180,
+            140,
+            (0..180 * 140)
+                .flat_map(|i| [i as u8, (i / 180) as u8, 90, [0, 128, 255][i % 3]])
+                .collect(),
+        )
+        .unwrap();
+        for (points, width, alpha) in [
+            (
+                vec![
+                    Point::new(30.0, 35.0),
+                    Point::new(80.0, 90.0),
+                    Point::new(130.0, 45.0),
+                ],
+                4.0,
+                255,
+            ),
+            (
+                vec![
+                    Point::new(-10.25, 4.5),
+                    Point::new(60.5, 70.25),
+                    Point::new(210.0, 150.0),
+                ],
+                1.0,
+                128,
+            ),
+            (
+                vec![
+                    Point::new(50.0, 50.0),
+                    Point::new(51.0, 50.0),
+                    Point::new(60.0, 60.0),
+                ],
+                37.0,
+                200,
+            ),
+        ] {
+            let mut shape = Shape::new(ShapeKind::Freehand { points });
+            shape.style.width = width;
+            shape.style.color = Color::rgba(200, 30, 80, alpha);
+            let layer = alpha_render::render_shape(image.width, image.height, &shape).unwrap();
+            let mut expected = image.clone();
+            for (dst, src) in expected
+                .pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(layer.pixels.as_chunks::<4>().0.iter())
+            {
+                let result = source_over(*dst, *src, 255);
+                dst.copy_from_slice(&result);
+            }
+            let actual = render_document(&image, &[shape]).unwrap();
+            assert!(
+                actual == expected,
+                "bounded freehand changed rendered pixels"
             );
         }
     }

@@ -4,6 +4,7 @@ mod benchmark {
     use shotkit::{
         alpha_composite::{flatten_checkerboard, source_over},
         alpha_document::{render_document, render_preview},
+        alpha_render,
         shapes::{Point, Shape, ShapeKind},
         stitch::Image,
     };
@@ -71,9 +72,56 @@ mod benchmark {
         old.as_secs_f64() * 1000.0 / f64::from(iterations), new.as_secs_f64() * 1000.0 / f64::from(iterations));
     }
 
+    fn compare_freehand(width: usize, height: usize) {
+        let pixels = (0..width * height)
+            .flat_map(|i| [(i % 251) as u8, ((i / width) % 251) as u8, 120, 255])
+            .collect();
+        let image = Arc::new(Image::new(width, height, pixels).unwrap());
+        let points = (0..600)
+            .map(|i| Point::new(30.0 + i as f32, 200.0 + ((i as f32) * 0.06).sin() * 100.0))
+            .collect();
+        let mut shapes = vec![Shape::new(ShapeKind::Freehand { points })];
+        let mut cache = None;
+        render_preview(&image, &shapes, 0, &mut cache).unwrap();
+        let iterations = 3;
+        let mut old = std::time::Duration::ZERO;
+        let mut new = std::time::Duration::ZERO;
+        for i in 0..iterations {
+            shapes[0].offset(1.0 + i as f32, 0.0);
+            let started = Instant::now();
+            let layer = alpha_render::render_shape(width, height, &shapes[0]).unwrap();
+            let mut original = (*image).clone();
+            for (dst, src) in original
+                .pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(layer.pixels.as_chunks::<4>().0.iter())
+            {
+                let result = source_over(*dst, *src, 255);
+                dst.copy_from_slice(&result);
+            }
+            let original = flatten_checkerboard(&original).unwrap();
+            old += started.elapsed();
+            let started = Instant::now();
+            let optimized =
+                flatten_checkerboard(&render_preview(&image, &shapes, 0, &mut cache).unwrap())
+                    .unwrap();
+            new += started.elapsed();
+            assert!(
+                original == optimized,
+                "freehand preview pixels must remain identical"
+            );
+        }
+        println!("FREEHAND_BENCHMARK {width}x{height} 600_points 3_frames full_layer_ms={:.2} bounded_layer_ms={:.2}",
+            old.as_secs_f64() * 1000.0 / f64::from(iterations), new.as_secs_f64() * 1000.0 / f64::from(iterations));
+    }
+
     pub fn run() {
         compare(1920, 1080);
         compare(1200, 10_000);
+        compare_freehand(1920, 1080);
+        compare_freehand(1200, 10_000);
     }
 }
 #[cfg(windows)]

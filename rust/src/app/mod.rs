@@ -1,3 +1,4 @@
+mod mouse_history;
 mod region;
 mod window_commands;
 mod window_mouse;
@@ -327,6 +328,7 @@ struct WindowState {
     width: i32,
     height: i32,
     drawing: bool,
+    pen_history: Option<shotkit::mouse_history::MouseSample>,
     crop_start: Option<(i32, i32)>,
     crop_end: Option<(i32, i32)>,
     modal_depth: usize,
@@ -346,6 +348,7 @@ impl WindowState {
             width: 0,
             height: 0,
             drawing: false,
+            pen_history: None,
             crop_start: None,
             crop_end: None,
             modal_depth: 0,

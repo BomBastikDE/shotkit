@@ -61,7 +61,29 @@ pub fn dirty_shape_region(
     after: Option<&crate::shapes::Shape>,
 ) -> Option<View> {
     use crate::shapes::ShapeKind;
-    let shapes: Vec<_> = [before, after].into_iter().flatten().collect();
+    // While creating a freehand stroke only its tail changes. Include the last
+    // two old points so joins are repainted; moving an existing stroke falls
+    // back to the conservative union of its complete old and new bounds.
+    let delta = match (before, after) {
+        (Some(old), Some(new)) if old.style == new.style => match (&old.kind, &new.kind) {
+            (ShapeKind::Freehand { points: a }, ShapeKind::Freehand { points: b })
+                if b.len() > a.len() && b.starts_with(a) =>
+            {
+                let mut shape = new.clone();
+                shape.kind = ShapeKind::Freehand {
+                    points: b[a.len().saturating_sub(2)..].to_vec(),
+                };
+                Some(shape)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let shapes: Vec<_> = if let Some(ref tail) = delta {
+        vec![tail]
+    } else {
+        [before, after].into_iter().flatten().collect()
+    };
     if shapes.is_empty() {
         return None;
     }
@@ -91,7 +113,12 @@ pub fn dirty_shape_region(
         }
         // Arrowheads extend up to four stroke widths; 16 image pixels and
         // 8 screen pixels cover antialiasing and the editor selection handles.
-        let margin = f64::from(shape.style.width.abs().max(1.0) * 4.0 + 16.0);
+        let width_factor = if matches!(shape.kind, ShapeKind::Freehand { .. }) {
+            12.0
+        } else {
+            4.0
+        };
+        let margin = f64::from(shape.style.width.abs().max(1.0) * width_factor + 16.0);
         left = left.min(f64::from(view.x) + (f64::from(bounds.x) - margin) * sx - 8.0);
         top = top.min(f64::from(view.y) + (f64::from(bounds.y) - margin) * sy - 8.0);
         right =
@@ -150,6 +177,39 @@ mod tests {
             dirty_shape_region(v, (1000, 500), Some(&text), None),
             Some(v)
         );
+    }
+
+    #[test]
+    fn growing_freehand_invalidates_tail_but_moved_stroke_invalidates_full_union() {
+        use crate::shapes::{Point, Shape, ShapeKind};
+        let v = View {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 500,
+        };
+        let before = Shape::new(ShapeKind::Freehand {
+            points: vec![
+                Point::new(20.0, 20.0),
+                Point::new(400.0, 200.0),
+                Point::new(700.0, 200.0),
+            ],
+        });
+        let mut after = before.clone();
+        if let ShapeKind::Freehand { points } = &mut after.kind {
+            points.push(Point::new(750.0, 210.0));
+        }
+        let tail = dirty_shape_region(v, (1000, 500), Some(&before), Some(&after)).unwrap();
+        assert!(
+            tail.x > 20,
+            "the unchanged first section should not be invalidated"
+        );
+        assert!(tail.x <= 400 && tail.x + tail.width >= 750);
+        let mut moved = before.clone();
+        moved.offset(20.0, 30.0);
+        let union = dirty_shape_region(v, (1000, 500), Some(&before), Some(&moved)).unwrap();
+        assert_eq!(union.x, 0);
+        assert!(union.x + union.width >= 720);
     }
 
     #[cfg(windows)]
@@ -218,6 +278,57 @@ mod tests {
                         before.kind
                     );
                 }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn growing_freehand_dirty_tail_contains_every_changed_pixel() {
+        use crate::{
+            alpha_document::render_document,
+            shapes::{Point, Shape, ShapeKind},
+            stitch::Image,
+        };
+        let image = Image::new(400, 200, vec![255; 400 * 200 * 4]).unwrap();
+        let view = View {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 200,
+        };
+        let before = Shape::new(ShapeKind::Freehand {
+            points: vec![
+                Point::new(10.0, 20.0),
+                Point::new(100.0, 160.0),
+                Point::new(250.0, 60.0),
+            ],
+        });
+        let mut after = before.clone();
+        if let ShapeKind::Freehand { points } = &mut after.kind {
+            points.push(Point::new(340.0, 170.0));
+        }
+        let old = render_document(&image, std::slice::from_ref(&before)).unwrap();
+        let new = render_document(&image, std::slice::from_ref(&after)).unwrap();
+        let area = dirty_shape_region(view, (400, 200), Some(&before), Some(&after)).unwrap();
+        for (index, (left, right)) in old
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(new.pixels.as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            if left != right {
+                let x = (index % 400) as i32;
+                let y = (index / 400) as i32;
+                assert!(
+                    x >= area.x
+                        && x < area.x + area.width
+                        && y >= area.y
+                        && y < area.y + area.height,
+                    "changed freehand pixel ({x},{y}) outside dirty tail"
+                );
             }
         }
     }

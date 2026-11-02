@@ -44,3 +44,7 @@ Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2
 ## Gemeldeter Fehler: Symbolleiste wirkt unscharf
 
 **Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15, dass die Symbole der Werkzeugleiste zwar erkennbar, aber unscharf und optisch unbefriedigend wirken. Die Symbole werden derzeit mit Win32-GDI anhand eines festen 20×20-Koordinatenrasters gezeichnet. Ob und wie Windows-Skalierung zur Darstellung auf dem Rechner beiträgt, ist nicht geprüft. Eine Korrektur benötigt eine visuelle Prüfung durch den Owner; die bestehende CI belegt die Bedienbarkeit, nicht die gewünschte Bildqualität.
+
+## Gemeldeter Fehler: schnelles Freihandzeichnen
+
+**Status: offen.** Nach dem Test von Alpha 16 meldete der Owner, dass die allgemeine Bedienung deutlich flüssiger sei. Beim schnellen Zeichnen freier Linien ruckelt es aber weiterhin und Bewegungen werden nicht vollständig erfasst. Ein erneuter Test auf seinem Rechner ist nach der Korrektur erforderlich.
