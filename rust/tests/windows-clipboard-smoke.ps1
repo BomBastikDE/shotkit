@@ -186,20 +186,30 @@ try {
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $main = $null
+    $welcomeDismissed = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($process.HasExited) { throw "PROCESS_EXITED during startup (code $($process.ExitCode))." }
         $main = [ShotKitClipboardSmoke.Native]::WindowsForProcess($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1
-        if ($null -ne $main) { break }
-        $notice = [ShotKitClipboardSmoke.Native]::WindowsForProcess($process.Id) | Where-Object { $_.Visible -and $_.Title -like '*Prototyp*' } | Select-Object -First 1
+        # The editor window can exist while its startup MessageBox is still
+        # running a modal loop. Do not treat editor creation as startup
+        # completion until that owned welcome dialog has actually gone away.
+        $notice = [ShotKitClipboardSmoke.Native]::WindowsForProcess($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit Rust – Prototyp' } | Select-Object -First 1
         if ($null -ne $notice) {
             # Dismiss only the known startup notice owned by this test process.
             if ([ShotKitClipboardSmoke.Native]::OwnerPid($notice.Handle) -ne [uint32]$process.Id) { throw 'NOTICE_OWNER_MISMATCH: refusing to click an unowned window.' }
-            [void][ShotKitClipboardSmoke.Native]::SetForegroundWindow($notice.Handle)
+            if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($notice.Handle)) { throw 'NOTICE_FOCUS_FAILED: could not foreground the owned startup notice.' }
             [void][ShotKitClipboardSmoke.Native]::SendMessageW($notice.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) # WM_CLOSE
+            $welcomeDismissed = $true
+            Start-Sleep -Milliseconds 100
+            continue
         }
+        if ($welcomeDismissed -and $null -ne $main) { break }
         Start-Sleep -Milliseconds 100
     }
+    if (-not $welcomeDismissed) { throw 'NOTICE_TIMEOUT: startup notice was not seen and dismissed.' }
     if ($null -eq $main) { throw 'EDITOR_TIMEOUT: owned image editor window not found.' }
+    $remainingNotice = [ShotKitClipboardSmoke.Native]::WindowsForProcess($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit Rust – Prototyp' } | Select-Object -First 1
+    if ($null -ne $remainingNotice) { throw 'NOTICE_CLOSE_FAILED: the owned startup notice remained visible after dismissal.' }
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'EDITOR_FOCUS_FAILED: could not foreground owned editor.' }
     [ShotKitClipboardSmoke.Native]::ClickCanvas($main.Handle, $process.Id)
     Start-Sleep -Milliseconds 100

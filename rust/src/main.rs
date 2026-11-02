@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 mod autostart;
+mod about_dialog;
 mod capture_targets;
 mod clipboard;
 mod element_picker;
@@ -1884,6 +1885,7 @@ unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
         (12, "Bild aus Zwischenablage öffnen"),
         (14, "Speicherordner öffnen"),
         (8, "Ungesicherte Aufnahme speichern …"),
+        (15, "Über ShotKit"),
         (6, "Beenden"),
     ] {
         AppendMenuW(menu, 0, id, wide(label).as_ptr());
@@ -1954,6 +1956,7 @@ unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot, String>) {
         5 => open_image(h),
         12 => paste_image(h),
         14 => open_storage_folder(h),
+        15 => about_dialog::show(h),
         8 => {
             resolve_recovery(h);
         }

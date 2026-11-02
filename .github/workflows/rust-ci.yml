@@ -26,6 +26,10 @@ jobs:
       - name: Build Windows application
         if: runner.os == 'Windows'
         run: cargo build --locked --release
+      - name: Interactive Windows About dialog smoke test
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-about-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
       - name: Interactive Windows clipboard alpha round-trip smoke test
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
