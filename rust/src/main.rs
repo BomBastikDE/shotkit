@@ -2485,19 +2485,27 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
             if sx < vx || sy < vy || sx >= vx + vw || sy >= vy + vh {
                 return 0;
             }
-            if editor(h).tool() == Tool::Text {
-                let (x, y) = point(h, l);
-                if let Some(text) = text_dialog::prompt(h, "") {
-                    if editor(h).place_text(ShapePoint::new(x as f32, y as f32), text) {
+            let (x, y) = point(h, l);
+            let image_point = ShapePoint::new(x as f32, y as f32);
+            if editor(h).tool() == Tool::Text
+                && !editor(h).selected_handle_hit(image_point)
+            {
+                if let Some((index, existing)) = editor(h).text_at(image_point) {
+                    if let Some(changed) = text_dialog::prompt(h, &existing) {
+                        if editor(h).set_text_at(index, changed) {
+                            window_state(h).dirty = true;
+                        }
+                    }
+                } else if let Some(text) = text_dialog::prompt(h, "") {
+                    if !text.trim().is_empty() && editor(h).place_text(image_point, text) {
                         window_state(h).dirty = true;
-                        InvalidateRect(h, std::ptr::null(), 0);
                     }
                 }
                 report_editor_error(h);
+                InvalidateRect(h, std::ptr::null(), 0);
                 return 0;
             }
             window_state(h).drawing = true;
-            let (x, y) = point(h, l);
             if editor(h).tool() == Tool::Crop {
                 window_state(h).crop_start = Some((x, y));
                 window_state(h).crop_end = Some((x, y));

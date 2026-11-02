@@ -252,6 +252,77 @@ impl EditorController {
         })
     }
 
+    /// Return the topmost hit text object's index and contents, in image space.
+    /// The caller can use the index to edit the same object without changing
+    /// the current selection, matching the canvas Text-tool behavior.
+    pub fn text_at(&self, at: Point) -> Option<(usize, String)> {
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return None;
+        }
+        self.document
+            .shapes()
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, shape)| shape.hit_test(at, self.hit_tolerance))
+            .and_then(|(index, shape)| match &shape.kind {
+                ShapeKind::Text { text, .. } => Some((index, text.clone())),
+                _ => None,
+            })
+    }
+
+    /// Whether the pointer is on a handle of the selected shape. This lets a
+    /// UI preserve handle priority before dispatching a Text-tool click.
+    pub fn selected_handle_hit(&self, at: Point) -> bool {
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return false;
+        }
+        self.selected
+            .and_then(|index| self.document.shapes().get(index))
+            .is_some_and(|shape| {
+                shape
+                    .handles()
+                    .iter()
+                    .any(|handle| distance(*handle, at) <= self.hit_tolerance + 4.0)
+            })
+    }
+
+    /// Replace text at a document index as one undoable edit. Empty or
+    /// whitespace-only input removes the object, like the original canvas.
+    pub fn set_text_at(&mut self, index: usize, text: impl Into<String>) -> bool {
+        let text = text.into();
+        if text.len() > MAX_TEXT_BYTES {
+            return false;
+        }
+        self.cancel_drag();
+        let Some(shape) = self.document.shapes().get(index) else {
+            return false;
+        };
+        let ShapeKind::Text { text: current, .. } = &shape.kind else {
+            return false;
+        };
+        if current == &text {
+            return false;
+        }
+        if text.trim().is_empty() {
+            match self.document.remove_shape(index) {
+                Ok(_) => {
+                    self.selected = None;
+                    return true;
+                }
+                Err(error) => {
+                    self.last_error = Some(error);
+                    return false;
+                }
+            }
+        }
+        self.edit_shape(index, |shape| {
+            if let ShapeKind::Text { text: current, .. } = &mut shape.kind {
+                *current = text;
+            }
+        })
+    }
+
     /// Current uncommitted drag result, without changing document or history.
     pub fn preview(&self) -> Option<Shape> {
         let drag = self.drag.as_ref()?;
@@ -1014,6 +1085,70 @@ mod tests {
         assert_eq!(e.selected_text(), Some("before"));
         assert!(e.redo());
         assert_eq!(e.selected_text(), Some("after"));
+    }
+
+    #[test]
+    fn text_hit_uses_topmost_shape_and_returns_text_without_changing_selection() {
+        let mut e = editor();
+        e.set_tool(Tool::Rectangle);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_up(p(60.0, 50.0));
+        assert!(e.place_text(p(20.0, 20.0), "front"));
+        let original_selection = e.selected_index();
+
+        // x=15 lies within the rectangle's hit band and the text bounds' hit
+        // tolerance, so both objects overlap at this point.
+        assert_eq!(e.text_at(p(15.0, 25.0)), Some((1, "front".to_owned())));
+        assert_eq!(e.selected_index(), original_selection);
+        assert_eq!(e.text_at(p(80.0, 80.0)), None);
+    }
+
+    #[test]
+    fn text_hit_on_topmost_non_text_does_not_edit_text_underneath() {
+        let mut e = editor();
+        assert!(e.place_text(p(10.0, 10.0), "behind"));
+        e.set_tool(Tool::Rectangle);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_up(p(60.0, 50.0));
+
+        assert_eq!(e.text_at(p(10.0, 25.0)), None);
+    }
+
+    #[test]
+    fn text_edit_is_undoable_and_no_change_adds_no_history() {
+        let mut e = editor();
+        assert!(e.place_text(p(5.0, 6.0), "before"));
+        let (index, existing) = e.text_at(p(8.0, 8.0)).unwrap();
+        assert_eq!(existing, "before");
+        assert!(!e.set_text_at(index, existing));
+        assert!(e.set_text_at(index, "after"));
+        assert!(matches!(&e.shapes()[0].kind, ShapeKind::Text { text, .. } if text == "after"));
+        assert!(e.undo());
+        assert!(matches!(&e.shapes()[0].kind, ShapeKind::Text { text, .. } if text == "before"));
+        assert!(e.redo());
+        assert!(matches!(&e.shapes()[0].kind, ShapeKind::Text { text, .. } if text == "after"));
+    }
+
+    #[test]
+    fn text_tool_keeps_selected_shape_handle_priority() {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_up(p(10.0, 10.0));
+        e.set_tool(Tool::Text);
+        assert!(e.selected_handle_hit(p(10.0, 10.0)));
+
+        e.mouse_down(p(10.0, 10.0));
+        e.mouse_move(p(4.0, 5.0));
+        assert_eq!(e.shapes().len(), 1);
+        assert_eq!(e.preview().unwrap().bounds().x, 4.0);
+        e.mouse_up(p(4.0, 5.0));
+        assert_eq!(e.shapes().len(), 1);
+        assert_eq!(e.shapes()[0].bounds().x, 4.0);
+        assert!(e.undo());
+        assert_eq!(e.shapes()[0].bounds().x, 10.0);
+        assert!(e.redo());
+        assert_eq!(e.shapes()[0].bounds().x, 4.0);
     }
 
     #[test]
