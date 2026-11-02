@@ -75,6 +75,7 @@ namespace ShotKitStepSmoke {
             r=new Rect{Left=a.X,Top=a.Y,Right=b.X,Bottom=b.Y};return true;
         }
         public static void Click(IntPtr h) { UIntPtr result; if(SendMessageTimeoutW(h,0x00F5,IntPtr.Zero,IntPtr.Zero,2,5000,out result)==IntPtr.Zero) throw new InvalidOperationException("Button click timed out or failed; an owned dialog may require attention."); }
+        public static void CloseNotice(IntPtr h) { UIntPtr result; if(SendMessageTimeoutW(h,0x0010,IntPtr.Zero,IntPtr.Zero,2,5000,out result)==IntPtr.Zero) throw new InvalidOperationException("Startup notice close timed out."); }
         public static byte[] ReadDibV5() {
             if(!OpenClipboard(IntPtr.Zero))throw new InvalidOperationException("OpenClipboard failed after Ctrl+C.");
             IntPtr memory=IntPtr.Zero,p=IntPtr.Zero;
@@ -220,7 +221,7 @@ try {
     [void][ShotKitStepSmoke.Native]::SetForegroundWindow($main.Handle)
     $welcome=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
     [void][ShotKitStepSmoke.Native]::SetForegroundWindow($welcome.Handle)
-    $ok=Get-Button $welcome.Handle 'OK';[ShotKitStepSmoke.Native]::Click($ok.Handle)
+    [void](Get-Button $welcome.Handle 'OK');[ShotKitStepSmoke.Native]::CloseNotice($welcome.Handle)
     [void](Wait-For {if(-not (Get-OwnedWindows | Where-Object {$_.Handle -eq $welcome.Handle -and $_.Visible})) {$true}} 5 'startup notice dismissal')
     $main=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'} | Select-Object -First 1} 10 'loaded editor'
     $client=[Activator]::CreateInstance([ShotKitStepSmoke.Rect]);if(-not [ShotKitStepSmoke.Native]::Client($main.Handle,[ref]$client)){throw 'GetClientRect failed.'}

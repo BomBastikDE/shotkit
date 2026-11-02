@@ -637,6 +637,10 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
     let tip_class = wide("tooltips_class32");
     let tooltip = CreateWindowExW(0x00000008, tip_class.as_ptr(), null(), 0x80000000 | 0x00000001,
         0, 0, 0, 0, hwnd, null_mut(), instance, null_mut());
+    if tooltip.is_null() {
+        DestroyWindow(hwnd);
+        return Err("Tooltip-Fenster konnte nicht erstellt werden".into());
+    }
     for (index, (action, (x, y, w, h))) in ACTIONS.iter().zip(positions).enumerate() {
         let label = wide(action.label);
         let mut tooltip_label = wide(match action.id {
@@ -679,11 +683,16 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
             }
         }
         if !tooltip.is_null() {
-            let mut info = ToolInfoW { size: std::mem::size_of::<ToolInfoW>() as u32,
+            // Version 5 common controls require the V2 size (without lpReserved).
+            let mut info = ToolInfoW { size: std::mem::offset_of!(ToolInfoW, reserved) as u32,
                 flags: TTF_IDISHWND | TTF_SUBCLASS, hwnd, id: button as usize,
                 rect: std::mem::zeroed(), instance, text: tooltip_label.as_mut_ptr(),
                 lparam: 0, reserved: null_mut() };
-            SendMessageW(tooltip, 0x0432, 0, &mut info as *mut _ as isize); // TTM_ADDTOOLW
+            if SendMessageW(tooltip, 0x0432, 0, &mut info as *mut _ as isize) == 0 { // TTM_ADDTOOLW
+                DestroyWindow(tooltip);
+                DestroyWindow(hwnd);
+                return Err(format!("Tooltip für {} konnte nicht registriert werden", action.label));
+            }
         }
         tip_text.push(tooltip_label);
         buttons.push(button);
