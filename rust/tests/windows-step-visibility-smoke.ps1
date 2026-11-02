@@ -90,7 +90,7 @@ namespace ShotKitStepSmoke {
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Step-Visibility-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'
-$inputPath = Join-Path $root 'step-fixture.png'; $process = $null; $failure = $null; $mouseDown = $false
+$inputPath = Join-Path $root 'step-fixture.png'; $referencePath = Join-Path $root 'step-reference.png'; $process = $null; $failure = $null; $mouseDown = $false
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 $centers = @(
     @{X=72;Y=70}, @{X=232;Y=70}, @{X=392;Y=70}, @{X=552;Y=70},
@@ -148,16 +148,23 @@ function Read-ClipboardBitmap {
        $redMask -ne 16711680 -or $greenMask -ne 65280 -or $blueMask -ne 255 -or $alphaMask -ne 4278190080L){
         throw "CLIPBOARD_HEADER: expected 640x480 32bpp BI_BITFIELDS with RGBA masks, got ${w}x${h}, $bpp bpp compression=$compression masks=$redMask/$greenMask/$blueMask/$alphaMask."
     }
-    $bitmap=[Drawing.Bitmap]::new($w,$h,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $rows=[Math]::Abs($h);$rowBytes=$w*4
+    if($dib.Length -lt 124+$rowBytes*$rows){throw 'CLIPBOARD_TRUNCATED: bitmap pixels are incomplete.'}
+    $bitmap=[Drawing.Bitmap]::new($w,$rows,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
-        for($y=0;$y -lt $h;$y++) { $sourceY=if($h -gt 0){$h-1-$y}else{$y};for($x=0;$x -lt $w;$x++) {
-            $i=124+($sourceY*$w+$x)*4;$bitmap.SetPixel($x,$y,[Drawing.Color]::FromArgb($dib[$i+3],$dib[$i+2],$dib[$i+1],$dib[$i]))
-        }}
+        $bounds=[Drawing.Rectangle]::new(0,0,$w,$rows)
+        $locked=$bitmap.LockBits($bounds,[Drawing.Imaging.ImageLockMode]::WriteOnly,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        try {
+            for($y=0;$y -lt $rows;$y++) {
+                $sourceY=if($h -gt 0){$rows-1-$y}else{$y}
+                [Runtime.InteropServices.Marshal]::Copy($dib,124+$sourceY*$rowBytes,[IntPtr]::Add($locked.Scan0,$y*$locked.Stride),$rowBytes)
+            }
+        } finally {$bitmap.UnlockBits($locked)}
         return $bitmap
     } catch { $bitmap.Dispose();throw }
 }
 function New-ExpectedImage([int]$Count) {
-    $bitmap=[Drawing.Bitmap]::new($inputPath)
+    $bitmap=[Drawing.Bitmap]::new($referencePath)
     $g=[Drawing.Graphics]::FromImage($bitmap)
     try {
         $g.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -201,6 +208,7 @@ try {
         $light=[Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255,238,240,244))
         try {$g.Clear([Drawing.Color]::FromArgb(255,24,28,36));$g.FillRectangle($light,320,0,320,480)} finally {$light.Dispose();$g.Dispose()}
         $fixture.Save($inputPath,[Drawing.Imaging.ImageFormat]::Png)
+        $fixture.Save($referencePath,[Drawing.Imaging.ImageFormat]::Png)
     } finally {$fixture.Dispose()}
 
     $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
