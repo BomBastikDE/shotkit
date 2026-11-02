@@ -317,9 +317,9 @@ try {
     const bandB = Math.floor(y / 11) * 41;
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      p[i] = (x * 19 + y * 11 + bandB) & 255;
+      p[i] = (x * 29 + y * 17 + bandR) & 255;
       p[i + 1] = (x * 7 + y * 31 + bandG) & 255;
-      p[i + 2] = (x * 29 + y * 17 + bandR) & 255;
+      p[i + 2] = (x * 19 + y * 11 + bandB) & 255;
       p[i + 3] = 255;
     }
   }
