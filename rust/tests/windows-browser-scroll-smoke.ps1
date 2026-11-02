@@ -187,6 +187,7 @@ $oldLocalAppData = $env:LOCALAPPDATA
 $passMessage = $null
 $testFailure = $null
 $cleanupFailures = @()
+$edgeOwnedHandles = New-Object System.Collections.ArrayList
 $mouseDown = $false
 $originalCursorX = 0
 $originalCursorY = 0
@@ -206,12 +207,17 @@ function Get-ProcessDialogs {
     param([System.Diagnostics.Process] $OwnedProcess)
     Get-ProcessWindows $OwnedProcess | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' }
 }
+function Format-DialogDetails {
+    param($Dialog)
+    $text = [ShotKitBrowserScrollSmoke.Native]::WindowText($Dialog.Handle)
+    "Title='$($Dialog.Title)' HWND=0x$($Dialog.Handle.ToInt64().ToString('X')) PID=$($Dialog.ProcessId) Class='$($Dialog.ClassName)' Text='$text'"
+}
 function Assert-NoUnexpectedDialog {
     param([System.Diagnostics.Process] $OwnedProcess, [string[]] $AllowedTitles = @())
     $dialog = Get-ProcessDialogs $OwnedProcess |
         Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -notlike '*Prototyp*' } |
         Select-Object -First 1
-    if ($null -ne $dialog) { throw "Unexpected ShotKit dialog. Title='$($dialog.Title)' HWND=$($dialog.Handle)." }
+    if ($null -ne $dialog) { throw "Unexpected ShotKit dialog: $(Format-DialogDetails $dialog)" }
 }
 function Wait-ForCondition {
     param([scriptblock] $Condition, [int] $TimeoutSeconds, [string] $Description,
@@ -253,45 +259,49 @@ function Wait-ForDialogClosed {
 }
 function Get-ProfileEdgeProcesses {
     $escapedProfile = [Regex]::Escape($edgeProfile)
-    @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
+    $candidates = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
-}
-function Stop-ProfileEdgeProcess {
-    param($ProcessIdentity)
-    $ProcessId = [int]$ProcessIdentity.ProcessId
-    $currentIdentity = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
-    if ($null -eq $currentIdentity) { return }
-    # The original process may have exited and Windows may already have reused its PID.
-    # Treat that as successful cleanup, without ever touching the replacement.
-    if ($currentIdentity.CreationDate -ne $ProcessIdentity.CreationDate) { return }
-    if ($currentIdentity.Name -ne 'msedge.exe' -or -not $currentIdentity.CommandLine -or
-        $currentIdentity.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
-        throw "Refusing to stop PID ${ProcessId}: it no longer identifies the test Edge profile."
-    }
-    $process = $null
-    try { $process = [Diagnostics.Process]::GetProcessById($ProcessId) }
-    catch {
-        $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
-        if ($null -eq $latest -or $latest.CreationDate -ne $ProcessIdentity.CreationDate) { return }
-        throw
-    }
-    try {
-        $confirmed = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
-        if ($null -eq $confirmed) { return }
-        if ($confirmed.CreationDate -ne $ProcessIdentity.CreationDate) { return }
-        if ($confirmed.Name -ne 'msedge.exe' -or
-            -not $confirmed.CommandLine -or $confirmed.CommandLine -notmatch [Regex]::Escape($edgeProfile)) {
-            throw "Refusing to stop PID ${ProcessId}: the original creation identity does not match the test Edge profile."
-        }
-        try { $process.Kill() }
+    foreach ($candidate in $candidates) {
+        $known = $edgeOwnedHandles | Where-Object {
+            $_.ProcessId -eq [int]$candidate.ProcessId -and $_.CreationDate -eq $candidate.CreationDate
+        } | Select-Object -First 1
+        if ($null -ne $known) { continue }
+        $handle = $null
+        try { $handle = [Diagnostics.Process]::GetProcessById([int]$candidate.ProcessId) }
         catch {
-            $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
-            if ($process.HasExited -or $null -eq $latest -or $latest.CreationDate -ne $ProcessIdentity.CreationDate) { return }
+            $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$($candidate.ProcessId)" -ErrorAction Stop
+            if ($null -eq $latest -or $latest.CreationDate -ne $candidate.CreationDate) { continue }
             throw
         }
-        if (-not $process.WaitForExit(3000) -and -not $process.HasExited) { throw "Owned Edge PID $ProcessId did not exit." }
+        try {
+            $confirmed = Get-CimInstance Win32_Process -Filter "ProcessId=$($candidate.ProcessId)" -ErrorAction Stop
+            if ($null -eq $confirmed -or $confirmed.CreationDate -ne $candidate.CreationDate -or
+                $confirmed.Name -ne 'msedge.exe' -or -not $confirmed.CommandLine -or
+                $confirmed.CommandLine -notmatch $escapedProfile) { continue }
+            if ($handle.ProcessName -ne 'msedge') { throw "Owned Edge process identity mismatch for PID $($candidate.ProcessId)." }
+            [void]$edgeOwnedHandles.Add([pscustomobject]@{
+                ProcessId=[int]$candidate.ProcessId; CreationDate=$candidate.CreationDate; Handle=$handle
+            })
+            $handle = $null
+        }
+        finally { if ($null -ne $handle) { $handle.Dispose() } }
     }
-    finally { $process.Dispose() }
+    return $candidates
+}
+function Stop-ProfileEdgeProcess {
+    param($OwnedHandle)
+    $process = $OwnedHandle.Handle
+    $ProcessId = $OwnedHandle.ProcessId
+    # This held Process handle was tied to the profile-verified process at discovery.
+    # Killing through it cannot target a later process that reuses the numeric PID.
+    if ($process.HasExited) { return }
+    if ($process.ProcessName -ne 'msedge') { throw "Verified Edge handle for PID $ProcessId reports unexpected process name '$($process.ProcessName)'." }
+    try { $process.Kill() }
+    catch {
+        if ($process.HasExited) { return }
+        throw
+    }
+    if (-not $process.WaitForExit(3000) -and -not $process.HasExited) { throw "Owned Edge PID $ProcessId did not exit." }
 }
 
 try {
@@ -452,13 +462,16 @@ try {
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero) # release stale Ctrl
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0, [UIntPtr]::Zero) # F10 down
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0x0002, [UIntPtr]::Zero) # F10 up
+    Write-Output 'MILESTONE: F10 key-up sent to verified foreground Edge HWND; waiting for scroll-direction dialog.'
     $directionDialog = Wait-ForCondition -TimeoutSeconds 10 -Description 'scroll direction prompt' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Richtung' } | Select-Object -First 1
     }
+    Write-Output "MILESTONE: scroll-direction dialog appeared: $(Format-DialogDetails $directionDialog)"
     if (-not [ShotKitBrowserScrollSmoke.Native]::PostMessageW($directionDialog.Handle, 0x0111, [IntPtr]6, [IntPtr]::Zero)) { throw 'Could not select vertical downward scrolling.' }
     $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'scroll selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
     }
+    Write-Output "MILESTONE: selection overlay visible HWND=0x$($overlay.Handle.ToInt64().ToString('X')); selected drag target is measured from renderer client bounds."
     if (-not [ShotKitBrowserScrollSmoke.Native]::SetForegroundWindow($overlay.Handle)) { throw 'Could not foreground selection overlay.' }
     if ([ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($overlay.Handle) -ne [uint]$shotKit.Id) {
         throw 'SHOTKIT_FOCUS_MISMATCH: selection overlay is not owned by the test ShotKit process.'
@@ -486,6 +499,7 @@ try {
     $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'auto-saved browser scroll PNG' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
     }
+    Write-Output "MILESTONE: auto-saved capture observed at '$($png.FullName)' ($($png.Length) bytes); checking completion dialog and image geometry."
     $completion = Wait-ForCondition -TimeoutSeconds 20 -Description 'normal end-of-scroll notification' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
@@ -546,17 +560,20 @@ finally {
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(8)
         do {
-            $owned = Get-ProfileEdgeProcesses
-            foreach ($process in $owned) {
-                try { Stop-ProfileEdgeProcess -ProcessIdentity $process }
-                catch { $cleanupFailures += "Could not stop owned Edge PID $($process.ProcessId): $($_.Exception.Message)" }
+            [void](Get-ProfileEdgeProcesses) # discover any newly spawned profile children and retain verified handles
+            $activeOwnedHandles = @($edgeOwnedHandles | Where-Object { -not $_.Handle.HasExited })
+            foreach ($ownedHandle in $activeOwnedHandles) {
+                try { Stop-ProfileEdgeProcess -OwnedHandle $ownedHandle }
+                catch { $cleanupFailures += "Could not stop owned Edge PID $($ownedHandle.ProcessId): $($_.Exception.Message)" }
             }
             Start-Sleep -Milliseconds 200
-        } while ((Get-ProfileEdgeProcesses).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
-        $remaining = Get-ProfileEdgeProcesses
+            [void](Get-ProfileEdgeProcesses)
+            $remaining = @($edgeOwnedHandles | Where-Object { -not $_.Handle.HasExited })
+        } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
         if ($remaining.Count -gt 0) { $cleanupFailures += "Owned Edge profile processes remain: $(@($remaining | ForEach-Object ProcessId) -join ', ')." }
     }
     catch { $cleanupFailures += "Could not verify owned Edge process cleanup: $($_.Exception.Message)" }
+    foreach ($ownedHandle in @($edgeOwnedHandles)) { try { $ownedHandle.Handle.Dispose() } catch { $cleanupFailures += "Could not release Edge process handle $($ownedHandle.ProcessId): $($_.Exception.Message)" } }
     if ($null -ne $edge) { $edge.Dispose() }
     if (Test-Path -LiteralPath $testRoot) {
         try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
