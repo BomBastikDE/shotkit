@@ -176,6 +176,21 @@ try {
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
  $captureBitmap=[Drawing.Bitmap]::new(($captureRect.Right-$captureRect.Left),($captureRect.Bottom-$captureRect.Top))
  try { $captureGraphics=[Drawing.Graphics]::FromImage($captureBitmap);try { $sourceDC=[ShotKitToolbarVisual.Native]::GetWindowDC($main.H);if($sourceDC -eq [IntPtr]::Zero){throw 'SCREENSHOT_DC_FAILED'};try {$targetDC=$captureGraphics.GetHdc();try {if(-not [ShotKitToolbarVisual.Native]::BitBlt($targetDC,0,0,$captureBitmap.Width,$captureBitmap.Height,$sourceDC,0,0,0x00CC0020)){throw 'SCREENSHOT_BITBLT_FAILED'}}finally{$captureGraphics.ReleaseHdc($targetDC)}}finally{[void][ShotKitToolbarVisual.Native]::ReleaseDC($main.H,$sourceDC)}}finally{$captureGraphics.Dispose()};$captureBitmap.Save($ScreenshotPath,[Drawing.Imaging.ImageFormat]::Png)}finally{$captureBitmap.Dispose()};if(-not(Test-Path -LiteralPath $ScreenshotPath -PathType Leaf) -or (Get-Item $ScreenshotPath).Length -lt 10000){throw 'SCREENSHOT_INVALID: editor capture missing or implausibly small.'}
+ # The inactive diagonal line must contain antialiased edge pixels, not only
+ # solid foreground and background pixels. This checks actual screen output.
+ $verify=[Drawing.Bitmap]::new($ScreenshotPath)
+ try {
+  $lineLeft=$lr.Left-$captureRect.Left; $lineTop=$lr.Top-$captureRect.Top
+  $edgePixels=0
+  for($y=$lineTop+8;$y -lt $lineTop+28;$y++) {
+   for($x=$lineLeft+8;$x -lt $lineLeft+28;$x++) {
+    if($x -lt 0 -or $y -lt 0 -or $x -ge $verify.Width -or $y -ge $verify.Height){throw 'SMOOTH_ICON_BOUNDS_INVALID'}
+    $pixel=$verify.GetPixel($x,$y)
+    if([Math]::Abs([int]$pixel.R-[int]$pixel.G) -le 1 -and [Math]::Abs([int]$pixel.G-[int]$pixel.B) -le 1 -and $pixel.R -gt 20 -and $pixel.R -lt 200){$edgePixels++}
+   }
+  }
+  if($edgePixels -eq 0){throw 'SMOOTH_ICON_EDGES_MISSING: no intermediate grayscale pixels in inactive line icon.'}
+ } finally { $verify.Dispose() }
  $pass="PASS: owned 24-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
 } catch {$failure=$_} finally {
  if($mouse){try{[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}

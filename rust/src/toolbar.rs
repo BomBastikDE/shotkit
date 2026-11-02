@@ -158,6 +158,7 @@ extern "system" {
         flags: u32,
     ) -> i32;
     fn GetSysColor(index: i32) -> u32;
+    fn GetDpiForWindow(hwnd: Hwnd) -> u32;
     fn FillRect(hdc: Hwnd, rect: *const NativeRect, brush: Hwnd) -> i32;
     fn InvalidateRect(hwnd: Hwnd, rect: *const NativeRect, erase: i32) -> i32;
     fn DrawFocusRect(hdc: Hwnd, rect: *const NativeRect) -> i32;
@@ -169,6 +170,27 @@ extern "system" {
 }
 #[link(name = "gdi32")]
 extern "system" {
+    fn CreateCompatibleDC(hdc: Hwnd) -> Hwnd;
+    fn CreateCompatibleBitmap(hdc: Hwnd, width: i32, height: i32) -> Hwnd;
+    fn DeleteDC(hdc: Hwnd) -> i32;
+    fn SetMapMode(hdc: Hwnd, mode: i32) -> i32;
+    fn SetWindowExtEx(hdc: Hwnd, x: i32, y: i32, old: *mut NativePoint) -> i32;
+    fn SetViewportExtEx(hdc: Hwnd, x: i32, y: i32, old: *mut NativePoint) -> i32;
+    fn SetStretchBltMode(hdc: Hwnd, mode: i32) -> i32;
+    fn SetBrushOrgEx(hdc: Hwnd, x: i32, y: i32, old: *mut NativePoint) -> i32;
+    fn StretchBlt(
+        dst: Hwnd,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        src: Hwnd,
+        sx: i32,
+        sy: i32,
+        sw: i32,
+        sh: i32,
+        rop: u32,
+    ) -> i32;
     fn GetStockObject(index: i32) -> Hwnd;
     fn CreateSolidBrush(color: u32) -> Hwnd;
     fn DeleteObject(object: Hwnd) -> i32;
@@ -299,12 +321,14 @@ unsafe extern "system" fn toolbar_proc(
                 let brush = CreateSolidBrush(bg);
                 FillRect(item.hdc, &item.rect, brush);
                 DeleteObject(brush);
-                draw_icon(
+                draw_smoothed_icon(
+                    item.hwnd_item,
                     item.hdc,
                     item.rect,
                     action.icon,
                     GetSysColor(if checked { 14 } else { 18 }),
                     current_color,
+                    bg,
                 );
                 if item.item_state & 0x0010 != 0 {
                     DrawFocusRect(item.hdc, &item.rect);

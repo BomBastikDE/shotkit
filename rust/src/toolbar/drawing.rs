@@ -116,7 +116,100 @@ pub(super) unsafe fn high_contrast_enabled() -> bool {
         && settings.flags & 1 != 0
 }
 
-/// Draw the same small, antialias-independent 20px geometry used by the C# toolbar.
+/// Render the original 20-unit icon geometry at four times its output size,
+/// then downsample it. The background is included so GDI can smooth the edges.
+// SAFETY CONTRACT:
+// Voraussetzung: hwnd und hdc gehören zum laufenden WM_DRAWITEM; bounds ist das
+// zugehörige Rechteck und alle Win32-GDI-Handles bleiben bis zur Rückkehr gültig.
+// Warum erfüllt: Der Toolbar-Callback übergibt seine aktuellen Parameter; alle
+// temporären Objekte werden vor der Rückkehr zurückgesetzt und freigegeben.
+// Nachrichten: GDI und GetDpiForWindow senden keine expliziten Fensternachrichten;
+// draw_icon kann SystemParameter abfragen und hält keinen STATE-Borrow.
+pub(super) unsafe fn draw_smoothed_icon(
+    hwnd: Hwnd,
+    hdc: Hwnd,
+    bounds: NativeRect,
+    icon: Icon,
+    color: u32,
+    current_color: u32,
+    background: u32,
+) {
+    const LOGICAL: i32 = 20;
+    const SAMPLE: i32 = LOGICAL * 4;
+    let dpi = GetDpiForWindow(hwnd).clamp(96, 384) as i32;
+    let available = (bounds.right - bounds.left).min(bounds.bottom - bounds.top) - 8;
+    let size = (LOGICAL * dpi / 96).min(available).max(1);
+    let left = bounds.left + (bounds.right - bounds.left - size) / 2;
+    let top = bounds.top + (bounds.bottom - bounds.top - size) / 2;
+    let mem = CreateCompatibleDC(hdc);
+    if mem.is_null() {
+        draw_icon(hdc, bounds, icon, color, current_color);
+        return;
+    }
+    let bitmap = CreateCompatibleBitmap(hdc, SAMPLE, SAMPLE);
+    if bitmap.is_null() {
+        DeleteDC(mem);
+        draw_icon(hdc, bounds, icon, color, current_color);
+        return;
+    }
+    let old_bitmap = SelectObject(mem, bitmap);
+    if old_bitmap.is_null() || old_bitmap as isize == -1 {
+        DeleteObject(bitmap);
+        DeleteDC(mem);
+        draw_icon(hdc, bounds, icon, color, current_color);
+        return;
+    }
+    let bg = CreateSolidBrush(background);
+    let area = NativeRect {
+        left: 0,
+        top: 0,
+        right: SAMPLE,
+        bottom: SAMPLE,
+    };
+    let ready = !bg.is_null() && FillRect(mem, &area, bg) != 0
+        && SetMapMode(mem, 8) != 0 // MM_ANISOTROPIC
+        && SetWindowExtEx(mem, LOGICAL, LOGICAL, null_mut()) != 0
+        && SetViewportExtEx(mem, SAMPLE, SAMPLE, null_mut()) != 0;
+    if !bg.is_null() {
+        DeleteObject(bg);
+    }
+    let mut drawn = false;
+    if ready {
+        let logical_bounds = NativeRect {
+            left: 0,
+            top: 0,
+            right: LOGICAL,
+            bottom: LOGICAL,
+        };
+        draw_icon(mem, logical_bounds, icon, color, current_color);
+        // Restore device coordinates for the source bitmap before StretchBlt.
+        let source_ready = SetMapMode(mem, 1) != 0; // MM_TEXT
+        let old_mode = if source_ready {
+            SetStretchBltMode(hdc, 4)
+        } else {
+            0
+        }; // HALFTONE
+        if old_mode != 0 {
+            let mut old_origin = NativePoint { x: 0, y: 0 };
+            let origin_set = SetBrushOrgEx(hdc, 0, 0, &mut old_origin) != 0;
+            drawn = StretchBlt(
+                hdc, left, top, size, size, mem, 0, 0, SAMPLE, SAMPLE, 0x00CC0020,
+            ) != 0; // SRCCOPY
+            if origin_set {
+                SetBrushOrgEx(hdc, old_origin.x, old_origin.y, null_mut());
+            }
+            SetStretchBltMode(hdc, old_mode);
+        }
+    }
+    SelectObject(mem, old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(mem);
+    if !drawn {
+        draw_icon(hdc, bounds, icon, color, current_color);
+    }
+}
+
+/// Draw the same small 20-unit geometry used by the C# toolbar.
 // SAFETY CONTRACT:
 // Voraussetzung: hdc und ausgewählte Objekte bleiben während der Zeichnung gültig.
 // Warum erfüllt bzw. offen: DC stammt aus WM_DRAWITEM; Objektanlage und Wiederherstellung bei allen Fehlern sind nicht vollständig geprüft.
