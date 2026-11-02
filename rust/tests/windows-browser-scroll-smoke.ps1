@@ -120,10 +120,10 @@ if ([string]::IsNullOrWhiteSpace($inputDesktop)) { throw 'NO_INTERACTIVE_DESKTOP
 try { Add-Type -AssemblyName System.Drawing }
 catch { throw "IMAGE_RUNTIME_UNAVAILABLE: System.Drawing could not be loaded: $($_.Exception.Message)" }
 
-$edgeCandidates = @(
+$edgeCandidates = @(@(
     (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
     (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
-) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
 if ($edgeCandidates.Count -eq 0) { throw 'EDGE_NOT_INSTALLED: Microsoft Edge was not found.' }
 $edgePath = $edgeCandidates[0]
 $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

@@ -55,11 +55,13 @@ namespace ShotKitEditorSmoke {
         [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr data);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
@@ -134,6 +136,8 @@ namespace ShotKitEditorSmoke {
             GetWindowThreadProcessId(hwnd, out pid);
             return pid;
         }
+        public static string WindowClass(IntPtr hwnd) { return Class(hwnd); }
+        public static string WindowTitle(IntPtr hwnd) { return Text(hwnd); }
         public static string WindowText(IntPtr hwnd) {
             StringBuilder all = new StringBuilder(Text(hwnd));
             EnumChildProc callback = delegate(IntPtr child, IntPtr data) {
@@ -149,6 +153,11 @@ namespace ShotKitEditorSmoke {
             if (button == IntPtr.Zero) throw new ArgumentException("Button HWND is null.");
             SendMessageW(button, 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
         }
+        public static bool PostButtonClick(IntPtr button) {
+            if (button == IntPtr.Zero) return false;
+            return PostMessageW(button, 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
+        }
+        public static bool IsLiveWindow(IntPtr hwnd) { return IsWindow(hwnd); }
     }
 }
 '@
@@ -222,11 +231,45 @@ function Click-VisibleButton {
     $details = ($buttons | ForEach-Object { "ID=$($_.Id) Text='$($_.Text)' HWND=$($_.Handle)" }) -join '; '
     throw "BUTTON_TIMEOUT: $Description; buttons=$details"
 }
-function Wait-ForDialogGone {
-    param([IntPtr] $Handle, [string] $Description, [string[]] $AllowedTitles = @())
-    [void](Wait-ForValue -Seconds 5 -Description $Description -Probe {
-        @((Get-OwnedDialogs | Where-Object { $_.Handle -eq $Handle })).Count -eq 0
-    } -AllowedTitles $AllowedTitles)
+function Dismiss-OwnedDialog {
+    param($Dialog, [string[]] $ExpectedTexts, [string] $ExpectedTitlePattern, [string] $Description)
+    $handle = [IntPtr]$Dialog.Handle
+    $dialogPid = [ShotKitEditorSmoke.Native]::OwnerPid($handle)
+    $dialogClass = [ShotKitEditorSmoke.Native]::WindowClass($handle)
+    $deadline = [DateTime]::UtcNow.AddSeconds(8)
+    $lastButtons = @()
+    $clickAttempts = 0
+    if ($dialogPid -ne [uint32]$process.Id -or $dialogClass -ne '#32770' -or
+        $Dialog.Title -notlike $ExpectedTitlePattern) {
+        throw "REFUSING_DIALOG_CLICK: $Description HWND=$handle PID=$dialogPid class='$dialogClass' title='$($Dialog.Title)' does not match the owned expected dialog."
+    }
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not [ShotKitEditorSmoke.Native]::IsLiveWindow($handle)) { return }
+        if ([ShotKitEditorSmoke.Native]::OwnerPid($handle) -ne [uint32]$process.Id -or
+            [ShotKitEditorSmoke.Native]::WindowClass($handle) -ne '#32770' -or
+            [ShotKitEditorSmoke.Native]::WindowTitle($handle) -notlike $ExpectedTitlePattern) {
+            throw "DIALOG_IDENTITY_CHANGED: refusing another click for $Description HWND=$handle."
+        }
+        $lastButtons = @([ShotKitEditorSmoke.Native]::VisibleButtons($handle))
+        $button = $lastButtons | Where-Object { $ExpectedTexts -contains (($_.Text -replace '&', '').Trim()) } | Select-Object -First 1
+        if ($null -ne $button) {
+            if (-not [ShotKitEditorSmoke.Native]::PostButtonClick($button.Handle)) {
+                throw "BM_CLICK_POST_FAILED: $Description HWND=$handle button HWND=$($button.Handle) ID=$($button.Id) Text='$($button.Text)'."
+            }
+            $clickAttempts++
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $currentDialogs = @(Get-OwnedDialogs | ForEach-Object {
+        $buttons = @([ShotKitEditorSmoke.Native]::VisibleButtons($_.Handle))
+        $buttonText = ($buttons | ForEach-Object { "HWND=$($_.Handle) ID=$($_.Id) Text='$($_.Text)'" }) -join '; '
+        if (-not $buttonText) { $buttonText = 'no visible buttons' }
+        "HWND=$($_.Handle) PID=$([ShotKitEditorSmoke.Native]::OwnerPid($_.Handle)) class='$($_.ClassName)' title='$($_.Title)' text='$([ShotKitEditorSmoke.Native]::WindowText($_.Handle))' buttons=[$buttonText]"
+    }) -join ' | '
+    $lastButtonText = ($lastButtons | ForEach-Object { "HWND=$($_.Handle) ID=$($_.Id) Text='$($_.Text)'" }) -join '; '
+    if (-not $lastButtonText) { $lastButtonText = 'no visible Button-class children' }
+    if (-not $currentDialogs) { $currentDialogs = 'none found in latest top-level enumeration' }
+    throw "DIALOG_CLOSE_TIMEOUT: $Description HWND=$handle remains live=$([ShotKitEditorSmoke.Native]::IsLiveWindow($handle)) after $clickAttempts BM_CLICK attempts. Last original-dialog buttons=[$lastButtonText]. Current owned dialogs=$currentDialogs"
 }
 function Get-MainWindow {
     Get-OwnedWindows | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible } | Select-Object -First 1
@@ -308,8 +351,7 @@ try {
     $welcome = Wait-ForValue -Seconds $StartupTimeoutSeconds -Description 'the expected ShotKit startup notice' -AllowedTitles @('*Prototyp*') -Probe {
         Get-OwnedDialogs | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    [void](Click-VisibleButton -Parent $welcome.Handle -ExpectedTexts @('OK') -Description 'startup acknowledgement')
-    Wait-ForDialogGone -Handle $welcome.Handle -Description 'startup notice closure' -AllowedTitles @('*Prototyp*')
+    Dismiss-OwnedDialog -Dialog $welcome -ExpectedTexts @('OK') -ExpectedTitlePattern '*Prototyp*' -Description 'startup notice closure'
 
     $main = Wait-ForValue -Seconds 5 -Description 'the loaded-image editor title' -Probe {
         Get-MainWindow | Where-Object { $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1
