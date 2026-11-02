@@ -8,7 +8,9 @@ param(
     [int] $StartupTimeoutSeconds = 30,
 
     [ValidateRange(30, 180)]
-    [int] $CaptureTimeoutSeconds = 90
+    [int] $CaptureTimeoutSeconds = 90,
+
+    [switch] $FixedHeaderFooter
 )
 
 $ErrorActionPreference = 'Stop'
@@ -343,6 +345,12 @@ try {
 })();
 </script></body></html>
 '@
+    if ($FixedHeaderFooter) {
+        # Fixed bars are deliberately patterned horizontally so the production
+        # matcher can identify them as stationary rows, like the unit fixture.
+        $html = $html.Replace('</style>', 'header,footer{position:fixed;left:0;width:100%;height:40px;z-index:2}header{top:0;background:repeating-linear-gradient(90deg,#e81329 0 100px,#ffcc00 100px 200px)}footer{bottom:0;background:repeating-linear-gradient(90deg,#0876d1 0 100px,#17b978 100px 200px)}</style>')
+        $html = $html.Replace('</body>', '<header></header><footer></footer></body>')
+    }
     [IO.File]::WriteAllText($htmlFile, $html, [Text.UTF8Encoding]::new($false))
 
     $desktopWidth = [ShotKitBrowserScrollSmoke.Native]::GetSystemMetrics(78)
@@ -534,9 +542,9 @@ try {
         throw 'SHOTKIT_FOCUS_MISMATCH: selection overlay is not owned by the test ShotKit process.'
     }
     $x0 = $client[0] + 100
-    $y0 = $client[1] + 10
+    $y0 = if ($FixedHeaderFooter) { $client[1] } else { $client[1] + 10 }
     $x1 = $x0 + 600
-    $y1 = $y0 + 400
+    $y1 = if ($FixedHeaderFooter) { $client[3] } else { $y0 + 400 }
     if ($x1 -gt $client[2] -or $y1 -gt $client[3]) { throw 'Selected browser scroll rectangle does not fit in the client area.' }
     $desktopLeft = [ShotKitBrowserScrollSmoke.Native]::GetSystemMetrics(76)
     $desktopTop = [ShotKitBrowserScrollSmoke.Native]::GetSystemMetrics(77)
@@ -570,18 +578,26 @@ try {
     $bitmap = [Drawing.Bitmap]::new($png.FullName)
     try {
         $selectedWidth = 600
-        $selectedHeight = 400
+        $selectedHeight = $y1 - $y0
         $expectedHeight = $scrollHeight - $innerHeight + $selectedHeight
         if ($bitmap.Width -ne $selectedWidth -or $bitmap.Height -ne $expectedHeight) {
             throw "SCROLL_BOUNDS_MISMATCH: got $($bitmap.Width)x$($bitmap.Height); expected ${selectedWidth}x${expectedHeight} from viewport/document geometry."
         }
         foreach ($y in 0..($expectedHeight - 1)) {
-            $sourceY = $y + 10
+            $sourceY = if ($FixedHeaderFooter) { $y } else { $y + 10 }
             foreach ($x in @(10, 97, 299, 588)) {
                 $sourceX = $x + 100
-                $expectedR = ($sourceX * 29 + $sourceY * 17 + [int][Math]::Floor($sourceY / 19) * 53) % 256
-                $expectedG = ($sourceX * 7 + $sourceY * 31 + [int][Math]::Floor($sourceY / 23) * 97) % 256
-                $expectedB = ($sourceX * 19 + $sourceY * 11 + [int][Math]::Floor($sourceY / 11) * 41) % 256
+                if ($FixedHeaderFooter -and $y -lt 40) {
+                    if ([int][Math]::Floor($sourceX / 100) % 2 -eq 0) { $expectedR = 232; $expectedG = 19; $expectedB = 41 }
+                    else { $expectedR = 255; $expectedG = 204; $expectedB = 0 }
+                } elseif ($FixedHeaderFooter -and $y -ge $expectedHeight - 40) {
+                    if ([int][Math]::Floor($sourceX / 100) % 2 -eq 0) { $expectedR = 8; $expectedG = 118; $expectedB = 209 }
+                    else { $expectedR = 23; $expectedG = 185; $expectedB = 120 }
+                } else {
+                    $expectedR = ($sourceX * 29 + $sourceY * 17 + [int][Math]::Floor($sourceY / 19) * 53) % 256
+                    $expectedG = ($sourceX * 7 + $sourceY * 31 + [int][Math]::Floor($sourceY / 23) * 97) % 256
+                    $expectedB = ($sourceX * 19 + $sourceY * 11 + [int][Math]::Floor($sourceY / 11) * 41) % 256
+                }
                 $actual = $bitmap.GetPixel($x, $y)
                 if ($actual.R -ne $expectedR -or $actual.G -ne $expectedG -or $actual.B -ne $expectedB) {
                     throw "SCROLL_PIXEL_MISMATCH: output ($x,$y) maps to page ($sourceX,$sourceY), got $($actual.R),$($actual.G),$($actual.B), expected $expectedR,$expectedG,$expectedB."
@@ -591,7 +607,8 @@ try {
     }
     finally { $bitmap.Dispose() }
     Write-Output "MILESTONE: saved scroll image validated at $($png.Length) bytes with $expectedHeight deterministic rows and four pixel tracks."
-    $passMessage = "PASS: real Edge page scrolled to bottom and auto-saved ${selectedWidth}x${expectedHeight}; every sampled pixel matches its deterministic source coordinate."
+    $fixture = if ($FixedHeaderFooter) { ' with fixed header/footer' } else { '' }
+    $passMessage = "PASS: real Edge page$fixture scrolled to bottom and auto-saved ${selectedWidth}x${expectedHeight}; every sampled pixel matches its deterministic source coordinate."
 }
 catch { $testFailure = $_ }
 finally {

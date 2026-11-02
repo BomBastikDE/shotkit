@@ -70,6 +70,10 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/windows-browser-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe
+      - name: Interactive Edge browser scroll smoke test with fixed header and footer
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/windows-browser-scroll-smoke.ps1 -ExePath target/release/shotkit-rust-prototype.exe -FixedHeaderFooter
       - name: Interactive Windows multi-editor lifecycle smoke test
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
