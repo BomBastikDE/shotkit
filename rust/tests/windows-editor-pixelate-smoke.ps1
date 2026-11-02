@@ -61,7 +61,7 @@ namespace ShotKitPixelSmoke {
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Pixelate-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA
 $process=$null; $mouseDown=$false; $failure=$null
-$input=Join-Path $root 'fixture.png'
+$inputPath=Join-Path $root 'fixture.png'
 $envApp=Join-Path $root 'appdata'; $envLocal=Join-Path $root 'localappdata'
 
 function Get-Main {
@@ -81,11 +81,11 @@ function Click-Button([IntPtr]$Parent,[string]$Text) {
 function Save-Image([string]$Description) {
     Click-Button $main.H 'Speichern'
     $end=[DateTime]::UtcNow.AddSeconds(15)
-    while([DateTime]::UtcNow -lt $end) { try { $b=[Drawing.Bitmap]::new($input); $b.Dispose(); return } catch { Start-Sleep -Milliseconds 120 } }
+    while([DateTime]::UtcNow -lt $end) { try { $b=[Drawing.Bitmap]::new($inputPath); $b.Dispose(); return } catch { Start-Sleep -Milliseconds 120 } }
     throw "SAVE_TIMEOUT: $Description"
 }
 function Read-Image {
-    $b=[Drawing.Bitmap]::new($input)
+    $b=[Drawing.Bitmap]::new($inputPath)
     try { $pixels=[Array]::CreateInstance([Drawing.Color],$b.Width*$b.Height); for($y=0;$y -lt $b.Height;$y++){for($x=0;$x -lt $b.Width;$x++){$pixels[$y*$b.Width+$x]=$b.GetPixel($x,$y)}}; return [pscustomobject]@{Width=$b.Width;Height=$b.Height;Pixels=$pixels} }
     finally {$b.Dispose()}
 }
@@ -123,10 +123,10 @@ function Drag-Image([int]$x1,[int]$y1,[int]$x2,[int]$y2) {
 try {
     New-Item -ItemType Directory -Path $root,$envApp,$envLocal -Force | Out-Null
     $fixture=[Drawing.Bitmap]::new(160,120,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    try { for($y=0;$y -lt 120;$y++){for($x=0;$x -lt 160;$x++){ $c=if((( [int]($x/4)+[int]($y/4))%2)-eq 0){[Drawing.Color]::FromArgb(255,240,20,30)}else{[Drawing.Color]::FromArgb(255,15,40,230)}; $fixture.SetPixel($x,$y,$c) }}; $fixture.Save($input,[Drawing.Imaging.ImageFormat]::Png) } finally {$fixture.Dispose()}
+    try { for($y=0;$y -lt 120;$y++){for($x=0;$x -lt 160;$x++){ $c=if((( [int]($x/4)+[int]($y/4))%2)-eq 0){[Drawing.Color]::FromArgb(255,240,20,30)}else{[Drawing.Color]::FromArgb(255,15,40,230)}; $fixture.SetPixel($x,$y,$c) }}; $fixture.Save($inputPath,[Drawing.Imaging.ImageFormat]::Png) } finally {$fixture.Dispose()}
     $original=Read-Image
     $env:APPDATA=$envApp;$env:LOCALAPPDATA=$envLocal
-    try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $input) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+    try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-Value {Get-Main} 'owned editor window'
     [void][ShotKitPixelSmoke.N]::ShowWindow($main.H,3);[void][ShotKitPixelSmoke.N]::SetForegroundWindow($main.H)
     $notice=Wait-Value { [ShotKitPixelSmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
