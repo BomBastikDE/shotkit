@@ -71,6 +71,25 @@ namespace ShotKitBrowserHoverSmoke {
         public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+        public static IntPtr ForegroundWindowHandle() { return GetForegroundWindow(); }
+        public static uint ProcessIdForWindow(IntPtr hwnd) {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            return processId;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ScreenPoint { public int X; public int Y; }
+        [DllImport("user32.dll", SetLastError=true)]
+        private static extern bool GetCursorPos(out ScreenPoint point);
+        public static bool CursorPosition(out int x, out int y) {
+            ScreenPoint point;
+            bool ok = GetCursorPos(out point);
+            x = point.X;
+            y = point.Y;
+            return ok;
+        }
         [DllImport("user32.dll", SetLastError=true)]
         public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")]
@@ -167,11 +186,13 @@ $uiaProbeFile = Join-Path $testRoot 'uia-probe.ps1'
 $uiaProbeResult = Join-Path $testRoot 'uia-result.json'
 $uiaProbeStdout = Join-Path $testRoot 'uia-probe.stdout.log'
 $uiaProbeStderr = Join-Path $testRoot 'uia-probe.stderr.log'
+$diagnosticsFile = Join-Path $testRoot 'uia-selection-diagnostics.log'
 $shotKit = $null
 $edge = $null
 $uiaProbe = $null
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
+$oldDiagnosticsPath = $env:SHOTKIT_UIA_DIAGNOSTICS_PATH
 $passMessage = $null
 $testFailure = $null
 $cleanupFailures = @()
@@ -466,11 +487,13 @@ catch {
     try {
         $env:APPDATA = $appData
         $env:LOCALAPPDATA = $localAppData
+        $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $diagnosticsFile
         $shotKit = Start-Process -FilePath $ExePath -WorkingDirectory $testRoot -PassThru
     }
     finally {
         $env:APPDATA = $oldAppData
         $env:LOCALAPPDATA = $oldLocalAppData
+        $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $oldDiagnosticsPath
     }
 
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
@@ -495,6 +518,12 @@ catch {
     if (-not [ShotKitBrowserHoverSmoke.Native]::SetForegroundWindow($overlay.Handle)) {
         throw 'Could not activate ShotKit selection overlay.'
     }
+    [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
+    $foregroundWindow = [ShotKitBrowserHoverSmoke.Native]::ForegroundWindowHandle()
+    $foregroundPid = [ShotKitBrowserHoverSmoke.Native]::ProcessIdForWindow($foregroundWindow)
+    if ($foregroundPid -ne [uint]$shotKit.Id) {
+        throw "TEST_FOCUS_MISMATCH: foreground PID is $foregroundPid, expected ShotKit PID $($shotKit.Id)."
+    }
 
     # Use the measured UIA screen rectangle and real system pointer input. The
     # click is stationary; a manual rectangle drag cannot satisfy the checks.
@@ -502,6 +531,18 @@ catch {
         throw 'Could not move the system pointer to the UIA target center.'
     }
     Start-Sleep -Milliseconds 1800
+    $actualX = 0
+    $actualY = 0
+    if (-not [ShotKitBrowserHoverSmoke.Native]::CursorPosition([ref]$actualX, [ref]$actualY) -or
+        $actualX -ne $centerX -or $actualY -ne $centerY) {
+        throw "TEST_CURSOR_MISMATCH: pointer is at ($actualX,$actualY), expected ($centerX,$centerY)."
+    }
+    $foregroundWindow = [ShotKitBrowserHoverSmoke.Native]::ForegroundWindowHandle()
+    $foregroundPid = [ShotKitBrowserHoverSmoke.Native]::ProcessIdForWindow($foregroundWindow)
+    if ($foregroundPid -ne [uint]$shotKit.Id) {
+        throw "TEST_FOCUS_MISMATCH: foreground PID is $foregroundPid at click time, expected ShotKit PID $($shotKit.Id)."
+    }
+    Write-Output "MILESTONE: cursor=$actualX,$actualY and foreground PID=$foregroundPid verified before hover click."
     [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     $mouseDown = $true
     Start-Sleep -Milliseconds 120
@@ -596,6 +637,7 @@ finally {
     }
     $env:APPDATA = $oldAppData
     $env:LOCALAPPDATA = $oldLocalAppData
+    $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $oldDiagnosticsPath
 
     # Only stop processes whose current identity still matches this unique
     # profile. A process disappearing between enumeration and Stop-Process is
@@ -616,6 +658,10 @@ finally {
     }
     catch { $cleanupFailures += "Could not verify owned Edge process cleanup: $($_.Exception.Message)" }
 
+    if ($null -ne $testFailure -and (Test-Path -LiteralPath $diagnosticsFile)) {
+        Write-Output 'DIAGNOSTICS: UIA and selection trace from failed browser hover test:'
+        Get-Content -LiteralPath $diagnosticsFile
+    }
     if (Test-Path -LiteralPath $testRoot) {
         try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
         catch { $cleanupFailures += "Could not remove test-owned files/profile '$testRoot': $($_.Exception.Message)" }

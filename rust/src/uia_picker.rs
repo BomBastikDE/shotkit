@@ -10,7 +10,9 @@
 //! that call unwinds, so window suggestions and dragging remain available.
 
 use std::{
-    io,
+    fs::OpenOptions,
+    io::{self, Write},
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex, MutexGuard, OnceLock,
@@ -59,6 +61,34 @@ pub struct PickResult {
     pub rect: Option<ElementRect>,
     /// `None` means the bounded search completed; `Some` marks a partial/error result.
     pub issue: Option<PickerError>,
+    /// Number of provider nodes inspected by the bounded worker search.
+    pub visited_nodes: usize,
+}
+
+/// Append numeric UIA/selection diagnostics only when explicitly enabled.
+/// The configured path must be inside the process temporary directory.
+pub(crate) fn log_diagnostic(message: &str) {
+    use std::sync::OnceLock;
+
+    static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let Some(value) = std::env::var_os("SHOTKIT_UIA_DIAGNOSTICS_PATH") else {
+        return;
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return;
+    }
+    let Some(parent) = path.parent() else { return };
+    let Ok(parent) = parent.canonicalize() else { return };
+    let Ok(temp) = std::env::temp_dir().canonicalize() else { return };
+    if !parent.starts_with(temp) || path.file_name().is_none() {
+        return;
+    }
+    let lock = LOG_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{message}");
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -213,6 +243,10 @@ fn worker_loop(
             pending.take()
         };
         let Some(request) = request else { continue };
+        log_diagnostic(&format!(
+            "uia request seq={} hwnd=0x{:X} point=({}, {})",
+            request.sequence, request.target_hwnd, request.point.x, request.point.y
+        ));
         let result = match (&automation, startup_error) {
             (Some(automation), None) => unsafe { inspect(automation, request) },
             (_, Some(error)) => PickResult {
@@ -220,14 +254,24 @@ fn worker_loop(
                 target_hwnd: request.target_hwnd,
                 rect: None,
                 issue: Some(error),
+                visited_nodes: 0,
             },
             _ => PickResult {
                 sequence: request.sequence,
                 target_hwnd: request.target_hwnd,
                 rect: None,
                 issue: Some(PickerError::Automation(0)),
+                visited_nodes: 0,
             },
         };
+        log_diagnostic(&format!(
+            "uia response seq={} hwnd=0x{:X} rect={:?} issue={:?} visited={}",
+            result.sequence,
+            result.target_hwnd,
+            result.rect,
+            result.issue,
+            result.visited_nodes
+        ));
         if shared.latest_sequence.load(Ordering::Acquire) == request.sequence {
             *lock(&shared.response) = Some(result);
         }
@@ -266,6 +310,7 @@ unsafe fn inspect(
         target_hwnd: request.target_hwnd,
         rect: None,
         issue: None,
+        visited_nodes: 0,
     };
     if request.target_hwnd == 0 {
         out.issue = Some(PickerError::InvalidTargetWindow);
@@ -320,6 +365,7 @@ unsafe fn inspect(
             break;
         }
         visited += 1;
+        out.visited_nodes = visited;
 
         let bounds: Option<RECT> = match element.CurrentBoundingRectangle() {
             Ok(rect) => Some(rect),

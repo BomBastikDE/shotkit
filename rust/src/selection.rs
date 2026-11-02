@@ -345,6 +345,15 @@ unsafe fn poll_window(state: *mut State) -> Option<H> {
     }
     let candidates = scan.candidates.unwrap_or_default();
     let root = candidates.iter().find(|c| c.is_top_level).copied();
+    uia_picker::log_diagnostic(&format!(
+        "selection window_scan seq={} point=({}, {}) root_hwnd={} root_rect={:?} candidate_count={}",
+        scan.sequence,
+        scan.point.x,
+        scan.point.y,
+        root.map(|c| c.hwnd).unwrap_or(0),
+        root.map(|c| c.rect),
+        candidates.len()
+    ));
     let (finish_result, should_choose) = {
         let s = &mut *state;
         s.window_confirmed_sequence = scan.sequence;
@@ -414,12 +423,22 @@ unsafe fn choose_hover(state: *mut State) {
             .map(|candidate| candidate.rect)
             .or_else(|| root_candidate(s))
     };
+    let accepted_uia = s.uia_rect.filter(|r| contains(*r, s.current));
     let rect = if !control_down {
-        s.uia_rect.filter(|r| contains(*r, s.current)).or(fallback)
+        accepted_uia.or(fallback)
     } else {
         fallback
     };
     s.hover_rect = rect.and_then(|r| intersection(r, desktop_rect(s)));
+    crate::uia_picker::log_diagnostic(&format!(
+        "selection hover point=({}, {}) ctrl={} uia_rect={:?} fallback_rect={:?} chosen_rect={:?}",
+        s.current.x,
+        s.current.y,
+        control_down,
+        accepted_uia,
+        fallback,
+        s.hover_rect
+    ));
 }
 
 unsafe fn poll_uia(state: *mut State) -> bool {
@@ -442,6 +461,15 @@ unsafe fn poll_uia(state: *mut State) -> bool {
             let root = root_candidate(s).unwrap_or(desktop_rect(s));
             intersection(r, root)
         });
+    crate::uia_picker::log_diagnostic(&format!(
+        "selection uia_response seq={} hwnd=0x{:X} rect={:?} issue={:?} visited={} accepted_rect={:?}",
+        response.sequence,
+        response.target_hwnd,
+        response.rect.map(|r| (r.left, r.top, r.right, r.bottom)),
+        response.issue,
+        response.visited_nodes,
+        s.uia_rect
+    ));
     choose_hover(state);
     true
 }
@@ -697,6 +725,10 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
                     // Freeze the rectangle that was already visible. In-flight
                     // UIA completions cannot change the accepted click target.
                     s.press_rect = s.visible_hover_rect.filter(|rect| contains(*rect, point));
+                    crate::uia_picker::log_diagnostic(&format!(
+                        "selection mouse_down point=({}, {}) visible_rect={:?} frozen_rect={:?}",
+                        point.x, point.y, s.visible_hover_rect, s.press_rect
+                    ));
                     s.pending_click = None;
                     s.window_point = point;
                     s.window_confirmed_sequence = 0;
@@ -779,6 +811,10 @@ unsafe extern "system" fn window_proc(hwnd: H, msg: u32, w: W, l: L) -> L {
             };
             ReleaseCapture();
             move_magnifier(state);
+            crate::uia_picker::log_diagnostic(&format!(
+                "selection mouse_up point=({}, {}) click_pending={} cancelled={} result={:?}",
+                point.x, point.y, click_pending, click_cancelled, result
+            ));
             if !click_pending {
                 let final_result = if click_cancelled { None } else { result }
                     .and_then(|r| intersection(r, desktop_rect(&*state)));
