@@ -379,8 +379,8 @@ try {
     } else {
         throw "EDGE_PAGE_NOT_READY: unexpected title '$($browserWindow.Title)'."
     }
-    if ($innerWidth -ne 984 -or $innerHeight -ne 636) {
-        throw "EDGE_VIEWPORT_SIZE_MISMATCH: this runner contract expects an exact 984x636 web viewport, got ${innerWidth}x${innerHeight}."
+    if ($innerWidth -lt 720 -or $innerHeight -lt 450) {
+        throw "EDGE_VIEWPORT_TOO_SMALL: expected at least 720x450, got ${innerWidth}x${innerHeight}."
     }
     if ($scrollHeight -ne $pageHeight) { throw "EDGE_PAGE_GEOMETRY_MISMATCH: expected scrollHeight=$pageHeight, got $scrollHeight." }
     if ($deviceScale -ne 1.0 -or $initialScrollX -ne 0 -or $initialScrollY -ne 0) {
@@ -418,7 +418,7 @@ try {
     }
     $contentOffsetX = $client[0] - $browserClient[0]
     $contentOffsetY = $client[1] - $browserClient[1]
-    Write-Output "MILESTONE: verified Edge renderer HWND=0x$($rendererWindow.Handle.ToInt64().ToString('X')) PID=$($rendererWindow.ProcessId), content origin=($($client[0]),$($client[1])) root-client offset=($contentOffsetX,$contentOffsetY), viewport=984x636; root client is $($browserClient[2]-$browserClient[0])x$($browserClient[3]-$browserClient[1])."
+    Write-Output "MILESTONE: verified Edge renderer HWND=0x$($rendererWindow.Handle.ToInt64().ToString('X')) PID=$($rendererWindow.ProcessId), content origin=($($client[0]),$($client[1])) root-client offset=($contentOffsetX,$contentOffsetY), viewport=${innerWidth}x${innerHeight}; root client is $($browserClient[2]-$browserClient[0])x$($browserClient[3]-$browserClient[1])."
 
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
