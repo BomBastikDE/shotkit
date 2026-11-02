@@ -30,3 +30,9 @@ Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile 
 ## Ergebnis melden
 
 Für jeden Schritt **bestanden**, **fehlgeschlagen** oder **nicht geprüft** notieren. Bei einem Fehler die Windows-Version, Monitor- und Skalierungskonfiguration, verwendete Anwendung/Webseite, Schritte und erwartetes gegenüber tatsächlichem Verhalten angeben. Screenshots nur dann teilen, wenn sie keine vertraulichen Informationen enthalten. Ein erfolgreicher Durchlauf belegt nur die konkret getestete Konfiguration.
+
+## Gemeldeter Fehler: Werkzeugleiste mit Text statt Symbolen
+
+**Status: offen.** Am 2. November 2026 meldete der Owner nach dem Start der Datei `shotkit-v2.0.0-alpha.15-windows-x64.exe` ein leeres Editorfenster mit 19 Textschaltflächen statt der erwarteten Symbole. Der übermittelte Screenshot zeigt diesen Zustand; die tatsächlich laufende EXE ist damit noch nicht identifiziert.
+
+Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2](https://github.com/BomBastikDE/shotkit/actions/runs/41532056391/attempts/2) getesteten Windows-Build überein. Die Windows-CI zeigt in ihrem Werkzeugleisten-Screenshot Symbole; das ersetzt den Owner-Test nicht. Alpha 9 und Alpha 15 verwenden dieselbe Einzelinstanz-Sperre; eine noch laufende alte Version könnte daher beim Start aktiviert worden sein. Diese Erklärung ist **nicht bestätigt**. Als nächster Schritt wurde das vollständige Beenden über das Tray und der erneute Start von Alpha 15 vorgeschlagen; das Ergebnis steht aus.
