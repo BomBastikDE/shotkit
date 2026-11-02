@@ -6,6 +6,7 @@ pub mod capture_output;
 pub mod delayed_capture;
 pub mod document;
 pub mod editor;
+pub mod hotkey_action;
 pub mod image_edit;
 pub mod image_io;
 pub mod output_windows;
