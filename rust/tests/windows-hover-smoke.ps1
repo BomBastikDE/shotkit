@@ -52,6 +52,10 @@ namespace ShotKitHoverSmoke {
         private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll", SetLastError=true)]
         public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
@@ -105,6 +109,14 @@ namespace ShotKitHoverSmoke {
             }, IntPtr.Zero);
             return all.ToString();
         }
+        public static IntPtr RootWindow(IntPtr hwnd) { return GetAncestor(hwnd, 2); }
+        public static uint OwnerProcessId(IntPtr hwnd) {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            return processId;
+        }
+        public static string WindowTitle(IntPtr hwnd) { return Text(hwnd); }
+        public static void ShowNormal(IntPtr hwnd) { ShowWindow(hwnd, 1); }
         public static IntPtr FindVisibleOkButton(IntPtr dialog, out string details) {
             IntPtr found = IntPtr.Zero;
             List<string> buttons = new List<string>();
@@ -391,10 +403,30 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     }
     Assert-NoUnexpectedDialog $shotKit
 
-    $surfaceWindow = Wait-ForCondition -TimeoutSeconds 10 -Description 'the visible synthetic form' -OwnedProcess $surface -Condition {
-        Get-ProcessWindows $surface | Where-Object { $_.Title -eq 'ShotKit Hover Synthetic Surface' -and $_.Visible } | Select-Object -First 1
+    $controlHandle = [IntPtr]([int64]$geometry[4])
+    $surfaceRoot = [ShotKitHoverSmoke.Native]::RootWindow($controlHandle)
+    if ($surfaceRoot -eq [IntPtr]::Zero) {
+        throw "The synthetic control HWND $controlHandle has no GA_ROOT window."
     }
-    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)) {
+    $rootOwner = [ShotKitHoverSmoke.Native]::OwnerProcessId($surfaceRoot)
+    if ($rootOwner -ne [uint32]$surface.Id) {
+        throw "Refusing to show a window not owned by the helper process: root HWND=$surfaceRoot owner PID=$rootOwner expected PID=$($surface.Id)."
+    }
+    $rootTitle = [ShotKitHoverSmoke.Native]::WindowTitle($surfaceRoot)
+    if ($rootTitle -ne 'ShotKit Hover Synthetic Surface') {
+        throw "Synthetic root HWND=$surfaceRoot has unexpected title '$rootTitle'."
+    }
+    [ShotKitHoverSmoke.Native]::ShowNormal($surfaceRoot)
+    $surfaceWindow = Wait-ForCondition -TimeoutSeconds 10 -Description 'the visible synthetic form from the stored control HWND' -OwnedProcess $surface -Condition {
+        $rootOwner = [ShotKitHoverSmoke.Native]::OwnerProcessId($surfaceRoot)
+        $rootTitle = [ShotKitHoverSmoke.Native]::WindowTitle($surfaceRoot)
+        if ($rootOwner -eq [uint32]$surface.Id -and
+            $rootTitle -eq 'ShotKit Hover Synthetic Surface' -and
+            [ShotKitHoverSmoke.Native]::IsWindowVisible($surfaceRoot)) {
+            [pscustomobject]@{ Handle = $surfaceRoot; Title = $rootTitle; Visible = $true }
+        }
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($surfaceRoot)) {
         throw 'Could not activate the synthetic surface.'
     }
     [ShotKitHoverSmoke.Native]::keybd_event(0x7A, 0, 0, [UIntPtr]::Zero)
@@ -405,7 +437,7 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
 
     # Let sequenced HWND and UIA hover scans settle on the own control, then
     # perform a click with no drag. A rectangle drag cannot satisfy the exact
-    # 280x180 bounds and four-quadrant pixel checks below.
+    # physical control bounds and four-quadrant pixel checks below.
     if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($overlay.Handle)) {
         throw 'Could not activate the selection overlay.'
     }
