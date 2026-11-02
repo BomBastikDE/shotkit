@@ -334,7 +334,12 @@ try {
     }
   }
   ctx.putImageData(image, 0, 0);
-  document.title = `ShotKit Browser Scroll Surface READY inner=${innerWidth}x${innerHeight} scroll=${document.scrollingElement.scrollHeight} dpr=${devicePixelRatio} offset=${scrollX},${scrollY}`;
+  const updateTitle = () => {
+    document.title = `ShotKit Browser Scroll Surface READY inner=${innerWidth}x${innerHeight} scroll=${document.scrollingElement.scrollHeight} dpr=${devicePixelRatio} offset=${scrollX},${scrollY}`;
+  };
+  window.addEventListener('resize', updateTitle, { passive: true });
+  window.addEventListener('scroll', updateTitle, { passive: true });
+  updateTitle();
 })();
 </script></body></html>
 '@
@@ -368,58 +373,6 @@ try {
             [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
     }
     if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND is not the activated owned browser surface.' }
-    $browserClient = [ShotKitBrowserScrollSmoke.Native]::ClientBounds($browserWindow.Handle)
-    if ($browserWindow.Title -match 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') {
-        $innerWidth = [int]$Matches[1]
-        $innerHeight = [int]$Matches[2]
-        $scrollHeight = [int]$Matches[3]
-        $deviceScale = [double]$Matches[4]
-        $initialScrollX = [int]$Matches[5]
-        $initialScrollY = [int]$Matches[6]
-    } else {
-        throw "EDGE_PAGE_NOT_READY: unexpected title '$($browserWindow.Title)'."
-    }
-    if ($innerWidth -lt 720 -or $innerHeight -lt 450) {
-        throw "EDGE_VIEWPORT_TOO_SMALL: expected at least 720x450, got ${innerWidth}x${innerHeight}."
-    }
-    if ($scrollHeight -ne $pageHeight) { throw "EDGE_PAGE_GEOMETRY_MISMATCH: expected scrollHeight=$pageHeight, got $scrollHeight." }
-    if ($deviceScale -ne 1.0 -or $initialScrollX -ne 0 -or $initialScrollY -ne 0) {
-        throw "EDGE_COORDINATE_MISMATCH: deviceScale=$deviceScale initialScroll=($initialScrollX,$initialScrollY)."
-    }
-    $profilePids = @((Get-ProfileEdgeProcesses | ForEach-Object { [uint]$_.ProcessId }))
-    $edgeChildWindows = @([ShotKitBrowserScrollSmoke.Native]::ChildWindows($browserWindow.Handle))
-    $rendererCandidates = @($edgeChildWindows |
-        Where-Object {
-            $_.Visible -and $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' -and
-            $profilePids -contains $_.ProcessId -and $_.ClientBounds -and
-            ($_.ClientBounds[2] - $_.ClientBounds[0]) -eq $innerWidth -and
-            ($_.ClientBounds[3] - $_.ClientBounds[1]) -eq $innerHeight
-        })
-    $rendererCandidateSummary = @($edgeChildWindows |
-        Where-Object { $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' } |
-        ForEach-Object {
-            $width = if ($_.ClientBounds) { $_.ClientBounds[2] - $_.ClientBounds[0] } else { -1 }
-            $height = if ($_.ClientBounds) { $_.ClientBounds[3] - $_.ClientBounds[1] } else { -1 }
-            "hwnd=0x$($_.Handle.ToInt64().ToString('X')) pid=$($_.ProcessId) visible=$($_.Visible) client=${width}x${height}"
-        })
-    if ($rendererCandidates.Count -ne 1) {
-        throw "EDGE_RENDERER_BOUNDS_UNVERIFIED: expected one visible profile-owned Chrome_RenderWidgetHostHWND at ${innerWidth}x${innerHeight}; found $($rendererCandidates.Count). Candidates: $($rendererCandidateSummary -join '; ')"
-    }
-    $rendererWindow = $rendererCandidates[0]
-    $client = $rendererWindow.ClientBounds
-    $clientWidth = $client[2] - $client[0]
-    $clientHeight = $client[3] - $client[1]
-    if ($clientWidth -ne $innerWidth -or $clientHeight -ne $innerHeight) {
-        throw "EDGE_RENDERER_BOUNDS_MISMATCH: child client ${clientWidth}x${clientHeight}, DOM viewport ${innerWidth}x${innerHeight}."
-    }
-    if ($client[0] -lt $browserClient[0] -or $client[1] -lt $browserClient[1] -or
-        $client[2] -gt $browserClient[2] -or $client[3] -gt $browserClient[3]) {
-        throw "EDGE_RENDERER_OUTSIDE_ROOT_CLIENT: child HWND client rect $($client -join ',') is outside root client rect $($browserClient -join ',')."
-    }
-    $contentOffsetX = $client[0] - $browserClient[0]
-    $contentOffsetY = $client[1] - $browserClient[1]
-    Write-Output "MILESTONE: verified Edge renderer HWND=0x$($rendererWindow.Handle.ToInt64().ToString('X')) PID=$($rendererWindow.ProcessId), content origin=($($client[0]),$($client[1])) root-client offset=($contentOffsetX,$contentOffsetY), viewport=${innerWidth}x${innerHeight}; root client is $($browserClient[2]-$browserClient[0])x$($browserClient[3]-$browserClient[1])."
-
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
     $settings = @{ version=1; save_folder=$saveFolder; open_editor=$true; copy_to_clipboard=$false; auto_save=$true; scroll_direction='down' } | ConvertTo-Json
@@ -459,6 +412,110 @@ try {
             [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
     }
     if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND changed before F10.' }
+    Write-Output 'MILESTONE: Edge activated after ShotKit startup dialog closed; polling current DOM viewport against the owned renderer HWND.'
+
+    $geometryTimeoutSeconds = [Math]::Min($StartupTimeoutSeconds, 15)
+    $geometryDeadline = [DateTime]::UtcNow.AddSeconds($geometryTimeoutSeconds)
+    $previousGeometryKey = $null
+    $stableGeometrySamples = 0
+    $lastGeometryDetail = 'no READY browser window observed'
+    $geometryReady = $false
+    while ([DateTime]::UtcNow -lt $geometryDeadline) {
+        $candidateWindow = $null
+        foreach ($process in (Get-ProfileEdgeProcesses)) {
+            $candidateWindow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$process.ProcessId) |
+                Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' -and $_.Title -like '*READY inner=*scroll=2400*' } |
+                Select-Object -First 1
+            if ($null -ne $candidateWindow) { break }
+        }
+        if ($null -ne $candidateWindow -and
+            $candidateWindow.Title -match 'inner=(\d+)x(\d+) scroll=(\d+) dpr=([\d.]+) offset=(-?\d+),(-?\d+)') {
+            $sampleInnerWidth = [int]$Matches[1]
+            $sampleInnerHeight = [int]$Matches[2]
+            $sampleScrollHeight = [int]$Matches[3]
+            $sampleDeviceScale = [double]$Matches[4]
+            $sampleScrollX = [int]$Matches[5]
+            $sampleScrollY = [int]$Matches[6]
+            $sampleRootClient = [ShotKitBrowserScrollSmoke.Native]::ClientBounds($candidateWindow.Handle)
+            $sampleProfilePids = @((Get-ProfileEdgeProcesses | ForEach-Object { [uint]$_.ProcessId }))
+            $sampleChildren = @([ShotKitBrowserScrollSmoke.Native]::ChildWindows($candidateWindow.Handle))
+            $sampleRenderers = @($sampleChildren | Where-Object {
+                $_.Visible -and $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' -and
+                $sampleProfilePids -contains $_.ProcessId -and $_.ClientBounds
+            })
+            $sampleSummary = @($sampleChildren | Where-Object { $_.ClassName -eq 'Chrome_RenderWidgetHostHWND' } | ForEach-Object {
+                $w = if ($_.ClientBounds) { $_.ClientBounds[2] - $_.ClientBounds[0] } else { -1 }
+                $h = if ($_.ClientBounds) { $_.ClientBounds[3] - $_.ClientBounds[1] } else { -1 }
+                "hwnd=0x$($_.Handle.ToInt64().ToString('X')) pid=$($_.ProcessId) visible=$($_.Visible) client=${w}x${h}"
+            }) -join '; '
+            $exactRenderers = @($sampleRenderers | Where-Object {
+                ($_.ClientBounds[2] - $_.ClientBounds[0]) -eq $sampleInnerWidth -and
+                ($_.ClientBounds[3] - $_.ClientBounds[1]) -eq $sampleInnerHeight
+            })
+            $lastGeometryDetail = "DOM=${sampleInnerWidth}x${sampleInnerHeight} scroll=$sampleScrollHeight dpr=$sampleDeviceScale offset=($sampleScrollX,$sampleScrollY); profile-owned renderers: $sampleSummary"
+            if ($exactRenderers.Count -eq 1) {
+                $sampleRenderer = $exactRenderers[0]
+                $sampleClient = $sampleRenderer.ClientBounds
+                $insideRootClient = $sampleClient[0] -ge $sampleRootClient[0] -and
+                    $sampleClient[1] -ge $sampleRootClient[1] -and
+                    $sampleClient[2] -le $sampleRootClient[2] -and
+                    $sampleClient[3] -le $sampleRootClient[3]
+                if ($insideRootClient -and $sampleInnerWidth -ge 720 -and $sampleInnerHeight -ge 450 -and
+                    $sampleScrollHeight -eq $pageHeight -and $sampleDeviceScale -eq 1.0 -and
+                    $sampleScrollX -eq 0 -and $sampleScrollY -eq 0) {
+                    $sampleKey = "{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f `
+                        $candidateWindow.Handle.ToInt64(), $sampleRenderer.Handle.ToInt64(),
+                        $sampleRenderer.ProcessId, $sampleClient[0], $sampleClient[1],
+                        $sampleClient[2], $sampleClient[3], $candidateWindow.Title
+                    if ($sampleKey -eq $previousGeometryKey) { $stableGeometrySamples++ }
+                    else { $previousGeometryKey = $sampleKey; $stableGeometrySamples = 1 }
+                    if ($stableGeometrySamples -ge 3) {
+                        $browserWindow = $candidateWindow
+                        $rendererWindow = $sampleRenderer
+                        $client = $sampleClient
+                        $browserClient = $sampleRootClient
+                        $innerWidth = $sampleInnerWidth
+                        $innerHeight = $sampleInnerHeight
+                        $scrollHeight = $sampleScrollHeight
+                        $deviceScale = $sampleDeviceScale
+                        $initialScrollX = $sampleScrollX
+                        $initialScrollY = $sampleScrollY
+                        $geometryReady = $true
+                        break
+                    }
+                } else {
+                    $stableGeometrySamples = 0
+                    $previousGeometryKey = $null
+                }
+            } else {
+                $stableGeometrySamples = 0
+                $previousGeometryKey = $null
+            }
+        } else {
+            $stableGeometrySamples = 0
+            $previousGeometryKey = $null
+            if ($null -ne $candidateWindow) { $lastGeometryDetail = "READY title not parseable: '$($candidateWindow.Title)'" }
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    if (-not $geometryReady) {
+        throw "EDGE_RENDERER_BOUNDS_UNVERIFIED: DOM viewport and profile-owned renderer did not match stably within ${geometryTimeoutSeconds}s. Last observation: $lastGeometryDetail"
+    }
+    $clientWidth = $client[2] - $client[0]
+    $clientHeight = $client[3] - $client[1]
+    if ($clientWidth -ne $innerWidth -or $clientHeight -ne $innerHeight) {
+        throw "EDGE_RENDERER_BOUNDS_MISMATCH: child client ${clientWidth}x${clientHeight}, DOM viewport ${innerWidth}x${innerHeight}."
+    }
+    $contentOffsetX = $client[0] - $browserClient[0]
+    $contentOffsetY = $client[1] - $browserClient[1]
+    Write-Output "MILESTONE: stable DOM/renderer geometry verified for three consecutive samples: renderer HWND=0x$($rendererWindow.Handle.ToInt64().ToString('X')) PID=$($rendererWindow.ProcessId), content origin=($($client[0]),$($client[1])) root-client offset=($contentOffsetX,$contentOffsetY), viewport=${innerWidth}x${innerHeight}; root client is $($browserClient[2]-$browserClient[0])x$($browserClient[3]-$browserClient[1])."
+    if (-not [ShotKitBrowserScrollSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) { throw 'Could not reactivate Edge after waiting for viewport geometry.' }
+    $foreground = Wait-ForCondition -TimeoutSeconds 3 -Description 'Edge foreground HWND after geometry stabilization' -OwnedProcess $null -Condition {
+        $foregroundHwnd = [ShotKitBrowserScrollSmoke.Native]::ForegroundWindowHandle()
+        if ($foregroundHwnd -eq $browserWindow.Handle -and
+            [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
+    }
+    if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND changed after geometry stabilization.' }
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero) # release stale Ctrl
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0, [UIntPtr]::Zero) # F10 down
     [ShotKitBrowserScrollSmoke.Native]::keybd_event(0x79, 0, 0x0002, [UIntPtr]::Zero) # F10 up
