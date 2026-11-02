@@ -20,6 +20,15 @@ namespace ShotKitToolbarVisual {
  public sealed class Win { public IntPtr H; public string ClassName,Title; public bool Visible; }
  public sealed class Button { public IntPtr H; public int Id; public string Text; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyId { public uint Size; public IntPtr Hwnd; public uint Id; public Guid Guid; }
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyData {
+  public uint Size; public IntPtr Hwnd; public uint Id,Flags,Callback; public IntPtr Icon;
+  [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string Tip;
+  public uint State,StateMask;
+  [MarshalAs(UnmanagedType.ByValTStr,SizeConst=256)] public string Info;
+  public uint Timeout;
+  [MarshalAs(UnmanagedType.ByValTStr,SizeConst=64)] public string InfoTitle;
+  public uint InfoFlags; public Guid Guid; public IntPtr BalloonIcon;
+ }
  public static class Native {
   delegate bool EnumProc(IntPtr h,IntPtr p);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb,IntPtr p);
@@ -44,6 +53,12 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e);
   [DllImport("user32.dll")] public static extern IntPtr LoadIconW(IntPtr i,IntPtr name);
   [DllImport("shell32.dll",CharSet=CharSet.Unicode)] public static extern int Shell_NotifyIconGetRect(ref NotifyId id,out Rect rect);
+  [DllImport("shell32.dll",CharSet=CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint command,ref NotifyData data);
+  public static bool VerifyTrayRegistration(IntPtr host) {
+   var n=new NotifyData { Size=(uint)Marshal.SizeOf(typeof(NotifyData)), Hwnd=host, Id=1, Flags=4,
+    Tip="ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü", Info="", InfoTitle="" };
+   return Shell_NotifyIconW(1,ref n); // NIM_MODIFY of the existing tooltip; fails for an unknown icon.
+  }
   [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d,int x,int y,int w,int h,IntPtr s,int sx,int sy,int op);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr h);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h,IntPtr dc);
@@ -151,7 +166,10 @@ try {
  $trayHost=Owned-Windows|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1
  if(-not $trayHost -or [ShotKitToolbarVisual.Native]::Owner($trayHost.H) -ne [uint32]$p.Id){throw 'TRAY_HOST_MISSING_OR_WRONG_OWNER'}
  $nid=[Activator]::CreateInstance([ShotKitToolbarVisual.NotifyId]);$nid.Size=[Runtime.InteropServices.Marshal]::SizeOf([type][ShotKitToolbarVisual.NotifyId]);$nid.Hwnd=$trayHost.H;$nid.Id=1
- $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$trayStatus=[ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect);if($trayStatus -ne 0){throw ('TRAY_ICON_NOT_REGISTERED: Shell_NotifyIconGetRect failed with HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
+ if(-not [ShotKitToolbarVisual.Native]::VerifyTrayRegistration($trayHost.H)){throw 'TRAY_ICON_NOT_REGISTERED: Windows rejected NIM_MODIFY for the exact registered host and ID.'}
+ $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$trayStatus=[ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect)
+ if($trayStatus -ne 0 -and $trayStatus -ne 1){throw ('TRAY_ICON_RECT_FAILED: Shell_NotifyIconGetRect returned HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
+ if($trayStatus -eq 1){Write-Output 'TRAY: icon identity verified by Windows; no visible bounding rectangle (S_FALSE).'}
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
  $captureBitmap=[Drawing.Bitmap]::new(($captureRect.Right-$captureRect.Left),($captureRect.Bottom-$captureRect.Top))
