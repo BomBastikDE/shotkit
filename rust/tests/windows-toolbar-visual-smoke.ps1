@@ -48,6 +48,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr h);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h,IntPtr dc);
   public static Win[] Windows(int pid){var a=new List<Win>(); EnumWindows((h,p)=>{uint q;GetWindowThreadProcessId(h,out q);if(q==(uint)pid){var c=new StringBuilder(256);var t=new StringBuilder(512);GetClassNameW(h,c,c.Capacity);GetWindowTextW(h,t,t.Capacity);a.Add(new Win{H=h,ClassName=c.ToString(),Title=t.ToString(),Visible=IsWindowVisible(h)});}return true;},IntPtr.Zero);return a.ToArray();}
+  public static Win[] Children(IntPtr parent){var a=new List<Win>();EnumChildWindows(parent,(h,p)=>{var c=new StringBuilder(256);var t=new StringBuilder(512);GetClassNameW(h,c,c.Capacity);GetWindowTextW(h,t,t.Capacity);a.Add(new Win{H=h,ClassName=c.ToString(),Title=t.ToString(),Visible=IsWindowVisible(h)});return true;},IntPtr.Zero);return a.ToArray();}
   public static Button[] Buttons(IntPtr parent){var a=new List<Button>();EnumChildWindows(parent,(h,p)=>{var c=new StringBuilder(128);GetClassNameW(h,c,c.Capacity);if(IsWindowVisible(h)&&IsWindowEnabled(h)&&String.Equals(c.ToString(),"Button",StringComparison.OrdinalIgnoreCase)){var t=new StringBuilder(512);GetWindowTextW(h,t,t.Capacity);a.Add(new Button{H=h,Id=GetDlgCtrlID(h),Text=t.ToString()});}return true;},IntPtr.Zero);return a.ToArray();}
   public static uint Owner(IntPtr h){uint p;GetWindowThreadProcessId(h,out p);return p;}
   public static IntPtr Icon(IntPtr h){var i=SendMessageW(h,0x7f,new IntPtr(1),IntPtr.Zero);if(i==IntPtr.Zero)i=SendMessageW(h,0x7f,IntPtr.Zero,IntPtr.Zero);if(i==IntPtr.Zero)i=GetClassLongPtrW(h,-14);return i;}
@@ -74,7 +75,7 @@ try {
  $welcome=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1
  if($welcome){$ok=[ShotKitToolbarVisual.Native]::Buttons($welcome.H)|Where-Object{$_.Text -eq 'OK'}|Select-Object -First 1;if(-not $ok){throw 'STARTUP_NOTICE_UNEXPECTED: owned prototype notice lacked exact OK button.'};[void][ShotKitToolbarVisual.Native]::SendMessageW($ok.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)}
  Start-Sleep -Milliseconds 500
- $toolbar=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1
+ $toolbar=[ShotKitToolbarVisual.Native]::Children($main.H)|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H));if($buttons.Count -ne 24){throw "TOOLBAR_BUTTONS_INCOMPLETE: expected exactly 24 native visible buttons, got $($buttons.Count)."}
  $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen')
