@@ -30,12 +30,18 @@ namespace ShotKitClipboardSmoke {
   public struct Point { public int X; public int Y; }
   public sealed class Window { public IntPtr Handle; public string ClassName; public string Title; public bool Visible; }
   public static class Native {
+    [StructLayout(LayoutKind.Sequential)] struct GuiThreadInfo { public uint cbSize; public uint flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public Rect rcCaret; }
     private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
+    private delegate bool ChildEnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr data);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, ChildEnumProc cb, IntPtr data);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll", SetLastError=true)] static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll")] static extern short GetKeyState(int key);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
@@ -53,13 +59,59 @@ namespace ShotKitClipboardSmoke {
     [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
     [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
+    [DllImport("user32.dll")] static extern bool IsClipboardFormatAvailable(uint format);
+    [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     public static uint ClipboardSequence() { return GetClipboardSequenceNumber(); }
+    public static string ControlKeyState() { return "GetAsyncKeyState="+GetAsyncKeyState(0x11)+", GetKeyState="+GetKeyState(0x11); }
+    static string DescribeWindow(IntPtr hwnd) { return "HWND="+hwnd+" PID="+OwnerPid(hwnd)+" class='"+GetText(hwnd,false)+"' title='"+GetText(hwnd,true)+"'"; }
+    public static string FocusReport(IntPtr target) {
+      uint pid, tid=GetWindowThreadProcessId(target,out pid);
+      GuiThreadInfo info=new GuiThreadInfo(); info.cbSize=(uint)Marshal.SizeOf(typeof(GuiThreadInfo));
+      if(!GetGUIThreadInfo(tid,ref info)) return "target="+DescribeWindow(target)+" GetGUIThreadInfo failed error="+Marshal.GetLastWin32Error();
+      return "target="+DescribeWindow(target)+" thread="+tid+" active=["+DescribeWindow(info.hwndActive)+"] keyboardFocus=["+DescribeWindow(info.hwndFocus)+"] capture=["+DescribeWindow(info.hwndCapture)+"]";
+    }
+    public static string ClipboardFormats() {
+      uint png=RegisterClipboardFormatW("PNG"); var found=new List<string>();
+      if(!OpenClipboard(IntPtr.Zero)) return "OpenClipboard failed; known-image-formats="+(png!=0 && IsClipboardFormatAvailable(png) ? "PNG " : "")+(IsClipboardFormatAvailable(17) ? "CF_DIBV5 " : "")+(IsClipboardFormatAvailable(8) ? "CF_DIB " : "")+(IsClipboardFormatAvailable(2) ? "CF_BITMAP" : "");
+      try {
+        uint format=0;
+        while((format=EnumClipboardFormats(format))!=0) {
+          string name;
+          if(format==png) name="PNG";
+          else if(format==17) name="CF_DIBV5";
+          else if(format==8) name="CF_DIB";
+          else if(format==2) name="CF_BITMAP";
+          else if(format==1) name="CF_TEXT";
+          else if(format==13) name="CF_UNICODETEXT";
+          else { var b=new StringBuilder(256); int n=GetClipboardFormatNameW(format,b,b.Capacity); name=n>0 ? b.ToString() : "format"; }
+          found.Add(name+"("+format+")");
+        }
+        return found.Count==0 ? "no formats enumerated" : String.Join(",",found.ToArray());
+      } finally { CloseClipboard(); }
+    }
     static string GetText(IntPtr h, bool title) { var b = new StringBuilder(512); if (title) GetWindowTextW(h,b,b.Capacity); else GetClassNameW(h,b,b.Capacity); return b.ToString(); }
     public static Window[] WindowsForProcess(int id) {
       var result = new List<Window>();
       EnumProc cb = delegate(IntPtr h, IntPtr d) { uint pid; GetWindowThreadProcessId(h,out pid); if(pid==(uint)id) result.Add(new Window { Handle=h, ClassName=GetText(h,false), Title=GetText(h,true), Visible=IsWindowVisible(h) }); return true; };
       EnumWindows(cb,IntPtr.Zero); GC.KeepAlive(cb); return result.ToArray();
+    }
+    public static string DescribeProcessWindows(int id) {
+      var rows=new List<string>();
+      EnumProc cb=delegate(IntPtr h,IntPtr d) {
+        uint pid; GetWindowThreadProcessId(h,out pid); if(pid!=(uint)id) return true;
+        var row=new StringBuilder(DescribeWindow(h)+" visible="+IsWindowVisible(h));
+        if(String.Equals(GetText(h,false),"#32770",StringComparison.OrdinalIgnoreCase)) {
+          var texts=new List<string>();
+          ChildEnumProc child=delegate(IntPtr c,IntPtr ignored) { string t=GetText(c,true); if(!String.IsNullOrWhiteSpace(t)) texts.Add(t); return true; };
+          EnumChildWindows(h,child,IntPtr.Zero); GC.KeepAlive(child);
+          row.Append(" dialogText=[").Append(String.Join(" | ",texts.ToArray())).Append("]");
+        }
+        rows.Add(row.ToString()); return true;
+      };
+      EnumWindows(cb,IntPtr.Zero); GC.KeepAlive(cb);
+      return rows.Count==0 ? "no top-level windows" : String.Join(" ; ",rows.ToArray());
     }
     public static uint OwnerPid(IntPtr h) { uint p; GetWindowThreadProcessId(h,out p); return p; }
     public static string WindowTitle(IntPtr h) { return GetText(h,true); }
@@ -153,10 +205,17 @@ try {
     Start-Sleep -Milliseconds 100
     if ([ShotKitClipboardSmoke.Native]::GetForegroundWindow() -ne $main.Handle) { throw 'EDITOR_FOCUS_FAILED: foreground window is not the owned editor.' }
     $sequenceBeforeCopy = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
+    $formatsBeforeCopy = [ShotKitClipboardSmoke.Native]::ClipboardFormats()
+    $focusBeforeCopy = [ShotKitClipboardSmoke.Native]::FocusReport($main.Handle)
     # Send an actual Ctrl+C keystroke to the foreground editor window.
     [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero)
-    try { [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 80; [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,2,[UIntPtr]::Zero) }
+    try {
+        Start-Sleep -Milliseconds 30
+        $ctrlStateDuringCopy = [ShotKitClipboardSmoke.Native]::ControlKeyState()
+        [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 80; [ShotKitClipboardSmoke.Native]::keybd_event(0x43,0,2,[UIntPtr]::Zero)
+    }
     finally { [ShotKitClipboardSmoke.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero) }
+    $ctrlStateAfterCopy = [ShotKitClipboardSmoke.Native]::ControlKeyState()
 
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     $png = $null
@@ -169,7 +228,13 @@ try {
         }
         Start-Sleep -Milliseconds 100
     }
-    if ($null -eq $png) { throw 'CLIPBOARD_PNG_TIMEOUT: Ctrl+C did not publish PNG clipboard image data.' }
+    if ($null -eq $png) {
+        $sequenceAtTimeout = [ShotKitClipboardSmoke.Native]::ClipboardSequence()
+        $formatsAtTimeout = [ShotKitClipboardSmoke.Native]::ClipboardFormats()
+        $focusAtTimeout = [ShotKitClipboardSmoke.Native]::FocusReport($main.Handle)
+        $ownedWindowsAtTimeout = [ShotKitClipboardSmoke.Native]::DescribeProcessWindows($process.Id)
+        throw "CLIPBOARD_PNG_TIMEOUT: Ctrl+C did not publish PNG clipboard image data. sequenceBefore=$sequenceBeforeCopy sequenceAfter=$sequenceAtTimeout formatsBefore=[$formatsBeforeCopy] formatsAfter=[$formatsAtTimeout] focusBefore=[$focusBeforeCopy] focusAtTimeout=[$focusAtTimeout] ctrlStateDuring=[$ctrlStateDuringCopy] ctrlStateAfter=[$ctrlStateAfterCopy] ownedWindowsAndDialogs=[$ownedWindowsAtTimeout]"
+    }
     if ($sequenceAfterCopy -eq $sequenceBeforeCopy) { throw 'CLIPBOARD_SEQUENCE_INVALID: the clipboard did not change after Ctrl+C.' }
     $stream = [IO.MemoryStream]::new([byte[]]$png)
     try {
