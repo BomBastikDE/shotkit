@@ -72,12 +72,6 @@ namespace ShotKitScrollSmoke {
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")]
-        public static extern bool ShowWindow(IntPtr hwnd, int command);
-        [DllImport("user32.dll")]
-        public static extern bool BringWindowToTop(IntPtr hwnd);
-        [DllImport("user32.dll")]
-        public static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")]
         private static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachState);
         [DllImport("user32.dll")]
         private static extern IntPtr SetFocus(IntPtr hwnd);

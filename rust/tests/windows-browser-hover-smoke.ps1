@@ -199,7 +199,7 @@ function Stop-OwnedEdgeProcess {
     if ($null -eq $current) { return }
     if ($current.Name -ne 'msedge.exe' -or -not $current.CommandLine -or
         $current.CommandLine -notmatch [Regex]::Escape($ProfilePath)) {
-        throw "Refusing to stop PID $ProcessId: current process identity does not match the test-owned Edge profile."
+        throw "Refusing to stop PID ${ProcessId}: current process identity does not match the test-owned Edge profile."
     }
     $processHandle = $null
     try { $processHandle = [Diagnostics.Process]::GetProcessById($ProcessId) }
