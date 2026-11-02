@@ -4,6 +4,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $ExePath,
 
+    [ValidateSet('Edge', 'Chrome')]
+    [string] $Browser = 'Edge',
+
     [ValidateRange(10, 120)]
     [int] $StartupTimeoutSeconds = 30,
 
@@ -167,17 +170,31 @@ if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
     throw "Windows PowerShell 5.1 was not found at '$windowsPowerShell'."
 }
 
-$edgeCandidates = @(@(
-    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
-    (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
-) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
-if ($edgeCandidates.Count -eq 0) {
-    throw 'EDGE_NOT_INSTALLED: Microsoft Edge was not found in the runner image.'
+$browserConfig = @{
+    Edge = @{
+        ProcessName = 'msedge.exe'
+        Candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+        )
+    }
+    Chrome = @{
+        ProcessName = 'chrome.exe'
+        Candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe')
+        )
+    }
+}[$Browser]
+$browserCandidates = @($browserConfig.Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) })
+if ($browserCandidates.Count -eq 0) {
+    throw "$($Browser.ToUpperInvariant())_NOT_INSTALLED: $Browser was not found in the runner image."
 }
-$edgePath = $edgeCandidates[0]
+$browserPath = $browserCandidates[0]
+$browserProcessName = $browserConfig.ProcessName
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Browser-Hover-' + [Guid]::NewGuid().ToString('N'))
-$edgeProfile = Join-Path $testRoot 'edge-profile'
+$browserProfile = Join-Path $testRoot ($Browser.ToLowerInvariant() + '-profile')
 $appData = Join-Path $testRoot 'appdata'
 $localAppData = Join-Path $testRoot 'localappdata'
 $saveFolder = Join-Path $testRoot 'captures'
@@ -188,7 +205,7 @@ $uiaProbeStdout = Join-Path $testRoot 'uia-probe.stdout.log'
 $uiaProbeStderr = Join-Path $testRoot 'uia-probe.stderr.log'
 $diagnosticsFile = Join-Path $testRoot 'uia-selection-diagnostics.log'
 $shotKit = $null
-$edge = $null
+$browserProcess = $null
 $uiaProbe = $null
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
@@ -329,51 +346,51 @@ function Wait-ForDialogClosed {
         @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
     } | Out-Null
 }
-function Get-EdgeProcessById {
+function Get-BrowserProcessById {
     param([int] $ProcessId)
     Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
 }
-function Get-ProfileEdgeProcesses {
+function Get-ProfileBrowserProcesses {
     param([string] $ProfilePath)
     $escapedProfile = [Regex]::Escape($ProfilePath)
-    @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
+    @(Get-CimInstance Win32_Process -Filter "Name='$browserProcessName'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
 }
-function Stop-OwnedEdgeProcess {
+function Stop-OwnedBrowserProcess {
     param([int] $ProcessId, [string] $ProfilePath)
-    $current = Get-EdgeProcessById $ProcessId
+    $current = Get-BrowserProcessById $ProcessId
     if ($null -eq $current) { return }
-    if ($current.Name -ne 'msedge.exe' -or -not $current.CommandLine -or
+    if ($current.Name -ne $browserProcessName -or -not $current.CommandLine -or
         $current.CommandLine -notmatch [Regex]::Escape($ProfilePath)) {
-        throw "Refusing to stop PID ${ProcessId}: current process identity does not match the test-owned Edge profile."
+        throw "Refusing to stop PID ${ProcessId}: current process identity does not match the test-owned $Browser profile."
     }
     $processHandle = $null
     try { $processHandle = [Diagnostics.Process]::GetProcessById($ProcessId) }
     catch {
-        if ($null -eq (Get-EdgeProcessById $ProcessId)) { return }
+        if ($null -eq (Get-BrowserProcessById $ProcessId)) { return }
         throw
     }
     try {
-        $confirmed = Get-EdgeProcessById $ProcessId
+        $confirmed = Get-BrowserProcessById $ProcessId
         if ($null -eq $confirmed) { return }
-        if ($confirmed.Name -ne 'msedge.exe' -or -not $confirmed.CommandLine -or
+        if ($confirmed.Name -ne $browserProcessName -or -not $confirmed.CommandLine -or
             $confirmed.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
             $confirmed.CreationDate -ne $current.CreationDate) {
             throw "PID $ProcessId changed identity during cleanup; refusing to stop the replacement process."
         }
         try { $processHandle.Kill() }
         catch {
-            if ($processHandle.HasExited -or $null -eq (Get-EdgeProcessById $ProcessId)) { return }
+            if ($processHandle.HasExited -or $null -eq (Get-BrowserProcessById $ProcessId)) { return }
             throw
         }
         if (-not $processHandle.WaitForExit(3000) -and -not $processHandle.HasExited) {
-            throw "Test-owned Edge PID $ProcessId remains after termination was requested."
+            throw "Test-owned $Browser PID $ProcessId remains after termination was requested."
         }
     }
     finally { $processHandle.Dispose() }
 }
 try {
-    New-Item -ItemType Directory -Path $testRoot, $edgeProfile, $appData, $localAppData, $saveFolder -Force | Out-Null
+    New-Item -ItemType Directory -Path $testRoot, $browserProfile, $appData, $localAppData, $saveFolder -Force | Out-Null
     $html = @'
 <!doctype html>
 <html lang="en">
@@ -414,7 +431,7 @@ try {
         [System.Windows.Automation.AutomationElement]::NameProperty,
         'ShotKit UIA hover target'
     )
-    # Accessibility is requested on Edge's command line, but its renderer and
+    # Accessibility is requested on the browser command line, but its renderer and
     # UIA provider can become available after the top-level HWND. Retry only
     # this transient absence; the parent process enforces the hard 15s limit.
     $deadline = [DateTime]::UtcNow.AddSeconds(12)
@@ -429,7 +446,7 @@ try {
         }
     } while ($null -eq $target -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $root) { throw 'UIA ElementFromHandle returned null throughout provider initialization.' }
-    if ($null -eq $target) { throw 'Named target remained absent from Edge UIA Control View after provider initialization wait.' }
+    if ($null -eq $target) { throw "Named target remained absent from $Browser UIA Control View after provider initialization wait." }
     $current = $target.Current
     $bounds = $current.BoundingRectangle
     if ($current.IsOffscreen) { throw 'Named target is marked offscreen.' }
@@ -463,25 +480,26 @@ catch {
     }
 
     $fileUri = ([Uri]::new($htmlFile)).AbsoluteUri
-    $edgeArgs = @(
-        "--user-data-dir=`"$edgeProfile`"",
+    $browserArgs = @(
+        "--user-data-dir=`"$browserProfile`"",
         '--no-first-run',
         '--disable-background-networking',
         '--disable-sync',
         '--disable-extensions',
         '--disable-component-update',
-        '--disable-features=msEdgeSidebarV2,msEdgeDiscover,msSmartScreenProtection',
         '--force-device-scale-factor=1',
         "--app=`"$fileUri`"",
         '--window-size=1000,720'
-    ) -join ' '
-    $edge = Start-Process -FilePath $edgePath -ArgumentList $edgeArgs -WorkingDirectory $testRoot -PassThru
+    )
+    if ($Browser -eq 'Edge') { $browserArgs += '--disable-features=msEdgeSidebarV2,msEdgeDiscover,msSmartScreenProtection' }
+    $browserArgs = $browserArgs -join ' '
+    $browserProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WorkingDirectory $testRoot -PassThru
 
-    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the owned Edge app window' -OwnedProcess $edge -Condition {
-        Get-ProcessWindows $edge | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
+    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description "the owned $Browser app window" -OwnedProcess $browserProcess -Condition {
+        Get-ProcessWindows $browserProcess | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
     }
     if (-not [ShotKitBrowserHoverSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) {
-        throw 'Could not foreground the test-owned Edge app window.'
+        throw "Could not foreground the test-owned $Browser app window."
     }
 
     $targetName = 'ShotKit UIA hover target'
@@ -498,7 +516,7 @@ catch {
         }
         if ([DateTime]::UtcNow -ge $probeDeadline) {
             try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
-            throw 'UIA_PRECHECK_TIMEOUT: Edge UI Automation did not return within 15 seconds.'
+            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds."
         }
         Start-Sleep -Milliseconds 100
     }
@@ -515,7 +533,7 @@ catch {
         [double]::IsInfinity($bounds.X) -or [double]::IsInfinity($bounds.Y) -or
         [double]::IsNaN($bounds.Width) -or [double]::IsNaN($bounds.Height) -or
         $bounds.Width -lt 100 -or $bounds.Height -lt 80) {
-        throw "UIA_PRECHECK_FAILED: Edge returned invalid or undersized bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height))."
+        throw "UIA_PRECHECK_FAILED: $Browser returned invalid or undersized bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height))."
     }
     if ([Math]::Abs($bounds.Width - 280) -gt 1 -or [Math]::Abs($bounds.Height - 180) -gt 1) {
         throw "UIA_PRECHECK_FAILED: expected 280x180 CSS px at scale factor 1, got $([Math]::Round($bounds.Width,2))x$([Math]::Round($bounds.Height,2)) UIA px."
@@ -574,7 +592,7 @@ catch {
     Assert-NoUnexpectedDialog $shotKit
 
     if (-not [ShotKitBrowserHoverSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) {
-        throw 'Could not activate the owned Edge app before requesting selection.'
+        throw "Could not activate the owned $Browser app before requesting selection."
     }
     [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x7A, 0, 0, [UIntPtr]::Zero)
     [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x7A, 0, 0x0002, [UIntPtr]::Zero)
@@ -664,7 +682,7 @@ catch {
     Write-Output 'MILESTONE: capture dimensions and all four expected pixels validated.'
 
     Assert-NoUnexpectedDialog $shotKit
-    $passMessage = "PASS: Edge UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($targetLeft,$targetTop,${targetWidth}x${targetHeight}); real hover-click captured exact dimensions and four expected pixels."
+    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($targetLeft,$targetTop,${targetWidth}x${targetHeight}); real hover-click captured exact dimensions and four expected pixels."
 }
 catch {
     $testFailure = $_
@@ -698,27 +716,27 @@ finally {
         catch { $cleanupFailures += "Could not stop isolated UIA probe: $($_.Exception.Message)" }
         $uiaProbe.Dispose()
     }
-    if ($null -ne $edge) {
+    if ($null -ne $browserProcess) {
         try {
-            $ownedEdge = Get-EdgeProcessById $edge.Id
-            if ($null -eq $ownedEdge) {
-                Write-Output "CLEANUP: Edge launcher PID $($edge.Id) is verified absent."
-            } elseif ($ownedEdge.Name -eq 'msedge.exe' -and $ownedEdge.CommandLine -and
-                $ownedEdge.CommandLine -match [Regex]::Escape($edgeProfile)) {
+            $ownedBrowser = Get-BrowserProcessById $browserProcess.Id
+            if ($null -eq $ownedBrowser) {
+                Write-Output "CLEANUP: $Browser launcher PID $($browserProcess.Id) is verified absent."
+            } elseif ($ownedBrowser.Name -eq $browserProcessName -and $ownedBrowser.CommandLine -and
+                $ownedBrowser.CommandLine -match [Regex]::Escape($browserProfile)) {
                 # Start-Process returned a Process object for this exact process;
                 # Kill uses its process handle instead of re-opening a bare PID.
-                if (-not $edge.HasExited) {
-                    $edge.Kill()
-                    if (-not $edge.WaitForExit(3000) -and -not $edge.HasExited) {
-                        throw "Owned Edge launcher PID $($edge.Id) remains after termination was requested."
+                if (-not $browserProcess.HasExited) {
+                    $browserProcess.Kill()
+                    if (-not $browserProcess.WaitForExit(3000) -and -not $browserProcess.HasExited) {
+                        throw "Owned $Browser launcher PID $($browserProcess.Id) remains after termination was requested."
                     }
                 }
             } else {
-                Write-Output "CLEANUP: Edge launcher PID $($edge.Id) now belongs to another process; it was left untouched."
+                Write-Output "CLEANUP: $Browser launcher PID $($browserProcess.Id) now belongs to another process; it was left untouched."
             }
         }
-        catch { $cleanupFailures += "Could not stop test-owned Edge process tree: $($_.Exception.Message)" }
-        $edge.Dispose()
+        catch { $cleanupFailures += "Could not stop test-owned $Browser process tree: $($_.Exception.Message)" }
+        $browserProcess.Dispose()
     }
     $env:APPDATA = $oldAppData
     $env:LOCALAPPDATA = $oldLocalAppData
@@ -728,20 +746,20 @@ finally {
     # profile. A process disappearing between enumeration and Stop-Process is
     # accepted only after a fresh PID query confirms absence.
     try {
-        $stragglers = Get-ProfileEdgeProcesses $edgeProfile
+        $stragglers = Get-ProfileBrowserProcesses $browserProfile
         foreach ($process in $stragglers) {
             try {
-                Stop-OwnedEdgeProcess -ProcessId $process.ProcessId -ProfilePath $edgeProfile
+                Stop-OwnedBrowserProcess -ProcessId $process.ProcessId -ProfilePath $browserProfile
             }
-            catch { $cleanupFailures += "Could not stop owned Edge profile process $($process.ProcessId): $($_.Exception.Message)" }
+            catch { $cleanupFailures += "Could not stop owned $Browser profile process $($process.ProcessId): $($_.Exception.Message)" }
         }
         Start-Sleep -Milliseconds 200
-        $remaining = Get-ProfileEdgeProcesses $edgeProfile
+        $remaining = Get-ProfileBrowserProcesses $browserProfile
         if ($remaining.Count -gt 0) {
-            $cleanupFailures += "Owned Edge processes remain for the test profile: $(@($remaining | ForEach-Object ProcessId) -join ', ')."
+            $cleanupFailures += "Owned $Browser processes remain for the test profile: $(@($remaining | ForEach-Object ProcessId) -join ', ')."
         }
     }
-    catch { $cleanupFailures += "Could not verify owned Edge process cleanup: $($_.Exception.Message)" }
+    catch { $cleanupFailures += "Could not verify owned $Browser process cleanup: $($_.Exception.Message)" }
 
     if ($null -ne $testFailure -and (Test-Path -LiteralPath $diagnosticsFile)) {
         Write-Output 'DIAGNOSTICS: UIA and selection trace from failed browser hover test:'
