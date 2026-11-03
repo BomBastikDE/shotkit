@@ -12,9 +12,10 @@ pub(super) unsafe fn blit_preview(
     src: H,
     target: (i32, i32, i32, i32),
     source: (i32, i32),
+    high_quality: bool,
 ) -> bool {
     let (x, y, width, height) = target;
-    let smooth = view::smooth_preview(source, (width, height));
+    let smooth = high_quality && view::smooth_preview(source, (width, height));
     let mut previous_mode = if smooth { SetStretchBltMode(dc, 4) } else { 0 }; // HALFTONE
     let mut previous_origin = Point { x: 0, y: 0 };
     let origin_set = previous_mode != 0 && SetBrushOrgEx(dc, 0, 0, &mut previous_origin) != 0;
@@ -89,14 +90,38 @@ mod tests {
                     );
                 }
             }
-            assert!(blit_preview(reduced.dc, src.dc, (0, 0, 4, 4), (16, 16)));
+            assert!(blit_preview(
+                reduced.dc,
+                src.dc,
+                (0, 0, 4, 4),
+                (16, 16),
+                true
+            ));
             let pixel = GetPixel(reduced.dc, 1, 1);
             let red = pixel & 255;
             assert!(
                 red > 0 && red < 255,
                 "reduced checkerboard must blend, got {pixel:08x}"
             );
-            assert!(blit_preview(native.dc, src.dc, (0, 0, 16, 16), (16, 16)));
+            assert!(blit_preview(
+                reduced.dc,
+                src.dc,
+                (0, 0, 4, 4),
+                (16, 16),
+                false
+            ));
+            let fast_red = GetPixel(reduced.dc, 1, 1) & 255;
+            assert!(
+                fast_red == 0 || fast_red == 255,
+                "live drawing should use the fast path"
+            );
+            assert!(blit_preview(
+                native.dc,
+                src.dc,
+                (0, 0, 16, 16),
+                (16, 16),
+                true
+            ));
             for y in 0..16 {
                 for x in 0..16 {
                     assert_eq!(GetPixel(native.dc, x, y), GetPixel(src.dc, x, y));

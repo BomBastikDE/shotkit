@@ -242,6 +242,7 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
                                 mem,
                                 (x, y, w, height),
                                 (source_width, source_height),
+                                !window_state(h).drawing,
                             );
                             SelectObject(mem, old);
                         }
