@@ -235,19 +235,14 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
                         let old = SelectObject(mem, flattened);
                         if !old.is_null() && old as isize != -1 {
                             let (x, y, w, height) = image_view(h);
-                            ok = StretchBlt(
+                            let source_width = window_state(h).width;
+                            let source_height = window_state(h).height;
+                            ok = preview_scaling::blit_preview(
                                 dc,
-                                x,
-                                y,
-                                w,
-                                height,
                                 mem,
-                                0,
-                                0,
-                                window_state(h).width,
-                                window_state(h).height,
-                                COPY,
-                            ) != 0;
+                                (x, y, w, height),
+                                (source_width, source_height),
+                            );
                             SelectObject(mem, old);
                         }
                         DeleteDC(mem);

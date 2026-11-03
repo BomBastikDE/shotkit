@@ -6,6 +6,14 @@ pub struct View {
     pub width: i32,
     pub height: i32,
 }
+/// Filter reduced previews; retain exact pixel edges at native size or above.
+pub fn smooth_preview(image: (i32, i32), displayed: (i32, i32)) -> bool {
+    image.0 > 0
+        && image.1 > 0
+        && displayed.0 > 0
+        && displayed.1 > 0
+        && (displayed.0 < image.0 || displayed.1 < image.1)
+}
 /// `zoom` multiplies fit-to-window; `pan` is the scroll offset in screen pixels.
 pub fn layout(
     image: (u32, u32),
@@ -331,6 +339,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn preview_filter_only_applies_when_the_image_is_reduced() {
+        assert!(smooth_preview((1920, 1080), (960, 540)));
+        assert!(smooth_preview((1920, 1080), (1920, 1079)));
+        assert!(!smooth_preview((1920, 1080), (1920, 1080)));
+        assert!(!smooth_preview((1920, 1080), (3840, 2160)));
+        assert!(!smooth_preview((0, 1080), (960, 540)));
     }
 
     #[test]

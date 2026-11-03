@@ -1,4 +1,5 @@
 mod mouse_history;
+mod preview_scaling;
 mod region;
 mod window_commands;
 mod window_mouse;
@@ -251,6 +252,8 @@ extern "system" {
     fn SelectObject(dc: H, obj: H) -> H;
     fn DeleteDC(dc: H) -> i32;
     fn DeleteObject(obj: H) -> i32;
+    fn SetStretchBltMode(dc: H, mode: i32) -> i32;
+    fn SetBrushOrgEx(dc: H, x: i32, y: i32, old: *mut Point) -> i32;
     fn StretchBlt(
         d: H,
         x: i32,

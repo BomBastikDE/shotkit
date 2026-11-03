@@ -117,11 +117,125 @@ mod benchmark {
             old.as_secs_f64() * 1000.0 / f64::from(iterations), new.as_secs_f64() * 1000.0 / f64::from(iterations));
     }
 
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetDC(window: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn ReleaseDC(window: *mut std::ffi::c_void, dc: *mut std::ffi::c_void) -> i32;
+    }
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateCompatibleDC(dc: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CreateCompatibleBitmap(
+            dc: *mut std::ffi::c_void,
+            width: i32,
+            height: i32,
+        ) -> *mut std::ffi::c_void;
+        fn SelectObject(
+            dc: *mut std::ffi::c_void,
+            object: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        fn DeleteObject(object: *mut std::ffi::c_void) -> i32;
+        fn DeleteDC(dc: *mut std::ffi::c_void) -> i32;
+        fn SetStretchBltMode(dc: *mut std::ffi::c_void, mode: i32) -> i32;
+        fn SetBrushOrgEx(
+            dc: *mut std::ffi::c_void,
+            x: i32,
+            y: i32,
+            old: *mut std::ffi::c_void,
+        ) -> i32;
+        fn PatBlt(
+            dc: *mut std::ffi::c_void,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            rop: u32,
+        ) -> i32;
+        fn StretchBlt(
+            dst: *mut std::ffi::c_void,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            src: *mut std::ffi::c_void,
+            sx: i32,
+            sy: i32,
+            sw: i32,
+            sh: i32,
+            rop: u32,
+        ) -> i32;
+    }
+
+    // SAFETY CONTRACT: The screen and memory DCs and bitmaps are created for
+    // positive fixed dimensions, selected only locally, then restored and freed.
+    // GDI calls do not explicitly dispatch window messages.
+    unsafe fn compare_scaling(width: i32, height: i32, target: (i32, i32)) {
+        use std::ptr::null_mut;
+        let screen = GetDC(null_mut());
+        assert!(!screen.is_null());
+        let src = CreateCompatibleDC(screen);
+        let dst = CreateCompatibleDC(screen);
+        assert!(!src.is_null() && !dst.is_null());
+        let source_bitmap = CreateCompatibleBitmap(screen, width, height);
+        let target_bitmap = CreateCompatibleBitmap(screen, target.0, target.1);
+        assert!(!source_bitmap.is_null() && !target_bitmap.is_null());
+        let old_src = SelectObject(src, source_bitmap);
+        let old_dst = SelectObject(dst, target_bitmap);
+        assert!(!old_src.is_null() && !old_dst.is_null());
+        ReleaseDC(null_mut(), screen);
+        assert_ne!(PatBlt(src, 0, 0, width, height, 0x00ff_0062), 0); // WHITENESS
+        assert_ne!(PatBlt(src, 0, 0, width / 2, height, 0x0000_0042), 0); // BLACKNESS
+        let mut times = [std::time::Duration::ZERO; 2];
+        for (index, mode) in [3, 4].into_iter().enumerate() {
+            assert_ne!(SetStretchBltMode(dst, mode), 0);
+            if mode == 4 {
+                assert_ne!(SetBrushOrgEx(dst, 0, 0, null_mut()), 0);
+            }
+            for _ in 0..3 {
+                let start = Instant::now();
+                assert_ne!(
+                    StretchBlt(
+                        dst,
+                        0,
+                        0,
+                        target.0,
+                        target.1,
+                        src,
+                        0,
+                        0,
+                        width,
+                        height,
+                        0x00cc_0020
+                    ),
+                    0
+                );
+                times[index] += start.elapsed();
+            }
+        }
+        SelectObject(src, old_src);
+        SelectObject(dst, old_dst);
+        DeleteObject(source_bitmap);
+        DeleteObject(target_bitmap);
+        DeleteDC(src);
+        DeleteDC(dst);
+        println!(
+            "SCALING_BENCHMARK {width}x{height} to {}x{} 3_frames basic_ms={:.2} halftone_ms={:.2}",
+            target.0,
+            target.1,
+            times[0].as_secs_f64() * 1000.0 / 3.0,
+            times[1].as_secs_f64() * 1000.0 / 3.0
+        );
+    }
+
     pub fn run() {
         compare(1920, 1080);
         compare(1200, 10_000);
         compare_freehand(1920, 1080);
         compare_freehand(1200, 10_000);
+        unsafe {
+            compare_scaling(1920, 1080, (960, 540));
+            compare_scaling(1200, 10_000, (120, 1000));
+        }
     }
 }
 #[cfg(windows)]
