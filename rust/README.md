@@ -1,10 +1,10 @@
 # ShotKit Rust – Alpha-Testversion
 
-Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Das ursprüngliche C#-ShotKit bleibt die stabile Version.
+Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Die letzte als stabil freigegebene Version ist bis zur ersten Rust-Beta das C#-ShotKit 1.2.0 (Branch `csharp/1.x`).
 
 ## Umstieg von C#
 
-Die C#-Version bleibt bis zur Freigabe der Rust-Beta die stabile Hauptversion. Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung und der geplante Weg zur 2.0 stehen in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
+Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README](../README.md#bisherige-c-version-120).
 
 ## Bisherige Funktionen
 

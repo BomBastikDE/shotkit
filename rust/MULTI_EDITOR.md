@@ -1,6 +1,6 @@
 # Multi-Editor: Dokumentzustand und Lebenszyklus
 
-Stand der Implementierung: 2026-11-02. Referenz: C# `src/Program.cs`
+Stand der Implementierung: 2026-11-02. Referenz (Branch `csharp/1.x`): C# `src/Program.cs`
 (`ShowEditor`, `Quit`) und `src/EditorForm.cs` (`OnFormClosing`).
 
 Jedes Bild erhält ein eigenes natives Fenster (`ShotKitRustEditor`). Über
