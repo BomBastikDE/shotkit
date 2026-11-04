@@ -68,3 +68,5 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 ## Nach Alpha 20 – in Entwicklung
 
 Bei Verpixeln beträgt die Mindestblockgröße 12 statt 6 Pixel; ein Regressionstest prüft die niedrigen Linienstärken. Dies verbessert die grobe Darstellung, garantiert aber keine Unkenntlichkeit oder sichere Schwärzung. [Issue #5](https://github.com/BomBastikDE/shotkit/issues/5) bleibt offen.
+
+Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereignis nicht übernimmt, meldet ShotKit den Fehler. Die konkrete Ursache einer Ablehnung lässt sich aus dem Rückgabewert nicht sicher bestimmen ([Issue #7](https://github.com/BomBastikDE/shotkit/issues/7)).
