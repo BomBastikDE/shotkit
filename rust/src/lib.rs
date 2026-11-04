@@ -16,6 +16,7 @@ pub mod pixelate;
 #[cfg(windows)]
 pub mod render;
 pub mod scroll_capture;
+pub mod scroll_completion;
 pub mod scroll_match;
 pub mod selection_rect;
 pub mod settings;

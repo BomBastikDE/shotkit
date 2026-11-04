@@ -84,3 +84,5 @@ Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereign
 - Das Verschieben der Bildansicht per Mausrad bleibt an den Bildrändern begrenzt und reagiert bei Richtungswechsel sofort ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Ist die Windows-Zwischenablage kurz belegt, wiederholt ShotKit nur das Öffnen mit begrenzter Wartezeit; Schreiboperationen werden nicht erneut ausgeführt ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Verliert eine laufende Bereichsauswahl die Maussteuerung, wird der unvollständige Vorgang abgebrochen, statt den Ziehzustand festzuhalten ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
+- Ergebnisse der Scroll-Aufnahme bleiben bei fehlgeschlagener Abschlussnachricht erhalten und werden über einen Timer auf dem UI-Thread verarbeitet; Fenstergenerationen schützen vor veralteten Zielen ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
+- Der Windows-Smoke-Test prüft die sichtbare Formvorschau während eines gehaltenen Ziehvorgangs; ein synthetischer Screenshot wird als CI-Artefakt gesichert ([#23](https://github.com/BomBastikDE/shotkit/issues/23)).

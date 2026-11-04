@@ -6,6 +6,11 @@ use super::*;
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
 // Nachrichten: DestroyWindow, ShowWindow und Menü-/Aufnahmefunktionen können reentrieren; der Handler hält keine Zustandsreferenz über diese Aufrufe.
 pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
+    if let Some(result) = scroll_completion::dispatch(h, m, w, |ticket| {
+        scroll_completion::finish_scroll(ticket);
+    }) {
+        return Some(result);
+    }
     Some(match m {
         WM_FINISH_QUIT if h == PRIMARY => {
             DestroyWindow(h);
@@ -19,47 +24,6 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
         0x0312 if hotkeys::dispatch(h, w) => 0,
         TRAY if l as u32 == 0x0202 => {
             capture_region(h);
-            0
-        }
-        SCROLL_DONE => {
-            let result = SCROLL_RESULT
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-            let Some(result) = result else {
-                return Some(0);
-            };
-            SCROLL_BUSY.store(false, Ordering::SeqCst);
-            match result {
-                Ok(outcome) => {
-                    let message = outcome.reason;
-                    let was_visible = RESTORE_EDITOR.swap(false, Ordering::SeqCst);
-                    if let Err(e) = handle_capture(h, outcome.image, was_visible) {
-                        if was_visible {
-                            ShowWindow(h, 5);
-                        }
-                        MessageBoxW(h, wide(&e).as_ptr(), wide("ShotKit Rust").as_ptr(), 0x10);
-                    } else {
-                        MessageBoxW(
-                            h,
-                            wide(&message).as_ptr(),
-                            wide("Scroll-Aufnahme beendet").as_ptr(),
-                            0,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if RESTORE_EDITOR.swap(false, Ordering::SeqCst) {
-                        ShowWindow(h, 5);
-                    }
-                    MessageBoxW(
-                        h,
-                        wide(&e).as_ptr(),
-                        wide("Scroll-Aufnahme fehlgeschlagen").as_ptr(),
-                        0x10,
-                    );
-                }
-            }
             0
         }
         DELAYED_CAPTURE => {

@@ -4,7 +4,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $ExePath,
     [ValidateRange(10, 120)]
-    [int] $StartupTimeoutSeconds = 30
+    [int] $StartupTimeoutSeconds = 30,
+    [ValidateNotNullOrEmpty()]
+    [string] $PreviewScreenshotPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,7 +73,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Editor-Handles-' + [Guid]
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'
 $inputPath = Join-Path $root 'handles.png'
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
-$proc = $null; $mouseDown = $false; $failure = $null
+$proc = $null; $mouseDown = $false; $failure = $null; $previewCapturePath = $null
 function Get-OwnedWindows { if ($null -eq $proc -or $proc.HasExited) { return @() }; @([ShotKitHandlesSmoke.Native]::Windows($proc.Id)) }
 function Get-Main { Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' } | Select-Object -First 1 }
 function Wait-For([scriptblock]$Probe, [int]$Seconds, [string]$What) {
@@ -89,7 +91,75 @@ function Read-Image([string]$Path) {
     finally { $bmp.Dispose() }
 }
 function Map-Point([int]$x,[int]$length,[int]$origin,[int]$shown) { [int][Math]::Round($origin+($x+0.5)*$shown/$length,[MidpointRounding]::AwayFromZero) }
-function Drag-Image([int]$x1,[int]$y1,[int]$x2,[int]$y2) {
+function Capture-HeldHandlePreview {
+    # Capture the actual desktop pixels in the image viewport while the mouse
+    # button is still down. This deliberately does not inspect an off-screen
+    # bitmap or infer preview state from the window title.
+    if([ShotKitHandlesSmoke.Native]::GetForegroundWindow() -ne $main.Handle){throw 'PREVIEW_CAPTURE_FOCUS_LOST.'}
+    $origin=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point])
+    if(-not [ShotKitHandlesSmoke.Native]::ClientToScreen($main.Handle,[ref]$origin)){throw 'PREVIEW_CAPTURE_ORIGIN_FAILED.'}
+    $client=[Activator]::CreateInstance([ShotKitHandlesSmoke.Rect])
+    if(-not [ShotKitHandlesSmoke.Native]::ClientRect($main.Handle,[ref]$client)){throw 'PREVIEW_CAPTURE_CLIENT_RECT_FAILED.'}
+    $left=$origin.X+$viewX; $top=$origin.Y+$viewY
+    if($viewX -lt 0 -or $viewY -lt 0 -or ($viewX+$shownW) -gt $client.Right -or ($viewY+$shownH) -gt $client.Bottom){throw 'PREVIEW_CAPTURE_VIEWPORT_OUTSIDE_CLIENT.'}
+    $cursor=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point]); [void][ShotKitHandlesSmoke.Native]::GetCursorPos([ref]$cursor)
+    if([ShotKitHandlesSmoke.Native]::Owner([ShotKitHandlesSmoke.Native]::WindowFromPoint($cursor)) -ne $proc.Id){throw 'PREVIEW_CAPTURE_INPUT_TARGET_MISMATCH.'}
+
+    $bitmap=[Drawing.Bitmap]::new($shownW,$shownH,[Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    try {
+        $graphics=[Drawing.Graphics]::FromImage($bitmap)
+        try { $graphics.CopyFromScreen($left,$top,0,0,$bitmap.Size,[Drawing.CopyPixelOperation]::SourceCopy) }
+        finally { $graphics.Dispose() }
+        $script:previewCapturePath=Join-Path $root 'held-handle-preview.png'
+        $bitmap.Save($script:previewCapturePath,[Drawing.Imaging.ImageFormat]::Png)
+        if(-not [string]::IsNullOrWhiteSpace($PreviewScreenshotPath)){
+            $requestedPath=[IO.Path]::GetFullPath($PreviewScreenshotPath)
+            if(Test-Path -LiteralPath $requestedPath){throw "PREVIEW_SCREENSHOT_PATH_EXISTS: refusing to overwrite '$requestedPath'."}
+            $requestedDirectory=[IO.Path]::GetDirectoryName($requestedPath)
+            if(-not [string]::IsNullOrWhiteSpace($requestedDirectory) -and -not (Test-Path -LiteralPath $requestedDirectory -PathType Container)){
+                New-Item -ItemType Directory -Path $requestedDirectory -Force | Out-Null
+            }
+            $bitmap.Save($requestedPath,[Drawing.Imaging.ImageFormat]::Png)
+            $script:previewCapturePath=$requestedPath
+        }
+
+        # The first rectangle spans (30,25)-(70,60); the held resize should
+        # replace its lower-right handle and yield (30,25)-(120,95). Probe
+        # only the unique old/new edges, away from corners and the pointer.
+        # Bands are scaled from image coordinates and allow for the 4 px
+        # annotation stroke plus StretchBlt/DPI edge sampling. This is a live
+        # screen-pixel regression probe for ghost/absent edges, not a golden
+        # screenshot comparison; the saved-image pixel checks below remain
+        # responsible for final document bounds.
+        $scaleX=$shownW/160.0; $scaleY=$shownH/120.0
+        $tolX=[Math]::Max(2,[int][Math]::Ceiling($scaleX*2.5)); $tolY=[Math]::Max(2,[int][Math]::Ceiling($scaleY*2.5))
+        $oldRightX=Map-Point 70 160 0 $shownW; $oldBottomY=Map-Point 60 120 0 $shownH
+        $newRightX=Map-Point 120 160 0 $shownW; $newBottomY=Map-Point 95 120 0 $shownH
+        $countRed={ param($x0,$y0,$x1,$y1)
+            $count=0
+            for($yy=[Math]::Max(0,$y0);$yy -le [Math]::Min($bitmap.Height-1,$y1);$yy++){
+                for($xx=[Math]::Max(0,$x0);$xx -le [Math]::Min($bitmap.Width-1,$x1);$xx++){
+                    $pixel=$bitmap.GetPixel($xx,$yy)
+                    if($pixel.R -gt 180 -and $pixel.G -lt 100 -and $pixel.B -lt 100){$count++}
+                }
+            }
+            return $count
+        }
+        $oldRightTop=Map-Point 31 120 0 $shownH; $oldRightBottom=Map-Point 56 120 0 $shownH
+        $oldBottomLeft=Map-Point 38 160 0 $shownW; $oldBottomRight=Map-Point 68 160 0 $shownW
+        $newRightTop=Map-Point 31 120 0 $shownH; $newRightBottom=Map-Point 89 120 0 $shownH
+        $newBottomLeft=Map-Point 32 160 0 $shownW; $newBottomRight=Map-Point 115 160 0 $shownW
+        $oldRight=&$countRed ($oldRightX-$tolX) $oldRightTop ($oldRightX+$tolX) $oldRightBottom
+        $oldBottom=&$countRed $oldBottomLeft ($oldBottomY-$tolY) $oldBottomRight ($oldBottomY+$tolY)
+        $newRight=&$countRed ($newRightX-$tolX) $newRightTop ($newRightX+$tolX) $newRightBottom
+        $newBottom=&$countRed $newBottomLeft ($newBottomY-$tolY) $newBottomRight ($newBottomY+$tolY)
+        if($newRight -lt 5 -or $newBottom -lt 5){throw "LIVE_PREVIEW_NEW_EDGES_MISSING: red pixels right=$newRight bottom=$newBottom; screenshot=$script:previewCapturePath"}
+        if($oldRight -gt 0 -or $oldBottom -gt 0){throw "LIVE_PREVIEW_OLD_EDGES_REMAIN: red pixels old-right=$oldRight old-bottom=$oldBottom; screenshot=$script:previewCapturePath"}
+        Write-Host "PASS: held-drag screen preview replaced old lower-right edges with the new bounds (red edge pixels new-right=$newRight new-bottom=$newBottom; old-right=$oldRight old-bottom=$oldBottom)."
+    }
+    finally { $bitmap.Dispose() }
+}
+function Drag-Image([int]$x1,[int]$y1,[int]$x2,[int]$y2,[scriptblock]$WhileHeld=$null) {
     $o=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point]); if(-not [ShotKitHandlesSmoke.Native]::ClientToScreen($main.Handle,[ref]$o)){throw 'Could not map editor origin.'}
     $sx=$o.X+(Map-Point $x1 160 $viewX $shownW); $sy=$o.Y+(Map-Point $y1 120 $viewY $shownH)
     $ex=$o.X+(Map-Point $x2 160 $viewX $shownW); $ey=$o.Y+(Map-Point $y2 120 $viewY $shownH)
@@ -98,7 +168,8 @@ function Drag-Image([int]$x1,[int]$y1,[int]$x2,[int]$y2) {
     $p=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point]); [void][ShotKitHandlesSmoke.Native]::GetCursorPos([ref]$p)
     if([ShotKitHandlesSmoke.Native]::Owner([ShotKitHandlesSmoke.Native]::WindowFromPoint($p)) -ne $proc.Id){throw 'INPUT_TARGET_MISMATCH at drag start.'}
     [ShotKitHandlesSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$true; Start-Sleep -Milliseconds 120
-    if(-not [ShotKitHandlesSmoke.Native]::SetCursorPos($ex,$ey)){throw 'Could not place pointer at drag end.'}; Start-Sleep -Milliseconds 200
+    if(-not [ShotKitHandlesSmoke.Native]::SetCursorPos($ex,$ey)){throw 'Could not place pointer at drag end.'}; Start-Sleep -Milliseconds 350
+    if($null -ne $WhileHeld){&$WhileHeld}
     [ShotKitHandlesSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$false; Start-Sleep -Milliseconds 150
 }
 try {
@@ -128,7 +199,7 @@ try {
     Drag-Image 30 25 70 60
     [void](Wait-For { (Get-Main).Title -like '*Werkzeug Rectangle*' } 3 'Rectangle tool remaining active')
     # Start at the visible lower-right handle and resize, without selecting Select.
-    Drag-Image 70 60 120 95
+    Drag-Image 70 60 120 95 { Capture-HeldHandlePreview }
     [void](Wait-For { (Get-Main).Title -like '*Werkzeug Rectangle*' } 3 'Rectangle tool remaining active after handle drag')
     Click-Button 'Speichern'
     $saved=Wait-For { try { $im=Read-Image $inputPath; if($im.Width -eq 160 -and $im.Height -eq 120){$im} } catch { $null } } 15 'saved annotation image'

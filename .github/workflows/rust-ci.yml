@@ -62,7 +62,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shotkit-toolbar-test-screenshot
-          path: rust/target/shotkit-toolbar-test.png
+          path: |
+            rust/target/shotkit-toolbar-test.png
+            rust/target/shotkit-held-preview-*.png
           if-no-files-found: warn
           retention-days: 7
       - name: Upload tested Windows build
