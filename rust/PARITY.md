@@ -21,7 +21,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Alle Bildschirme aufnehmen | implementiert, nicht belegt | `capture_targets.rs`-Grenztests; Mehrmonitor-Windows-Test fehlt | Implementierung vorhanden; Mehrmonitor-Nachweis fehlt. |
 | Aktives Fenster aufnehmen | implementiert, nicht belegt | Windows-Test für tatsächlich aktives Fremdfenster fehlt | Implementierung vorhanden; die Übernahme des korrekten Fensters braucht direkten Nachweis. |
 | Bereich mit Maus aufziehen | fertig | `windows-smoke.ps1`; Alpha-9-Lauf | Interaktiver Einzelbildschirm-Test mit gespeicherter Aufnahme. |
-| Fenster / Unterelement per Maus auswählen | fehlt | `windows-hover-smoke.ps1`, `windows-browser-hover-smoke.ps1`; [Edge-/Chrome-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41461190364) | Vorschläge sind getestet; Referenzverhalten für `Strg`/Unterelement ist abzugleichen: Rust dokumentiert `Strg` für das größere Fenster. |
+| Fenster / Unterelement per Maus auswählen | implementiert, nicht belegt | `windows-hover-smoke.ps1`, `windows-browser-hover-smoke.ps1`; [Edge-/Chrome-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41461190364) | Vorschläge für verschachtelte Bedienelemente und Browser sind getestet. Das vollständige Referenzverhalten für `Strg` ist nicht belegt; Rust verwendet `Strg` für das größere Fenster. |
 | Lupe mit Koordinaten und Farbwert | implementiert, nicht belegt | Direkter Windows-Test für dargestellte Werte fehlt | Implementierung vorhanden; Anzeige und Werte sind noch nicht direkt belegt. |
 | Overlay: Pfeiltasten bewegen Mauszeiger um 1 / mit Umschalt um 10 Pixel | fehlt | `windows-keyboard-selection-smoke.ps1` testet stattdessen Rust-Bereichskorrektur | Andere Bedienung ist vorhanden; Referenz-Mauszeigerbewegung ist nicht nachgewiesen. |
 | Overlay: Enter übernimmt Ziel; Esc / Rechtsklick bricht ab | fehlt | `windows-keyboard-selection-smoke.ps1` testet Enter und Esc im Korrekturmodus | Rechtsklick-Abbruch und Enter für unveränderten Vorschlag separat nachweisen. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 21 fertig, 20 implementiert, nicht belegt, 5 fehlt, 1 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 21 fertig, 21 implementiert, nicht belegt, 4 fehlt, 1 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
