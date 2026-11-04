@@ -61,6 +61,10 @@ pub(super) fn absolute_argument_path(path: PathBuf) -> PathBuf {
     }
 }
 
+fn is_unc_path(path: &Path) -> bool {
+    shotkit::network_path::is_unc_path_utf16(&path.as_os_str().encode_wide().collect::<Vec<_>>())
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: Das gefundene Fensterhandle wird als Momentaufnahme behandelt.
 // Warum erfüllt bzw. offen: Der Klassenname ist ein lokaler UTF-16-Puffer; zukünftige Gültigkeit und Identität sind gesondert zu prüfen.
@@ -188,14 +192,27 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
         return 3;
     }
     let _busy_guard = InstanceFileBusyGuard;
-    let prompt = format!(
-        "Eine zweite ShotKit-Instanz möchte diese Datei öffnen:\n\n{}\n\nSoll sie jetzt geöffnet werden?",
-        path.display()
-    );
+    let network_path = is_unc_path(&path);
+    let prompt = if network_path {
+        format!(
+            "Warnung: Diese Datei liegt auf einem Netzwerkserver:\n\n{}\n\nWenn Sie fortfahren, kontaktiert ShotKit den Server. Windows kann dabei Ihre Anmeldeinformationen automatisch zur Authentifizierung verwenden.\n\nDatei jetzt öffnen?",
+            path.display()
+        )
+    } else {
+        format!(
+            "Eine zweite ShotKit-Instanz möchte diese Datei öffnen:\n\n{}\n\nSoll sie jetzt geöffnet werden?",
+            path.display()
+        )
+    };
     if MessageBoxW(
         h,
         wide(&prompt).as_ptr(),
-        wide("Datei aus zweiter Instanz").as_ptr(),
+        wide(if network_path {
+            "Netzwerkdatei aus zweiter Instanz"
+        } else {
+            "Datei aus zweiter Instanz"
+        })
+        .as_ptr(),
         0x24,
     ) != 6
     {

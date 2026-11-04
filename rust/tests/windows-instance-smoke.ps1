@@ -109,6 +109,19 @@ public static class ShotKitInstanceSmokeNative {
         return found.ToArray();
     }
 
+    public static string GetDialogText(IntPtr dialog) {
+        var found = new List<string>();
+        EnumChildProc callback = delegate(IntPtr child, IntPtr state) {
+            var text = new StringBuilder(2048);
+            GetWindowText(child, text, text.Capacity);
+            if (text.Length > 0) found.Add(text.ToString());
+            return true;
+        };
+        EnumChildWindows(dialog, callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return String.Join("\n", found.ToArray());
+    }
+
     public static void ClickButton(IntPtr button) {
         const uint BM_CLICK = 0x00F5;
         if (button == IntPtr.Zero) throw new InvalidOperationException("Dialog-Schaltfläche ist null.");
@@ -197,6 +210,7 @@ $initialImage = Join-Path $root 'first-editor.png'
 $primary = $null
 $secondActivate = $null
 $secondFile = $null
+$secondNetworkFile = $null
 $testFailure = $null
 $cleanupErrors = @()
 
@@ -285,10 +299,40 @@ try {
         throw 'PRIMARY_EXITED: Die erste Instanz wurde während der Ablehnung beendet.'
     }
 
+    # Exercise the warning and rejection using a reserved .invalid hostname.
+    # This UI test does not instrument network traffic.
+    $uncProbe = '\\shotkit-unc-probe.invalid\share\probe.png'
+    $secondNetworkFile = New-ShotKitProcess @($uncProbe)
+    $networkTitle = '*Netzwerkdatei aus zweiter Instanz*'
+    Wait-ForCondition {
+        -not $primary.HasExited -and $null -ne (Get-Dialog $primary $networkTitle)
+    } $TimeoutSeconds 'NETWORK_PROMPT_TIMEOUT: Der Netzwerk-Warnhinweis wurde nicht angezeigt.'
+    $networkConfirmation = Get-Dialog $primary $networkTitle
+    $networkText = [ShotKitInstanceSmokeNative]::GetDialogText($networkConfirmation.Handle)
+    foreach ($requiredText in @('Netzwerkserver', 'Anmeldeinformationen', 'shotkit-unc-probe.invalid')) {
+        if ($networkText.IndexOf($requiredText, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "NETWORK_WARNING_TEXT_MISSING: '$requiredText' fehlt im Netzwerkdialog: $networkText"
+        }
+    }
+    $networkDeclineButton = Wait-ForDialogButton $primary $networkConfirmation @('No', 'Nein') 'IDNO'
+    Wait-ForDialogClosed $primary $networkConfirmation 'NETWORK_PROMPT_CLOSE_TIMEOUT: Netzwerkdialog blieb nach Ablehnung geöffnet.'
+    Wait-ForCondition {
+        -not $secondNetworkFile.HasExited -and $null -ne (Get-Dialog $secondNetworkFile $declinedTitle)
+    } $TimeoutSeconds 'NETWORK_DECLINE_RESULT_TIMEOUT: Zweitprozess meldete die Netzwerkdatei-Ablehnung nicht.'
+    $networkDeclined = Get-Dialog $secondNetworkFile $declinedTitle
+    $networkDeclinedButton = Wait-ForDialogButton $secondNetworkFile $networkDeclined @('OK') 'IDOK'
+    Wait-ForDialogClosed $secondNetworkFile $networkDeclined 'NETWORK_DECLINE_RESULT_CLOSE_TIMEOUT: Ablehnungsdialog blieb geöffnet.'
+    if (-not $secondNetworkFile.WaitForExit($TimeoutSeconds * 1000) -or $secondNetworkFile.ExitCode -ne 0) {
+        throw 'NETWORK_DECLINE_NOT_CONTROLLED: Zweitstart endete nach Ablehnung nicht kontrolliert.'
+    }
+    if ($primary.HasExited) {
+        throw 'PRIMARY_EXITED: Die erste Instanz wurde während der Netzwerkdatei-Ablehnung beendet.'
+    }
+
 } catch {
     $testFailure = $_.Exception.Message
 } finally {
-    foreach ($owned in @($secondFile, $secondActivate, $primary)) {
+    foreach ($owned in @($secondNetworkFile, $secondFile, $secondActivate, $primary)) {
         if ($null -ne $owned) {
             try {
                 if (-not $owned.HasExited) {
