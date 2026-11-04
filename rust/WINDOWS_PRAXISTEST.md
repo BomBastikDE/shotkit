@@ -1,6 +1,6 @@
 # ShotKit Rust: Windows-Praxistest
 
-Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile C#-Version. Aktuelle Vorabversion: [v2.0.0-alpha.18](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.18); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
+Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile C#-Version. Aktuelle Vorabversion: [v2.0.0-alpha.19](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.19); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
 
 ## Ausgangslage notieren
 
@@ -48,3 +48,7 @@ Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2
 ## Gemeldeter Fehler: schnelles Freihandzeichnen
 
 **Status: offen.** Nach dem Test von Alpha 16 meldete der Owner, dass die allgemeine Bedienung deutlich flüssiger sei. Beim schnellen Zeichnen freier Linien ruckelt es aber weiterhin und Bewegungen werden nicht vollständig erfasst. Alpha 18 enthält eine begrenzte Renderfläche und die Übernahme eindeutig zuordenbarer Zwischenpunkte aus der Windows-Maushistorie. Ein erneuter Schnellzeichentest auf seinem Rechner ist erforderlich.
+
+## Gemeldeter Fehler: Symbole verschwinden nach Rückgängig
+
+**Status: offen.** Am 4. November 2026 meldete der Owner für Alpha 19, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste nahezu vollständig verschwanden. Der Screenshot zeigt die leeren Schaltflächen und ein weiterhin sichtbares Undo-Symbol. Eine Ursache wird untersucht; eine Korrektur ist erst nach erfolgreichem Test und erneuter Rückmeldung des Owners bestätigt.

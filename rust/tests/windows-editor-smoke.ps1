@@ -306,6 +306,36 @@ function Wait-ForImageState {
     }
     throw "IMAGE_STATE_TIMEOUT: $Description. Last decode/probe error: $lastError"
 }
+function Assert-ToolbarIconsVisible {
+    param([IntPtr] $MainHandle, [string] $Context)
+    $origin = [Activator]::CreateInstance([ShotKitEditorSmoke.Point])
+    if (-not [ShotKitEditorSmoke.Native]::ClientToScreen($MainHandle, [ref]$origin)) { throw "${Context}: client origin unavailable" }
+    $buttons = @([ShotKitEditorSmoke.Native]::VisibleButtons($MainHandle))
+    foreach ($name in @('Pfeil (A)', 'Linie (L)', 'Rechteck (R)', 'Ellipse (E)', 'Text (T)')) {
+        $button = $buttons | Where-Object { $_.Text -ceq $name } | Select-Object -First 1
+        if (-not $button) { throw "${Context}: toolbar button missing: $name" }
+        $rect = [Activator]::CreateInstance([ShotKitEditorSmoke.Rect])
+        if (-not [ShotKitEditorSmoke.Native]::GetChildRectInClient($MainHandle, $button.Handle, [ref]$rect)) { throw "${Context}: button bounds unavailable: $name" }
+        $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
+        if ($width -lt 20 -or $height -lt 20) { throw "${Context}: invalid button bounds: $name" }
+        $bitmap = [Drawing.Bitmap]::new($width, $height)
+        try {
+            $graphics = [Drawing.Graphics]::FromImage($bitmap)
+            try { $graphics.CopyFromScreen($origin.X + $rect.Left, $origin.Y + $rect.Top, 0, 0, $bitmap.Size) }
+            finally { $graphics.Dispose() }
+            $background = $bitmap.GetPixel(2, 2)
+            $different = 0
+            for ($y = 6; $y -lt $height - 6; $y++) {
+                for ($x = 6; $x -lt $width - 6; $x++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ([Math]::Abs([int]$pixel.R - [int]$background.R) + [Math]::Abs([int]$pixel.G - [int]$background.G) + [Math]::Abs([int]$pixel.B - [int]$background.B) -gt 90) { $different++ }
+                }
+            }
+            if ($different -lt 5) { throw "${Context}: toolbar icon is missing or overpainted: $name ($different contrasting pixels)" }
+        } finally { $bitmap.Dispose() }
+    }
+}
+
 function Save-FromToolbar {
     param([IntPtr] $MainHandle)
     [void](Click-VisibleButton -Parent $MainHandle -ExpectedTexts @('Speichern') -Description 'editor Save button')
@@ -514,6 +544,14 @@ try {
     }
 
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo annotation')
+    Start-Sleep -Milliseconds 300
+    Assert-ToolbarIconsVisible -MainHandle $main.Handle -Context 'UNDO_REPAINT'
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Wiederholen') -Description 'redo annotation')
+    Start-Sleep -Milliseconds 300
+    Assert-ToolbarIconsVisible -MainHandle $main.Handle -Context 'REDO_REPAINT'
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo annotation again')
+    Start-Sleep -Milliseconds 300
+    Assert-ToolbarIconsVisible -MainHandle $main.Handle -Context 'SECOND_UNDO_REPAINT'
     Save-FromToolbar $main.Handle
     [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring the original transparent pixels' -Predicate {
         param($image)

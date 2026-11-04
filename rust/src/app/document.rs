@@ -239,7 +239,7 @@ pub(super) unsafe fn create_editor_window() -> Result<H, String> {
         0,
         class.as_ptr(),
         wide("ShotKit Rust").as_ptr(),
-        0x00cf0000,
+        0x00cf0000 | 0x02000000, // WS_CLIPCHILDREN keeps toolbar children out of parent repaint.
         0x80000000u32 as i32,
         0x80000000u32 as i32,
         1000,

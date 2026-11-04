@@ -46,6 +46,10 @@ Die vorhandenen ShotKit-Symbole werden höher aufgelöst gezeichnet und geglätt
 
 Freihandstriche werden auf einen begrenzten Bildbereich gerendert; eindeutig zuordenbare Zwischenpunkte aus der begrenzten Windows-Maushistorie werden übernommen. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41541041605) maß für einen Strich mit 600 Punkten und drei Durchläufen 28,15 → 18,05 ms bei 1920 × 1080 und 146,04 → 79,12 ms bei 1200 × 10.000 Pixeln. Die verglichenen Vorschaubilder waren pixelgleich; abschließende Windows-Bildschirmausgabe und realer Schnellzeichentest sind darin nicht enthalten. Alle 23 Smoke-Szenarien bestanden. EXE und SHA256-Datei sind im [Pre-Release](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.18) enthalten.
 
+## Alpha 19
+
+Die verkleinerte Editoransicht verwendet eine höherwertige Skalierung; während des Zeichnens bleibt der schnelle Darstellungsweg aktiv. Die 1:1-Ausgabe wird nicht geglättet. [Release-Lauf 41678872270](https://github.com/BomBastikDE/shotkit/actions/runs/41678872270) bestand unter Linux und Windows mit 23 von 23 Smoke-Szenarien. Der Owner meldete anschließend, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste verschwanden; die Untersuchung und der Nachweis der Korrektur stehen aus.
+
 ## Übergabe 2. November 2026
 
 - Erledigt: Alpha 16, 17 und 18 nach grüner Linux-/Windows-CI veröffentlicht; C# bleibt stabile Hauptversion.
