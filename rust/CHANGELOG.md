@@ -50,7 +50,7 @@ Freihandstriche werden auf einen begrenzten Bildbereich gerendert; eindeutig zuo
 
 Die verkleinerte Editoransicht verwendet eine höherwertige Skalierung; während des Zeichnens bleibt der schnelle Darstellungsweg aktiv. Die 1:1-Ausgabe wird nicht geglättet ([Issue #4](https://github.com/BomBastikDE/shotkit/issues/4)). [Release-Lauf 41678872270](https://github.com/BomBastikDE/shotkit/actions/runs/41678872270) bestand unter Linux und Windows mit 23 von 23 Smoke-Szenarien. Der Owner meldete anschließend, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste verschwanden ([Issue #1](https://github.com/BomBastikDE/shotkit/issues/1)).
 
-## In Entwicklung nach Alpha 19
+## Alpha 20 – vorbereitet
 
 Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) schützt die Werkzeugleiste vor dem Übermalen durch den Editor. Der [CI-Lauf 41897317737](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) bestand unter Linux und Windows; der blockierende Editor-Smoke-Test prüft sichtbare Symbolpixel nach Undo, Redo und erneutem Undo. Die Korrektur ist noch nicht veröffentlicht und muss auf dem Rechner des Owners bestätigt werden.
 
