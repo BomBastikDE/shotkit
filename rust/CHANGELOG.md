@@ -64,3 +64,7 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 - Danach: Die 20 Zeilen „implementiert, nicht belegt“ priorisiert testen und den Symbolleisten-Test wieder verbindlich machen.
 - Bei der nächsten ohnehin nötigen CI-Änderung checkout und upload-artifact auf aktuelle Hauptversionen prüfen und aktualisieren.
 - Reale Tests mit gemischter DPI, mehreren Monitoren und weiteren Browsern sowie Entscheidungen zu main, legacy und Code-Signing bleiben beim Owner.
+
+## Nach Alpha 20 – in Entwicklung
+
+Bei Verpixeln beträgt die Mindestblockgröße 12 statt 6 Pixel; ein Regressionstest prüft die niedrigen Linienstärken. Dies verbessert die grobe Darstellung, garantiert aber keine Unkenntlichkeit oder sichere Schwärzung. [Issue #5](https://github.com/BomBastikDE/shotkit/issues/5) bleibt offen.
