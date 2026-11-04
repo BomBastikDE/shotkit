@@ -150,6 +150,23 @@ namespace ShotKitKeyboardSurface {
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the area-selection overlay' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
 
+    # Losing mouse capture while a drag is active must cancel without output.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    try {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+130),($geometry[1]+110)); Start-Sleep -Milliseconds 150
+        if(-not [ShotKitKeyboardSmoke.Native]::PostMessageW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not send WM_CANCELMODE to the selection overlay.'}
+        [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'capture loss to cancel the selection overlay' -OwnedProcess $shotKit -Condition {
+            if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+        })
+    }
+    finally { [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Capture-loss cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after capture loss' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
     # First prove Escape abandons a Shift-frozen manual selection without
     # producing output, then request a fresh overlay for the confirmed case.
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
@@ -278,7 +295,7 @@ namespace ShotKitKeyboardSurface {
         }
     }
     finally {$clickBitmap.Dispose()}
-    Write-Output "PASS: Escape cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
+    Write-Output "PASS: Capture loss and Escape cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
 }
 finally {
     if($shiftDown){Send-Key 0x10 $false}

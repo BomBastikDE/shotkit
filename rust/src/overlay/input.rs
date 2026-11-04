@@ -1,5 +1,20 @@
 use super::*;
 
+const WM_CANCELMODE: u32 = 0x001f;
+const WM_CAPTURECHANGED: u32 = 0x0215;
+
+/// End an active pointer gesture before any API that can synchronously send
+/// WM_CAPTURECHANGED. Returns whether there was a gesture to cancel.
+fn end_drag_for_capture_loss(state: &mut State) -> bool {
+    if !state.down {
+        return false;
+    }
+    state.down = false;
+    state.press_rect = None;
+    state.pending_click = None;
+    true
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: Windows-Callbackparameter und der serialisierte Overlayzustand sind gültig.
 // Warum erfüllt bzw. offen: window_proc wird von Windows auf dem Besitzerthread
@@ -8,6 +23,21 @@ use super::*;
 pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
     let state = std::ptr::addr_of_mut!(STATE);
     Some(match msg {
+        WM_CAPTURECHANGED | WM_CANCELMODE if (*state).down => {
+            // Clear `down` before ReleaseCapture: that call may reenter this
+            // callback with WM_CAPTURECHANGED. The reentrant notification
+            // then becomes a harmless no-op instead of finishing twice.
+            let cancelled = end_drag_for_capture_loss(&mut *state);
+            if msg == WM_CANCELMODE && cancelled {
+                ReleaseCapture();
+            }
+            let target = mark_finished(state, None);
+            if !target.is_null() {
+                let _ = KillTimer(target, UIA_TIMER_ID);
+                DestroyWindow(target);
+            }
+            0
+        }
         WM_ERASEBKGND => 1,
         WM_LBUTTONDOWN => {
             let point = cursor_screen(l, (*state).origin);
@@ -150,6 +180,42 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
         }
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_loss_ends_drag_and_discards_incomplete_click_state() {
+        let mut state = State {
+            down: true,
+            press_rect: Some((1, 2, 3, 4)),
+            pending_click: Some(PendingClick {
+                rect: (1, 2, 3, 4),
+                point: Point { x: 2, y: 3 },
+                root_hwnd: 1,
+            }),
+            ..State::default()
+        };
+
+        assert!(end_drag_for_capture_loss(&mut state));
+        assert!(!state.down);
+        assert_eq!(state.press_rect, None);
+        assert!(state.pending_click.is_none());
+    }
+
+    #[test]
+    fn capture_loss_cleanup_is_idempotent_for_releasecapture_reentrancy() {
+        let mut state = State {
+            down: true,
+            ..State::default()
+        };
+
+        assert!(end_drag_for_capture_loss(&mut state));
+        assert!(!end_drag_for_capture_loss(&mut state));
+        assert!(!state.down);
+    }
 }
 // SAFETY CONTRACT:
 // Voraussetzung: Windows-Callbackparameter und der serialisierte Overlayzustand sind gültig.

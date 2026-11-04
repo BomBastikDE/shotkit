@@ -83,3 +83,4 @@ Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereign
 - Automatisch gespeicherte PNG-Dateien werden erst nach vollständigem Schreiben unter ihrem endgültigen Namen veröffentlicht; bestehende Dateien werden dabei nicht ersetzt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
 - Das Verschieben der Bildansicht per Mausrad bleibt an den Bildrändern begrenzt und reagiert bei Richtungswechsel sofort ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Ist die Windows-Zwischenablage kurz belegt, wiederholt ShotKit nur das Öffnen mit begrenzter Wartezeit; Schreiboperationen werden nicht erneut ausgeführt ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
+- Verliert eine laufende Bereichsauswahl die Maussteuerung, wird der unvollständige Vorgang abgebrochen, statt den Ziehzustand festzuhalten ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
