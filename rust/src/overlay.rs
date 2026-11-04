@@ -117,6 +117,7 @@ extern "system" {
     fn TranslateMessage(msg: *const Msg) -> i32;
     fn DispatchMessageW(msg: *const Msg) -> L;
     fn PostQuitMessage(code: i32);
+    fn PostThreadMessageW(thread: u32, msg: u32, w: W, l: L) -> i32;
     fn SetCapture(hwnd: H) -> H;
     fn ReleaseCapture() -> i32;
     fn InvalidateRect(hwnd: H, rect: *const Rect, erase: i32) -> i32;
@@ -144,6 +145,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> H;
+    fn GetCurrentThreadId() -> u32;
 }
 #[link(name = "gdi32")]
 extern "system" {
@@ -186,6 +188,7 @@ extern "system" {
     fn GetStockObject(index: i32) -> H;
 }
 
+const WM_NULL: u32 = 0x0000;
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000f;
 const WM_ERASEBKGND: u32 = 0x0014;
@@ -309,6 +312,16 @@ static mut STATE: State = State {
     done: false,
 };
 static SELECTION_LOCK: Mutex<()> = Mutex::new(());
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem Overlay-Nachrichtenthread, dessen Queue durch
+// Fensteranlage oder GetMessageW initialisiert wurde.
+// Warum erfüllt bzw. offen: Alle Aufrufer laufen auf dem Besitzerthread;
+// PostThreadMessageW kann bei einem API-Fehler dennoch fehlschlagen.
+// Nachrichten: PostThreadMessageW stellt WM_NULL als harmlose Thread-Nachricht ein.
+unsafe fn wake_overlay_message_loop() {
+    let _ = PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
+}
 
 fn unpack(l: L) -> (i32, i32) {
     (

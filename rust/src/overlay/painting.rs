@@ -66,6 +66,7 @@ pub(super) unsafe fn handle_paint(hwnd: H, msg: u32, _w: W, _l: L) -> Option<L> 
                 s.magnifier_hwnd = null_mut();
                 (hwnd, magnifier)
             };
+            wake_overlay_message_loop();
             let _ = KillTimer(timer_hwnd, UIA_TIMER_ID);
             if !magnifier.is_null() {
                 DestroyWindow(magnifier);

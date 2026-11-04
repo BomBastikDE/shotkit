@@ -147,11 +147,17 @@ try {
   while([DateTime]::UtcNow -lt $deadline){$overlay=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitSelectionOverlay'}|Select-Object -First 1;if($overlay){break};Start-Sleep -Milliseconds 100}
   if(-not $overlay -or [ShotKitToolbarVisual.Native]::Owner($overlay.H) -ne [uint32]$p.Id){throw "CAPTURE_$($captureMode.ToUpperInvariant())_FAILED: owned selection overlay did not appear."}
   [void][ShotKitToolbarVisual.Native]::SendMessageW($overlay.H,0x0100,[IntPtr]0x1b,[IntPtr]::Zero)
-  $deadline=[DateTime]::UtcNow.AddSeconds(5);$alive=$null
-  do{$alive=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitSelectionOverlay'}|Select-Object -First 1;if(-not $alive){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $deadline)
-  if($alive){throw "CAPTURE_CANCEL_FAILED: $captureMode overlay remained visible after Escape."}
-  $main=Owned-Windows|Where-Object{$_.Visible -and $_.H -eq $main.H}|Select-Object -First 1
-  if(-not $main){throw "CAPTURE_CANCEL_FAILED: editor did not return after cancelling $captureMode."}
+  $editorHandle=$main.H
+  $deadline=[DateTime]::UtcNow.AddSeconds(5);$alive=$null;$restored=$null
+  do{
+   $windows=@(Owned-Windows)
+   $alive=$windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitSelectionOverlay'}|Select-Object -First 1
+   $restored=$windows|Where-Object{$_.Visible -and $_.H -eq $editorHandle}|Select-Object -First 1
+   if(-not $alive -and $restored){break}
+   Start-Sleep -Milliseconds 100
+  }while([DateTime]::UtcNow -lt $deadline)
+  if($alive -or -not $restored){$details=($windows|ForEach-Object{"$($_.ClassName):hwnd=$($_.H):visible=$($_.Visible):title=$($_.Title)"}) -join ', ';throw "CAPTURE_CANCEL_FAILED: $captureMode overlayVisible=$([bool]$alive), originalEditorVisible=$([bool]$restored), windows: $details"}
+  $main=$restored
  }
  # Mouse and keyboard must each change the selected tool, confirmed by the app's live window title.
  $line=$buttons|Where-Object{$_.Text -ceq 'Linie (L)'}|Select-Object -First 1;$lr=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($line.H,[ref]$lr)){throw 'LINE_BUTTON_RECT_FAILED'}

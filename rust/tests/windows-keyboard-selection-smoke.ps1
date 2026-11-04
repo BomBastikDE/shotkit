@@ -36,6 +36,7 @@ namespace ShotKitKeyboardSmoke {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -156,7 +157,7 @@ namespace ShotKitKeyboardSurface {
     [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
     try {
         [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+130),($geometry[1]+110)); Start-Sleep -Milliseconds 150
-        if(-not [ShotKitKeyboardSmoke.Native]::PostMessageW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not send WM_CANCELMODE to the selection overlay.'}
+        if(-not [ShotKitKeyboardSmoke.Native]::PostMessageW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not post WM_CANCELMODE to the selection overlay.'}
         [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'capture loss to cancel the selection overlay' -OwnedProcess $shotKit -Condition {
             if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
         })
@@ -166,6 +167,26 @@ namespace ShotKitKeyboardSurface {
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after capture loss' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    # A synchronously sent WM_CANCELMODE can be dispatched while GetMessageW
+    # is blocked. Its completion must wake the overlay loop even as the HWND
+    # is destroyed by the callback.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    try {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+130),($geometry[1]+110)); Start-Sleep -Milliseconds 150
+        $sendResult=[IntPtr]::Zero
+        if([ShotKitKeyboardSmoke.Native]::SendMessageTimeoutW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero,2,5000,[ref]$sendResult) -eq [IntPtr]::Zero){throw 'Could not synchronously send WM_CANCELMODE to the selection overlay.'}
+        [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'synchronously sent WM_CANCELMODE to cancel the selection overlay' -OwnedProcess $shotKit -Condition {
+            if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+        })
+    }
+    finally { [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Synchronous capture-loss cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after synchronous capture loss' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
 
     # First prove Escape abandons a Shift-frozen manual selection without
     # producing output, then request a fresh overlay for the confirmed case.
@@ -184,6 +205,15 @@ namespace ShotKitKeyboardSurface {
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after Escape' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    $sendResult=[IntPtr]::Zero
+    if([ShotKitKeyboardSmoke.Native]::SendMessageTimeoutW($overlay.Handle,0x0100,[IntPtr]0x1B,[IntPtr]::Zero,2,5000,[ref]$sendResult) -eq [IntPtr]::Zero){throw 'Could not synchronously send Escape to the selection overlay.'}
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'synchronously sent Escape to close the selection overlay' -OwnedProcess $shotKit -Condition {
+        if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+    })
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after synchronous Escape' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
 
     # Drag a known 200x150 rectangle over the synthetic surface. Shift remains
     # physically held across mouse-up; the overlay must stay alive for edits.
