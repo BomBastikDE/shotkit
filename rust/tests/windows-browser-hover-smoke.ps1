@@ -392,6 +392,43 @@ function Get-ProfileBrowserProcesses {
     @(Get-CimInstance Win32_Process -Filter "Name='$browserProcessName'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
 }
+function Write-BrowserStartupDiagnostics {
+    param([System.Diagnostics.Process] $Launcher, [string] $ProfilePath)
+    Write-Output "DIAGNOSTICS: $Browser startup timed out; collecting test-owned process/window metadata before cleanup."
+    try {
+        $launcherCurrent = Get-BrowserProcessById $Launcher.Id
+        $launcherProfileMatch = [bool]($null -ne $launcherCurrent -and
+            $launcherCurrent.Name -eq $browserProcessName -and $launcherCurrent.CommandLine -and
+            $launcherCurrent.CommandLine -match [Regex]::Escape($ProfilePath))
+        Write-Output "DIAGNOSTICS: launcher PID=$($Launcher.Id) hasExited=$($Launcher.HasExited) currentProfileMatch=$launcherProfileMatch."
+        $processes = @(Get-ProfileBrowserProcesses $ProfilePath)
+        Write-Output "DIAGNOSTICS: profile-owned process count=$($processes.Count)."
+        foreach ($snapshot in $processes) {
+            $current = Get-BrowserProcessById ([int]$snapshot.ProcessId)
+            # Process enumeration and lookup can race with exit/PID reuse.
+            # Only inspect windows after confirming the same owned identity.
+            if ($null -eq $current -or $current.Name -ne $browserProcessName -or
+                -not $current.CommandLine -or $current.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
+                $null -eq $snapshot.CreationDate -or $snapshot.CreationDate -ne $current.CreationDate) {
+                Write-Output "DIAGNOSTICS: profile-owned PID=$($snapshot.ProcessId) disappeared or changed identity before window inspection."
+                continue
+            }
+            $created = $current.CreationDate.ToUniversalTime().ToString('o')
+            $isLauncher = [int]$current.ProcessId -eq $Launcher.Id
+            Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) parent=$($current.ParentProcessId) session=$($current.SessionId) created=$created profileMatch=True launcher=$isLauncher."
+            $windows = @([ShotKitBrowserHoverSmoke.Native]::WindowsForProcess([int]$current.ProcessId))
+            Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) window count=$($windows.Count)."
+            foreach ($window in $windows) {
+                $class = if ($window.ClassName -match '^[#A-Za-z0-9_.-]{1,80}$') { $window.ClassName } else { '<redacted>' }
+                Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) HWND=$($window.Handle) class=$class visible=$($window.Visible)."
+            }
+        }
+    }
+    catch {
+        # Exception messages can contain profile paths; retain only the type.
+        Write-Output "DIAGNOSTICS: browser startup metadata collection failed ($($_.Exception.GetType().Name))."
+    }
+}
 function Stop-OwnedBrowserProcess {
     param($ProcessSnapshot, [string] $ProfilePath)
     $ProcessId = [int]$ProcessSnapshot.ProcessId
@@ -559,8 +596,16 @@ catch {
     $browserArgs = $browserArgs -join ' '
     $browserProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WorkingDirectory $testRoot -PassThru
 
-    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description "the owned $Browser app window" -OwnedProcess $browserProcess -Condition {
-        Get-ProcessWindows $browserProcess | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
+    try {
+        $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description "the owned $Browser app window" -OwnedProcess $browserProcess -Condition {
+            Get-ProcessWindows $browserProcess | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
+        }
+    }
+    catch {
+        if ($_.Exception.Message -eq "Timed out after $($StartupTimeoutSeconds)s waiting for the owned $Browser app window.") {
+            Write-BrowserStartupDiagnostics -Launcher $browserProcess -ProfilePath $browserProfile
+        }
+        throw
     }
     if (-not [ShotKitBrowserHoverSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) {
         throw "Could not foreground the test-owned $Browser app window."
