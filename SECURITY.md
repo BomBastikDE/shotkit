@@ -4,9 +4,9 @@
 
 | Version | Sicherheitskorrekturen |
 |---|---|
-| C#-Version 1.2.x (Branch `main`, stabile Hauptversion) | ✅ |
-| Rust-Version, jeweils neueste `v2.0.0-alpha.N` (Branch `rust/development`) | ✅ |
+| Rust-Version, jeweils neueste `v2.0.0-alpha.N` (Branch `main`) | ✅ |
 | Ältere Rust-Alphas | ❌ – bitte auf die neueste Alpha aktualisieren |
+| C#-Version 1.2.x (Branch `csharp/1.x`, letzte stabile Version) | ✅ nur Sicherheitskorrekturen, bis zur Rust-Beta |
 | C#-Versionen vor 1.2 | ❌ |
 
 ## Sicherheitslücke melden
