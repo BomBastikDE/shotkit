@@ -222,7 +222,7 @@ unsafe fn copy_bgra_clipboard(
         }
     }
 
-    if OpenClipboard(owner) == 0 {
+    if !crate::clipboard_retry::open_with_retry(|| OpenClipboard(owner) != 0) {
         return Err("OpenClipboard ist fehlgeschlagen; Clipboard blieb unverändert".into());
     }
     let mut clipboard = Clipboard(true);
