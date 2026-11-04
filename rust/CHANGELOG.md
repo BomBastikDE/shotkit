@@ -50,9 +50,9 @@ Freihandstriche werden auf einen begrenzten Bildbereich gerendert; eindeutig zuo
 
 Die verkleinerte Editoransicht verwendet eine höherwertige Skalierung; während des Zeichnens bleibt der schnelle Darstellungsweg aktiv. Die 1:1-Ausgabe wird nicht geglättet ([Issue #4](https://github.com/BomBastikDE/shotkit/issues/4)). [Release-Lauf 41678872270](https://github.com/BomBastikDE/shotkit/actions/runs/41678872270) bestand unter Linux und Windows mit 23 von 23 Smoke-Szenarien. Der Owner meldete anschließend, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste verschwanden ([Issue #1](https://github.com/BomBastikDE/shotkit/issues/1)).
 
-## Alpha 20 – vorbereitet
+## Alpha 20
 
-Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) schützt die Werkzeugleiste vor dem Übermalen durch den Editor. Der [CI-Lauf 41897317737](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) bestand unter Linux und Windows; der blockierende Editor-Smoke-Test prüft sichtbare Symbolpixel nach Undo, Redo und erneutem Undo. Die Korrektur ist noch nicht veröffentlicht und muss auf dem Rechner des Owners bestätigt werden.
+Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) schützt die Werkzeugleiste vor dem Übermalen durch den Editor. Der [CI-Lauf 41897317737](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) bestand unter Linux und Windows; der blockierende Editor-Smoke-Test prüft sichtbare Symbolpixel nach Undo, Redo und erneutem Undo. Der [Release-Lauf 41902749425, Versuch 2](https://github.com/BomBastikDE/shotkit/actions/runs/41902749425/attempts/2) bestand unter Linux und Windows; das [Pre-Release](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.20) enthält EXE und SHA256-Datei. Im ersten Versuch erreichte die Edge-UI-Automation das Zeitlimit; die Ursache ist nicht abschließend geklärt. Die Korrektur muss auf dem Rechner des Owners bestätigt werden.
 
 ## Übergabe 2. November 2026
 
