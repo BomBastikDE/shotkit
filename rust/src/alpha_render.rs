@@ -84,12 +84,88 @@ struct GdiplusStartupInput {
     suppress_background_thread: i32,
     suppress_external_codecs: i32,
 }
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PointF {
     x: f32,
     y: f32,
+}
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArrowGeometry {
+    tip: PointF,
+    left: PointF,
+    right: PointF,
+    shaft_end: Option<PointF>,
+}
+
+/// Calculate export arrow geometry without relying on platform drawing APIs.
+/// Non-finite, unrepresentable, and sub-pixel arrows produce no geometry.
+#[cfg(any(windows, test))]
+fn arrow_geometry(
+    start: crate::shapes::Point,
+    end: crate::shapes::Point,
+    width: f32,
+) -> Option<ArrowGeometry> {
+    let (sx, sy, ex, ey) = (start.x as f64, start.y as f64, end.x as f64, end.y as f64);
+    if ![sx, sy, ex, ey, width as f64].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let (dx, dy) = (ex - sx, ey - sy);
+    let len = dx.hypot(dy);
+    if !len.is_finite() || len < 1.0 {
+        return None;
+    }
+    let width = (width as f64).clamp(1.0, 256.0);
+    let head = (width * 4.0).max(8.0).min(len * 0.6);
+    let (ux, uy) = (dx / len, dy / len);
+    let shaft_fits = len > head && head * 0.45 * 0.8 >= width * 0.5;
+    // If the shaft cannot meet the head without protruding, extend the filled
+    // head back to the arrow start and make its base at least stroke-width wide.
+    let (bx, by) = if shaft_fits {
+        (ex - ux * head, ey - uy * head)
+    } else {
+        (sx, sy)
+    };
+    let half_base = if shaft_fits {
+        head * 0.45
+    } else {
+        (head * 0.45).max(width * 0.5)
+    };
+    let (nx, ny) = (-uy * half_base, ux * half_base);
+    let point = |x: f64, y: f64| {
+        if x.is_finite()
+            && y.is_finite()
+            && x.abs() <= f32::MAX as f64
+            && y.abs() <= f32::MAX as f64
+        {
+            Some(PointF {
+                x: x as f32,
+                y: y as f32,
+            })
+        } else {
+            None
+        }
+    };
+    let tip = point(ex, ey)?;
+    let left = point(bx + nx, by + ny)?;
+    let right = point(bx - nx, by - ny)?;
+
+    // Stop the shaft inside the head, as the GDI renderer does. For a short,
+    // wide arrow the triangle may be narrower than the stroke; omit the shaft
+    // in that case so its square end cannot protrude through the head sides.
+    let shaft_end = if shaft_fits {
+        Some(point(ex - ux * head * 0.8, ey - uy * head * 0.8)?)
+    } else {
+        None
+    };
+    Some(ArrowGeometry {
+        tip,
+        left,
+        right,
+        shaft_end,
+    })
 }
 #[cfg(windows)]
 #[repr(C)]
@@ -341,33 +417,20 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             end.y,
         )),
         ShapeKind::Arrow { start, end } => {
-            status(GdipDrawLine(
-                g,
-                pen.as_ptr(),
-                start.x,
-                start.y,
-                end.x,
-                end.y,
-            ))?;
-            let dx = end.x - start.x;
-            let dy = end.y - start.y;
-            let len = (dx * dx + dy * dy).sqrt().max(1.0);
-            let head = (width * 4.0).max(8.0).min(len * 0.6);
-            let bx = end.x - dx / len * head;
-            let by = end.y - dy / len * head;
-            let nx = -dy / len * head * 0.45;
-            let ny = dx / len * head * 0.45;
-            let pts = [
-                PointF { x: end.x, y: end.y },
-                PointF {
-                    x: bx + nx,
-                    y: by + ny,
-                },
-                PointF {
-                    x: bx - nx,
-                    y: by - ny,
-                },
-            ];
+            let Some(geometry) = arrow_geometry(*start, *end, width) else {
+                return Ok(());
+            };
+            if let Some(shaft_end) = geometry.shaft_end {
+                status(GdipDrawLine(
+                    g,
+                    pen.as_ptr(),
+                    start.x,
+                    start.y,
+                    shaft_end.x,
+                    shaft_end.y,
+                ))?;
+            }
+            let pts = [geometry.tip, geometry.left, geometry.right];
             let brush = create_brush(pen_color)?;
             status(GdipFillPolygon(g, brush.as_ptr(), pts.as_ptr(), 3, 0))
         }
