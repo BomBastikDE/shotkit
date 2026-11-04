@@ -49,8 +49,9 @@ Linux (`ubuntu-24.04`) und Windows (`windows-2022`, interaktiver Desktop) bestan
 (nur `SECURITY.md` geändert, Code identisch zu `8979e24`) schlugen im ersten Versuch zwei Szenarien fehl:
 „keyboard selection“ (Testprozess mit Exitcode 1) und „Edge browser hover“
 (`UIA_PRECHECK_TIMEOUT: Edge UI Automation did not return within 15 seconds`). Im zweiten Versuch desselben
-Laufs bestanden alle 23. Das spricht für zeitabhängige Tests, nicht für einen Programmfehler – ist aber nicht
-weiter untersucht.
+Laufs bestanden alle 23. Der erfolgreiche Wiederholungsversuch zeigt, dass der Fehler nicht in jedem Lauf auftritt. Seine Ursache ist
+nicht geklärt; ein zeitabhängiges Test- oder Umgebungsproblem ist eine Möglichkeit, ein Programmfehler ist damit
+nicht ausgeschlossen.
 
 ### Praxistest auf dem Rechner des Owners
 
