@@ -9,6 +9,8 @@ param(
 
     [switch] $KeyboardAdjustment,
 
+    [switch] $EnterAccept,
+
     [ValidateRange(10, 120)]
     [int] $StartupTimeoutSeconds = 30,
 
@@ -17,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($KeyboardAdjustment -and $EnterAccept) { throw 'INVALID_OPTIONS: -KeyboardAdjustment and -EnterAccept are separate scenarios.' }
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -738,20 +741,28 @@ catch {
         throw "TEST_FOCUS_MISMATCH: foreground PID is $foregroundPid at click time, expected ShotKit PID $($shotKit.Id)."
     }
     Write-Output "MILESTONE: cursor=$actualX,$actualY and foreground PID=$foregroundPid verified before hover click."
-    if ($KeyboardAdjustment) {
-        # Preserve the real browser hover suggestion, then exercise the public
-        # keyboard path: Right translates one pixel, Shift+Down extends the
-        # bottom edge one pixel, and Enter accepts that exact edited rectangle.
+    if ($KeyboardAdjustment -or $EnterAccept) {
+        # Preserve the real browser hover suggestion. The adjustment scenario
+        # edits it with Right and Shift+Down; EnterAccept submits it unchanged.
         Start-Sleep -Milliseconds 900
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0x0002, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0x0002, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        if ($KeyboardAdjustment) {
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0x0002, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0x0002, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        }
         Start-Sleep -Milliseconds 250
         [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero)
         [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0x0002, [UIntPtr]::Zero)
+        if ($EnterAccept) {
+            $cursorAfterEnterX = 0; $cursorAfterEnterY = 0
+            if (-not [ShotKitBrowserHoverSmoke.Native]::CursorPosition([ref]$cursorAfterEnterX, [ref]$cursorAfterEnterY) -or
+                $cursorAfterEnterX -ne $actualX -or $cursorAfterEnterY -ne $actualY) {
+                throw "ENTER_MOVED_CURSOR: cursor was ($actualX,$actualY) before Enter and ($cursorAfterEnterX,$cursorAfterEnterY) after Enter."
+            }
+        }
     }
     else {
         [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -789,12 +800,49 @@ catch {
     $bitmap = [Drawing.Bitmap]::new($png.FullName)
     try {
         $uiaSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'uia_response'
-        if ($KeyboardAdjustment) {
-            $expectedLeft = $uiaSelection.Left + 1
-            $expectedTop = $uiaSelection.Top
-            $expectedRight = $uiaSelection.Right + 1
-            $expectedBottom = $uiaSelection.Bottom + 1
-            $keyboardRect = [pscustomobject]@{ Left=$expectedLeft; Top=$expectedTop; Right=$expectedRight; Bottom=$expectedBottom }
+        if ($EnterAccept) {
+            $uiaWidth = $uiaSelection.Right - $uiaSelection.Left
+            $uiaHeight = $uiaSelection.Bottom - $uiaSelection.Top
+            $selectionWidth = $uiaWidth
+            $selectionHeight = $uiaHeight
+            if ([Math]::Abs($uiaWidth - 280) -gt 1 -or [Math]::Abs($uiaHeight - 180) -gt 1 -or
+                [Math]::Abs($uiaSelection.Left - $bounds.X) -gt 1 -or
+                [Math]::Abs($uiaSelection.Top - $bounds.Y) -gt 1 -or
+                [Math]::Abs($uiaSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
+                [Math]::Abs($uiaSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
+                throw "UIA_BASE_BOUNDS_MISMATCH: UIA suggestion $($uiaWidth)x$($uiaHeight) at ($($uiaSelection.Left),$($uiaSelection.Top),$($uiaSelection.Right),$($uiaSelection.Bottom)) does not match fractional bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height)) within one pixel."
+            }
+            $trace = [IO.File]::ReadAllText($diagnosticsFile)
+            if ($trace -match 'selection mouse_(down|up)') {
+                throw 'ENTER_PATH_MOUSE_GESTURE: Enter acceptance unexpectedly recorded a mouse selection gesture.'
+            }
+            if ($bitmap.Width -ne $uiaWidth -or $bitmap.Height -ne $uiaHeight) {
+                throw "ENTER_BOUNDS_MISMATCH: PNG is $($bitmap.Width)x$($bitmap.Height), logged UIA rectangle is ${uiaWidth}x${uiaHeight}."
+            }
+            # Fractional UIA bounds can round at either edge. Check the edge
+            # landmarks at their measured positions inside the logged crop;
+            # there is no following outside pixel when the crop is unchanged.
+            $rightMarkerX = [int][Math]::Floor($bounds.X + $bounds.Width) - 1 - $uiaSelection.Left
+            $bottomMarkerY = [int][Math]::Floor($bounds.Y + $bounds.Height) - 1 - $uiaSelection.Top
+            $sampleX = [int][Math]::Floor($bitmap.Width / 2.0)
+            $sampleY = [int][Math]::Floor($bitmap.Height / 2.0)
+            if ($rightMarkerX -lt 0 -or $rightMarkerX -ge $bitmap.Width -or
+                $bottomMarkerY -lt 0 -or $bottomMarkerY -ge $bitmap.Height) {
+                throw "ENTER_PIXEL_INDEX_MISMATCH: measured UIA edge markers fall outside the logged crop (right=$rightMarkerX, bottom=$bottomMarkerY, PNG=$($bitmap.Width)x$($bitmap.Height))."
+            }
+            $rightMarker = $bitmap.GetPixel($rightMarkerX, $sampleY)
+            $bottomMarker = $bitmap.GetPixel($sampleX, $bottomMarkerY)
+            if ($rightMarker.R -lt 250 -or $rightMarker.G -gt 5 -or $rightMarker.B -lt 250 -or
+                $bottomMarker.R -gt 5 -or $bottomMarker.G -lt 250 -or $bottomMarker.B -lt 250) {
+                throw "ENTER_PIXEL_POSITION_MISMATCH: expected magenta right-edge marker at ($rightMarkerX,$sampleY) and cyan bottom marker at ($sampleX,$bottomMarkerY); got RGB right=$($rightMarker.R),$($rightMarker.G),$($rightMarker.B) bottom=$($bottomMarker.R),$($bottomMarker.G),$($bottomMarker.B)."
+            }
+            $finalRect = [pscustomobject]@{ Left=$uiaSelection.Left; Top=$uiaSelection.Top; Right=$uiaSelection.Right; Bottom=$uiaSelection.Bottom }
+        }
+        elseif ($KeyboardAdjustment) {
+            $keyboardRect = [pscustomobject]@{
+                Left=$uiaSelection.Left + 1; Top=$uiaSelection.Top
+                Right=$uiaSelection.Right + 1; Bottom=$uiaSelection.Bottom + 1
+            }
             $baseWidth = $uiaSelection.Right - $uiaSelection.Left
             $baseHeight = $uiaSelection.Bottom - $uiaSelection.Top
             if ([Math]::Abs($baseWidth - 280) -gt 1 -or [Math]::Abs($baseHeight - 180) -gt 1 -or
@@ -895,8 +943,9 @@ catch {
     Write-Output 'MILESTONE: capture dimensions and all four expected pixels validated.'
 
     Assert-NoUnexpectedDialog $shotKit
-    $interaction = if ($KeyboardAdjustment) { 'hover + Right + Shift+Down + Enter' } else { 'hover-click' }
-    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top)); $interaction captured exact dimensions and four expected pixels."
+    $interaction = if ($KeyboardAdjustment) { 'hover + Right + Shift+Down + Enter' } elseif ($EnterAccept) { 'unchanged hover + Enter, cursor stationary' } else { 'hover-click' }
+    $location = if ($EnterAccept) { "logged UIA rectangle=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top))" } else { "screen=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top))" }
+    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), $location; $interaction captured matching dimensions and expected pixels."
 }
 catch {
     $testFailure = $_

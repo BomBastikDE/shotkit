@@ -52,7 +52,7 @@ cargo build --locked --release
 pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit.exe -AllowLocalInteractive
 ```
 
-Das Skript führt alle 24 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.
+Das Skript führt alle 25 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.
 
 ## Lizenz
 
