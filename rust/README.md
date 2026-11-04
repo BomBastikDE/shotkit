@@ -1,10 +1,10 @@
 # ShotKit Rust – Alpha-Testversion
 
-Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Das ursprüngliche C#-ShotKit bleibt die stabile Version.
+Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Die letzte als stabil freigegebene Version ist bis zur ersten Rust-Beta das C#-ShotKit 1.2.0 (Branch `csharp/1.x`).
 
 ## Umstieg von C#
 
-Die C#-Version bleibt bis zur Freigabe der Rust-Beta die stabile Hauptversion. Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung und der geplante Weg zur 2.0 stehen in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
+Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README auf main](https://github.com/BomBastikDE/shotkit/blob/main/README.md#bisherige-c-version-120).
 
 ## Bisherige Funktionen
 
@@ -24,6 +24,8 @@ Die C#-Version bleibt bis zur Freigabe der Rust-Beta die stabile Hauptversion. Z
 ## Bekannte Grenzen
 
 Auf einem interaktiven Windows-CI-Runner wurden Bereichsaufnahme, vertikale und horizontale Scrollbilder, lokale Testseiten in Edge und Chrome für Elementvorschläge, ein Editorablauf mit Transparenz, das Kopieren und Einfügen transparenter Bilder, das Infofenster und die unabhängige Bearbeitung mehrerer Bilder geprüft. Weitere Windows-Praxistests stehen aus. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Transparente Bilder können bearbeitet und in passenden Formaten gespeichert werden; die neuen Bild- und Editorfunktionen benötigen weitere Windows-Praxistests. Die vollständige Übereinstimmung mit dem Original ist noch nicht bestätigt. Siehe [ROADMAP.md](ROADMAP.md).
+
+Ein unerwarteter Programmabbruch beendet alle offenen Editorfenster; nicht gespeicherte Änderungen und nur im Arbeitsspeicher zurückgehaltene Aufnahmen gehen verloren. Die Wiederherstellungsfunktion im Tray hält solche Aufnahmen nur während der laufenden Sitzung vor. Wichtige Bearbeitungen daher regelmäßig speichern.
 
 Beim ersten Start öffnet sich nach einer Aufnahme der Editor; automatisches Speichern und Kopieren in die Zwischenablage sind zunächst ausgeschaltet. Diese Ausgaben und der optionale Autostart können im Tray-Menü eingestellt werden. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 
@@ -50,7 +52,7 @@ cargo build --locked --release
 pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit.exe -AllowLocalInteractive
 ```
 
-Das Skript führt alle 23 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.
+Das Skript führt alle 24 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test ist nur in der CI vorübergehend über `-AllowToolbarFailure` nicht blockierend; vor der Beta muss diese Ausnahme entfallen.
 
 ## Lizenz
 
