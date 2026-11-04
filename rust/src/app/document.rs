@@ -37,6 +37,90 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     result
 }
+
+/// Avoid replacing an opened original when the export path cannot preserve its
+/// source format faithfully. Unknown and currently unsupported formats fail
+/// closed and must go through Save As as well.
+fn requires_save_as(path: &Path) -> bool {
+    !matches!(
+        image_io::format_from_path(path),
+        Ok(image::ImageFormat::Png | image::ImageFormat::Bmp)
+    )
+}
+
+fn opened_original_requires_save_as(path: &Path, bytes: &[u8]) -> bool {
+    requires_save_as(path)
+        || !matches!(
+            image::guess_format(bytes),
+            Ok(image::ImageFormat::Png | image::ImageFormat::Bmp)
+        )
+}
+
+fn confirm_save_as_for_original(owner: H) -> bool {
+    // SAFETY: owner is the live editor HWND on its UI thread; no window-state
+    // references are held across the modal call, which can dispatch messages.
+    unsafe {
+        MessageBoxW(
+            owner,
+            wide("Dieses Original kann beim direkten Speichern verändert oder unvollständig erhalten werden. Soll stattdessen unter einem neuen Namen gespeichert werden?").as_ptr(),
+            wide("Original schützen").as_ptr(),
+            0x24, // MB_ICONWARNING | MB_YESNO; only Yes proceeds via Save As.
+        ) == 6
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct FileInformation {
+    attributes: u32,
+    creation: [u32; 2],
+    access: [u32; 2],
+    write: [u32; 2],
+    volume_serial: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    index_high: u32,
+    index_low: u32,
+}
+
+fn file_identity(path: &Path) -> Result<(u32, u32, u32), String> {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(handle: H, information: *mut FileInformation) -> i32;
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut info = FileInformation::default();
+    // SAFETY: file owns a valid handle and info is writable for the duration
+    // of this synchronous filesystem call, which does not dispatch UI messages.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok((info.volume_serial, info.index_high, info.index_low))
+}
+
+fn same_existing_path(left: &Path, right: &Path) -> Result<bool, String> {
+    let original = std::fs::canonicalize(left)
+        .map_err(|e| format!("Originalpfad konnte nicht geprüft werden: {e}"))?;
+    let target = match std::fs::canonicalize(right) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Zielpfad konnte nicht geprüft werden: {error}")),
+    };
+    if original
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&target.to_string_lossy())
+    {
+        return Ok(true);
+    }
+    let left_id = file_identity(&original)
+        .map_err(|e| format!("Originaldatei konnte nicht geprüft werden: {e}"))?;
+    let right_id = file_identity(&target)
+        .map_err(|e| format!("Zieldatei konnte nicht geprüft werden: {e}"))?;
+    Ok(left_id == right_id)
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebender Editor auf dem UI-Thread.
 // Warum erfüllt: Die Aktion wird aus der Fensterbehandlung für das eigene Fenster aufgerufen; Reentranz wird noch geprüft.
@@ -48,8 +132,22 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
         return false;
     }
     let previous = (&window_state(h).current_path).clone();
-    let path = if save_as || previous.is_none() {
-        match file_dialog::save(h, previous.as_deref()) {
+    let protected_original = window_state(h).protected_original;
+    let force_save_as = !save_as && protected_original;
+    if force_save_as && !confirm_save_as_for_original(h) {
+        return false;
+    }
+    let path = if save_as || force_save_as || previous.is_none() {
+        // A protected Save As starts without the original filename, and the
+        // post-dialog check below prevents accepting that same file anyway.
+        match file_dialog::save(
+            h,
+            if force_save_as {
+                None
+            } else {
+                previous.as_deref()
+            },
+        ) {
             Ok(Some(p)) => p,
             Ok(None) => return false,
             Err(e) => {
@@ -58,8 +156,31 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             }
         }
     } else {
-        previous.unwrap()
+        previous.as_ref().unwrap().clone()
     };
+    if force_save_as {
+        let Some(original) = previous.as_deref() else {
+            return false;
+        };
+        let result = same_existing_path(original, &path);
+        let message = match result {
+            Ok(false) => None,
+            Ok(true) => Some(
+                "Bitte wählen Sie einen anderen Dateinamen, damit das Original erhalten bleibt."
+                    .to_owned(),
+            ),
+            Err(error) => Some(error),
+        };
+        if let Some(message) = message {
+            MessageBoxW(
+                h,
+                wide(&message).as_ptr(),
+                wide("Original geschützt").as_ptr(),
+                0x30,
+            );
+            return false;
+        }
+    }
     let result = (|| -> Result<(), String> {
         let format = image_io::format_from_path(&path)?;
         let image = bitmap_image(h)?;
@@ -69,6 +190,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     match result {
         Ok(()) => {
             window_state(h).current_path = Some(path);
+            window_state(h).protected_original = false;
             window_state(h).dirty = false;
             refresh_title(h);
             true
@@ -82,6 +204,77 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             );
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod save_safety_tests {
+    use super::{opened_original_requires_save_as, requires_save_as, same_existing_path};
+    use std::path::Path;
+
+    #[test]
+    fn png_and_bmp_can_be_overwritten_directly() {
+        assert!(!requires_save_as(Path::new("capture.png")));
+        assert!(!requires_save_as(Path::new("capture.bmp")));
+    }
+
+    #[test]
+    fn lossy_and_unsupported_originals_require_save_as() {
+        for path in [
+            "capture.jpg",
+            "capture.jpeg",
+            "capture.gif",
+            "capture.tif",
+            "capture.tiff",
+            "capture.webp",
+            "capture",
+        ] {
+            assert!(requires_save_as(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn source_format_is_checked_even_when_extension_is_misleading() {
+        let pixels = shotkit::stitch::Image::new(1, 1, vec![0, 0, 255, 255]).unwrap();
+        let png = shotkit::image_io::encode(&pixels, image::ImageFormat::Png).unwrap();
+        let jpeg = shotkit::image_io::encode(&pixels, image::ImageFormat::Jpeg).unwrap();
+        assert!(!opened_original_requires_save_as(
+            Path::new("image.png"),
+            &png
+        ));
+        assert!(opened_original_requires_save_as(
+            Path::new("image.png"),
+            &jpeg
+        ));
+        assert!(opened_original_requires_save_as(
+            Path::new("image.jpg"),
+            &png
+        ));
+    }
+
+    #[test]
+    fn protected_save_as_rejects_the_original_path() {
+        let path = std::env::temp_dir().join(format!(
+            "shotkit-save-safety-{}-{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"fixture").unwrap();
+        assert!(same_existing_path(&path, &path).unwrap());
+        let alias = path.with_extension("hardlink.jpg");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(same_existing_path(&path, &alias).unwrap());
+        std::fs::remove_file(&alias).unwrap();
+        assert!(!same_existing_path(
+            &path,
+            &path.with_file_name("shotkit-save-safety-different.jpg")
+        )
+        .unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(same_existing_path(&path, &path).is_err());
     }
 }
 // SAFETY CONTRACT:
@@ -208,18 +401,20 @@ pub(super) unsafe fn open_image(h: H) {
 // Warum erfüllt: Aufrufer sind Einzelinstanz- und Editorabläufe; path ist ein besitzender Wert.
 // Nachrichten: Fensteranlage und SetWindowTextW können reentrieren; Bild und Pfad sind besitzend, State-Zuweisungen enden vor der Titelaktualisierung.
 pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
-    let result = (|| -> Result<Image, String> {
+    let result = (|| -> Result<(Image, bool), String> {
         let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
         if metadata.len() > 512 * 1024 * 1024 {
             return Err("Die Bilddatei ist zu groß.".into());
         }
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-        image_io::decode(&bytes)
+        let protected_original = opened_original_requires_save_as(&path, &bytes);
+        Ok((image_io::decode(&bytes)?, protected_original))
     })();
     match result {
-        Ok(image) => match display_image(h, image) {
+        Ok((image, protected_original)) => match display_image(h, image) {
             Ok(window) => {
                 window_state(window).current_path = Some(path);
+                window_state(window).protected_original = protected_original;
                 window_state(window).dirty = false;
                 refresh_title(window);
                 Ok(())
@@ -333,6 +528,7 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
     install_bitmap(h, bmp, &image);
     window_state(h).editor = Some(state);
     window_state(h).current_path = None;
+    window_state(h).protected_original = false;
     window_state(h).dirty = true;
     window_state(h).zoom = 1.0;
     window_state(h).pan_x = 0;
@@ -349,19 +545,15 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
 // Warum erfüllt: Aufruf aus dem Mausereignis des eigenen Fensters; die Bildlogik prüft die Grenzen.
 // Nachrichten: Toolbar- und Titelfunktionen sowie MessageBoxW können reentrieren; das Ergebnisbild ist ein Arc und Editor-Borrows enden vor diesen Aufrufen.
 pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
-    let x = a.0.min(b.0);
-    let y = a.1.min(b.1);
-    let width = a.0.max(b.0) - x;
-    let height = a.1.max(b.1) - y;
-    if width < 3 || height < 3 {
+    let image = editor(h).image_arc();
+    let Some(rect) =
+        shotkit::image_edit::crop_rect_from_points(a, b, (image.width as u32, image.height as u32))
+    else {
+        return;
+    };
+    if rect.width < 3 || rect.height < 3 {
         return;
     }
-    let rect = CropRect {
-        x: x as usize,
-        y: y as usize,
-        width: width as usize,
-        height: height as usize,
-    };
     let result = (|| -> Result<(), String> {
         editor(h)
             .document_mut()

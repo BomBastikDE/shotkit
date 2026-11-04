@@ -70,3 +70,15 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 Bei Verpixeln beträgt die Mindestblockgröße 12 statt 6 Pixel; ein Regressionstest prüft die niedrigen Linienstärken. Dies verbessert die grobe Darstellung, garantiert aber keine Unkenntlichkeit oder sichere Schwärzung. [Issue #5](https://github.com/BomBastikDE/shotkit/issues/5) bleibt offen.
 
 Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereignis nicht übernimmt, meldet ShotKit den Fehler. Die konkrete Ursache einer Ablehnung lässt sich aus dem Rückgabewert nicht sicher bestimmen ([Issue #7](https://github.com/BomBastikDE/shotkit/issues/7)).
+
+- Beim Zuschneiden werden beide gewählten Randpixel berücksichtigt ([#18](https://github.com/BomBastikDE/shotkit/issues/18)).
+- Undo/Redo hebt die Auswahl auf, wenn Hinzufügen oder Entfernen die Anzahl der Formen ändert ([#19](https://github.com/BomBastikDE/shotkit/issues/19)).
+- Beim ersten Speichern geöffneter JPEG-, GIF-, TIFF- und anders benannter Bilder mit diesen Inhalten wird ein neuer Dateiname verlangt; EXIF-Ausrichtung wird beim Laden angewendet. Metadaten und Animation bleiben beim Export nicht erhalten ([#20](https://github.com/BomBastikDE/shotkit/issues/20)).
+- Scroll-Aufnahmen brechen nach wiederholt nicht eindeutig zugeordneten Bildern ab und weisen auf unsichere Übergänge hin ([#21](https://github.com/BomBastikDE/shotkit/issues/21)).
+- Release-Tags müssen zur Cargo-Version passen ([#24](https://github.com/BomBastikDE/shotkit/issues/24)); der Edge-UIA-Test protokolliert aufeinanderfolgende Abfrageschritte bei einem Timeout ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+- GitHub Actions werden auf konkrete Commit-IDs festgelegt; checkout sowie Upload/Download verwenden aktuelle Hauptversionen. Dependabot prüft Actions und Cargo-Abhängigkeiten ([#10](https://github.com/BomBastikDE/shotkit/issues/10)).
+- Schnelle Doppelklicks auf der Zeichenfläche behalten das aktive Werkzeug; ein Doppelklick auf ein Textobjekt öffnet weiterhin dessen Bearbeitung ([#22](https://github.com/BomBastikDE/shotkit/issues/22)).
+- Der Release-Workflow akzeptiert vorbereitend Alpha- und Beta-Tags als Pre-Releases und prüft vor Veröffentlichung den Versionsabgleich. Eine Beta wurde noch nicht veröffentlicht.
+- Beim Ziehen und Ändern vorhandener Formen ersetzt die Vorschau die alte Form und führt den Auswahlrahmen mit; neue Formen werden weiterhin zusätzlich angezeigt ([#23](https://github.com/BomBastikDE/shotkit/issues/23)).
+- Automatisch gespeicherte PNG-Dateien werden erst nach vollständigem Schreiben unter ihrem endgültigen Namen veröffentlicht; bestehende Dateien werden dabei nicht ersetzt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+- Das Verschieben der Bildansicht per Mausrad bleibt an den Bildrändern begrenzt und reagiert bei Richtungswechsel sofort ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).

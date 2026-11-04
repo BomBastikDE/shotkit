@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Publish a new alpha only after the calling workflow's blocking checks pass."""
+"""Publish an alpha or beta only after the workflow's blocking checks pass."""
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
-TAG_PATTERN = re.compile(r"v2\.\d+\.\d+-alpha\.\d+\Z")
+TAG_PATTERN = re.compile(r"v2\.\d+\.\d+-(?:alpha|beta)\.\d+\Z")
 
 
 def api(url, token, method="GET", data=None, content_type="application/json"):
@@ -31,9 +32,14 @@ def api(url, token, method="GET", data=None, content_type="application/json"):
         return json.load(response)
 
 
-def publish(exe_path, tag, commit, repository, token, run_url):
+def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=None):
     if not TAG_PATTERN.fullmatch(tag):
-        raise ValueError("Only v2 alpha tags may create a release")
+        raise ValueError("Only v2 alpha or beta tags may create a release")
+    manifest_path = manifest_path or Path(__file__).resolve().parent.parent / "Cargo.toml"
+    with Path(manifest_path).open("rb") as manifest:
+        version = tomllib.load(manifest).get("package", {}).get("version")
+    if version != tag.removeprefix("v"):
+        raise ValueError("Release tag does not match Cargo package version")
     exe = Path(exe_path).read_bytes()
     if len(exe) < 100_000 or exe[:2] != b"MZ":
         raise ValueError("Tested artifact is not a valid-sized Windows executable")
@@ -51,8 +57,9 @@ def publish(exe_path, tag, commit, repository, token, run_url):
         raise ValueError("Release already exists; refusing to change it")
     filename = f"shotkit-{tag}-windows-x64.exe"
     checksum = f"{hashlib.sha256(exe).hexdigest()}  {filename}\n".encode()
+    stage = "Beta" if "-beta." in tag else "Alpha"
     body = (
-        f"Automatisch getestete Alpha. CI: {run_url}\n\n"
+        f"Automatisch getestete {stage}. CI: {run_url}\n\n"
         "Die EXE ist nicht signiert. Windows SmartScreen kann eine Warnung zeigen; "
         "nach eigener Prüfung kann die Ausführung über ‚Weitere Informationen‘ und "
         "‚Trotzdem ausführen‘ gestartet werden. Die SHA256-Datei dient zur "

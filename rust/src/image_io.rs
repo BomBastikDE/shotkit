@@ -1,7 +1,8 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
 use crate::stitch::Image;
 use image::{
-    codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, ImageReader, Limits, RgbImage, RgbaImage,
+    codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits,
+    RgbImage, RgbaImage,
 };
 use std::{
     io::{BufReader, Cursor},
@@ -16,8 +17,17 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         .map_err(|e| e.to_string())?;
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
-    reader.limits(limits);
-    let rgba = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    // Mirror ImageReader::decode's allocation reservation before decoding.
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|e| e.to_string())?;
+    decoder.set_limits(limits).map_err(|e| e.to_string())?;
+    let orientation = decoder.orientation().map_err(|e| e.to_string())?;
+    let mut decoded = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    decoded.apply_orientation(orientation);
+    let rgba = decoded.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut pixels = rgba.into_raw();
     for px in pixels.as_chunks_mut::<4>().0 {
@@ -106,6 +116,41 @@ mod tests {
             assert_eq!(src, dst);
         }
     }
+    #[test]
+    fn jpeg_exif_orientation_is_applied_on_load() {
+        let source = Image::new(
+            2,
+            3,
+            vec![
+                0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255, 0, 255, 255, 255, 255, 0, 255, 255,
+                255, 255, 0, 255,
+            ],
+        )
+        .unwrap();
+        let jpeg = encode(&source, ImageFormat::Jpeg).unwrap();
+        let unrotated = decode(&jpeg).unwrap();
+        let exif = [
+            b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 1, 3, 0, 1, 0,
+            0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut with_exif = jpeg[..2].to_vec();
+        with_exif.extend_from_slice(&[0xff, 0xe1, 0, (exif.len() + 2) as u8]);
+        with_exif.extend_from_slice(&exif);
+        with_exif.extend_from_slice(&jpeg[2..]);
+        let rotated = decode(&with_exif).unwrap();
+        assert_eq!((rotated.width, rotated.height), (3, 2));
+        for y in 0..unrotated.height {
+            for x in 0..unrotated.width {
+                let src = (y * unrotated.width + x) * 4;
+                let dst = (x * rotated.width + (rotated.width - 1 - y)) * 4;
+                assert_eq!(
+                    &unrotated.pixels[src..src + 4],
+                    &rotated.pixels[dst..dst + 4]
+                );
+            }
+        }
+    }
+
     #[test]
     fn gif_and_jpeg_are_readable() {
         for fmt in [ImageFormat::Gif, ImageFormat::Jpeg] {

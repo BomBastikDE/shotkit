@@ -55,25 +55,7 @@ unsafe fn invalidate_preview_change(
 // Nachrichten: Textdialog und SetCapture können reentrieren; Text und Koordinaten werden vor den Aufrufen kopiert.
 pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L> {
     Some(match m {
-        0x0203 if !window_state(h).bitmap.is_null() => {
-            let (x, y) = point(h, l);
-            editor(h).set_tool(Tool::Select);
-            toolbar::set_active(h, toolbar::ID_SELECT);
-            editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
-            editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
-            let current = editor(h).selected_text().map(str::to_owned);
-            if let Some(text) = current {
-                if let Some(changed) = text_dialog::prompt(h, &text) {
-                    if editor(h).set_selected_text(changed) {
-                        window_state(h).dirty = true;
-                    }
-                }
-            }
-            report_editor_error(h);
-            invalidate_image_view(h);
-            0
-        }
-        0x0201 if !window_state(h).bitmap.is_null() => {
+        0x0201 | 0x0203 if !window_state(h).bitmap.is_null() => {
             let (vx, vy, vw, vh) = image_view(h);
             let sx = (l as u32 as u16 as i16) as i32;
             let sy = ((l as u32 >> 16) as u16 as i16) as i32;
@@ -81,8 +63,28 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 return Some(0);
             }
             let (x, y) = point(h, l);
-            window_state(h).pen_history = None;
             let image_point = ShapePoint::new(x as f32, y as f32);
+            if m == 0x0203 {
+                // A double-click should edit only the text object actually
+                // under the pointer. Other double-clicks continue through the
+                // same path as WM_LBUTTONDOWN, so fast consecutive marks are
+                // not swallowed by CS_DBLCLKS.
+                if let Some((index, existing)) = editor(h).text_at(image_point) {
+                    editor(h).set_tool(Tool::Select);
+                    toolbar::set_active(h, toolbar::ID_SELECT);
+                    editor(h).mouse_down(image_point);
+                    editor(h).mouse_up(image_point);
+                    if let Some(changed) = text_dialog::prompt(h, &existing) {
+                        if editor(h).set_text_at(index, changed) {
+                            window_state(h).dirty = true;
+                        }
+                    }
+                    report_editor_error(h);
+                    invalidate_image_view(h);
+                    return Some(0);
+                }
+            }
+            window_state(h).pen_history = None;
             let text_tool = editor(h).tool() == Tool::Text;
             let handle_hit = text_tool && editor(h).selected_handle_hit(image_point);
             if text_tool {

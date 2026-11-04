@@ -118,20 +118,33 @@ fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
         .unwrap_or_default()
         .as_millis();
 
-    // create_new is the collision guard, including concurrent captures.
+    // Create the sibling temp exclusively. Publish the final name without
+    // replacement only after the complete PNG has been written and synced.
     for _ in 0..256 {
         let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = folder.join(format!("ShotKit-{stamp}-{sequence}.png"));
-        let file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let temp_path = folder.join(format!(
+            ".ShotKit-{}-{stamp}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         };
-        finish_created_file(&path, file, |file| {
+        let result = write_and_publish(&temp_path, &path, file, |file| {
             file.write_all(&png)?;
             file.sync_all()
-        })?;
-        return Ok(path);
+        });
+        match result {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -139,25 +152,86 @@ fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
     ))
 }
 
-fn finish_created_file(
-    path: &std::path::Path,
+fn write_and_publish(
+    temp_path: &std::path::Path,
+    final_path: &std::path::Path,
     mut file: std::fs::File,
     write: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let result = write(&mut file);
     drop(file);
     if let Err(write_error) = result {
-        return match fs::remove_file(path) {
+        return match fs::remove_file(temp_path) {
             Ok(()) => Err(write_error),
             Err(cleanup_error) => Err(io::Error::new(
                 cleanup_error.kind(),
                 format!(
-                    "{write_error}; additionally could not remove partial file: {cleanup_error}"
+                    "{write_error}; additionally could not remove temporary file: {cleanup_error}"
                 ),
             )),
         };
     }
-    Ok(())
+
+    match publish_no_replace(temp_path, final_path) {
+        Ok(true) => Ok(()),
+        Ok(false) => match fs::remove_file(temp_path) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("PNG was published but temporary file could not be removed: {error}"),
+            )),
+        },
+        Err(publish_error) => match fs::remove_file(temp_path) {
+            Ok(()) => Err(publish_error),
+            Err(cleanup_error) => Err(io::Error::new(
+                cleanup_error.kind(),
+                format!(
+                    "{publish_error}; additionally could not remove temporary file: {cleanup_error}"
+                ),
+            )),
+        },
+    }
+}
+
+#[cfg(windows)]
+fn publish_no_replace(source: &std::path::Path, destination: &std::path::Path) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // Both paths are siblings, including for UNC folders, so this is a
+    // same-volume rename. Omitting MOVEFILE_REPLACE_EXISTING makes collisions
+    // fail atomically instead of replacing an existing capture.
+    // SAFETY: Both NUL-terminated UTF-16 buffers remain alive for the call;
+    // this filesystem operation does not synchronously dispatch window messages.
+    let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x8) };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(true)
+    }
+}
+
+#[cfg(not(windows))]
+fn publish_no_replace(source: &std::path::Path, destination: &std::path::Path) -> io::Result<bool> {
+    // rename replaces an existing destination on Unix. Creating a hard link
+    // is atomic and fails if destination exists; sibling paths keep it on the
+    // same filesystem. Removing the temp name after link leaves the final name
+    // as the only visible name for the completed file.
+    fs::hard_link(source, destination).map(|()| false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

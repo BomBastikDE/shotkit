@@ -618,9 +618,9 @@ try {
     Save-FromToolbar $main.Handle
     [void](Wait-ForImageState -Path $inputPath -Description 'saved cropped image dimensions' -Predicate {
         param($image)
-        return ($image.Width -eq 100 -and $image.Height -eq 80)
+        return ($image.Width -eq 101 -and $image.Height -eq 81)
     })
-    $passMessage = 'PASS: verified Shift-constrained rectangle, line, and arrow behavior with undo; a too-small crop kept Crop active, while a committed crop saved at 100x80 and switched to Select.'
+    $passMessage = 'PASS: verified Shift-constrained rectangle, line, and arrow behavior with undo; a too-small crop kept Crop active, while a committed crop saved at 101x81 and switched to Select.'
 }
 catch {
     $testFailure = $_

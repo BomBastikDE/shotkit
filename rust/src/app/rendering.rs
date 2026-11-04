@@ -54,31 +54,31 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     let (crop_start, crop_end) = (window_state(h).crop_start, window_state(h).crop_end);
     // Copy editor data before rendering or making Win32 calls, which may
     // synchronously dispatch messages and borrow this window state again.
-    let (source, shapes, tool, selection, stable_count) = {
+    let (source, shapes, tool, selection, moving_selection, stable_count) = {
         let state = editor(h);
-        let mut draft = if preview { state.preview() } else { None };
-        let stable_count = if draft.is_some() && state.tool() == Tool::Select {
-            state.selected_index().unwrap_or(state.shapes().len())
+        let preview_shapes = if preview {
+            state.preview().map(|draft| (state.preview_index(), draft))
         } else {
-            state.shapes().len()
+            None
         };
-        let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
-        for (i, shape) in state.shapes().iter().enumerate() {
-            if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i)
-            {
-                shapes.push(draft.take().expect("draft checked above"));
+        let preview_index = preview_shapes.as_ref().and_then(|(index, _)| *index);
+        let (shapes, stable_count) =
+            shotkit::editor::compose_preview_shapes(state.shapes(), preview_shapes)
+                .map_err(str::to_owned)?;
+        let selection = state.selected_index().and_then(|selected| {
+            if preview_index == Some(selected) {
+                shapes.get(selected).cloned()
             } else {
-                shapes.push(shape.clone());
+                state.selection().cloned()
             }
-        }
-        if let Some(shape) = draft {
-            shapes.push(shape);
-        }
+        });
+        let moving_selection = preview_index.is_some() && preview_index == state.selected_index();
         (
             state.image_arc(),
             shapes,
             state.tool(),
-            state.selection().cloned(),
+            selection,
+            moving_selection,
             stable_count,
         )
     };
@@ -142,7 +142,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             DeleteObject(pen);
         }
     }
-    if preview && tool == Tool::Select {
+    if preview && (tool == Tool::Select || moving_selection) {
         if let Some(shape) = selection.as_ref() {
             let b = shape.bounds();
             let pen = CreatePen(0, 1, 0x00d77800);

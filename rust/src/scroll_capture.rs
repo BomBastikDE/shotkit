@@ -3,6 +3,8 @@
 use crate::scroll_match::{find_offset, Frame, MatchResult};
 use crate::stitch::{Image, Stitcher};
 
+const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Down,
@@ -110,6 +112,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
     let mut stitch = Stitcher::new(first).map_err(str::to_owned)?;
     let (mut notches, mut expected, mut still) = (1i32, h / 3, 0usize);
     let (mut known, mut last_top, mut last_bottom, mut fallbacks) = (0f32, 0usize, 0usize, 0usize);
+    let mut consecutive_fallbacks = 0usize;
     let initial_stop = interrupted(io);
     let mut reason = initial_error
         .clone()
@@ -220,13 +223,24 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 }
                 m = matched(&prev, &analyzed, expected);
             }
-            if m.is_none() && known > 0.0 {
+            let used_fallback = m.is_none() && known > 0.0;
+            if used_fallback && consecutive_fallbacks >= MAX_CONSECUTIVE_FALLBACKS {
+                reason = format!(
+                    "{} aufeinanderfolgende Bildabgleiche fehlgeschlagen – Teilaufnahme bis hierhin übernommen.",
+                    consecutive_fallbacks + 1
+                );
+                break;
+            }
+            if used_fallback {
                 m = Some(MatchResult {
                     dy: (known * notches as f32).round() as usize,
                     top: last_top,
                     bottom: last_bottom,
                 });
                 fallbacks += 1;
+                consecutive_fallbacks += 1;
+            } else if m.is_some() {
+                consecutive_fallbacks = 0;
             }
             let Some(m) = m else {
                 reason="Bildinhalt ließ sich nicht eindeutig zuordnen – Aufnahme bis hierhin übernommen.".into();
@@ -265,7 +279,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
     }
     if fallbacks > 0 {
         reason.push_str(&format!(
-            "\n{fallbacks}× wurde die gemessene Scrollweite verwendet – Übergänge prüfen."
+            "\n{fallbacks}× wurde die gemessene Scrollweite verwendet – Übergänge im Teilbild prüfen."
         ));
     }
     let combined = stitch.finish().map_err(str::to_owned)?;

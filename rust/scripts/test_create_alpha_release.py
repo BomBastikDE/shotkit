@@ -17,6 +17,8 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.exe = Path(self.temp.name) / "shotkit.exe"
         self.exe.write_bytes(b"MZ" + b"x" * 100_000)
+        self.manifest = Path(self.temp.name) / "Cargo.toml"
+        self.manifest.write_text('[package]\nversion = "2.0.0-alpha.14"\n', encoding="utf-8")
         self.calls = []
         self.existing = False
         self.bad_digest = False
@@ -43,7 +45,7 @@ class ReleaseTests(unittest.TestCase):
 
     def publish(self, tag="v2.0.0-alpha.14"):
         with patch.object(release, "api", side_effect=self.api):
-            return release.publish(self.exe, tag, "commit", "owner/repo", "token", "https://example.com/run")
+            return release.publish(self.exe, tag, "commit", "owner/repo", "token", "https://example.com/run", self.manifest)
 
     def test_publish_only_after_two_verified_uploads(self):
         self.assertEqual(self.publish(), "https://example.com/release")
@@ -64,9 +66,23 @@ class ReleaseTests(unittest.TestCase):
             self.publish()
         self.assertNotIn("PATCH", [c[1] for c in self.calls])
 
-    def test_non_alpha_tag_is_rejected_before_api_calls(self):
-        with self.assertRaisesRegex(ValueError, "alpha tags"):
-            self.publish("v2.0.0-beta.1")
+    def test_mismatched_version_is_rejected_before_api_calls(self):
+        self.manifest.write_text('[package]\nversion = "2.0.0-alpha.13"\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.publish()
+        self.assertEqual(self.calls, [])
+
+    def test_beta_prerelease_uses_matching_manifest_and_beta_description(self):
+        self.manifest.write_text('[package]\nversion = "2.0.0-beta.1"\n', encoding="utf-8")
+        self.assertEqual(self.publish("v2.0.0-beta.1"), "https://example.com/release")
+        create = json.loads(self.calls[2][2])
+        self.assertTrue(create["draft"] and create["prerelease"])
+        self.assertIn("Beta", create["body"])
+        self.assertIn(b"shotkit-v2.0.0-beta.1-windows-x64.exe", self.calls[4][2])
+
+    def test_other_tag_is_rejected_before_api_calls(self):
+        with self.assertRaisesRegex(ValueError, "alpha or beta tags"):
+            self.publish("v2.0.0-rc.1")
         self.assertEqual(self.calls, [])
 
 

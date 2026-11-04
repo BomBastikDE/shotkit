@@ -479,22 +479,29 @@ try {
     $uiaProbeScript = @'
 $ErrorActionPreference = 'Stop'
 try {
+    [Console]::Error.WriteLine('UIA phase: loading UIAutomationClient')
     Add-Type -AssemblyName UIAutomationClient
+    [Console]::Error.WriteLine('UIA phase: loading UIAutomationTypes')
     Add-Type -AssemblyName UIAutomationTypes
+    [Console]::Error.WriteLine('UIA phase: preparing target search')
     $windowHandle = [IntPtr]([Int64]$args[0])
     $condition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::NameProperty,
         'ShotKit UIA hover target'
     )
-    # Accessibility is requested on the browser command line, but its renderer and
-    # UIA provider can become available after the top-level HWND. Retry only
+    # The renderer and UIA provider can become available after the top-level
+    # HWND. Retry only
     # this transient absence; the parent process enforces the hard 15s limit.
     $deadline = [DateTime]::UtcNow.AddSeconds(12)
     $target = $null
     do {
+        [Console]::Error.WriteLine("UIA phase: FromHandle starting at $([DateTime]::UtcNow.ToString('o'))")
         $root = [System.Windows.Automation.AutomationElement]::FromHandle($windowHandle)
+        [Console]::Error.WriteLine("UIA phase: FromHandle completed at $([DateTime]::UtcNow.ToString('o'))")
         if ($null -ne $root) {
+            [Console]::Error.WriteLine("UIA phase: FindFirst starting at $([DateTime]::UtcNow.ToString('o'))")
             $target = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            [Console]::Error.WriteLine("UIA phase: FindFirst completed at $([DateTime]::UtcNow.ToString('o'))")
         }
         if ($null -eq $target -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 200
@@ -502,8 +509,10 @@ try {
     } while ($null -eq $target -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $root) { throw 'UIA ElementFromHandle returned null throughout provider initialization.' }
     if ($null -eq $target) { throw "Named target remained absent from $Browser UIA Control View after provider initialization wait." }
+    [Console]::Error.WriteLine("UIA phase: Current starting at $([DateTime]::UtcNow.ToString('o'))")
     $current = $target.Current
     $bounds = $current.BoundingRectangle
+    [Console]::Error.WriteLine("UIA phase: Current completed at $([DateTime]::UtcNow.ToString('o'))")
     if ($current.IsOffscreen) { throw 'Named target is marked offscreen.' }
     if ($current.ControlType.ProgrammaticName -ne 'ControlType.Button') {
         throw "Named target is not exposed as a UIA button (type '$($current.ControlType.ProgrammaticName)')."
@@ -571,7 +580,8 @@ catch {
         }
         if ([DateTime]::UtcNow -ge $probeDeadline) {
             try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
-            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds."
+            $probeTrace = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { 'No probe diagnostics available.' }
+            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds. Probe trace: $probeTrace"
         }
         Start-Sleep -Milliseconds 100
     }

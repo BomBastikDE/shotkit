@@ -133,10 +133,26 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
                 window_state(h).zoom = (window_state(h).zoom
                     * if delta > 0 { 1.2 } else { 1.0 / 1.2 })
                 .clamp(0.05, 64.0);
-            } else if GetKeyState(0x10) < 0 {
-                window_state(h).pan_x = window_state(h).pan_x.saturating_sub(delta);
             } else {
-                window_state(h).pan_y = window_state(h).pan_y.saturating_sub(delta);
+                let mut client: Rect = zeroed();
+                GetClientRect(h, &mut client);
+                let viewport = (
+                    0,
+                    toolbar_height(h),
+                    client.right,
+                    client.bottom - toolbar_height(h),
+                );
+                let state = window_state(h);
+                let pan = view::pan_after_wheel(
+                    (state.width as u32, state.height as u32),
+                    viewport,
+                    state.zoom,
+                    (state.pan_x, state.pan_y),
+                    delta,
+                    GetKeyState(0x10) < 0,
+                );
+                state.pan_x = pan.0;
+                state.pan_y = pan.1;
             }
             InvalidateRect(h, std::ptr::null(), 1);
             0

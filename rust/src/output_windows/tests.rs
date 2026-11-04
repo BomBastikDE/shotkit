@@ -114,21 +114,55 @@ fn autosave_creates_distinct_png_files_in_configured_folder() {
     let first = first.saved_path.unwrap();
     let second = second.saved_path.unwrap();
     assert_ne!(first, second);
-    assert_eq!(&fs::read(first).unwrap()[..8], b"\x89PNG\r\n\x1a\n");
-    assert_eq!(&fs::read(second).unwrap()[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(
+        image_io::decode(&fs::read(first).unwrap()).unwrap(),
+        image()
+    );
+    assert_eq!(
+        image_io::decode(&fs::read(second).unwrap()).unwrap(),
+        image()
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn failed_partial_write_removes_created_file() {
+fn final_path_stays_absent_until_temp_file_is_complete_and_synced() {
     let dir = temp_dir();
-    let path = dir.join("partial.png");
+    let temp_path = dir.join(".partial.tmp");
+    let final_path = dir.join("complete.png");
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)
+        .open(&temp_path)
         .unwrap();
-    let error = finish_created_file(&path, file, |file| {
+    let png = image_io::encode(&image(), image::ImageFormat::Png).unwrap();
+    write_and_publish(&temp_path, &final_path, file, |file| {
+        file.write_all(&png)?;
+        assert!(!final_path.exists());
+        assert_eq!(fs::read(&temp_path)?, png);
+        file.sync_all()
+    })
+    .unwrap();
+    assert!(final_path.exists());
+    assert!(!temp_path.exists());
+    assert_eq!(
+        image_io::decode(&fs::read(&final_path).unwrap()).unwrap(),
+        image()
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_partial_write_removes_temp_without_publishing_final_path() {
+    let dir = temp_dir();
+    let temp_path = dir.join(".partial.tmp");
+    let final_path = dir.join("partial.png");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .unwrap();
+    let error = write_and_publish(&temp_path, &final_path, file, |file| {
         file.write_all(b"partial")?;
         Err(io::Error::new(
             io::ErrorKind::Other,
@@ -137,7 +171,30 @@ fn failed_partial_write_removes_created_file() {
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Other);
-    assert!(!path.exists());
+    assert!(!temp_path.exists());
+    assert!(!final_path.exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn publish_collision_preserves_existing_file_and_cleans_temp() {
+    let dir = temp_dir();
+    let temp_path = dir.join(".collision.tmp");
+    let final_path = dir.join("capture.png");
+    fs::write(&final_path, b"existing capture").unwrap();
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .unwrap();
+    let error = write_and_publish(&temp_path, &final_path, file, |file| {
+        file.write_all(b"new capture")?;
+        file.sync_all()
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(&final_path).unwrap(), b"existing capture");
+    assert!(!temp_path.exists());
     fs::remove_dir_all(dir).unwrap();
 }
 

@@ -90,6 +90,45 @@ fn editor() -> EditorController {
     EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap()).unwrap()
 }
 
+fn test_rect(x: f32, y: f32) -> Shape {
+    Shape::new(ShapeKind::Rectangle {
+        start: p(x, y),
+        end: p(x + 10.0, y + 10.0),
+    })
+}
+
+#[test]
+fn compose_preview_replaces_in_place_and_keeps_following_shapes() {
+    let original = test_rect(1.0, 2.0);
+    let following = test_rect(30.0, 40.0);
+    let replacement = test_rect(5.0, 6.0);
+    let (shapes, stable_count) = compose_preview_shapes(
+        &[original, following.clone()],
+        Some((Some(0), replacement.clone())),
+    )
+    .unwrap();
+
+    assert_eq!(shapes, vec![replacement, following]);
+    assert_eq!(shapes.len(), 2);
+    assert_eq!(stable_count, 0);
+}
+
+#[test]
+fn compose_preview_appends_creation_after_existing_selected_shapes_once() {
+    let selected = test_rect(1.0, 2.0);
+    let following = test_rect(30.0, 40.0);
+    let draft = test_rect(60.0, 70.0);
+    let (shapes, stable_count) = compose_preview_shapes(
+        &[selected.clone(), following.clone()],
+        Some((None, draft.clone())),
+    )
+    .unwrap();
+
+    assert_eq!(shapes, vec![selected, following, draft]);
+    assert_eq!(shapes.len(), 3);
+    assert_eq!(stable_count, 2);
+}
+
 #[test]
 fn recover_constructor_returns_invalid_image_unchanged() {
     let invalid = Image {
@@ -135,6 +174,31 @@ fn creates_with_preview_then_commits_once_and_undo_redoes() {
     assert!(e.redo());
     assert_eq!(e.shapes().len(), 1);
 }
+
+#[test]
+fn preview_index_tracks_existing_shape_drags_but_not_new_shape_creation() {
+    let mut e = rect_editor();
+    assert_eq!(e.selected_index(), Some(0));
+
+    // Handle drags are allowed while a drawing tool is active.
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(10.0, 10.0));
+    e.mouse_move(p(5.0, 5.0));
+    assert_eq!(e.preview_index(), Some(0));
+    assert_eq!(e.preview().unwrap().bounds().x, 5.0);
+    assert_eq!(e.shapes()[0].bounds().x, 10.0);
+    e.mouse_up(p(5.0, 5.0));
+
+    // A create drag can retain the previous selection, but must append its
+    // preview instead of replacing that selected document shape.
+    e.mouse_down(p(70.0, 70.0));
+    e.mouse_move(p(80.0, 85.0));
+    assert_eq!(e.selected_index(), Some(0));
+    assert_eq!(e.preview_index(), None);
+    assert_eq!(e.shapes().len(), 1);
+    assert_eq!(e.preview().unwrap().bounds().x, 70.0);
+}
+
 #[test]
 fn moves_as_one_step_and_delete_undo_redo() {
     let mut e = rect_editor();
@@ -143,6 +207,7 @@ fn moves_as_one_step_and_delete_undo_redo() {
     e.mouse_move(p(20.0, 30.0));
     assert_eq!(e.shapes()[0].bounds().x, 10.0);
     assert_eq!(e.preview().unwrap().bounds().x, 20.0);
+    assert_eq!(e.preview_index(), Some(0));
     e.mouse_up(p(20.0, 30.0));
     assert_eq!(e.shapes()[0].bounds().x, 20.0);
     assert!(e.undo());
@@ -283,6 +348,35 @@ fn select_first(e: &mut EditorController) {
     e.mouse_down(p(10.0, 25.0));
     e.mouse_up(p(10.0, 25.0));
     assert_eq!(e.selected_index(), Some(0));
+}
+
+#[test]
+fn undo_redo_shape_count_change_never_keeps_a_shifted_selection() {
+    let mut e = two_rectangles();
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(180.0, 10.0));
+    e.mouse_up(p(220.0, 40.0));
+    e.set_tool(Tool::Select);
+    select_first(&mut e);
+    assert!(e.delete_selected());
+    e.mouse_down(p(180.0, 25.0));
+    e.mouse_up(p(180.0, 25.0));
+    assert_eq!(e.selected_index(), Some(1));
+
+    assert!(e.undo());
+    assert_eq!(e.shapes().len(), 3);
+    assert_eq!(e.selected_index(), None);
+    assert!(!e.delete_selected());
+    assert!(!e.nudge_selected(1.0, 0.0));
+    assert_eq!(e.shapes().len(), 3);
+
+    e.mouse_down(p(100.0, 25.0));
+    e.mouse_up(p(100.0, 25.0));
+    assert_eq!(e.selected_index(), Some(1));
+    assert!(e.redo());
+    assert_eq!(e.shapes().len(), 2);
+    assert_eq!(e.selected_index(), None);
+    assert!(!e.delete_selected());
 }
 
 #[test]

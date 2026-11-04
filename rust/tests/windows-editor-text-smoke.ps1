@@ -40,6 +40,7 @@ namespace ShotKitTextSmoke {
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint data, UIntPtr extra);
+        [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -106,6 +107,24 @@ function Canvas-Click([int]$ImageX,[int]$ImageY) {
     if($targetPid -ne $proc.Id){throw "INPUT_TARGET_MISMATCH before click: requested screen=($sx,$sy), cursor=($($cursor.X),$($cursor.Y)), HWND=$target, class='$([ShotKitTextSmoke.Native]::ClassName($target))', title='$([ShotKitTextSmoke.Native]::Title($target))', owner PID=$targetPid, expected test PID=$($proc.Id), target rect valid=$rectOk ($($targetRect.Left),$($targetRect.Top))-($($targetRect.Right),$($targetRect.Bottom)), editor HWND=$($main.Handle), image point=($ImageX,$ImageY), view=($viewX,$viewY ${shownW}x${shownH})."}
     $script:lastCanvasClick="screen=($sx,$sy), cursor=($($cursor.X),$($cursor.Y)), target HWND=$target class='$([ShotKitTextSmoke.Native]::ClassName($target))' title='$([ShotKitTextSmoke.Native]::Title($target))' PID=$targetPid; requested image=($ImageX,$ImageY); test view origin=($viewX,$viewY), size=${shownW}x${shownH}"
     [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true;Start-Sleep -Milliseconds 80
+    [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
+}
+function Canvas-DoubleClick([int]$ImageX,[int]$ImageY) {
+    $o=[Activator]::CreateInstance([ShotKitTextSmoke.Point]); if(-not [ShotKitTextSmoke.Native]::ClientToScreen($main.Handle,[ref]$o)){throw 'Could not map editor origin.'}
+    $sx=$o.X+$viewX+[int][Math]::Floor(($ImageX+0.5)*$shownW/160.0); $sy=$o.Y+$viewY+[int][Math]::Floor(($ImageY+0.5)*$shownH/120.0)
+    if(-not [ShotKitTextSmoke.Native]::SetForegroundWindow($main.Handle)){throw 'EDITOR_FOCUS_FAILED.'}
+    if(-not [ShotKitTextSmoke.Native]::SetCursorPos($sx,$sy)){throw 'Could not position pointer for double-click.'}
+    Start-Sleep -Milliseconds 200
+    $p=[Activator]::CreateInstance([ShotKitTextSmoke.Point]);$p.X=$sx;$p.Y=$sy
+    $target=[ShotKitTextSmoke.Native]::WindowFromPoint($p)
+    if([ShotKitTextSmoke.Native]::Owner($target) -ne $proc.Id){throw 'INPUT_TARGET_MISMATCH before double-click.'}
+    $limit=[ShotKitTextSmoke.Native]::GetDoubleClickTime()
+    [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true
+    Start-Sleep -Milliseconds 70
+    [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
+    Start-Sleep -Milliseconds ([Math]::Min(120,[Math]::Max(20,[int]$limit-100)))
+    [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true
+    Start-Sleep -Milliseconds 70
     [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
 }
 function Text-Dialog([string]$Description) {
@@ -190,7 +209,33 @@ try {
     Canvas-Click 40 40
     $d=Check-DialogText $original 'reopen after Undo'
     Button $d.Handle 'Abbrechen'
-    Write-Output 'PASS: created a text object, reopened it with the Text tool and verified initial text, saved an edit, reopened the edited content, and verified Undo restored the original text.'
+    Button $main.Handle 'Auswahl (V)'
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Select*'} | Select-Object -First 1} 5 'active Select tool for text double-click')
+    Canvas-DoubleClick 40 40
+    $d=Check-DialogText $original 'double-click on existing text with Select tool'
+    Button $d.Handle 'Abbrechen'
+
+    Button $main.Handle 'Nummer (N)'
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Number*'} | Select-Object -First 1} 5 'active Number tool')
+    Canvas-Click 80 80
+    Button $main.Handle 'Speichern'
+    $firstMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
+    $doubleClickTime=[ShotKitTextSmoke.Native]::GetDoubleClickTime()
+    Start-Sleep -Milliseconds ([int]$doubleClickTime+100)
+    Canvas-DoubleClick 80 80
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Number*'} | Select-Object -First 1} 5 'Number tool remains active after canvas double-click')
+    Button $main.Handle 'Speichern'
+    $secondMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
+    if($secondMarkerHash -ceq $firstMarkerHash){throw 'DOUBLE_CLICK_MARK_NOT_SAVED: saved image did not change after the quick second Number click.'}
+    Button $main.Handle 'Zurück'
+    Button $main.Handle 'Speichern'
+    $oneUndoHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
+    if($oneUndoHash -ceq $firstMarkerHash){throw 'DOUBLE_CLICK_CREATED_ONLY_ONE_MARK: one Undo removed all marks created by the quick double-click.'}
+    Button $main.Handle 'Zurück'
+    Button $main.Handle 'Speichern'
+    $twoUndoHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
+    if($twoUndoHash -cne $firstMarkerHash){throw 'DOUBLE_CLICK_UNDO_DID_NOT_RESTORE_BASELINE: two Undo actions did not restore the saved single-marker image.'}
+    Write-Output 'PASS: created and edited text, verified Undo, reopened existing text with a Select-tool double-click, and verified a quick Number double-click created two separately undoable saved markers while keeping Number active.'
 }
 catch {
     $failure=$_

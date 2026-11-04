@@ -51,6 +51,35 @@ pub fn layout(
         height: h,
     }
 }
+
+/// Apply a wheel delta to one pan axis without storing offsets beyond the
+/// image's visible travel. `delta` follows WM_MOUSEWHEEL's signed convention.
+pub fn pan_after_wheel(
+    image: (u32, u32),
+    viewport: (i32, i32, i32, i32),
+    zoom: f64,
+    pan: (i32, i32),
+    delta: i32,
+    horizontal: bool,
+) -> (i32, i32) {
+    let view = layout(image, viewport, zoom, (0, 0));
+    let max_pan = if horizontal {
+        (view.width - viewport.2.max(1)).max(0)
+    } else {
+        (view.height - viewport.3.max(1)).max(0)
+    };
+    if horizontal {
+        (
+            (pan.0.clamp(0, max_pan).saturating_sub(delta)).clamp(0, max_pan),
+            pan.1,
+        )
+    } else {
+        (
+            pan.0,
+            (pan.1.clamp(0, max_pan).saturating_sub(delta)).clamp(0, max_pan),
+        )
+    }
+}
 pub fn to_image(view: View, image: (u32, u32), point: (i32, i32)) -> (i32, i32) {
     let w = image.0.max(1).min(i32::MAX as u32) as i32;
     let h = image.1.max(1).min(i32::MAX as u32) as i32;
@@ -390,5 +419,33 @@ mod tests {
         );
         let v = layout((100, 100), (0, 0, 100, 100), 2.0, (999, 999));
         assert_eq!((v.x, v.y), (-100, -100));
+    }
+
+    #[test]
+    fn wheel_pan_stops_at_edges_and_reverses_without_dead_travel() {
+        let image = (1000, 500);
+        let viewport = (0, 0, 400, 300);
+        // At 1.5x fit the image is 600x300, so horizontal travel is
+        // exactly 200 px and vertical travel is zero.
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (0, 0), 120, true),
+            (0, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (0, 0), -120, true),
+            (120, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (190, 0), -120, true),
+            (200, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (200, 0), 120, true),
+            (80, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (40, 99), 120, false),
+            (40, 0)
+        );
     }
 }
