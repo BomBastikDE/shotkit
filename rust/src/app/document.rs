@@ -3,7 +3,11 @@ use super::*;
 pub(super) fn path_wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    replace_existing: bool,
+) -> Result<(), String> {
     let dir = path.parent().ok_or("Ungültiger Speicherordner.")?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -24,7 +28,7 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             MoveFileExW(
                 path_wide(&temp).as_ptr(),
                 path_wide(path).as_ptr(),
-                0x1 | 0x8,
+                (if replace_existing { 0x1 } else { 0 }) | 0x8,
             )
         } == 0
         {
@@ -137,7 +141,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     if force_save_as && !confirm_save_as_for_original(h) {
         return false;
     }
-    let path = if save_as || force_save_as || previous.is_none() {
+    let (path, replace_existing) = if save_as || force_save_as || previous.is_none() {
         // A protected Save As starts without the original filename, and the
         // post-dialog check below prevents accepting that same file anyway.
         match file_dialog::save(
@@ -148,7 +152,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
                 previous.as_deref()
             },
         ) {
-            Ok(Some(p)) => p,
+            Ok(Some(selection)) => selection,
             Ok(None) => return false,
             Err(e) => {
                 MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
@@ -156,7 +160,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             }
         }
     } else {
-        previous.as_ref().unwrap().clone()
+        (previous.as_ref().unwrap().clone(), true)
     };
     if force_save_as {
         let Some(original) = previous.as_deref() else {
@@ -185,7 +189,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
         let format = image_io::format_from_path(&path)?;
         let image = bitmap_image(h)?;
         let bytes = image_io::encode(&image, format)?;
-        write_atomic(&path, &bytes)
+        write_atomic(&path, &bytes, replace_existing)
     })();
     match result {
         Ok(()) => {
@@ -209,7 +213,9 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
 
 #[cfg(test)]
 mod save_safety_tests {
-    use super::{opened_original_requires_save_as, requires_save_as, same_existing_path};
+    use super::{
+        opened_original_requires_save_as, requires_save_as, same_existing_path, write_atomic,
+    };
     use std::path::Path;
 
     #[test]
@@ -276,6 +282,33 @@ mod save_safety_tests {
         std::fs::remove_file(&path).unwrap();
         assert!(same_existing_path(&path, &path).is_err());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_as_absent_target_collision_is_preserved_but_confirmed_target_replaces() {
+        let path = std::env::temp_dir().join(format!(
+            "shotkit-atomic-save-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let collision = b"created after the save dialog observed an absent target";
+        let replacement = b"new encoded image";
+
+        // Models another process creating the path between the dialog's
+        // absence check and the atomic rename.
+        std::fs::write(&path, collision).unwrap();
+        assert!(write_atomic(&path, replacement, false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), collision);
+
+        // A dialog-confirmed existing target, and ordinary Ctrl+S, retain
+        // their explicit replace behavior.
+        write_atomic(&path, replacement, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), replacement);
+        std::fs::remove_file(&path).unwrap();
+    }
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Besitzer für synchrone Dialoge.
@@ -301,8 +334,8 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
         if answer != 6 {
             return false;
         }
-        let path = match file_dialog::save(h, None) {
-            Ok(Some(path)) => path,
+        let (path, replace_existing) = match file_dialog::save(h, None) {
+            Ok(Some(selection)) => selection,
             Ok(None) => return false,
             Err(e) => {
                 MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
@@ -316,7 +349,7 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
             };
             image_io::format_from_path(&path)
                 .and_then(|format| image_io::encode(image, format))
-                .and_then(|bytes| write_atomic(&path, &bytes))
+                .and_then(|bytes| write_atomic(&path, &bytes, replace_existing))
         };
         match result {
             Ok(()) => {

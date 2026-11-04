@@ -160,7 +160,7 @@ mod win32 {
         owner: Hwnd,
         initial_name: Option<&Path>,
         save: bool,
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<(PathBuf, bool)>, String> {
         let mut file = vec![0u16; FILE_BUFFER_LEN];
         let mut initial_dir = Vec::new();
         if let Some(path) = initial_name {
@@ -235,10 +235,10 @@ mod win32 {
         let end = file.iter().position(|&u| u == 0).unwrap_or(file.len());
         let selected = PathBuf::from(std::ffi::OsString::from_wide(&file[..end]));
         if !save {
-            return Ok(Some(selected));
+            return Ok(Some((selected, false)));
         }
         let target = shotkit::save_path::with_extension(&selected, ofn.filter_index);
-        match std::fs::symlink_metadata(&target) {
+        let confirmed_existing = match std::fs::symlink_metadata(&target) {
             Ok(_) => {
                 let message: Vec<u16> = format!(
                     "Die Datei ist bereits vorhanden:\n\n{}\n\nMöchten Sie sie ersetzen?",
@@ -253,11 +253,12 @@ mod win32 {
                 if unsafe { MessageBoxW(owner, message.as_ptr(), title.as_ptr(), 0x134) } != 6 {
                     return Ok(None);
                 }
+                true
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(format!("Zieldatei konnte nicht geprüft werden: {error}")),
-        }
-        Ok(Some(target))
+        };
+        Ok(Some((target, confirmed_existing)))
     }
 }
 
@@ -273,7 +274,7 @@ mod win32 {
 // Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten haben getrennte Implementierungen.
 // Nachrichten: Der Windows-Dateidialog verarbeitet Nachrichten; die andere Variante nicht.
 pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
-    win32::dialog(owner, None, false)
+    win32::dialog(owner, None, false).map(|selected| selected.map(|(path, _)| path))
 }
 
 /// Shows the Windows Save dialog and returns the selected image path.
@@ -290,7 +291,7 @@ pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 pub unsafe fn save(
     owner: *mut c_void,
     initial_name: Option<&Path>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<(PathBuf, bool)>, String> {
     win32::dialog(owner, initial_name, true)
 }
 
@@ -313,6 +314,6 @@ pub unsafe fn open(_owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 pub unsafe fn save(
     _owner: *mut c_void,
     _initial_name: Option<&Path>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<(PathBuf, bool)>, String> {
     Err("Windows file dialogs are only available on Windows".into())
 }
