@@ -2,6 +2,7 @@ use super::*;
 
 const WM_CANCELMODE: u32 = 0x001f;
 const WM_CAPTURECHANGED: u32 = 0x0215;
+const WM_RBUTTONDOWN: u32 = 0x0204;
 
 /// End an active pointer gesture before any API that can synchronously send
 /// WM_CAPTURECHANGED. Returns whether there was a gesture to cancel.
@@ -23,6 +24,20 @@ fn end_drag_for_capture_loss(state: &mut State) -> bool {
 pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
     let state = std::ptr::addr_of_mut!(STATE);
     Some(match msg {
+        WM_RBUTTONDOWN => {
+            // Match the legacy overlay: right-click aborts the capture.
+            // Clear gesture state before releasing capture because that can
+            // synchronously reenter through WM_CAPTURECHANGED.
+            if end_drag_for_capture_loss(&mut *state) {
+                ReleaseCapture();
+            }
+            let target = mark_finished(state, None);
+            if !target.is_null() {
+                let _ = KillTimer(target, UIA_TIMER_ID);
+                DestroyWindow(target);
+            }
+            0
+        }
         WM_CAPTURECHANGED | WM_CANCELMODE if (*state).down => {
             // Clear `down` before ReleaseCapture: that call may reenter this
             // callback with WM_CAPTURECHANGED. The reentrant notification

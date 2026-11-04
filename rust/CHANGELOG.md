@@ -92,3 +92,4 @@ Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereign
 - Das Tray-Menü sendet nach dem Schließen die von Windows vorgesehene Abschlussnachricht; ein Smoke-Test prüft Außenklick und erneutes Öffnen ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - „Speichern unter“ ersetzt keine zwischen Auswahl und Schreibabschluss neu angelegte Datei; die Anwendung meldet die Kollision und erhält das vorhandene Ziel ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Sehr kurze, dicke Pfeile werden ohne über die Spitze hinausragenden Schaft gerendert; die Form reicht bis zum gesetzten Startpunkt ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
+- Ein Rechtsklick bricht die laufende Bereichsauswahl wie in ShotKit C# v1.2.0 ohne Aufnahme ab.

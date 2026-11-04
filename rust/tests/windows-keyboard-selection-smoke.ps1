@@ -215,6 +215,19 @@ namespace ShotKitKeyboardSurface {
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after synchronous Escape' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
 
+    # Legacy parity: a real right-click aborts the overlay and produces no file.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero)
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'right-click to close the selection overlay' -OwnedProcess $shotKit -Condition {
+        if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+    })
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Right-click cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after right-click' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
     # Drag a known 200x150 rectangle over the synthetic surface. Shift remains
     # physically held across mouse-up; the overlay must stay alive for edits.
     $x1=$geometry[0]+80; $y1=$geometry[1]+60; $x2=$x1+200; $y2=$y1+150
@@ -325,7 +338,7 @@ namespace ShotKitKeyboardSurface {
         }
     }
     finally {$clickBitmap.Dispose()}
-    Write-Output "PASS: Capture loss and Escape cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
+    Write-Output "PASS: Capture loss, Escape, and right-click cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
 }
 finally {
     if($shiftDown){Send-Key 0x10 $false}
