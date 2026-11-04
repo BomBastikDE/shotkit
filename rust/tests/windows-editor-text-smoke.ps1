@@ -216,14 +216,14 @@ try {
     Button $d.Handle 'Abbrechen'
 
     Button $main.Handle 'Nummer (N)'
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Number*'} | Select-Object -First 1} 5 'active Number tool')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Step*'} | Select-Object -First 1} 5 'active Number tool')
     Canvas-Click 80 80
     Button $main.Handle 'Speichern'
     $firstMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     $doubleClickTime=[ShotKitTextSmoke.Native]::GetDoubleClickTime()
     Start-Sleep -Milliseconds ([int]$doubleClickTime+100)
     Canvas-DoubleClick 80 80
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Number*'} | Select-Object -First 1} 5 'Number tool remains active after canvas double-click')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Step*'} | Select-Object -First 1} 5 'Number tool remains active after canvas double-click')
     Button $main.Handle 'Speichern'
     $secondMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     if($secondMarkerHash -ceq $firstMarkerHash){throw 'DOUBLE_CLICK_MARK_NOT_SAVED: saved image did not change after the quick second Number click.'}
