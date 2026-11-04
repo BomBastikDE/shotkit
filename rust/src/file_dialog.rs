@@ -71,7 +71,11 @@ mod win32 {
         fn CommDlgExtendedError() -> u32;
     }
 
-    const OFN_OVERWRITEPROMPT: u32 = 0x0000_0002;
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(owner: Hwnd, text: *const u16, title: *const u16, flags: u32) -> i32;
+    }
+
     const OFN_HIDEREADONLY: u32 = 0x0000_0004;
     const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
     const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
@@ -197,7 +201,7 @@ mod win32 {
                 | OFN_NOCHANGEDIR
                 | OFN_PATHMUSTEXIST
                 | if save {
-                    OFN_OVERWRITEPROMPT | OFN_ENABLEHOOK
+                    OFN_ENABLEHOOK
                 } else {
                     OFN_FILEMUSTEXIST
                 },
@@ -229,9 +233,31 @@ mod win32 {
             };
         }
         let end = file.iter().position(|&u| u == 0).unwrap_or(file.len());
-        Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
-            &file[..end],
-        ))))
+        let selected = PathBuf::from(std::ffi::OsString::from_wide(&file[..end]));
+        if !save {
+            return Ok(Some(selected));
+        }
+        let target = shotkit::save_path::with_extension(&selected, ofn.filter_index);
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => {
+                let message: Vec<u16> = format!(
+                    "Die Datei ist bereits vorhanden:\n\n{}\n\nMöchten Sie sie ersetzen?",
+                    target.display()
+                )
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+                let title: Vec<u16> = "Datei ersetzen".encode_utf16().chain(Some(0)).collect();
+                // SAFETY: owner is supplied by the caller and both UTF-16
+                // strings remain alive during this synchronous dialog call.
+                if unsafe { MessageBoxW(owner, message.as_ptr(), title.as_ptr(), 0x134) } != 6 {
+                    return Ok(None);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Zieldatei konnte nicht geprüft werden: {error}")),
+        }
+        Ok(Some(target))
     }
 }
 
@@ -254,7 +280,7 @@ pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 ///
 /// `initial_name` optionally supplies an initial filename and directory. The
 /// extension follows the selected filter when the user omits one, and
-/// existing files trigger the standard overwrite confirmation for that final
+/// existing files trigger an overwrite confirmation for that final
 /// path. Returns `Ok(None)` on cancel and `Err` on Win32 error.
 #[cfg(windows)]
 // SAFETY CONTRACT:

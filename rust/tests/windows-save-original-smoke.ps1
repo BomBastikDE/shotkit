@@ -45,6 +45,18 @@ namespace ShotKitSaveSmoke {
         public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
         public static void ControlDown() { keybd_event(0x11,0,0,UIntPtr.Zero); }
         public static void ControlUp() { keybd_event(0x11,0,0x0002,UIntPtr.Zero); }
+        public static void ControlShiftS() {
+            try {
+                keybd_event(0x11,0,0,UIntPtr.Zero);
+                keybd_event(0x10,0,0,UIntPtr.Zero);
+                keybd_event(0x53,0,0,UIntPtr.Zero);
+            }
+            finally {
+                keybd_event(0x53,0,0x0002,UIntPtr.Zero);
+                keybd_event(0x10,0,0x0002,UIntPtr.Zero);
+                keybd_event(0x11,0,0x0002,UIntPtr.Zero);
+            }
+        }
         public static void TapS() {
             try { keybd_event(0x53,0,0,UIntPtr.Zero); }
             finally { keybd_event(0x53,0,0x0002,UIntPtr.Zero); }
@@ -98,6 +110,55 @@ function New-Fixture([string]$Path,[string]$Format) {
         $bmp.Save($Path,$kind)
     } finally {$bmp.Dispose()}
 }
+function New-PngFixture([string]$Path,[Drawing.Color]$Background) {
+    $bmp=[Drawing.Bitmap]::new(32,24,[Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    try {
+        $g=[Drawing.Graphics]::FromImage($bmp)
+        try {$g.Clear($Background);$g.FillRectangle([Drawing.Brushes]::Orange,5,4,17,13)} finally {$g.Dispose()}
+        $bmp.Save($Path,[Drawing.Imaging.ImageFormat]::Png)
+    } finally {$bmp.Dispose()}
+}
+function Save-As-Dialog([IntPtr]$Main,[string]$Description,[string]$FileName) {
+    [void][ShotKitSaveSmoke.Native]::SetForegroundWindow($Main)
+    [ShotKitSaveSmoke.Native]::ControlShiftS()
+    $dialog=Wait-For {
+        $windows=Owned-Windows
+        $windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and @([ShotKitSaveSmoke.Native]::Children($_.Handle) | Where-Object {$_.ClassName -eq 'Edit'}).Count -gt 0} | Select-Object -First 1
+    } 8 "$Description Save As dialog"
+    $edit=[ShotKitSaveSmoke.Native]::Children($dialog.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'Edit'} | Select-Object -First 1
+    if($null -eq $edit){throw "$Description Save As filename control missing."}
+    if(-not [ShotKitSaveSmoke.Native]::SetEditText($edit.Handle,$FileName)){throw "$Description could not set Save As filename."}
+    Dialog-Button $dialog.Handle 1 # IDOK
+}
+function Run-Dotted-Png-Overwrite {
+    $source=Join-Path $root 'dotted-name-source.png'
+    $output=Join-Path $root 'Bericht v1.2.png'
+    New-PngFixture $source ([Drawing.Color]::DarkCyan)
+    New-PngFixture $output ([Drawing.Color]::DarkMagenta)
+    $before=Hash-File $output
+    $script:proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $source) -WorkingDirectory $root -PassThru
+    $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'dotted-name editor window'
+    [void][ShotKitSaveSmoke.Native]::SetForegroundWindow($main.Handle)
+    $welcome=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'dotted-name startup notice'
+    Button $welcome.Handle 'OK'
+    $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} 10 'dotted-name loaded editor'
+
+    Save-As-Dialog $main.Handle 'dotted-name decline' 'Bericht v1.2'
+    $replace=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'Datei ersetzen'} | Select-Object -First 1} 8 'replacement confirmation after Save As closes'
+    Dialog-Button $replace.Handle 7 # IDNO
+    Start-Sleep -Milliseconds 250
+    if((Hash-File $output) -cne $before){throw 'Existing Bericht v1.2.png changed after declining replacement.'}
+
+    Save-As-Dialog $main.Handle 'dotted-name accept' 'Bericht v1.2'
+    $replace=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'Datei ersetzen'} | Select-Object -First 1} 8 'second replacement confirmation after Save As closes'
+    Dialog-Button $replace.Handle 6 # IDYES
+    [void](Wait-For {(Hash-File $output) -cne $before} 10 'confirmed dotted-name PNG replacement')
+    if((Get-Item -LiteralPath $output).Length -le 0){throw 'Confirmed Bericht v1.2.png replacement is empty.'}
+    $image=[Drawing.Image]::FromFile($output)
+    try {if($image.RawFormat.Guid -ne [Drawing.Imaging.ImageFormat]::Png.Guid){throw 'Confirmed dotted-name output is not a PNG.'}} finally {$image.Dispose()}
+    Write-Output "PASS: Bericht v1.2 was saved as PNG; declining replacement preserved SHA256 $before and confirming replacement produced a valid PNG."
+    $script:proc.Kill();[void]$script:proc.WaitForExit(5000);$script:proc=$null
+}
 function Run-Format([string]$Format) {
     $extension=if($Format -eq 'jpeg'){'jpg'}else{'gif'}
     $source=Join-Path $root "source.$extension"; $output=Join-Path $root "saved-as-$Format.png"
@@ -137,6 +198,7 @@ try {
     $env:APPDATA=$appData; $env:LOCALAPPDATA=$localAppData
     Run-Format 'jpeg'
     Run-Format 'gif'
+    Run-Dotted-Png-Overwrite
     Write-Output 'PASS: lossy JPEG and GIF originals remained byte-for-byte unchanged after both cancelling and exporting through Save As.'
 }
 catch { $failure=$_ }
