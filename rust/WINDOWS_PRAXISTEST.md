@@ -1,6 +1,6 @@
 # ShotKit Rust: Windows-Praxistest
 
-Diese Anleitung ergänzt die automatischen Tests. Sie ersetzt nicht die stabile C#-Version. Aktuelle Vorabversion: [v2.0.0-alpha.19](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.19); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
+Diese Anleitung ergänzt die automatischen Tests. Aktuelle Vorabversion: [v2.0.0-alpha.20](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-alpha.20); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
 
 ## Ausgangslage notieren
 
