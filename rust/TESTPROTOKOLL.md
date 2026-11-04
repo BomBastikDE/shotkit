@@ -67,6 +67,22 @@ deckt die CI nicht ab.
 
 ## Reviews
 
+### Vollständiges Code-Review – 2026-11-04, Stand `8288105` (v2.0.0-alpha.20)
+
+Gesamter Rust-Code in vier Bereichen (Win32/App, Editor/Rendering, Aufnahme/Scroll/Overlay, Ein- und Ausgabe/Einstellungen/CI) durchgesehen; jeder gemeldete Befund wurde an der Codestelle nachgeprüft. Kein Build, kein Windows-Test.
+
+- Bestätigt und als Issue angelegt: [#18](https://github.com/BomBastikDE/shotkit/issues/18) Zuschneiden verliert letzte Spalte/Zeile,
+  [#19](https://github.com/BomBastikDE/shotkit/issues/19) falsche Auswahl nach Rückgängig,
+  [#20](https://github.com/BomBastikDE/shotkit/issues/20) Strg+S überschreibt Originale verlustbehaftet,
+  [#21](https://github.com/BomBastikDE/shotkit/issues/21) unbegrenzte Ersatz-Scrollweite,
+  [#22](https://github.com/BomBastikDE/shotkit/issues/22) Doppelklick wechselt Werkzeug,
+  [#23](https://github.com/BomBastikDE/shotkit/issues/23) Vorschau beim Ziehen,
+  [#24](https://github.com/BomBastikDE/shotkit/issues/24) Tag-/Cargo-Version im Release,
+  [#25](https://github.com/BomBastikDE/shotkit/issues/25) Ursachen der unzuverlässigen Windows-Tests,
+  [#26](https://github.com/BomBastikDE/shotkit/issues/26) Einstellungsformat.
+- Gemeldet, aber nicht einzeln nachgeprüft: Sammel-Issue [#27](https://github.com/BomBastikDE/shotkit/issues/27).
+- Geprüft, kein Fehler: Alt+F4 im Editor, offene Editorfenster in Bildschirmaufnahmen (erwartet), Lücken bei Schritt-Nummern (wie C# 1.2.0), GDI-/Clipboard-Handles, Überlaufprüfungen bei Bildgrößen, Virtual-Screen-Koordinaten, UIA-Worker, Stitcher-Nähte, Autostart, Kollisionsschutz beim Autosave-Dateinamen.
+
 ### Code-Review – 2026-11-04, Stand `151ebb0` (vor Alpha 20)
 
 Durchsicht ausgewählter Stellen in `rust/src` (Undo-Historie, Verpixeln, Einfügen, Scroll-Aufnahme,
