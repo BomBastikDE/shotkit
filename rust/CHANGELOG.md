@@ -36,11 +36,11 @@ Die Release-Erstellung für Alpha-Tags läuft nach erfolgreichen Linux- und Wind
 
 ## Alpha 16
 
-Die Editorvorschau verwendet einen Cache für unveränderte Formen, begrenzt Neuzeichnungen auf betroffene Bereiche und berechnet das Schachbrett nur für transparente Pixel. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41537579633) maß bei vier Formen und drei Durchläufen für 1920 × 1080 Pixel 83,59 → 25,24 ms und für 1200 × 10.000 Pixel 435,56 → 127,93 ms je Vorschau-Berechnung. Diese Messung umfasst Rendering und Vorschau-Aufbereitung, nicht die abschließende Windows-Bildschirmausgabe. Der Owner meldete eine deutlich flüssigere Bedienung; schnelles Freihandzeichnen blieb auffällig.
+Die Editorvorschau verwendet einen Cache für unveränderte Formen, begrenzt Neuzeichnungen auf betroffene Bereiche und berechnet das Schachbrett nur für transparente Pixel. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41537579633) maß bei vier Formen und drei Durchläufen für 1920 × 1080 Pixel 83,59 → 25,24 ms und für 1200 × 10.000 Pixel 435,56 → 127,93 ms je Vorschau-Berechnung. Diese Messung umfasst Rendering und Vorschau-Aufbereitung, nicht die abschließende Windows-Bildschirmausgabe. Der Owner meldete eine deutlich flüssigere Bedienung; schnelles Freihandzeichnen blieb auffällig ([Issue #2](https://github.com/BomBastikDE/shotkit/issues/2)).
 
 ## Alpha 17
 
-Die vorhandenen ShotKit-Symbole werden höher aufgelöst gezeichnet und geglättet ausgegeben. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41539042247) bestand mit 23 von 23 Smoke-Szenarien, einschließlich eines Bildtests auf Zwischenstufen an Symbolkanten. Die EXE ist 1.135.616 Bytes groß, 1.536 Bytes mehr als Alpha 16; neue Abhängigkeiten wurden nicht hinzugefügt. Die visuelle Abnahme durch den Owner steht aus.
+Die vorhandenen ShotKit-Symbole werden höher aufgelöst gezeichnet und geglättet ausgegeben. Der [Windows-Release-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41539042247) bestand mit 23 von 23 Smoke-Szenarien, einschließlich eines Bildtests auf Zwischenstufen an Symbolkanten. Die EXE ist 1.135.616 Bytes groß, 1.536 Bytes mehr als Alpha 16; neue Abhängigkeiten wurden nicht hinzugefügt. Die visuelle Abnahme durch den Owner steht aus ([Issue #3](https://github.com/BomBastikDE/shotkit/issues/3)).
 
 ## Alpha 18
 
@@ -48,7 +48,11 @@ Freihandstriche werden auf einen begrenzten Bildbereich gerendert; eindeutig zuo
 
 ## Alpha 19
 
-Die verkleinerte Editoransicht verwendet eine höherwertige Skalierung; während des Zeichnens bleibt der schnelle Darstellungsweg aktiv. Die 1:1-Ausgabe wird nicht geglättet. [Release-Lauf 41678872270](https://github.com/BomBastikDE/shotkit/actions/runs/41678872270) bestand unter Linux und Windows mit 23 von 23 Smoke-Szenarien. Der Owner meldete anschließend, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste verschwanden; die Untersuchung und der Nachweis der Korrektur stehen aus.
+Die verkleinerte Editoransicht verwendet eine höherwertige Skalierung; während des Zeichnens bleibt der schnelle Darstellungsweg aktiv. Die 1:1-Ausgabe wird nicht geglättet ([Issue #4](https://github.com/BomBastikDE/shotkit/issues/4)). [Release-Lauf 41678872270](https://github.com/BomBastikDE/shotkit/actions/runs/41678872270) bestand unter Linux und Windows mit 23 von 23 Smoke-Szenarien. Der Owner meldete anschließend, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste verschwanden ([Issue #1](https://github.com/BomBastikDE/shotkit/issues/1)).
+
+## In Entwicklung nach Alpha 19
+
+Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) schützt die Werkzeugleiste vor dem Übermalen durch den Editor. Der [CI-Lauf 41897317737](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) bestand unter Linux und Windows; der blockierende Editor-Smoke-Test prüft sichtbare Symbolpixel nach Undo, Redo und erneutem Undo. Die Korrektur ist noch nicht veröffentlicht und muss auf dem Rechner des Owners bestätigt werden.
 
 ## Übergabe 2. November 2026
 

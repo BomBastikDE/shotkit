@@ -51,4 +51,4 @@ Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2
 
 ## Gemeldeter Fehler: Symbole verschwinden nach Rückgängig
 
-**Status: offen.** Am 4. November 2026 meldete der Owner für Alpha 19, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste nahezu vollständig verschwanden. Der Screenshot zeigt die leeren Schaltflächen und ein weiterhin sichtbares Undo-Symbol. Eine Ursache wird untersucht; eine Korrektur ist erst nach erfolgreichem Test und erneuter Rückmeldung des Owners bestätigt.
+**Status: offen ([Issue #1](https://github.com/BomBastikDE/shotkit/issues/1)).** Am 4. November 2026 meldete der Owner für Alpha 19, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste nahezu vollständig verschwanden. Der Screenshot zeigt die leeren Schaltflächen und ein weiterhin sichtbares Undo-Symbol. Eine Korrektur ist auf dem Entwicklungszweig im [Windows-CI-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) nach Undo und Redo getestet; eine neue Alpha und der Praxistest des Owners stehen noch aus.
