@@ -43,11 +43,11 @@ Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2
 
 ## Gemeldeter Fehler: Symbolleiste wirkt unscharf
 
-**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15, dass die Symbole der Werkzeugleiste zwar erkennbar, aber unscharf und optisch unbefriedigend wirken. Die Symbole werden derzeit mit Win32-GDI anhand eines festen 20×20-Koordinatenrasters gezeichnet. Ob und wie Windows-Skalierung zur Darstellung auf dem Rechner beiträgt, ist nicht geprüft. Alpha 17 und Alpha 18 enthalten eine Glättung; ihre Darstellung auf dem Rechner des Owners ist noch zu beurteilen. Die CI belegt den Kantentest und die Bedienbarkeit, nicht die gewünschte Bildqualität.
+**Status: vom Owner als behoben bestätigt ([Issue #3](https://github.com/BomBastikDE/shotkit/issues/3)).** Am 2. November 2026 meldete der Owner unscharfe Symbole in Alpha 15. Alpha 17 und Alpha 18 enthalten eine Glättung; am 5. November bestätigte der Owner, die Symbolschärfe geprüft zu haben und den Fehler als behoben anzusehen. Die verwendete Version und die Skalierung des erneuten Tests wurden nicht genannt.
 
 ## Gemeldeter Fehler: schnelles Freihandzeichnen
 
-**Status: offen.** Nach dem Test von Alpha 16 meldete der Owner, dass die allgemeine Bedienung deutlich flüssiger sei. Beim schnellen Zeichnen freier Linien ruckelt es aber weiterhin und Bewegungen werden nicht vollständig erfasst. Alpha 18 enthält eine begrenzte Renderfläche und die Übernahme eindeutig zuordenbarer Zwischenpunkte aus der Windows-Maushistorie. Ein erneuter Schnellzeichentest auf seinem Rechner ist erforderlich.
+**Status: vom Owner als behoben bestätigt ([Issue #2](https://github.com/BomBastikDE/shotkit/issues/2)).** Nach dem Test von Alpha 16 meldete der Owner Ruckeln und fehlende Bewegungen beim schnellen Zeichnen. Alpha 18 enthält eine begrenzte Renderfläche und die Übernahme eindeutig zuordenbarer Zwischenpunkte aus der Windows-Maushistorie. Am 5. November bestätigte der Owner den erneuten Test und dass der Fehler behoben sei; die dabei verwendete Version wurde nicht genannt.
 
 ## Gemeldeter Fehler: Symbole verschwinden nach Rückgängig
 
