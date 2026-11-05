@@ -183,6 +183,34 @@ function Wait-ForCondition {
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
 }
 
+function Invoke-SelectionDrag {
+    param([int] $StartX, [int] $StartY, [int] $EndX, [int] $EndY)
+    $mouseDown = $false
+    try {
+        if (-not [ShotKitSmoke.Native]::SetCursorPos($StartX, $StartY)) { throw 'Could not position the cursor for the drag start.' }
+        Start-Sleep -Milliseconds 150
+        [ShotKitSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        $mouseDown = $true
+        if (-not [ShotKitSmoke.Native]::SetCursorPos($EndX, $EndY)) { throw 'Could not position the cursor for the drag endpoint.' }
+        Start-Sleep -Milliseconds 200
+    }
+    finally {
+        if ($mouseDown) { [ShotKitSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
+    }
+}
+
+function Assert-EmptyDragKeepsOverlay {
+    param([int] $StartX, [int] $StartY, [int] $EndX, [int] $EndY, [string] $Description)
+    Invoke-SelectionDrag -StartX $StartX -StartY $StartY -EndX $EndX -EndY $EndY
+    Start-Sleep -Milliseconds 250
+    [void](Wait-ForCondition -TimeoutSeconds 5 -Description "the selection overlay to remain available after $Description" -OwnedProcess $process -Condition {
+        Get-OwnWindows $process | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
+    })
+    if (Get-OwnWindows $process | Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible }) {
+        throw "$Description unexpectedly opened the editor."
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $appData, $localAppData, $saveFolder -Force | Out-Null
     $settingsPath = Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
@@ -245,12 +273,18 @@ try {
     $x2 = $x1 + 200
     $y2 = $y1 + 200
     [void][ShotKitSmoke.Native]::SetForegroundWindow($overlay.Handle)
-    if (-not [ShotKitSmoke.Native]::SetCursorPos($x1, $y1)) { throw 'Could not position the cursor for the selection start.' }
-    Start-Sleep -Milliseconds 150
-    [ShotKitSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    [void][ShotKitSmoke.Native]::SetCursorPos($x2, $y2)
-    Start-Sleep -Milliseconds 200
-    [ShotKitSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+
+    # Exact one-pixel horizontal/vertical movements and a longer horizontal
+    # drag are empty gestures. Each must leave selection ready for a retry.
+    $retryX = $x1 + 40
+    $retryY = $y1 + 80
+    Assert-EmptyDragKeepsOverlay -StartX $retryX -StartY $retryY -EndX ($retryX + 1) -EndY $retryY -Description 'a one-pixel horizontal drag'
+    Assert-EmptyDragKeepsOverlay -StartX $retryX -StartY $retryY -EndX $retryX -EndY ($retryY + 1) -Description 'a one-pixel vertical drag'
+    Assert-EmptyDragKeepsOverlay -StartX $retryX -StartY $retryY -EndX ($retryX + 120) -EndY $retryY -Description 'a longer horizontal drag'
+
+    # A valid two-dimensional drag immediately after the rejected drags must
+    # still produce a capture and open the editor.
+    Invoke-SelectionDrag -StartX $x1 -StartY $y1 -EndX $x2 -EndY $y2
 
     $editor = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'a visible editor window after area capture' -OwnedProcess $process -Condition {
         $window = Get-OwnWindows $process | Where-Object {
