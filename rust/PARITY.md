@@ -19,7 +19,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Globale Tastenkürzel einschließlich Druck-Modifikatoren und Ausweichkürzeln | implementiert, nicht belegt | `hotkey_action::tests::print_screen_matrix_matches_csharp_reference_and_dispatch_actions` prüft Tasten, Modifier und Aktionen; `windows-smoke.ps1` prüft einen Aufnahmeweg | Registrierung und Konfliktbehandlung für jedes Kürzel sind unter Windows noch nicht vollständig nachgewiesen. |
 | Bildschirm unter Mauszeiger aufnehmen | implementiert, nicht belegt | `capture_targets.rs`-Grenztests; Windows-Test für alle Monitoranordnungen fehlt | Implementierung vorhanden; mehrere echte Monitore sind Owner-Praxistest. |
 | Alle Bildschirme aufnehmen | implementiert, nicht belegt | `capture_targets.rs`-Grenztests; Mehrmonitor-Windows-Test fehlt | Implementierung vorhanden; Mehrmonitor-Nachweis fehlt. |
-| Aktives Fenster aufnehmen | implementiert, nicht belegt | Windows-Test für tatsächlich aktives Fremdfenster fehlt | Implementierung vorhanden; die Übernahme des korrekten Fensters braucht direkten Nachweis. |
+| Aktives Fenster aufnehmen | fertig | `windows-active-window-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41956648214) | Shift+Druck erfasst ein aktives, separat gestartetes Testfenster; DWM-Rahmen und vier Farbpunkte geprüft. Weitere Fenster- und Monitoranordnungen sind damit nicht abgedeckt. |
 | Bereich mit Maus aufziehen | fertig | `windows-smoke.ps1`; Alpha-9-Lauf | Interaktiver Einzelbildschirm-Test mit gespeicherter Aufnahme. |
 | Fenster / Unterelement per Maus auswählen | implementiert, nicht belegt | `windows-hover-smoke.ps1`, `windows-browser-hover-smoke.ps1`; [Edge-/Chrome-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41461190364) | Vorschläge für verschachtelte Bedienelemente und Browser sind getestet. Das vollständige Referenzverhalten für `Strg` ist nicht belegt; Rust verwendet `Strg` für das größere Fenster. |
 | Lupe mit Koordinaten und Farbwert | implementiert, nicht belegt | Direkter Windows-Test für dargestellte Werte fehlt | Implementierung vorhanden; Anzeige und Werte sind noch nicht direkt belegt. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 22 fertig, 21 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 23 fertig, 20 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
