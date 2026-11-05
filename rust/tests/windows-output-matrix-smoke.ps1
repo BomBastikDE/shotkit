@@ -260,10 +260,15 @@ try {
     $surfaceSource=@'
 param([string]$ReadyFile)
 $ErrorActionPreference='Stop'
-Write-Output 'FIXTURE_STAGE: loading assemblies'
+function Write-Stage([string]$Name) { [Console]::Out.WriteLine("FIXTURE_STAGE: $Name"); [Console]::Out.Flush() }
+Write-Stage 'loading assemblies'
+Write-Stage 'loading System.Windows.Forms'
 Add-Type -AssemblyName System.Windows.Forms
+Write-Stage 'loaded System.Windows.Forms'
+Write-Stage 'loading System.Drawing'
 Add-Type -AssemblyName System.Drawing
-Write-Output 'FIXTURE_STAGE: compiling surface'
+Write-Stage 'loaded System.Drawing'
+Write-Stage 'compiling surface'
 Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll' -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -303,7 +308,7 @@ namespace ShotKitOutputMatrixSurface {
  }
 }
 "@
-Write-Output 'FIXTURE_STAGE: constructing surface and entering message loop'
+Write-Stage 'constructing surface and entering message loop'
 [System.Windows.Forms.Application]::Run([ShotKitOutputMatrixSurface.Surface]::new($ReadyFile))
 '@
     [IO.File]::WriteAllText($surfaceScript,$surfaceSource,[Text.UTF8Encoding]::new($false))
@@ -321,6 +326,14 @@ Write-Output 'FIXTURE_STAGE: constructing surface and entering message loop'
             $windows=@([ShotKitOutputMatrixSmoke.Native]::Windows($surface.Id) | ForEach-Object {"handle=$($_.Handle) class='$($_.ClassName)' title='$($_.Title)' visible=$($_.Visible)"}) -join '; '
             Write-Output "FIXTURE_DIAGNOSTIC: pid=$($surface.Id) exited=$($surface.HasExited) readyFile=$(Test-Path -LiteralPath $readyFile) windows=[$windows]"
         } catch { Write-Output 'FIXTURE_DIAGNOSTIC: window inspection failed.' }
+        try {
+            $surface.Refresh()
+            $threads=@($surface.Threads | ForEach-Object {
+                $wait=if($_.ThreadState -eq [Diagnostics.ThreadState]::Wait){$_.WaitReason}else{'n/a'}
+                "id=$($_.Id) state=$($_.ThreadState) wait=$wait"
+            }) -join '; '
+            Write-Output "FIXTURE_DIAGNOSTIC: cpuSeconds=$($surface.TotalProcessorTime.TotalSeconds) threads=[$threads]"
+        } catch { Write-Output 'FIXTURE_DIAGNOSTIC: process/thread inspection failed.' }
         throw $startupFailure
     }
     $ready=Wait-ForCondition -Seconds 10 -Description 'complete fixture client coordinates' -OwnedProcess $surface -Condition {
@@ -481,7 +494,7 @@ finally {
                     if($env:GITHUB_ACTIONS -ceq 'true') {
                         Write-Output "FIXTURE_DIAGNOSTIC: $([IO.Path]::GetFileName($log)): $content"
                     } elseif($log -eq $surfaceStdout) {
-                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
+                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: loading System.Windows.Forms','FIXTURE_STAGE: loaded System.Windows.Forms','FIXTURE_STAGE: loading System.Drawing','FIXTURE_STAGE: loaded System.Drawing','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
                         foreach($line in @($content -split "`r?`n")) { if($line -cin $phases) { Write-Output $line } }
                     } else {
                         Write-Output "FIXTURE_DIAGNOSTIC: stderr nonempty=$(-not [string]::IsNullOrWhiteSpace($content))"

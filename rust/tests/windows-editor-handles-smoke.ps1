@@ -293,7 +293,15 @@ try {
     $ok=[ShotKitHandlesSmoke.Native]::Buttons($notice.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq 'OK' } | Select-Object -First 1
     if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING: expected owned OK button.'}
     [ShotKitHandlesSmoke.Native]::Click($ok.Handle)
-    [void](Wait-For { -not [ShotKitHandlesSmoke.Native]::IsWindow($notice.Handle) } 10 'startup notice close')
+    # HWND values can be reused after a dialog is destroyed. Check for the
+    # owned notice itself, including hidden windows, rather than its old HWND.
+    try {
+        [void](Wait-For { -not @(Get-OwnedWindows | Where-Object { $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' }).Count } 10 'startup notice close')
+    } catch {
+        $windows = @(Get-OwnedWindows | ForEach-Object { "HWND=$($_.Handle) PID=$($_.Pid) class='$($_.ClassName)' title='$($_.Title)' visible=$($_.Visible)" }) -join '; '
+        Write-Host "STARTUP_NOTICE_DIAGNOSTIC: original HWND=$($notice.Handle); current owned windows: $windows"
+        throw
+    }
     $main=Wait-For { Get-Main | Where-Object {$_.Title -like '*Strg+S speichern*'} | Select-Object -First 1 } 15 'loaded image editor'
     $client=[Activator]::CreateInstance([ShotKitHandlesSmoke.Rect]); [void][ShotKitHandlesSmoke.Native]::ClientRect($main.Handle,[ref]$client)
     # Native toolbar geometry is obtained from its owned child HWND.
