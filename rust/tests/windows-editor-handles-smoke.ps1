@@ -293,6 +293,7 @@ try {
     $ok=[ShotKitHandlesSmoke.Native]::Buttons($notice.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq 'OK' } | Select-Object -First 1
     if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING: expected owned OK button.'}
     [ShotKitHandlesSmoke.Native]::Click($ok.Handle)
+    [void](Wait-For { -not [ShotKitHandlesSmoke.Native]::IsWindow($notice.Handle) } 10 'startup notice close')
     $main=Wait-For { Get-Main | Where-Object {$_.Title -like '*Strg+S speichern*'} | Select-Object -First 1 } 15 'loaded image editor'
     $client=[Activator]::CreateInstance([ShotKitHandlesSmoke.Rect]); [void][ShotKitHandlesSmoke.Native]::ClientRect($main.Handle,[ref]$client)
     # Native toolbar geometry is obtained from its owned child HWND.
@@ -336,21 +337,24 @@ try {
     Click-Button 'Wiederholen'
     [void](Save-AndWaitImage { param($image) Test-SameImage $image $thick } 'redo restoring width 8 pixels')
     Write-Host "PASS: selected rectangle line width changed through the native menu (red span $thinCount to $thickCount), with exact exported pixel Undo and Redo."
+    # Do not mistake a leftover or unexpected modal dialog for ChooseColorW.
+    $unexpected=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+    if($unexpected.Count -ne 0){throw "COLOR_PREEXISTING_DIALOG: titles=[$(($unexpected | ForEach-Object {$_.Title}) -join '; ')]."}
     # Queue the toolbar click: ChooseColorW enters a modal loop on the UI thread.
     $colorButton=@([ShotKitHandlesSmoke.Native]::Controls($main.Handle) | Where-Object {$_.Visible -and $_.Id -eq 0x5120 -and $_.ClassName -eq 'Button'})
     if($colorButton.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::Owner($colorButton[0].Handle) -ne $proc.Id){throw 'COLOR_BUTTON_IDENTITY_MISMATCH.'}
     if(-not [ShotKitHandlesSmoke.Native]::PostMessageW($colorButton[0].Handle,0x00f5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'COLOR_BUTTON_POST_FAILED.'}
-    $dialog=Wait-For {
-        $dialogs=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
-        if($dialogs.Count -gt 1){throw 'COLOR_DIALOG_AMBIGUOUS.'}
-        if($dialogs.Count -eq 1){$dialogs[0]}
-    } 10 'owned color dialog'
-    if([ShotKitHandlesSmoke.Native]::Owner($dialog.Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'}
-    # A visible dialog can precede initialization of its CC_FULLOPEN controls.
-    # Wait for all three SDK COLOR_RED/GREEN/BLUE edits, retaining strict identity checks.
+    # A visible dialog can precede initialization. Select it only once all
+    # three SDK COLOR_RED/GREEN/BLUE edits identify the CC_FULLOPEN dialog.
     try {
-        [void](Wait-For {
-            $controls=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle))
+        $dialog=Wait-For {
+            $dialogs=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+            if($dialogs.Count -gt 1){throw 'COLOR_DIALOG_AMBIGUOUS.'}
+            if($dialogs.Count -eq 0){return}
+            $candidate=$dialogs[0]
+            if($candidate.Title -like '*Prototyp*'){throw 'COLOR_UNEXPECTED_STARTUP_NOTICE.'}
+            if([ShotKitHandlesSmoke.Native]::Owner($candidate.Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'}
+            $controls=@([ShotKitHandlesSmoke.Native]::Controls($candidate.Handle))
             $ready=$true
             foreach($id in @(706,707,708)){
                 $matches=@($controls | Where-Object {$_.Id -eq $id -and $_.ClassName -eq 'Edit'})
@@ -358,13 +362,17 @@ try {
                 if($matches.Count -eq 0 -or -not $matches[0].Visible){$ready=$false; continue}
                 if([ShotKitHandlesSmoke.Native]::Owner($matches[0].Handle) -ne $proc.Id){throw "COLOR_EDIT_OWNER_MISMATCH ID=$id."}
             }
-            $ready
-        } 10 'all visible owned color dialog RGB edits')
+            if($ready){$candidate}
+        } 10 'owned color dialog with all visible RGB edits'
     } catch {
-        $snapshot=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | ForEach-Object {
-            'id={0} class={1} visible={2} pid={3} hwnd=0x{4:X}' -f $_.Id,$_.ClassName,$_.Visible,([ShotKitHandlesSmoke.Native]::Owner($_.Handle)),$_.Handle.ToInt64()
+        $snapshot=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'} | ForEach-Object {
+            $window=$_
+            $controls=@([ShotKitHandlesSmoke.Native]::Controls($window.Handle) | ForEach-Object {
+                'id={0} class={1} visible={2} pid={3} hwnd=0x{4:X}' -f $_.Id,$_.ClassName,$_.Visible,([ShotKitHandlesSmoke.Native]::Owner($_.Handle)),$_.Handle.ToInt64()
+            }) -join '; '
+            "title='$($window.Title)' hwnd=0x$('{0:X}' -f $window.Handle.ToInt64()) pid=$($window.Pid) controls=[$controls]"
         }) -join '; '
-        throw "COLOR_DIALOG_CONTROLS_NOT_READY: dialog title='$($dialog.Title)' hwnd=0x$('{0:X}' -f $dialog.Handle.ToInt64()) pid=$([ShotKitHandlesSmoke.Native]::Owner($dialog.Handle)) exists=$([ShotKitHandlesSmoke.Native]::IsWindow($dialog.Handle)); controls=[$snapshot]; cause=$($_.Exception.Message)"
+        throw "COLOR_DIALOG_NOT_IDENTIFIED: dialogs=[$snapshot]; cause=$($_.Exception.Message)"
     }
     foreach($entry in @(@{Id=706;Value='20'},@{Id=707;Value='140'},@{Id=708;Value='240'})){
         $control=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | Where-Object {$_.Visible -and $_.Id -eq $entry.Id -and $_.ClassName -eq 'Edit'})
