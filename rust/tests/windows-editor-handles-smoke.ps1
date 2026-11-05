@@ -32,6 +32,7 @@ namespace ShotKitHandlesSmoke {
     public struct Point { public int X, Y; }
     public sealed class Window { public IntPtr Handle; public int Pid; public string ClassName, Title; public bool Visible; }
     public sealed class Button { public IntPtr Handle; public string Text; }
+    public sealed class Control { public IntPtr Handle; public int Id; public string ClassName; public bool Visible; }
     public static class Native {
         private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr data);
@@ -66,6 +67,27 @@ namespace ShotKitHandlesSmoke {
         }
         public static Button[] Buttons(IntPtr parent) {
             var r=new List<Button>(); EnumProc cb=(h,d)=>{ if(IsWindowVisible(h) && Text(h,true)=="Button") r.Add(new Button{Handle=h,Text=Text(h,false)}); return true;}; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return r.ToArray();
+        }
+        public static Control[] Controls(IntPtr parent) {
+            var r=new List<Control>(); EnumProc cb=(h,d)=>{ r.Add(new Control{Handle=h,Id=GetDlgCtrlID(h),ClassName=Text(h,true),Visible=IsWindowVisible(h)}); return true; }; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return r.ToArray();
+        }
+        [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint msg,IntPtr w,IntPtr l);
+        [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+        public static void SetText(IntPtr h,string text) {
+            IntPtr p=Marshal.StringToHGlobalUni(text),result;
+            try { if(SendMessageTimeoutW(h,0x000c,IntPtr.Zero,p,2,3000,out result)==IntPtr.Zero || result==IntPtr.Zero) throw new InvalidOperationException("WM_SETTEXT failed or timed out."); }
+            finally { Marshal.FreeHGlobal(p); }
+        }
+        [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint timeout, out IntPtr result);
+        public static string ControlText(IntPtr h) {
+            const int capacity=16;
+            var buffer=new StringBuilder(capacity); IntPtr result;
+            if(SendMessageTimeoutW(h,0x000d,(IntPtr)capacity,buffer,2,3000,out result)==IntPtr.Zero)
+                throw new TimeoutException("WM_GETTEXT failed or timed out.");
+            long length=result.ToInt64();
+            if(length<0 || length>=capacity-1 || length!=buffer.Length)
+                throw new InvalidOperationException("WM_GETTEXT returned invalid or truncated text length.");
+            return buffer.ToString();
         }
         public static IntPtr FindToolbar(IntPtr parent) {
             IntPtr result=IntPtr.Zero; EnumProc cb=(h,d)=>{ if(IsWindowVisible(h) && Text(h,true)=="ShotKitRustEditorToolbar") { result=h; return false; } return true;}; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return result;
@@ -314,6 +336,39 @@ try {
     Click-Button 'Wiederholen'
     [void](Save-AndWaitImage { param($image) Test-SameImage $image $thick } 'redo restoring width 8 pixels')
     Write-Host "PASS: selected rectangle line width changed through the native menu (red span $thinCount to $thickCount), with exact exported pixel Undo and Redo."
+    # Queue the toolbar click: ChooseColorW enters a modal loop on the UI thread.
+    $colorButton=@([ShotKitHandlesSmoke.Native]::Controls($main.Handle) | Where-Object {$_.Visible -and $_.Id -eq 0x5120 -and $_.ClassName -eq 'Button'})
+    if($colorButton.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::Owner($colorButton[0].Handle) -ne $proc.Id){throw 'COLOR_BUTTON_IDENTITY_MISMATCH.'}
+    if(-not [ShotKitHandlesSmoke.Native]::PostMessageW($colorButton[0].Handle,0x00f5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'COLOR_BUTTON_POST_FAILED.'}
+    $dialog=Wait-For {
+        $dialogs=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+        if($dialogs.Count -gt 1){throw 'COLOR_DIALOG_AMBIGUOUS.'}
+        if($dialogs.Count -eq 1){$dialogs[0]}
+    } 10 'owned color dialog'
+    if([ShotKitHandlesSmoke.Native]::Owner($dialog.Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'}
+    # COLOR_RED/GREEN/BLUE in the Windows SDK ColorDlg.h; CC_FULLOPEN exposes them.
+    foreach($entry in @(@{Id=706;Value='20'},@{Id=707;Value='140'},@{Id=708;Value='240'})){
+        $control=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | Where-Object {$_.Visible -and $_.Id -eq $entry.Id -and $_.ClassName -eq 'Edit'})
+        if($control.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::Owner($control[0].Handle) -ne $proc.Id){throw "COLOR_EDIT_IDENTITY_MISMATCH ID=$($entry.Id)."}
+        [ShotKitHandlesSmoke.Native]::SetText($control[0].Handle,$entry.Value)
+    }
+    foreach($entry in @(@{Id=706;Value='20'},@{Id=707;Value='140'},@{Id=708;Value='240'})){
+        $control=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | Where-Object {$_.Visible -and $_.Id -eq $entry.Id -and $_.ClassName -eq 'Edit'})
+        if($control.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::ControlText($control[0].Handle) -cne $entry.Value){throw "COLOR_EDIT_READBACK_MISMATCH ID=$($entry.Id)."}
+    }
+    $ok=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | Where-Object {$_.Visible -and $_.Id -eq 1 -and $_.ClassName -eq 'Button'})
+    if($ok.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::Owner($ok[0].Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OK_IDENTITY_MISMATCH.'}
+    if(-not [ShotKitHandlesSmoke.Native]::PostMessageW($ok[0].Handle,0x00f5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'COLOR_DIALOG_OK_POST_FAILED.'}
+    [void](Wait-For { -not [ShotKitHandlesSmoke.Native]::IsWindow($dialog.Handle) } 10 'color dialog close')
+    $colored=Save-AndWaitImage {param($image) -not (Test-SameImage $image $thick)} 'changed color exported pixels'
+    $blue=0
+    for($y=15;$y -le 35;$y++){$q=$colored.Pixels[$y*160+50];if($q.A -gt 0 -and $q.R -eq 20 -and $q.G -eq 140 -and $q.B -eq 240){$blue++}}
+    if($blue -lt 3){throw "COLOR_EXPORT_WRONG: found $blue exact RGB(20,140,240) pixels on selected rectangle."}
+    Click-Button 'Zurück'
+    [void](Save-AndWaitImage {param($image) Test-SameImage $image $thick} 'undo restoring pre-color pixels')
+    Click-Button 'Wiederholen'
+    [void](Save-AndWaitImage {param($image) Test-SameImage $image $colored} 'redo restoring changed-color pixels')
+    Write-Host 'PASS: native color dialog changed the selected rectangle; exported RGB and exact pixel Undo/Redo verified.'
 
 }
 catch { $failure=$_ }

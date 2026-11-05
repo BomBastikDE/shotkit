@@ -35,7 +35,15 @@ namespace ShotKitTextSmoke {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
-        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
+        [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+        [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr owner, IntPtr menu, uint position, out Rect r);
+        [DllImport("user32.dll")] public static extern int MenuItemFromPoint(IntPtr owner, IntPtr menu, Point p);
+        [DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr menu, int position);
+        [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+        [DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr menu, uint position, uint flags);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu, uint position, StringBuilder text, int count, uint flags);
+        public static string MenuText(IntPtr menu, uint position) { var text=new StringBuilder(64); GetMenuStringW(menu,position,text,text.Capacity,0x400); return text.ToString(); }
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -70,6 +78,7 @@ namespace ShotKitTextSmoke {
         public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
         public static bool Client(IntPtr h,out Rect r) { return GetClientRect(h,out r); }
         public static bool WindowRect(IntPtr h,out Rect r) { return GetWindowRect(h,out r); }
+        public static IntPtr Menu(IntPtr h) { IntPtr result; return SendMessageTimeoutW(h,0x01e1,IntPtr.Zero,IntPtr.Zero,0x0002,500,out result)==IntPtr.Zero ? IntPtr.Zero : result; }
         public static int Owner(IntPtr h) { uint p;GetWindowThreadProcessId(h,out p);return (int)p; }
         public static int Id(IntPtr h) { return GetDlgCtrlID(h); }
     }
@@ -141,6 +150,58 @@ function Check-DialogText([string]$Expected,[string]$Stage) {
         throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at ${Stage}: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Product text-click diagnostic: '$clickDiag'. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."
     }
     return $d
+}
+function Choose-FontSize48 {
+    $button=[ShotKitTextSmoke.Native]::Children($main.Handle) | Where-Object { $_.Visible -and $_.ClassName -eq 'Button' } | Where-Object { ($_.Text -replace '&','').Trim() -eq 'Schriftgröße…' } | Select-Object -First 1
+    if($null -eq $button){throw 'FONT_SIZE_BUTTON_MISSING.'}
+    if(-not [ShotKitTextSmoke.Native]::SetForegroundWindow($main.Handle) -or [ShotKitTextSmoke.Native]::GetForegroundWindow() -ne $main.Handle){throw 'STYLE_EDITOR_FOCUS_FAILED.'}
+    $rect=[Activator]::CreateInstance([ShotKitTextSmoke.Rect])
+    if(-not [ShotKitTextSmoke.Native]::GetWindowRect($button.Handle,[ref]$rect)){throw 'FONT_SIZE_BUTTON_RECT_FAILED.'}
+    $x=[int][Math]::Floor(($rect.Left+$rect.Right)/2); $y=[int][Math]::Floor(($rect.Top+$rect.Bottom)/2)
+    if(-not [ShotKitTextSmoke.Native]::SetCursorPos($x,$y)){throw 'FONT_SIZE_BUTTON_CURSOR_FAILED.'}
+    $point=[Activator]::CreateInstance([ShotKitTextSmoke.Point]); [void][ShotKitTextSmoke.Native]::GetCursorPos([ref]$point)
+    if([ShotKitTextSmoke.Native]::WindowFromPoint($point) -ne $button.Handle){throw 'FONT_SIZE_BUTTON_TARGET_MISMATCH.'}
+    try {
+        [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$true
+    } finally {
+        [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$false
+    }
+    $popup=Wait-For { Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'} | Select-Object -First 1 } 5 'font size popup'
+    $menu=Wait-For { $m=[ShotKitTextSmoke.Native]::Menu($popup.Handle); if($m -ne [IntPtr]::Zero){$m} } 5 'font size menu handle'
+    # The size-48 entry has command ID 6 and position 5 in this menu.
+    if([ShotKitTextSmoke.Native]::GetMenuItemCount($menu) -ne 8 -or [ShotKitTextSmoke.Native]::GetMenuItemID($menu,5) -ne 6 -or [ShotKitTextSmoke.Native]::MenuText($menu,5) -ne '48'){throw 'FONT_SIZE_MENU_IDENTITY_MISMATCH.'}
+    if(-not [ShotKitTextSmoke.Native]::GetMenuItemRect([IntPtr]::Zero,$menu,5,[ref]$rect) -or $rect.Right -le $rect.Left -or $rect.Bottom -le $rect.Top){throw 'FONT_SIZE_MENU_RECT_FAILED.'}
+    $point.X=[int][Math]::Floor(($rect.Left+$rect.Right)/2); $point.Y=[int][Math]::Floor(($rect.Top+$rect.Bottom)/2)
+    if([ShotKitTextSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$point) -ne 5 -or -not [ShotKitTextSmoke.Native]::SetCursorPos($point.X,$point.Y)){throw 'FONT_SIZE_MENU_TARGET_INVALID.'}
+    [void](Wait-For {
+        $actual=[Activator]::CreateInstance([ShotKitTextSmoke.Point]); [void][ShotKitTextSmoke.Native]::GetCursorPos([ref]$actual)
+        $state=[ShotKitTextSmoke.Native]::GetMenuState($menu,5,0x400)
+        [ShotKitTextSmoke.Native]::WindowFromPoint($actual) -eq $popup.Handle -and [ShotKitTextSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$actual) -eq 5 -and $state -ne [uint32]::MaxValue -and ($state -band 0x83) -eq 0x80
+    } 5 'enabled highlighted font size 48')
+    $current=Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768' -and $_.Handle -eq $popup.Handle} | Select-Object -First 1
+    if($null -eq $current -or [ShotKitTextSmoke.Native]::Menu($current.Handle) -ne $menu -or [ShotKitTextSmoke.Native]::GetMenuItemID($menu,5) -ne 6 -or [ShotKitTextSmoke.Native]::MenuText($menu,5) -ne '48'){throw 'FONT_SIZE_MENU_CHANGED.'}
+    $actual=[Activator]::CreateInstance([ShotKitTextSmoke.Point])
+    if(-not [ShotKitTextSmoke.Native]::GetCursorPos([ref]$actual) -or [ShotKitTextSmoke.Native]::WindowFromPoint($actual) -ne $popup.Handle -or [ShotKitTextSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$actual) -ne 5){throw 'FONT_SIZE_MENU_TARGET_CHANGED.'}
+    try {
+        [ShotKitTextSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$true
+    } finally {
+        [ShotKitTextSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$false
+    }
+    [void](Wait-For { -not @(Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'}).Count } 5 'font size popup close')
+}
+function Test-SameImage($a,$b) {
+    if($a.Width -ne $b.Width -or $a.Height -ne $b.Height){return $false}
+    for($i=0;$i -lt $a.Pixels.Length;$i++){if($a.Pixels[$i].ToArgb() -ne $b.Pixels[$i].ToArgb()){return $false}}
+    return $true
+}
+function Save-AndWaitImage([scriptblock]$Predicate,[string]$Description) {
+    Button $main.Handle 'Speichern'
+    return Wait-For { try {$image=Read-Image $inputPath; if(&$Predicate $image){return $image}} catch {} } 15 $Description
+}
+function Read-Image([string]$Path) {
+    $bmp=[Drawing.Bitmap]::new($Path)
+    try { $colors=[Array]::CreateInstance([Drawing.Color],$bmp.Width*$bmp.Height); for($y=0;$y -lt $bmp.Height;$y++){for($x=0;$x -lt $bmp.Width;$x++){$colors[$y*$bmp.Width+$x]=$bmp.GetPixel($x,$y)}}; return [pscustomobject]@{Width=$bmp.Width;Height=$bmp.Height;Pixels=$colors} }
+    finally { $bmp.Dispose() }
 }
 function Wait-ForTextPlacement {
     Wait-For {
@@ -214,6 +275,28 @@ try {
     Canvas-DoubleClick 40 40
     $d=Check-DialogText $original 'double-click on existing text with Select tool'
     Button $d.Handle 'Abbrechen'
+
+    # Select the existing text, save a baseline, then change its size through
+    # the actual native popup. Compare decoded PNG pixels, not file metadata.
+    Canvas-Click 40 40
+    Button $main.Handle 'Speichern'
+    $baseline=Wait-For { try { $im=Read-Image $inputPath; if($im.Width -eq 160 -and $im.Height -eq 120 -and @($im.Pixels | Where-Object {$_.A -gt 0}).Count -gt 0){$im} } catch {} } 15 'baseline text export'
+    Choose-FontSize48
+    $large=Save-AndWaitImage { param($image) -not (Test-SameImage $image $baseline) } 'font size 48 exported pixels'
+    $baseYs=[System.Collections.Generic.List[int]]::new(); $largeYs=[System.Collections.Generic.List[int]]::new()
+    for($y=0;$y -lt 120;$y++){for($x=0;$x -lt 160;$x++){
+        if($baseline.Pixels[$y*160+$x].A -gt 0){$baseYs.Add($y)}
+        if($large.Pixels[$y*160+$x].A -gt 0){$largeYs.Add($y)}
+    }}
+    if($baseYs.Count -eq 0 -or $largeYs.Count -eq 0){throw 'FONT_SIZE_TEXT_PIXELS_MISSING.'}
+    $baseHeight=(($baseYs|Measure-Object -Maximum).Maximum) - (($baseYs|Measure-Object -Minimum).Minimum) + 1
+    $largeHeight=(($largeYs|Measure-Object -Maximum).Maximum) - (($largeYs|Measure-Object -Minimum).Minimum) + 1
+    if($largeHeight -lt $baseHeight+5){throw "FONT_SIZE_EXPORT_WRONG: baseline height=$baseHeight, size 48 height=$largeHeight."}
+    Button $main.Handle 'Zurück'
+    [void](Save-AndWaitImage { param($image) Test-SameImage $image $baseline } 'undo restoring original text pixels')
+    Button $main.Handle 'Wiederholen'
+    [void](Save-AndWaitImage { param($image) Test-SameImage $image $large } 'redo restoring size 48 text pixels')
+    Write-Output "PASS: selected text size changed through native menu (export height $baseHeight to $largeHeight), with exact pixel Undo and Redo."
 
     Button $main.Handle 'Nummer (N)'
     [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Step*'} | Select-Object -First 1} 5 'active Number tool')
