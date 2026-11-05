@@ -70,7 +70,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Bild in die Zwischenablage kopieren | fertig | `windows-clipboard-smoke.ps1`; Alpha-9-Lauf | Interaktiver Export inklusive Alpha-Daten. |
 | Bild aus Zwischenablage einfügen | fertig | `windows-clipboard-smoke.ps1`; Alpha-9-Lauf | Der Test fügt den kopierten Inhalt als weiteren Editor ein und prüft den erneuten Export. |
 | Optional automatisches Speichern, Kopieren und Editor nach Aufnahme | implementiert, nicht belegt | `output_windows.rs::autosave_creates_distinct_png_files_in_configured_folder`; `windows-last-region-clipboard-smoke.ps1` | Einzelpfade getestet; alle Kombinationen und Einstellungswechsel über das Tray sind nicht vollständig belegt. |
-| Speicherordner öffnen | implementiert, nicht belegt | `src/main.rs::open_storage_folder`; direkter Windows-Smoke-Test fehlt | Menüaktion und Ordneröffnung sind implementiert; kein durchgängiger Nachweis des tatsächlichen Windows-Ablaufs. |
+| Speicherordner öffnen | fertig | `windows-storage-folder-smoke.ps1`; [Windows-/Linux-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41963693907) | Der Test betätigt den echten Datei-Menüpunkt und prüft, dass der Explorer den isoliert konfigurierten Ordner öffnet. Andere Shell-Konfigurationen sind damit nicht allgemein belegt. |
 | Standardwerte und bestehende Einstellungen | bewusst anders | `settings.rs`-Default-/Pfadtests; `README.md` | Rust nutzt getrennte Einstellungen und startet ohne automatisches Speichern/Kopieren. Die C#-Einstellungen werden nicht übernommen; Konsequenzen sind für die Migration zu dokumentieren. |
 | Autostart | implementiert, nicht belegt | `autostart.rs`-Tests für Kommandozeilen-Quoting | Direkter sicher isolierter Windows-Test für Aktivieren/Deaktivieren fehlt. |
 | Infofenster / Tray-Symbol | fertig | `windows-about-smoke.ps1`, `windows-toolbar-visual-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41516470659) | Infofenster, Fenster-Icon und Registrierung des Tray-Symbols sind im Test belegt. Die Beurteilung der Optik durch den Owner bleibt offen. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 25 fertig, 18 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 26 fertig, 17 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
