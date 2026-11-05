@@ -98,12 +98,12 @@ function Run-Format($Format){
   [void](Wait-For {-not [ShotKitFormatsSmoke.N]::IsWindow($welcome.H)} 'owned startup notice close' 8)
   $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 'loaded editor' 12
   [void][ShotKitFormatsSmoke.N]::SetForegroundWindow($main.H)
-  if([ShotKitFormatsSmoke.N]::GetForegroundWindow() -ne $main.H){throw "EDITOR_NOT_FOREGROUND_BEFORE_SAVE_AS: expected HWND=$($main.H), actual=$([ShotKitFormatsSmoke.N]::GetForegroundWindow())."}
+  [void](Wait-For {[ShotKitFormatsSmoke.N]::GetForegroundWindow() -eq $main.H} 'exact editor foreground before Save As' 5)
   [ShotKitFormatsSmoke.N]::ControlShiftS()
   $dialog=Get-SaveDialog
   if([ShotKitFormatsSmoke.N]::Owner($dialog.H) -ne $proc.Id){throw "SAVE_DIALOG_OWNER_MISMATCH HWND=$($dialog.H)."}
   [void][ShotKitFormatsSmoke.N]::SetForegroundWindow($dialog.H)
-  if([ShotKitFormatsSmoke.N]::GetForegroundWindow() -ne $dialog.H){throw "SAVE_DIALOG_NOT_FOREGROUND: expected HWND=$($dialog.H), actual=$([ShotKitFormatsSmoke.N]::GetForegroundWindow())."}
+  [void](Wait-For {[ShotKitFormatsSmoke.N]::GetForegroundWindow() -eq $dialog.H} 'exact Save As dialog foreground' 5)
   $filterCombo=Get-FilterCombo $dialog
   [ShotKitFormatsSmoke.N]::SelectComboByInput($filterCombo.Child.H,$Format.Index,$proc.Id)
   $selection=[ShotKitFormatsSmoke.N]::ComboSelection($filterCombo.Child.H)
