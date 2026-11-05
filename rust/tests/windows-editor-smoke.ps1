@@ -37,6 +37,12 @@ using System.Text;
 namespace ShotKitEditorSmoke {
     public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
     public struct Point { public int X; public int Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct GuiThreadInfo {
+        public uint cbSize; public uint flags;
+        public IntPtr hwndActive; public IntPtr hwndFocus; public IntPtr hwndCapture;
+        public IntPtr hwndMenuOwner; public IntPtr hwndMoveSize; public IntPtr hwndCaret;
+        public Rect rcCaret;
+    }
     public sealed class WindowInfo {
         public IntPtr Handle;
         public string ClassName;
@@ -59,11 +65,14 @@ namespace ShotKitEditorSmoke {
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll", EntryPoint="GetWindowThreadProcessId")] private static extern uint GetWindowThreadProcessIdNoPid(IntPtr hwnd, IntPtr pid);
         [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll", SetLastError=true)] private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+        [DllImport("user32.dll")] private static extern short GetKeyState(int key);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
@@ -137,6 +146,14 @@ namespace ShotKitEditorSmoke {
             GetWindowThreadProcessId(hwnd, out pid);
             return pid;
         }
+        public static uint OwnerThreadId(IntPtr hwnd) { return GetWindowThreadProcessIdNoPid(hwnd, IntPtr.Zero); }
+        public static IntPtr ThreadFocus(uint threadId) {
+            GuiThreadInfo info = new GuiThreadInfo();
+            info.cbSize = (uint)Marshal.SizeOf(typeof(GuiThreadInfo));
+            if (!GetGUIThreadInfo(threadId, ref info)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return info.hwndFocus;
+        }
+        public static bool IsKeyDown(int key) { return GetKeyState(key) < 0; }
         public static string WindowClass(IntPtr hwnd) { return Class(hwnd); }
         public static string WindowTitle(IntPtr hwnd) { return Text(hwnd); }
         public static string WindowText(IntPtr hwnd) {
@@ -182,6 +199,9 @@ $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
 $mouseDown = $false
 $shiftDown = $false
+$keyboardEditorThread = 0
+$keyboardPriorFocus = [IntPtr]::Zero
+$nudgeArrowKey = 0
 $editorStopped = $true
 $testFailure = $null
 $cleanupFailures = @()
@@ -374,6 +394,63 @@ function Invoke-CanvasDrag {
         Start-Sleep -Milliseconds 100
     }
 }
+function Begin-EditorKeyboardFocus {
+    $script:keyboardEditorThread = [ShotKitEditorSmoke.Native]::OwnerThreadId($main.Handle)
+    if ($script:keyboardEditorThread -eq 0) {
+        throw 'NUDGE_FOCUS_THREAD_INVALID: editor window has no owning GUI thread.'
+    }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(1500)
+    do {
+        $script:keyboardPriorFocus = [ShotKitEditorSmoke.Native]::ThreadFocus($script:keyboardEditorThread)
+        $foreground = [ShotKitEditorSmoke.Native]::GetForegroundWindow()
+        if ($foreground -eq $main.Handle -and $script:keyboardPriorFocus -eq $main.Handle) { return }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "NUDGE_FOCUS_MISMATCH: after real canvas click expected main HWND=$($main.Handle), foreground=$foreground, keyboardFocus=$script:keyboardPriorFocus, editorThread=$script:keyboardEditorThread."
+}
+function Send-EditorArrowKey {
+    param([byte] $Key, [bool] $WithShift, [string] $Description)
+    Begin-EditorKeyboardFocus
+    try {
+        if ([ShotKitEditorSmoke.Native]::IsKeyDown(0x11) -or [ShotKitEditorSmoke.Native]::IsKeyDown(0x12)) {
+            throw "NUDGE_MODIFIER_STATE_INVALID: Ctrl or Alt is already down before $Description."
+        }
+        if ($WithShift) {
+            [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+            $script:shiftDown = $true
+            Start-Sleep -Milliseconds 80
+            if (-not [ShotKitEditorSmoke.Native]::IsKeyDown(0x10)) { throw "NUDGE_SHIFT_NOT_DOWN: $Description." }
+        } elseif ([ShotKitEditorSmoke.Native]::IsKeyDown(0x10)) {
+            throw "NUDGE_UNEXPECTED_SHIFT: Shift is already down before $Description."
+        }
+        $foreground = [ShotKitEditorSmoke.Native]::GetForegroundWindow()
+        $focus = [ShotKitEditorSmoke.Native]::ThreadFocus($script:keyboardEditorThread)
+        if ($foreground -ne $main.Handle -or $focus -ne $main.Handle) {
+            throw "NUDGE_FOCUS_LOST: before $Description, expected main HWND=$($main.Handle), foreground=$foreground, keyboardFocus=$focus."
+        }
+        [ShotKitEditorSmoke.Native]::keybd_event($Key, 0, 0, [UIntPtr]::Zero)
+        $script:nudgeArrowKey = $Key
+        Start-Sleep -Milliseconds 80
+        [ShotKitEditorSmoke.Native]::keybd_event($Key, 0, 0x0002, [UIntPtr]::Zero)
+        $script:nudgeArrowKey = 0
+        Start-Sleep -Milliseconds 80
+        $foreground = [ShotKitEditorSmoke.Native]::GetForegroundWindow()
+        $focus = [ShotKitEditorSmoke.Native]::ThreadFocus($script:keyboardEditorThread)
+        if ($foreground -ne $main.Handle -or $focus -ne $main.Handle) {
+            throw "NUDGE_FOCUS_LOST: after $Description, expected main HWND=$($main.Handle), foreground=$foreground, keyboardFocus=$focus."
+        }
+    }
+    finally {
+        if ($script:nudgeArrowKey -ne 0) {
+            [ShotKitEditorSmoke.Native]::keybd_event([byte]$script:nudgeArrowKey, 0, 0x0002, [UIntPtr]::Zero)
+            $script:nudgeArrowKey = 0
+        }
+        if ($WithShift -and $script:shiftDown) {
+            [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+            $script:shiftDown = $false
+        }
+    }
+}
 function Get-RedBounds {
     param($Image)
     $xs = [System.Collections.Generic.List[int]]::new(); $ys = [System.Collections.Generic.List[int]]::new(); $count = 0
@@ -391,6 +468,15 @@ function Test-OriginalImage {
     if ($Image.Width -ne $expectedBase.Width -or $Image.Height -ne $expectedBase.Height) { return $false }
     for ($i = 0; $i -lt $Image.Pixels.Length; $i++) {
         $a = $Image.Pixels[$i]; $b = $expectedBase.Pixels[$i]
+        if ($a.R -ne $b.R -or $a.G -ne $b.G -or $a.B -ne $b.B -or $a.A -ne $b.A) { return $false }
+    }
+    return $true
+}
+function Test-ImagesEqual {
+    param($Image, $Expected)
+    if ($Image.Width -ne $Expected.Width -or $Image.Height -ne $Expected.Height) { return $false }
+    for ($i = 0; $i -lt $Image.Pixels.Length; $i++) {
+        $a = $Image.Pixels[$i]; $b = $Expected.Pixels[$i]
         if ($a.R -ne $b.R -or $a.G -ne $b.G -or $a.B -ne $b.B -or $a.A -ne $b.A) { return $false }
     }
     return $true
@@ -615,6 +701,55 @@ try {
     }
     $squareBounds = Get-RedBounds $square
     if ([Math]::Abs((($squareBounds.Right-$squareBounds.Left)-($squareBounds.Bottom-$squareBounds.Top))) -gt 3) { throw "SHIFT_RECTANGLE_NOT_SQUARE: red bounds $($squareBounds.Left),$($squareBounds.Top)-$($squareBounds.Right),$($squareBounds.Bottom)." }
+
+    # Select the square by clicking its upper edge. The click must naturally
+    # leave the editor foreground and focused; the test never sets focus.
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Auswahl (V)') -Description 'select tool for keyboard nudge')
+    [void](Wait-ForValue -Seconds 5 -Description 'select tool activation for keyboard nudge' -Probe {
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Select*' } | Select-Object -First 1
+    })
+    $selectX = [int][Math]::Floor(($squareBounds.Left + $squareBounds.Right) / 2.0)
+    $selectY = $squareBounds.Top
+    Invoke-CanvasDrag $selectX $selectY $selectX $selectY $false
+
+    Send-EditorArrowKey 0x27 $false 'unmodified Right arrow (1 image pixel)'
+    Save-FromToolbar $main.Handle
+    $nudgedRight = Wait-ForImageState -Path $inputPath -Description 'one-pixel right-arrow nudge' -Predicate {
+        param($image)
+        $bounds = Get-RedBounds $image
+        if ($null -eq $bounds) { throw 'NUDGE_RIGHT_NO_RED_OBJECT: exported image has no red square.' }
+        if ($bounds.Left -ne ($squareBounds.Left + 1) -or $bounds.Right -ne ($squareBounds.Right + 1) -or
+            $bounds.Top -ne $squareBounds.Top -or $bounds.Bottom -ne $squareBounds.Bottom) {
+            throw "NUDGE_RIGHT_BOUNDS_MISMATCH: expected ($($squareBounds.Left + 1),$($squareBounds.Top))-($($squareBounds.Right + 1),$($squareBounds.Bottom)); got ($($bounds.Left),$($bounds.Top))-($($bounds.Right),$($bounds.Bottom))."
+        }
+        return $image
+    }
+    $rightBounds = Get-RedBounds $nudgedRight
+
+    Send-EditorArrowKey 0x28 $true 'Shift+Down arrow (10 image pixels)'
+    Save-FromToolbar $main.Handle
+    $nudgedDown = Wait-ForImageState -Path $inputPath -Description 'ten-pixel Shift+Down nudge' -Predicate {
+        param($image)
+        $bounds = Get-RedBounds $image
+        if ($null -eq $bounds) { throw 'NUDGE_SHIFT_DOWN_NO_RED_OBJECT: exported image has no red square.' }
+        if ($bounds.Left -ne $rightBounds.Left -or $bounds.Right -ne $rightBounds.Right -or
+            $bounds.Top -ne ($rightBounds.Top + 10) -or $bounds.Bottom -ne ($rightBounds.Bottom + 10)) {
+            throw "NUDGE_SHIFT_DOWN_BOUNDS_MISMATCH: expected ($($rightBounds.Left),$($rightBounds.Top + 10))-($($rightBounds.Right),$($rightBounds.Bottom + 10)); got ($($bounds.Left),$($bounds.Top))-($($bounds.Right),$($bounds.Bottom))."
+        }
+        return $image
+    }
+
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo Shift+Down nudge')
+    Save-FromToolbar $main.Handle
+    [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring the one-pixel right nudge' -Predicate {
+        param($image) Test-ImagesEqual $image $nudgedRight
+    })
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo right-arrow nudge')
+    Save-FromToolbar $main.Handle
+    [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring the original Shift square after arrow nudges' -Predicate {
+        param($image) Test-ImagesEqual $image $square
+    })
+
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo Shift square')
     Save-FromToolbar $main.Handle
     [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring image before line snap' -Predicate { param($image) Test-OriginalImage $image })
@@ -661,7 +796,7 @@ try {
         param($image)
         return ($image.Width -eq 101 -and $image.Height -eq 81)
     })
-    $passMessage = 'PASS: verified Shift-constrained rectangle, line, and arrow behavior with undo; a too-small crop kept Crop active, while a committed crop saved at 101x81 and switched to Select.'
+    $passMessage = "PASS: verified Shift-constrained rectangle/line/arrow, native editor nudges (Right 1px, Shift+Down 10px) with exact PNG Undo restoration; natural foreground and keyboard focus after canvas click matched HWND=$($main.Handle.ToInt64()). Crop behavior and saved 101x81 output also passed."
 }
 catch {
     $testFailure = $_
@@ -670,6 +805,10 @@ finally {
     if ($mouseDown) {
         try { [ShotKitEditorSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
         catch { $cleanupFailures += "Could not release test mouse button: $($_.Exception.Message)" }
+    }
+    if ($nudgeArrowKey -ne 0) {
+        try { [ShotKitEditorSmoke.Native]::keybd_event([byte]$nudgeArrowKey, 0, 0x0002, [UIntPtr]::Zero); $nudgeArrowKey = 0 }
+        catch { $cleanupFailures += "Could not release nudge arrow key: $($_.Exception.Message)" }
     }
     if ($shiftDown) {
         try { [ShotKitEditorSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero) }
