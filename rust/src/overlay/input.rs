@@ -14,10 +14,12 @@ enum PointerGesture {
 fn pointer_gesture(start: Point, current: Point) -> PointerGesture {
     let dx = (i64::from(start.x) - i64::from(current.x)).abs();
     let dy = (i64::from(start.y) - i64::from(current.y)).abs();
-    if dx <= i64::from(CLICK_SLOP) && dy <= i64::from(CLICK_SLOP) {
+    if dx == 0 && dy == 0 {
         PointerGesture::Click
     } else if dx == 0 || dy == 0 {
         PointerGesture::EmptyDrag
+    } else if dx <= i64::from(CLICK_SLOP) && dy <= i64::from(CLICK_SLOP) {
+        PointerGesture::Click
     } else {
         PointerGesture::Drag((
             start.x.min(current.x),
@@ -279,10 +281,27 @@ mod tests {
     }
 
     #[test]
-    fn clicks_keep_the_existing_slop_including_zero_dimensions() {
+    fn exact_axis_aligned_drags_are_empty_even_within_click_slop() {
         let start = Point { x: 100, y: 100 };
+        for current in [
+            Point { x: 101, y: 100 },
+            Point { x: 99, y: 100 },
+            Point { x: 100, y: 101 },
+            Point { x: 100, y: 99 },
+        ] {
+            assert_eq!(pointer_gesture(start, current), PointerGesture::EmptyDrag);
+        }
+    }
+
+    #[test]
+    fn clicks_keep_the_existing_slop_for_diagonal_pointer_jitter() {
+        let start = Point { x: 100, y: 100 };
+        assert_eq!(pointer_gesture(start, start), PointerGesture::Click);
         for dx in -CLICK_SLOP..=CLICK_SLOP {
             for dy in -CLICK_SLOP..=CLICK_SLOP {
+                if dx == 0 || dy == 0 {
+                    continue;
+                }
                 assert_eq!(
                     pointer_gesture(
                         start,
