@@ -222,13 +222,22 @@ $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powe
     # Magnifier is 120x120 with the label below. Find exact RGB field pixels in
     # its zoomed image; sample away from the expected cursor center and frame.
     $matches = 0
+    $observedColors = @{}
     for ($y=10; $y -lt 110; $y+=4) {
         for ($x=10; $x -lt 110; $x+=4) {
             $color = [ShotKitMagnifierSmoke.Native]::WindowPixel($mag.Handle,$x,$y)
             if ($color -eq 0x00E7A412) { $matches++ }
+            $key = '{0:X8}' -f $color
+            if (-not $observedColors.ContainsKey($key)) { $observedColors[$key] = 0 }
+            $observedColors[$key]++
         }
     }
-    if ($matches -lt 8) { throw "Magnifier image did not contain the expected #12A4E7 field (exact-color samples: $matches)." }
+    if ($matches -lt 8) {
+        $top = @($observedColors.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 8 | ForEach-Object { "$($_.Key):$($_.Value)" }) -join ', '
+        $screenCenter = [ShotKitMagnifierSmoke.Native]::ScreenPixel($mag.Bounds.Left + 60, $mag.Bounds.Top + 60)
+        $targetNow = [ShotKitMagnifierSmoke.Native]::ScreenPixel($targetX, $targetY)
+        throw ("Magnifier image did not contain expected #12A4E7 (exact-color samples={0}; window COLORREF counts={1}; desktop magnifier center=0x{2:X8}; desktop source point=0x{3:X8}; magnifier bounds=({4},{5})-({6},{7}); cursor target=({8},{9}))." -f $matches,$top,$screenCenter,$targetNow,$mag.Bounds.Left,$mag.Bounds.Top,$mag.Bounds.Right,$mag.Bounds.Bottom,$targetX,$targetY)
+    }
 
     $labelWhitePixels = 0
     for ($y=124; $y -lt 144; $y++) {
