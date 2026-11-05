@@ -305,11 +305,16 @@ fn wait_dialog(owner: Hwnd, latest: &mut Hwnd) -> Hwnd {
         let hwnd = unsafe { dialog_for_owner(owner) };
         if !hwnd.is_null() {
             *latest = hwnd;
-            return hwnd;
+            // The HWND can be enumerated while WM_CREATE is still constructing
+            // controls. prompt shows the window only after CreateWindowExW and
+            // its initial positioning have completed.
+            if unsafe { IsWindowVisible(hwnd) } != 0 {
+                return hwnd;
+            }
         }
         thread::sleep(Duration::from_millis(20));
     }
-    panic!("timed out waiting for an owned ShotKit text dialog");
+    panic!("timed out waiting for a shown owned ShotKit text dialog");
 }
 
 fn wait_thread(worker: &thread::JoinHandle<()>) {

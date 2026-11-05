@@ -52,6 +52,7 @@ extern "system" {
         data: isize,
     ) -> i32;
     fn GetWindow(hwnd: Hwnd, command: u32) -> Hwnd;
+    fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn GetParent(hwnd: Hwnd) -> Hwnd;
     fn GetClassNameW(hwnd: Hwnd, text: *mut u16, max: i32) -> i32;
     fn GetDlgCtrlID(hwnd: Hwnd) -> i32;
