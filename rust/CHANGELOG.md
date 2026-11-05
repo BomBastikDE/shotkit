@@ -67,6 +67,7 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 
 ## Nach Alpha 20 – in Entwicklung
 
+- Eine waagerechte oder senkrechte Ziehbewegung ohne Fläche lässt die Bereichsauswahl offen; eine neue Auswahl kann direkt begonnen werden ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Die Auswahllupe zeigt den vergrößerten Bildinhalt wieder statt einer weißen Fläche ([#41](https://github.com/BomBastikDE/shotkit/issues/41)).
 - Textdialog und Infofenster passen Maße und Schrift bei Windows-DPI-Wechseln an; simulierte Wechsel sind getestet, reale gemischte DPI bleiben ein Praxistest ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Mausrad und Modifikatortasten werden aus derselben Windows-Ereignisnachricht ausgewertet; der sporadische Schwenkfehler bleibt zur Beobachtung offen ([#42](https://github.com/BomBastikDE/shotkit/issues/42)).
