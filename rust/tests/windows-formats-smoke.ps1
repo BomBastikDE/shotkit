@@ -106,6 +106,7 @@ function Run-Format($Format){
   [void](Wait-For {[ShotKitFormatsSmoke.N]::GetForegroundWindow() -eq $dialog.H} 'exact Save As dialog foreground' 5)
   $filterCombo=Get-FilterCombo $dialog
   [ShotKitFormatsSmoke.N]::SelectComboByInput($filterCombo.Child.H,$Format.Index,$proc.Id)
+  [void](Wait-For {[ShotKitFormatsSmoke.N]::ComboSelection($filterCombo.Child.H) -eq $Format.Index} "exact $($Format.Name) filter selection" 5)
   $selection=[ShotKitFormatsSmoke.N]::ComboSelection($filterCombo.Child.H)
   $selectedLabel=[ShotKitFormatsSmoke.N]::ComboText($filterCombo.Child.H,$selection)
   if($selection -ne $Format.Index -or $selectedLabel -cne $Format.Filter){throw "FILTER_SELECTION_MISMATCH $($Format.Name): index=$selection label='$selectedLabel' expected index=$($Format.Index) label='$($Format.Filter)'."}
