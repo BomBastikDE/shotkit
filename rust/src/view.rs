@@ -32,10 +32,21 @@ pub fn zoom_reset_key(key: usize) -> Option<ZoomAction> {
     }
 }
 
+// Original size can lie outside the normal relative zoom range. Allow steps
+// back toward that range without jumping; do not step further out of it.
+fn zoom_step(current: f64, factor: f64) -> f64 {
+    if !current.is_finite() || current <= 0.0 {
+        return 1.0;
+    }
+    (current * factor).clamp(0.05_f64.min(current), 64.0_f64.max(current))
+}
+
 /// Match the C# editor's Ctrl+wheel zoom step and existing Rust zoom limits.
 pub fn zoom_after_wheel(current: f64, delta: i32) -> f64 {
-    let factor = if delta > 0 { 1.25 } else { 0.8 };
-    (current * factor).clamp(0.05, 64.0)
+    if delta == 0 {
+        return current;
+    }
+    zoom_step(current, if delta > 0 { 1.25 } else { 0.8 })
 }
 
 /// The stored zoom is relative to fit-to-window, so original size uses the
@@ -48,8 +59,8 @@ pub fn zoom_for_action(
     current: f64,
 ) -> f64 {
     let next = match action {
-        ZoomAction::In => current * 1.25,
-        ZoomAction::Out => current * 0.8,
+        ZoomAction::In => return zoom_step(current, 1.25),
+        ZoomAction::Out => return zoom_step(current, 0.8),
         ZoomAction::Fit => 1.0,
         ZoomAction::Original => {
             let fit = (f64::from(viewport.2.max(1)) / f64::from(image.0.max(1)))
@@ -57,8 +68,8 @@ pub fn zoom_for_action(
             1.0 / fit
         }
     };
-    if next.is_finite() {
-        next.clamp(0.05, 64.0)
+    if next.is_finite() && next > 0.0 {
+        next
     } else {
         1.0
     }
@@ -96,8 +107,8 @@ pub fn layout(
     let iw = image.0.max(1) as f64;
     let ih = image.1.max(1) as f64;
     let fit = (vw as f64 / iw).min(vh as f64 / ih);
-    let factor = if zoom.is_finite() {
-        zoom.clamp(0.05, 64.0)
+    let factor = if zoom.is_finite() && zoom > 0.0 {
+        zoom
     } else {
         1.0
     };
@@ -114,8 +125,8 @@ pub fn layout(
         -pan.1.clamp(0, h - vh)
     };
     View {
-        x: x + px,
-        y: y + py,
+        x: x.saturating_add(px),
+        y: y.saturating_add(py),
         width: w,
         height: h,
     }
@@ -152,10 +163,12 @@ pub fn pan_after_wheel(
 pub fn to_image(view: View, image: (u32, u32), point: (i32, i32)) -> (i32, i32) {
     let w = image.0.max(1).min(i32::MAX as u32) as i32;
     let h = image.1.max(1).min(i32::MAX as u32) as i32;
-    let x =
-        ((point.0 - view.x) as i64 * w as i64 / view.width.max(1) as i64).clamp(0, (w - 1) as i64);
-    let y =
-        ((point.1 - view.y) as i64 * h as i64 / view.height.max(1) as i64).clamp(0, (h - 1) as i64);
+    let x = ((i64::from(point.0) - i64::from(view.x)) * i64::from(w)
+        / i64::from(view.width.max(1)))
+    .clamp(0, (w - 1) as i64);
+    let y = ((i64::from(point.1) - i64::from(view.y)) * i64::from(h)
+        / i64::from(view.height.max(1)))
+    .clamp(0, (h - 1) as i64);
     (x as i32, y as i32)
 }
 /// The screen-space union of old and new shape footprints, clipped to the image.
@@ -272,6 +285,34 @@ mod tests {
         }
     }
     #[test]
+    fn original_escapes_relative_limits_and_steps_return_without_jumps() {
+        for (image, viewport) in [
+            ((1, 1), (0, 44, 1000, 800)),
+            ((30000, 1), (0, 44, 200, 200)),
+            ((1, 30000), (0, 44, 200, 200)),
+            ((29999, 101), (0, 44, 1, 1)),
+        ] {
+            let original = zoom_for_action(ZoomAction::Original, image, viewport, 1.0);
+            let rendered = layout(image, viewport, original, (0, 0));
+            assert_eq!((rendered.width as u32, rendered.height as u32), image);
+            let (toward, away, factor) = if original < 0.05 {
+                (ZoomAction::In, ZoomAction::Out, 1.25)
+            } else {
+                (ZoomAction::Out, ZoomAction::In, 0.8)
+            };
+            assert_eq!(
+                zoom_for_action(toward, image, viewport, original),
+                original * factor
+            );
+            assert_eq!(zoom_for_action(away, image, viewport, original), original);
+            assert_eq!(
+                zoom_after_wheel(original, if factor > 1.0 { 120 } else { -120 }),
+                original * factor
+            );
+        }
+    }
+
+    #[test]
     fn view_actions_preserve_step_sizes_and_existing_zoom_limits() {
         let image = (4000, 2000);
         let viewport = (0, 44, 800, 600);
@@ -295,6 +336,7 @@ mod tests {
         assert_eq!(zoom_reset_key(0x61), None);
         assert_eq!(zoom_after_wheel(2.0, 120), 2.5);
         assert_eq!(zoom_after_wheel(2.5, -120), 2.0);
+        assert_eq!(zoom_after_wheel(2.5, 0), 2.5);
         assert_eq!(zoom_after_wheel(64.0, 120), 64.0);
         assert_eq!(zoom_after_wheel(0.05, -120), 0.05);
     }
@@ -518,6 +560,22 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn coordinates_do_not_overflow_at_integer_extremes() {
+        let v = layout((1, 1), (i32::MAX, i32::MAX, 100, 100), 0.05, (0, 0));
+        assert_eq!((v.x, v.y), (i32::MAX, i32::MAX));
+        let v = View {
+            x: i32::MIN,
+            y: i32::MIN,
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            to_image(v, (i32::MAX as u32, i32::MAX as u32), (i32::MAX, i32::MAX)),
+            (i32::MAX - 1, i32::MAX - 1)
+        );
+    }
+
     #[test]
     fn zoom_pan_and_hit_test() {
         let v = layout((1000, 2000), (0, 0, 500, 500), 2.0, (0, 250));
