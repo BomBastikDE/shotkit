@@ -56,7 +56,7 @@ jobs:
         timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
-        run: ./tests/run-all.ps1 -ExePath target/release/shotkit.exe -ScreenshotPath target/shotkit-toolbar-test.png -AllowToolbarFailure
+        run: ./tests/run-all.ps1 -ExePath target/release/shotkit.exe -ScreenshotPath target/shotkit-toolbar-test.png
       - name: Upload toolbar test screenshot
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
