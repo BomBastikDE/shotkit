@@ -38,6 +38,7 @@ $cases = @(
     @{ Name = 'Interactive Windows step number visibility smoke test'; Script = 'windows-step-visibility-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows clipboard alpha round-trip smoke test'; Script = 'windows-clipboard-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows capture smoke test'; Script = 'windows-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows capture output recovery smoke test'; Script = 'windows-output-failure-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows magnifier smoke test'; Script = 'windows-magnifier-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows active-window capture parity smoke test'; Script = 'windows-active-window-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hotkey conflict smoke test'; Script = 'windows-hotkey-conflict-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
