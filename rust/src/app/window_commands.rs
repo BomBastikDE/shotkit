@@ -92,9 +92,7 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
         0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
             if GetKeyState(0x11) < 0 {
-                window_state(h).zoom = (window_state(h).zoom
-                    * if delta > 0 { 1.2 } else { 1.0 / 1.2 })
-                .clamp(0.05, 64.0);
+                window_state(h).zoom = view::zoom_after_wheel(window_state(h).zoom, delta);
             } else {
                 let mut client: Rect = zeroed();
                 GetClientRect(h, &mut client);
@@ -119,11 +117,18 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
-        0x0100 if GetKeyState(0x11) < 0 && w == 0x30 => {
+        0x0100
+            if GetKeyState(0x11) < 0
+                && view::zoom_reset_key(w) == Some(view::ZoomAction::Original) =>
+        {
             toolbar_action(h, toolbar::ID_ZOOM_ORIGINAL);
             0
         }
-        0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !window_state(h).bitmap.is_null() => {
+        0x0100
+            if GetKeyState(0x11) < 0
+                && view::zoom_reset_key(w) == Some(view::ZoomAction::Fit)
+                && !window_state(h).bitmap.is_null() =>
+        {
             toolbar_action(h, toolbar::ID_ZOOM_FIT);
             0
         }

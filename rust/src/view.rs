@@ -23,6 +23,21 @@ pub enum ZoomAction {
     Fit,
 }
 
+/// Map the reference Ctrl+0/Ctrl+9 keys, including their numpad variants.
+pub fn zoom_reset_key(key: usize) -> Option<ZoomAction> {
+    match key {
+        0x30 | 0x60 => Some(ZoomAction::Original),
+        0x39 | 0x69 => Some(ZoomAction::Fit),
+        _ => None,
+    }
+}
+
+/// Match the C# editor's Ctrl+wheel zoom step and existing Rust zoom limits.
+pub fn zoom_after_wheel(current: f64, delta: i32) -> f64 {
+    let factor = if delta > 0 { 1.25 } else { 0.8 };
+    (current * factor).clamp(0.05, 64.0)
+}
+
 /// The stored zoom is relative to fit-to-window, so original size uses the
 /// reciprocal of the unrounded fit factor. Computing it from rounded preview
 /// dimensions would introduce pixel errors for odd-sized source images.
@@ -250,6 +265,19 @@ mod tests {
             0.05
         );
         assert!(zoom_for_action(ZoomAction::Original, (0, 0), (0, 0, 0, 0), 1.0).is_finite());
+    }
+
+    #[test]
+    fn reference_zoom_keys_and_wheel_steps_include_numpad_and_limits() {
+        assert_eq!(zoom_reset_key(0x30), Some(ZoomAction::Original));
+        assert_eq!(zoom_reset_key(0x60), Some(ZoomAction::Original));
+        assert_eq!(zoom_reset_key(0x39), Some(ZoomAction::Fit));
+        assert_eq!(zoom_reset_key(0x69), Some(ZoomAction::Fit));
+        assert_eq!(zoom_reset_key(0x61), None);
+        assert_eq!(zoom_after_wheel(2.0, 120), 2.5);
+        assert_eq!(zoom_after_wheel(2.5, -120), 2.0);
+        assert_eq!(zoom_after_wheel(64.0, 120), 64.0);
+        assert_eq!(zoom_after_wheel(0.05, -120), 0.05);
     }
 
     #[test]
