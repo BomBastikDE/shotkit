@@ -53,7 +53,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Farbe, Strichbreite und Schriftgröße nachträglich ändern | implementiert, nicht belegt | `editor.rs::selected_style_change_is_undoable_and_redoable` | Modelländerung geprüft; direkter Windows-Test aller Dialoge und Formtypen fehlt. |
 | Umschalt: Quadrat/Kreis und 45-Grad-Linien/Pfeile | fertig | `editor.rs::shift_modifier_is_applied_to_preview_and_final_mouse_up`; `windows-editor-smoke.ps1`; Alpha-7-Lauf | Windows-Test prüft Rechteck, Linie und Pfeil; weitere Formen zusätzlich per Unit-Test. |
 | Pfeiltasten verschieben ausgewähltes Objekt | implementiert, nicht belegt | `editor.rs::nudge_is_one_undoable_edit_and_requires_a_selection` | Modelltest vorhanden; direkter Windows-Tastaturtest für Objektverschiebung fehlt. |
-| Werkzeugleiste: feste Aktionen und Überlauf bei schmalem Fenster | implementiert, nicht belegt | C#: `src/EditorForm.cs::ApplyResponsive` und `ApplyStage`; Rust: `toolbar_layout.rs`, `windows-toolbar-visual-smoke.ps1 -ResponsiveOnly` | Stufenweises Überlaufmenü und feste Aktionen sind implementiert; der neue Windows-Test muss noch bestehen. Anders als C# bleibt auf ausdrücklichen Wunsch auch Speichern in jeder Stufe sichtbar. |
+| Werkzeugleiste: feste Aktionen und Überlauf bei schmalem Fenster | bewusst anders | C#: `src/EditorForm.cs::ApplyResponsive` und `ApplyStage`; Rust: `toolbar_layout.rs`, `windows-toolbar-visual-smoke.ps1 -ResponsiveOnly`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41945268715) | Stufenweises Überlaufmenü und feste Aktionen sind bei mehreren Fensterbreiten geprüft; einzelne echte Menüaktionen und Zoom-Ausgabe ebenfalls. Anders als C# bleibt auf ausdrücklichen Wunsch auch Speichern in jeder Stufe sichtbar. |
 | Strg+N: neue Aufnahme aus dem Editor | fertig | `windows-toolbar-visual-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41516470659) | Der Test löst Strg+N aus, prüft das eigene Auswahl-Overlay und bricht es anschließend ab. |
 | Zuschneiden | fertig | `document.rs::shared_history_orders_shape_and_image_changes`; `windows-editor-smoke.ps1`; Alpha-8-Lauf | Erfolgreicher Crop und Werkzeugwechsel unter Windows geprüft. |
 | Rahmen / Schlagschatten mit transparentem PNG | implementiert, nicht belegt | `document.rs::frame_keeps_transparent_source_pixel_and_offsets_shapes` | Bildlogik geprüft; Windows-Ausgabe für beide Effekte fehlt. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 22 fertig, 22 implementiert, nicht belegt, 2 fehlt, 1 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 22 fertig, 21 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
