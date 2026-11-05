@@ -39,7 +39,7 @@ fn short_thick_arrow_has_no_shaft_sticking_out_before_its_head() {
         end: Point::new(10.0, 16.0),
     });
     let blank = render_shape(32, 32, &zero).expect("zero arrow render");
-    assert!(blank.pixels.chunks_exact(4).all(|p| p[3] == 0));
+    assert!(blank.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0));
 }
 
 #[test]

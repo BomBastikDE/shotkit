@@ -61,23 +61,33 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
     {
         render_gdiplus(width, height, shape, &mut pargb)?;
         // GDI+ PARGB stores premultiplied channels. Convert back to straight BGRA.
-        for pixel in pargb.chunks_exact_mut(4) {
+        for pixel in pargb.as_chunks_mut::<4>().0 {
             let a = pixel[3];
             if a != 0 {
-                for c in 0..3 {
-                    pixel[c] = ((u16::from(pixel[c]) * 255 + u16::from(a) / 2) / u16::from(a))
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * 255 + u16::from(a) / 2) / u16::from(a))
                         .min(255) as u8;
                 }
             } else {
                 pixel[..3].fill(0);
             }
         }
-        return Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions);
+        Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions)
     }
     #[cfg(not(windows))]
     {
         let _ = (width, height, shape, pargb);
         Err(RenderError::PlatformUnavailable)
+    }
+}
+
+// Preserve the previous max/min behavior for NaN: use the minimum size.
+#[cfg(any(windows, test))]
+fn bounded_size(value: f32, maximum: f32) -> f32 {
+    if value.is_nan() {
+        1.0
+    } else {
+        value.clamp(1.0, maximum)
     }
 }
 
@@ -407,7 +417,7 @@ unsafe fn render_started(
 // Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
     use crate::shapes::ShapeKind;
-    let width = shape.style.width.max(1.0).min(256.0);
+    let width = bounded_size(shape.style.width, 256.0);
     let pen_color = argb(shape.style.color, 255);
     let mut pen_raw = ptr::null_mut();
     status(GdipCreatePen1(pen_color, width, UNIT_PIXEL, &mut pen_raw))?;
@@ -653,7 +663,7 @@ unsafe fn draw_text(
     let mut font_raw = ptr::null_mut();
     status(GdipCreateFont(
         family.as_ptr(),
-        size.max(1.0).min(512.0),
+        bounded_size(size, 512.0),
         0,
         UNIT_PIXEL,
         &mut font_raw,

@@ -649,7 +649,12 @@ pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
     }
 
     let mut msg: Msg = zeroed();
-    while !state.done {
+    loop {
+        // Dialog callbacks update done through the window's userdata pointer.
+        // Check it again after each dispatch without borrowing state across Win32.
+        if state.done {
+            break;
+        }
         let status = GetMessageW(&mut msg, null_mut(), 0, 0);
         if status <= 0 {
             break;

@@ -67,7 +67,7 @@ impl DibCanvas {
             0,
             "GdiFlush before direct DIB initialization failed"
         );
-        for pixel in canvas.bytes_mut().chunks_exact_mut(4) {
+        for pixel in canvas.bytes_mut().as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&bgra);
         }
         canvas
@@ -84,7 +84,11 @@ impl DibCanvas {
         self.bytes()[i..i + 4].try_into().unwrap()
     }
     fn changed_from(&self, bgra: [u8; 4]) -> bool {
-        self.bytes().chunks_exact(4).any(|pixel| pixel != bgra)
+        self.bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| *pixel != bgra)
     }
 }
 

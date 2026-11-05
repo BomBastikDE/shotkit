@@ -314,7 +314,7 @@ unsafe fn translucent_highlight(dc: Hdc, rect: WinRect, color: Color) -> bool {
         alpha as u8,
     ];
     let pixels = std::slice::from_raw_parts_mut(bits.cast::<u8>(), bytes);
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&bgra);
     }
 
@@ -342,6 +342,14 @@ unsafe fn translucent_highlight(dc: Hdc, rect: WinRect, color: Color) -> bool {
 /// for Blur and must be the original, unannotated image HDC; if absent Blur draws
 /// a conspicuous diagonal fallback mark. Returns false for invalid input/HDC or
 /// failed GDI allocation, true when the requested primitive was issued.
+///
+/// # Safety
+/// `dc` and any supplied `source` must be valid GDI device contexts with their
+/// selected bitmaps and other resources alive throughout this call. The caller
+/// must prevent concurrent use, deletion, or changes to those resources. For
+/// Blur, `source` must contain the original image in the shape's coordinates.
+/// Flush pending GDI work with `GdiFlush` before accessing DIB pixels directly
+/// after this function returns.
 // SAFETY CONTRACT:
 // Voraussetzung: dc und optionaler source-DC sind gültig und deren Ressourcen bleiben während aller Operationen lebendig.
 // Warum erfüllt bzw. offen: Interne Ressourcen haben Guards; externe Handlelebensdauer und GDI-Synchronisation bleiben Aufruferpflicht.

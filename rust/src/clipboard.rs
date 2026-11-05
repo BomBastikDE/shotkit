@@ -185,7 +185,7 @@ pub unsafe fn copy_bitmap(
     let mut header = BitmapInfoHeader {
         size: std::mem::size_of::<BitmapInfoHeader>() as u32,
         width,
-        height: -(height as i32),
+        height: -height,
         planes: 1,
         bit_count: 32,
         compression: BI_RGB,
@@ -211,7 +211,7 @@ pub unsafe fn copy_bitmap(
     if lines != height {
         return Err(format!("GetDIBits returned {lines} of {height} scan lines"));
     }
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     drop(dc);
@@ -444,7 +444,7 @@ unsafe fn read_bitmap(bitmap: H) -> Result<shotkit::stitch::Image, String> {
     if lines != height as i32 {
         return Err(format!("GetDIBits returned {lines} of {height} scan lines"));
     }
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     drop(dc);

@@ -593,7 +593,7 @@ mod tests {
             Color::rgba(255, 0, 0, 255),
         );
         let result = render_document(&original, &[shape]).unwrap();
-        let outside = (0 * 16 + 0) * 4;
+        let outside = 0;
         assert_eq!(&result.pixels[outside..outside + 4], &[20, 40, 60, 91]);
         let inside = (7 * 16 + 7) * 4;
         assert!(result.pixels[inside + 3] > 91);

@@ -1,5 +1,7 @@
 use super::*;
 
+/// Publish an image using an opaque Win32 window handle as clipboard owner.
+/// Windows validates the handle; it is never dereferenced as a Rust pointer.
 #[cfg(windows)]
 pub fn copy_image_to_clipboard(
     owner: *mut c_void,
@@ -7,27 +9,38 @@ pub fn copy_image_to_clipboard(
     exclude_from_history: bool,
 ) -> Result<(), String> {
     let _dib = validate_dib_image(image)?;
-    unsafe {
-        copy_bgra_clipboard(
-            owner,
-            image.pixels.as_ptr(),
-            image.width,
-            image.height,
-            image.width.checked_mul(4).ok_or("Bildzeile überläuft")?,
-            true,
-            Some(image),
-            exclude_from_history,
-        )
-    }
+    let source = BgraSource {
+        pixels: image.pixels.as_ptr(),
+        width: image.width,
+        height: image.height,
+        stride: image.width.checked_mul(4).ok_or("Bildzeile überläuft")?,
+        top_down: true,
+        image_for_png: Some(image),
+    };
+    let destination = ClipboardDestination {
+        owner,
+        exclude_from_history,
+    };
+    // SAFETY: validation above establishes the size of the immutable image
+    // buffer, which remains borrowed throughout the transfer. The owner is an
+    // opaque Win32 handle, not an address from which Rust memory is read.
+    unsafe { copy_bgra_clipboard(source, destination) }
 }
 
 /// Transfers an existing 32-bit BGRA DIB section without creating an Image
 /// copy. The source is only read; ownership remains with the caller.
+///
+/// # Safety
+/// For accepted dimensions and stride, `pixels` must point into an allocation
+/// containing at least `(height - 1) * source_stride + width * 4` readable,
+/// initialized bytes. Each row must contain straight-alpha BGRA pixels in the
+/// indicated orientation. The allocation must remain alive and unchanged
+/// throughout this call, including any reentrant clipboard notifications.
+/// Complete pending GDI writes with `GdiFlush` on the drawing thread before
+/// calling, and prevent concurrent GDI or CPU writes and bitmap deletion.
+/// `owner` is an opaque Win32 window handle, validated by Windows; it is not
+/// dereferenced as a Rust pointer.
 #[cfg(windows)]
-// SAFETY CONTRACT:
-// Voraussetzung: pixels zeigt auf ausreichend viele initialisierte, unveränderte BGRA-Bytes mit passendem Stride und Orientierung.
-// Warum erfüllt bzw. offen: Maße und Stride werden geprüft; Allokationslebensdauer und GDI-Synchronisation sind Aufruferpflicht.
-// Nachrichten: Clipboard-APIs können synchron Nachrichten auslösen; Quellpixel werden zuvor kopiert.
 pub unsafe fn copy_dib_section_to_clipboard(
     owner: *mut c_void,
     pixels: *const u8,
@@ -38,32 +51,61 @@ pub unsafe fn copy_dib_section_to_clipboard(
     exclude_from_history: bool,
 ) -> Result<(), String> {
     copy_bgra_clipboard(
-        owner,
-        pixels,
-        width,
-        height,
-        source_stride,
-        top_down,
-        None,
-        exclude_from_history,
+        BgraSource {
+            pixels,
+            width,
+            height,
+            stride: source_stride,
+            top_down,
+            image_for_png: None,
+        },
+        ClipboardDestination {
+            owner,
+            exclude_from_history,
+        },
     )
+}
+
+/// Borrowed source description; only the unsafe transfer reads its raw pixels.
+#[cfg(windows)]
+struct BgraSource<'a> {
+    pixels: *const u8,
+    width: usize,
+    height: usize,
+    stride: usize,
+    top_down: bool,
+    image_for_png: Option<&'a Image>,
+}
+
+#[cfg(windows)]
+struct ClipboardDestination {
+    // HWND is an opaque OS-managed handle, not a pointer to Rust memory.
+    owner: *mut c_void,
+    exclude_from_history: bool,
 }
 
 #[cfg(windows)]
 // SAFETY CONTRACT:
-// Voraussetzung: Der Quellpuffer erfüllt den BGRA- und Lebensdauervertrag; owner ist für Clipboard-Veröffentlichung geeignet.
-// Warum erfüllt bzw. offen: Rohpixel werden vor Clipboard-Aufrufen kopiert; HGLOBAL-Ownership wird nach Übergabe beachtet.
-// Nachrichten: Clipboard-APIs können synchron Nachrichten auslösen.
+// The source must satisfy copy_dib_section_to_clipboard's readable-buffer,
+// lifetime and synchronization contract. Win32 validates the opaque owner.
+// Source rows are copied before clipboard notification calls. HGLOBAL ownership
+// passes to Windows only after a successful SetClipboardData.
 unsafe fn copy_bgra_clipboard(
-    owner: *mut c_void,
-    pixels: *const u8,
-    width: usize,
-    height: usize,
-    source_stride: usize,
-    top_down: bool,
-    image_for_png: Option<&Image>,
-    exclude_from_history: bool,
+    source: BgraSource<'_>,
+    destination: ClipboardDestination,
 ) -> Result<(), String> {
+    let BgraSource {
+        pixels,
+        width,
+        height,
+        stride: source_stride,
+        top_down,
+        image_for_png,
+    } = source;
+    let ClipboardDestination {
+        owner,
+        exclude_from_history,
+    } = destination;
     use std::ptr::null_mut;
     type Handle = *mut c_void;
     #[link(name = "user32")]
@@ -318,7 +360,7 @@ fn encode_small_clipboard_png(image: &Image) -> Result<Vec<u8>, String> {
     rgba.try_reserve_exact(pixel_bytes)
         .map_err(|e| format!("PNG-RGBA-Puffer konnte nicht reserviert werden: {e}"))?;
     rgba.extend_from_slice(&image.pixels);
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let width = u32::try_from(image.width).map_err(|_| "PNG width is too large")?;

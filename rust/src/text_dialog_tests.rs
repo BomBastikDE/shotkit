@@ -240,7 +240,7 @@ unsafe fn send_timeout(
 }
 
 unsafe fn read_control_text(hwnd: Hwnd) -> String {
-    let length = send_timeout(hwnd, WM_GETTEXTLENGTH, 0, 0, "WM_GETTEXTLENGTH") as usize;
+    let length = send_timeout(hwnd, WM_GETTEXTLENGTH, 0, 0, "WM_GETTEXTLENGTH");
     assert!(
         length < 4_096,
         "test Edit text unexpectedly exceeds buffer bound"

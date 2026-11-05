@@ -63,7 +63,7 @@ pub(super) unsafe fn cancel_gesture(h: H) {
     window_state(h).drawing = false;
     window_state(h).crop_start = None;
     window_state(h).crop_end = None;
-    if let Some(state) = (&mut window_state(h).editor).as_mut() {
+    if let Some(state) = window_state(h).editor.as_mut() {
         state.cancel_drag();
     }
     if had_capture {

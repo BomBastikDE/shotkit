@@ -386,26 +386,6 @@ fn take_quit_completion(ready: &AtomicBool, modal_depth: usize) -> bool {
     modal_depth == 0 && ready.swap(false, Ordering::SeqCst)
 }
 
-#[cfg(test)]
-mod quit_completion_tests {
-    use super::*;
-
-    #[test]
-    fn completion_requires_approval_and_is_consumed_once() {
-        let ready = AtomicBool::new(false);
-        assert!(!take_quit_completion(&ready, 0));
-        ready.store(true, Ordering::SeqCst);
-        assert!(take_quit_completion(&ready, 0));
-        assert!(!take_quit_completion(&ready, 0));
-    }
-
-    #[test]
-    fn modal_handler_defers_without_consuming_completion() {
-        let ready = AtomicBool::new(true);
-        assert!(!take_quit_completion(&ready, 1));
-        assert!(take_quit_completion(&ready, 0));
-    }
-}
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster mit initialisiertem Zustand;
 // Zugriff nur auf dem UI-Thread, ohne überlappenden Borrow oder Reentranz.
@@ -628,7 +608,8 @@ unsafe fn run_application() {
         cls_extra: 0,
         wnd_extra: 0,
         instance: inst,
-        icon: LoadIconW(inst, 1usize as *const u16),
+        // Win32 integer resource ID 1, encoded as a pointer without dereferencing.
+        icon: LoadIconW(inst, std::ptr::without_provenance::<u16>(1)),
         cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
         background: (6usize as H),
         menu: std::ptr::null(),
@@ -679,5 +660,26 @@ unsafe fn run_application() {
     while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+}
+
+#[cfg(test)]
+mod quit_completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_requires_approval_and_is_consumed_once() {
+        let ready = AtomicBool::new(false);
+        assert!(!take_quit_completion(&ready, 0));
+        ready.store(true, Ordering::SeqCst);
+        assert!(take_quit_completion(&ready, 0));
+        assert!(!take_quit_completion(&ready, 0));
+    }
+
+    #[test]
+    fn modal_handler_defers_without_consuming_completion() {
+        let ready = AtomicBool::new(true);
+        assert!(!take_quit_completion(&ready, 1));
+        assert!(take_quit_completion(&ready, 0));
     }
 }

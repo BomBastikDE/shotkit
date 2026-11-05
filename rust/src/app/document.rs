@@ -135,32 +135,33 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     if window_state(h).bitmap.is_null() {
         return false;
     }
-    let previous = (&window_state(h).current_path).clone();
+    let previous = window_state(h).current_path.clone();
     let protected_original = window_state(h).protected_original;
     let force_save_as = !save_as && protected_original;
     if force_save_as && !confirm_save_as_for_original(h) {
         return false;
     }
-    let (path, replace_existing) = if save_as || force_save_as || previous.is_none() {
-        // A protected Save As starts without the original filename, and the
-        // post-dialog check below prevents accepting that same file anyway.
-        match file_dialog::save(
-            h,
-            if force_save_as {
-                None
-            } else {
-                previous.as_deref()
-            },
-        ) {
-            Ok(Some(selection)) => selection,
-            Ok(None) => return false,
-            Err(e) => {
-                MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
-                return false;
+    let (path, replace_existing) = match (save_as || force_save_as, previous.as_ref()) {
+        (false, Some(path)) => (path.clone(), true),
+        _ => {
+            // A protected Save As starts without the original filename, and the
+            // post-dialog check below prevents accepting that same file anyway.
+            match file_dialog::save(
+                h,
+                if force_save_as {
+                    None
+                } else {
+                    previous.as_deref()
+                },
+            ) {
+                Ok(Some(selection)) => selection,
+                Ok(None) => return false,
+                Err(e) => {
+                    MessageBoxW(h, wide(&e).as_ptr(), wide("Speicherdialog").as_ptr(), 0x10);
+                    return false;
+                }
             }
         }
-    } else {
-        (previous.as_ref().unwrap().clone(), true)
     };
     if force_save_as {
         let Some(original) = previous.as_deref() else {
@@ -211,105 +212,6 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     }
 }
 
-#[cfg(test)]
-mod save_safety_tests {
-    use super::{
-        opened_original_requires_save_as, requires_save_as, same_existing_path, write_atomic,
-    };
-    use std::path::Path;
-
-    #[test]
-    fn png_and_bmp_can_be_overwritten_directly() {
-        assert!(!requires_save_as(Path::new("capture.png")));
-        assert!(!requires_save_as(Path::new("capture.bmp")));
-    }
-
-    #[test]
-    fn lossy_and_unsupported_originals_require_save_as() {
-        for path in [
-            "capture.jpg",
-            "capture.jpeg",
-            "capture.gif",
-            "capture.tif",
-            "capture.tiff",
-            "capture.webp",
-            "capture",
-        ] {
-            assert!(requires_save_as(Path::new(path)), "{path}");
-        }
-    }
-
-    #[test]
-    fn source_format_is_checked_even_when_extension_is_misleading() {
-        let pixels = shotkit::stitch::Image::new(1, 1, vec![0, 0, 255, 255]).unwrap();
-        let png = shotkit::image_io::encode(&pixels, image::ImageFormat::Png).unwrap();
-        let jpeg = shotkit::image_io::encode(&pixels, image::ImageFormat::Jpeg).unwrap();
-        assert!(!opened_original_requires_save_as(
-            Path::new("image.png"),
-            &png
-        ));
-        assert!(opened_original_requires_save_as(
-            Path::new("image.png"),
-            &jpeg
-        ));
-        assert!(opened_original_requires_save_as(
-            Path::new("image.jpg"),
-            &png
-        ));
-    }
-
-    #[test]
-    fn protected_save_as_rejects_the_original_path() {
-        let path = std::env::temp_dir().join(format!(
-            "shotkit-save-safety-{}-{}.jpg",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, b"fixture").unwrap();
-        assert!(same_existing_path(&path, &path).unwrap());
-        let alias = path.with_extension("hardlink.jpg");
-        std::fs::hard_link(&path, &alias).unwrap();
-        assert!(same_existing_path(&path, &alias).unwrap());
-        std::fs::remove_file(&alias).unwrap();
-        assert!(!same_existing_path(
-            &path,
-            &path.with_file_name("shotkit-save-safety-different.jpg")
-        )
-        .unwrap());
-        std::fs::remove_file(&path).unwrap();
-        assert!(same_existing_path(&path, &path).is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn save_as_absent_target_collision_is_preserved_but_confirmed_target_replaces() {
-        let path = std::env::temp_dir().join(format!(
-            "shotkit-atomic-save-{}-{}.png",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let collision = b"created after the save dialog observed an absent target";
-        let replacement = b"new encoded image";
-
-        // Models another process creating the path between the dialog's
-        // absence check and the atomic rename.
-        std::fs::write(&path, collision).unwrap();
-        assert!(write_atomic(&path, replacement, false).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), collision);
-
-        // A dialog-confirmed existing target, and ordinary Ctrl+S, retain
-        // their explicit replace behavior.
-        write_atomic(&path, replacement, true).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), replacement);
-        std::fs::remove_file(&path).unwrap();
-    }
-}
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Besitzer für synchrone Dialoge.
 // Warum zu prüfen: Neben dem Tray-Ablauf gibt es WM_CLOSE; deren Reentranzschutz ist noch nicht vollständig belegt.
@@ -667,5 +569,105 @@ pub(super) unsafe fn history(h: H, redo: bool) {
         InvalidateRect(h, std::ptr::null(), 1);
     } else if let Some(bitmap) = replacement {
         DeleteObject(bitmap);
+    }
+}
+
+#[cfg(test)]
+mod save_safety_tests {
+    use super::{
+        opened_original_requires_save_as, requires_save_as, same_existing_path, write_atomic,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn png_and_bmp_can_be_overwritten_directly() {
+        assert!(!requires_save_as(Path::new("capture.png")));
+        assert!(!requires_save_as(Path::new("capture.bmp")));
+    }
+
+    #[test]
+    fn lossy_and_unsupported_originals_require_save_as() {
+        for path in [
+            "capture.jpg",
+            "capture.jpeg",
+            "capture.gif",
+            "capture.tif",
+            "capture.tiff",
+            "capture.webp",
+            "capture",
+        ] {
+            assert!(requires_save_as(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn source_format_is_checked_even_when_extension_is_misleading() {
+        let pixels = shotkit::stitch::Image::new(1, 1, vec![0, 0, 255, 255]).unwrap();
+        let png = shotkit::image_io::encode(&pixels, image::ImageFormat::Png).unwrap();
+        let jpeg = shotkit::image_io::encode(&pixels, image::ImageFormat::Jpeg).unwrap();
+        assert!(!opened_original_requires_save_as(
+            Path::new("image.png"),
+            &png
+        ));
+        assert!(opened_original_requires_save_as(
+            Path::new("image.png"),
+            &jpeg
+        ));
+        assert!(opened_original_requires_save_as(
+            Path::new("image.jpg"),
+            &png
+        ));
+    }
+
+    #[test]
+    fn protected_save_as_rejects_the_original_path() {
+        let path = std::env::temp_dir().join(format!(
+            "shotkit-save-safety-{}-{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"fixture").unwrap();
+        assert!(same_existing_path(&path, &path).unwrap());
+        let alias = path.with_extension("hardlink.jpg");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(same_existing_path(&path, &alias).unwrap());
+        std::fs::remove_file(&alias).unwrap();
+        assert!(!same_existing_path(
+            &path,
+            &path.with_file_name("shotkit-save-safety-different.jpg")
+        )
+        .unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(same_existing_path(&path, &path).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_as_absent_target_collision_is_preserved_but_confirmed_target_replaces() {
+        let path = std::env::temp_dir().join(format!(
+            "shotkit-atomic-save-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let collision = b"created after the save dialog observed an absent target";
+        let replacement = b"new encoded image";
+
+        // Models another process creating the path between the dialog's
+        // absence check and the atomic rename.
+        std::fs::write(&path, collision).unwrap();
+        assert!(write_atomic(&path, replacement, false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), collision);
+
+        // A dialog-confirmed existing target, and ordinary Ctrl+S, retain
+        // their explicit replace behavior.
+        write_atomic(&path, replacement, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), replacement);
+        std::fs::remove_file(&path).unwrap();
     }
 }

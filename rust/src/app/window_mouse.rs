@@ -142,7 +142,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
     Some(match m {
         0x0200 if window_state(h).drawing && !window_state(h).bitmap.is_null() => {
             let (x, y) = point(h, l);
-            if matches!(window_state(h).crop_start, Some(_)) {
+            if window_state(h).crop_start.is_some() {
                 window_state(h).crop_end = Some((x, y));
                 invalidate_image_view(h);
                 return Some(0);

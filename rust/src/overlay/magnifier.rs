@@ -8,7 +8,7 @@ pub(super) unsafe fn capture_desktop(origin: (i32, i32), size: (i32, i32)) -> (H
     let estimated_bytes = i64::from(size.0)
         .checked_mul(i64::from(size.1))
         .and_then(|pixels| pixels.checked_mul(4));
-    if estimated_bytes.map_or(true, |bytes| bytes > MAX_MAGNIFIER_SNAPSHOT_BYTES) {
+    if estimated_bytes.is_none_or(|bytes| bytes > MAX_MAGNIFIER_SNAPSHOT_BYTES) {
         return (null_mut(), null_mut(), null_mut());
     }
     let screen_dc = GetDC(null_mut());
@@ -132,8 +132,8 @@ pub(super) unsafe fn magnifier_rect(state: &State, point: Point) -> (i32, i32, i
 pub(super) fn magnifier_source_rect(state: &State, point: Point) -> (i32, i32, i32, i32) {
     let local_x = point.x.saturating_sub(state.origin.0);
     let local_y = point.y.saturating_sub(state.origin.1);
-    let width = state.size.0.min(MAG_PIXELS).max(1);
-    let height = state.size.1.min(MAG_PIXELS).max(1);
+    let width = state.size.0.clamp(1, MAG_PIXELS);
+    let height = state.size.1.clamp(1, MAG_PIXELS);
     let max_x = state.size.0.saturating_sub(width).max(0);
     let max_y = state.size.1.saturating_sub(height).max(0);
     let left = local_x.saturating_sub(width / 2).clamp(0, max_x);

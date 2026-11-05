@@ -309,7 +309,7 @@ impl ScrollIo for WindowsScrollIo {
             ));
         }
         // Screen captures are opaque; GDI does not promise a useful alpha byte.
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
         Image::new(width as usize, height as usize, pixels).map_err(str::to_owned)

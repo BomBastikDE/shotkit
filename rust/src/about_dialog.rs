@@ -289,13 +289,11 @@ unsafe fn child(
     class: &str,
     text: &str,
     style: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
+    bounds: (i32, i32, i32, i32),
     id: usize,
     instance: H,
 ) -> H {
+    let (x, y, width, height) = bounds;
     CreateWindowExW(
         0,
         wide(class).as_ptr(),
@@ -358,10 +356,12 @@ unsafe extern "system" fn about_proc(hwnd: H, message: u32, wparam: W, lparam: L
                         } else {
                             0
                         },
-                    scale(x, dpi),
-                    scale(y, dpi),
-                    scale(width, dpi),
-                    scale(height, dpi),
+                    (
+                        scale(x, dpi),
+                        scale(y, dpi),
+                        scale(width, dpi),
+                        scale(height, dpi),
+                    ),
                     if button { LINK_BUTTON } else { 0 },
                     instance,
                 );

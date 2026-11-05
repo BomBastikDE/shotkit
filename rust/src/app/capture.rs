@@ -225,7 +225,7 @@ pub(super) unsafe fn active_window_target(h: H, window: H) -> Result<ActiveWindo
     }
     let root = GetAncestor(window, 2);
     let root = if root.is_null() { window } else { root };
-    if root == h || editor_windows().iter().any(|editor| *editor == root) {
+    if root == h || editor_windows().contains(&root) {
         return Err("ShotKit war das aktive Fenster. Bitte zuerst das gewünschte Fenster aktivieren und erneut wählen.".into());
     }
     let mut class_name = [0u16; 256];

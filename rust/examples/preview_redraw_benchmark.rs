@@ -12,8 +12,8 @@ mod benchmark {
 
     fn baseline_flatten(image: &Image) -> Image {
         let mut pixels = Vec::with_capacity(image.pixels.len());
-        for (i, src) in image.pixels.chunks_exact(4).enumerate() {
-            let gray = if (((i % image.width) / 12) + ((i / image.width) / 12)) % 2 == 0 {
+        for (i, src) in image.pixels.as_chunks::<4>().0.iter().enumerate() {
+            let gray = if (((i % image.width) / 12) + ((i / image.width) / 12)).is_multiple_of(2) {
                 236
             } else {
                 196
@@ -29,7 +29,7 @@ mod benchmark {
 
     fn compare(width: usize, height: usize) {
         let mut pixels = vec![0; width * height * 4];
-        for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
+        for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[(i % 251) as u8, ((i / width) % 251) as u8, 120, 255]);
         }
         let image = Arc::new(Image::new(width, height, pixels).unwrap());

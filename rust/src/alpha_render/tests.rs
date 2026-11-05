@@ -69,3 +69,14 @@ fn step_labels_scale_for_multiple_digits_and_use_contrast_color() {
         0xffff_ffff
     );
 }
+
+#[test]
+fn render_sizes_keep_nan_fallback_and_clamp_extremes() {
+    for maximum in [256.0, 512.0] {
+        assert_eq!(bounded_size(f32::NAN, maximum), 1.0);
+        assert_eq!(bounded_size(f32::NEG_INFINITY, maximum), 1.0);
+        assert_eq!(bounded_size(0.0, maximum), 1.0);
+        assert_eq!(bounded_size(12.5, maximum), 12.5);
+        assert_eq!(bounded_size(f32::INFINITY, maximum), maximum);
+    }
+}

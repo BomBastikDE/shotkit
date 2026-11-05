@@ -173,9 +173,9 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
     if packet.tag != INSTANCE_COPYDATA_TAG
         || packet.bytes < 2
         || packet.bytes as usize > MAX_IPC_PATH_UNITS * 2
-        || packet.bytes % 2 != 0
+        || !packet.bytes.is_multiple_of(2)
         || packet.data.is_null()
-        || (packet.data as usize) % std::mem::align_of::<u16>() != 0
+        || !(packet.data as usize).is_multiple_of(std::mem::align_of::<u16>())
     {
         return 0;
     }
