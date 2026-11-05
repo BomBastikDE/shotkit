@@ -346,7 +346,19 @@ try {
         if($dialogs.Count -eq 1){$dialogs[0]}
     } 10 'owned color dialog'
     if([ShotKitHandlesSmoke.Native]::Owner($dialog.Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'}
-    # COLOR_RED/GREEN/BLUE in the Windows SDK ColorDlg.h; CC_FULLOPEN exposes them.
+    # A visible dialog can precede initialization of its CC_FULLOPEN controls.
+    # Wait for all three SDK COLOR_RED/GREEN/BLUE edits, retaining strict identity checks.
+    [void](Wait-For {
+        $controls=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle))
+        $ready=$true
+        foreach($id in @(706,707,708)){
+            $matches=@($controls | Where-Object {$_.Id -eq $id -and $_.ClassName -eq 'Edit'})
+            if($matches.Count -gt 1){throw "COLOR_EDIT_AMBIGUOUS ID=$id count=$($matches.Count)."}
+            if($matches.Count -eq 0 -or -not $matches[0].Visible){$ready=$false; continue}
+            if([ShotKitHandlesSmoke.Native]::Owner($matches[0].Handle) -ne $proc.Id){throw "COLOR_EDIT_OWNER_MISMATCH ID=$id."}
+        }
+        $ready
+    } 10 'all visible owned color dialog RGB edits')
     foreach($entry in @(@{Id=706;Value='20'},@{Id=707;Value='140'},@{Id=708;Value='240'})){
         $control=@([ShotKitHandlesSmoke.Native]::Controls($dialog.Handle) | Where-Object {$_.Visible -and $_.Id -eq $entry.Id -and $_.ClassName -eq 'Edit'})
         if($control.Count -ne 1 -or [ShotKitHandlesSmoke.Native]::Owner($control[0].Handle) -ne $proc.Id){throw "COLOR_EDIT_IDENTITY_MISMATCH ID=$($entry.Id)."}

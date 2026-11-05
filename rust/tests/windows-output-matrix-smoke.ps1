@@ -148,6 +148,7 @@ if($inputDesktop -cne 'Default'){throw "INTERACTIVE_DEFAULT_DESKTOP_REQUIRED: cu
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Output-Matrix-' + [Guid]::NewGuid().ToString('N'))
 
 $surfaceScript=Join-Path $root 'surface.ps1'; $readyFile=Join-Path $root 'surface-ready.txt'
+$surfaceStdout=Join-Path $root 'surface-stdout.txt'; $surfaceStderr=Join-Path $root 'surface-stderr.txt'
 $shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $failure=$null; $mouseDown=$false; $allExited=$true
 
 function Get-OwnWindows([Diagnostics.Process] $p) { [ShotKitOutputMatrixSmoke.Native]::Windows($p.Id) }
@@ -244,8 +245,10 @@ try {
     $surfaceSource=@'
 param([string]$ReadyFile)
 $ErrorActionPreference='Stop'
+Write-Output 'FIXTURE_STAGE: loading assemblies'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Write-Output 'FIXTURE_STAGE: compiling surface'
 Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll' -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -269,15 +272,25 @@ namespace ShotKitOutputMatrixSurface {
  }
 }
 "@
+Write-Output 'FIXTURE_STAGE: constructing surface and entering message loop'
 [System.Windows.Forms.Application]::Run([ShotKitOutputMatrixSurface.Surface]::new($ReadyFile))
 '@
     [IO.File]::WriteAllText($surfaceScript,$surfaceSource,[Text.UTF8Encoding]::new($false))
     $powershellExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)){throw 'Windows PowerShell 5.1 is required for the isolated fixture window.'}
     $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $surfaceScript,$readyFile
-    $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru
-    $fixtureWindow=Wait-ForCondition -Seconds 20 -Description 'the deterministic fixture surface' -OwnedProcess $surface -Condition {
-        [ShotKitOutputMatrixSmoke.Native]::Windows($surface.Id) | Where-Object {$_.Title -eq 'ShotKit Output Matrix Fixture' -and $_.Visible} | Select-Object -First 1
+    $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
+    try {
+        $fixtureWindow=Wait-ForCondition -Seconds 20 -Description 'the deterministic fixture surface' -OwnedProcess $surface -Condition {
+            [ShotKitOutputMatrixSmoke.Native]::Windows($surface.Id) | Where-Object {$_.Title -eq 'ShotKit Output Matrix Fixture' -and $_.Visible} | Select-Object -First 1
+        }
+    } catch {
+        $startupFailure=$_
+        try {
+            $windows=@([ShotKitOutputMatrixSmoke.Native]::Windows($surface.Id) | ForEach-Object {"handle=$($_.Handle) class='$($_.ClassName)' title='$($_.Title)' visible=$($_.Visible)"}) -join '; '
+            Write-Output "FIXTURE_DIAGNOSTIC: pid=$($surface.Id) exited=$($surface.HasExited) readyFile=$(Test-Path -LiteralPath $readyFile) windows=[$windows]"
+        } catch { Write-Output 'FIXTURE_DIAGNOSTIC: window inspection failed.' }
+        throw $startupFailure
     }
     $ready=Wait-ForCondition -Seconds 10 -Description 'complete fixture client coordinates' -OwnedProcess $surface -Condition {
         if(Test-Path -LiteralPath $readyFile){
@@ -427,6 +440,24 @@ finally {
             try {if (-not $owned.HasExited){$owned.Kill();if (-not $owned.WaitForExit(5000) -or -not $owned.HasExited){throw 'Owned process did not exit after termination request.'}}}
             catch {$allExited=$false;if (-not $failure){$failure=$_}}
             $owned.Dispose()
+        }
+    }
+    if($failure -and $null -ne $surface) {
+        foreach($log in @($surfaceStdout,$surfaceStderr)) {
+            try {
+                if(Test-Path -LiteralPath $log) {
+                    $content=Get-Content -LiteralPath $log -Raw
+                    if($env:GITHUB_ACTIONS -ceq 'true') {
+                        Write-Output "FIXTURE_DIAGNOSTIC: $([IO.Path]::GetFileName($log)): $content"
+                    } elseif($log -eq $surfaceStdout) {
+                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop')
+                        foreach($line in @($content -split "`r?`n")) { if($line -cin $phases) { Write-Output $line } }
+                    } else {
+                        Write-Output "FIXTURE_DIAGNOSTIC: stderr nonempty=$(-not [string]::IsNullOrWhiteSpace($content))"
+                    }
+                }
+            }
+            catch { Write-Output "FIXTURE_DIAGNOSTIC: could not read $([IO.Path]::GetFileName($log))." }
         }
     }
     if($allExited -and (Test-Path -LiteralPath $root)){
