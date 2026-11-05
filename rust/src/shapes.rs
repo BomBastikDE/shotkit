@@ -97,6 +97,7 @@ pub enum Tool {
     Text,
     Highlight,
     Blur,
+    Redact,
     Step,
     Pen,
     Crop,
@@ -120,15 +121,46 @@ impl Default for Style {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShapeKind {
-    Line { start: Point, end: Point },
-    Arrow { start: Point, end: Point },
-    Rectangle { start: Point, end: Point },
-    Ellipse { start: Point, end: Point },
-    Highlight { start: Point, end: Point },
-    Blur { start: Point, end: Point },
-    Freehand { points: Vec<Point> },
-    Text { location: Point, text: String },
-    Step { center: Point, number: i32 },
+    Line {
+        start: Point,
+        end: Point,
+    },
+    Arrow {
+        start: Point,
+        end: Point,
+    },
+    Rectangle {
+        start: Point,
+        end: Point,
+    },
+    Ellipse {
+        start: Point,
+        end: Point,
+    },
+    Highlight {
+        start: Point,
+        end: Point,
+    },
+    Blur {
+        start: Point,
+        end: Point,
+    },
+    /// Opaque black area applied after all other annotations.
+    Redact {
+        start: Point,
+        end: Point,
+    },
+    Freehand {
+        points: Vec<Point>,
+    },
+    Text {
+        location: Point,
+        text: String,
+    },
+    Step {
+        center: Point,
+        number: i32,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
@@ -149,7 +181,8 @@ impl Shape {
             | ShapeKind::Rectangle { start, end }
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
-            | ShapeKind::Blur { start, end } => Rect::from_points(*start, *end),
+            | ShapeKind::Blur { start, end }
+            | ShapeKind::Redact { start, end } => Rect::from_points(*start, *end),
             ShapeKind::Freehand { points } => points
                 .iter()
                 .fold(None::<(Point, Point)>, |acc, p| {
@@ -194,7 +227,8 @@ impl Shape {
             | ShapeKind::Rectangle { start, end }
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
-            | ShapeKind::Blur { start, end } => {
+            | ShapeKind::Blur { start, end }
+            | ShapeKind::Redact { start, end } => {
                 (start.x - end.x).abs() < 3.0 && (start.y - end.y).abs() < 3.0
             }
             ShapeKind::Freehand { points } => points.len() < 2,
@@ -212,7 +246,8 @@ impl Shape {
             | ShapeKind::Rectangle { start, end }
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
-            | ShapeKind::Blur { start, end } => {
+            | ShapeKind::Blur { start, end }
+            | ShapeKind::Redact { start, end } => {
                 add(start);
                 add(end)
             }
@@ -232,7 +267,8 @@ impl Shape {
             ShapeKind::Rectangle { .. }
             | ShapeKind::Ellipse { .. }
             | ShapeKind::Highlight { .. }
-            | ShapeKind::Blur { .. } => self.bounds().corners().to_vec(),
+            | ShapeKind::Blur { .. }
+            | ShapeKind::Redact { .. } => self.bounds().corners().to_vec(),
             _ => vec![],
         }
     }
@@ -247,7 +283,8 @@ impl Shape {
             ShapeKind::Rectangle { start, end }
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
-            | ShapeKind::Blur { start, end } => {
+            | ShapeKind::Blur { start, end }
+            | ShapeKind::Redact { start, end } => {
                 let r = Rect::from_points(*start, *end);
                 let (mut l, mut t, mut right, mut b) = (r.x, r.y, r.x + r.width, r.y + r.height);
                 match index {

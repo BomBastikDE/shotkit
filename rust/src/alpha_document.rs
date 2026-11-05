@@ -45,6 +45,18 @@ pub fn render_preview(
     stable_count: usize,
     cache: &mut Option<PreviewCache>,
 ) -> Result<Image, String> {
+    // Pixelation must sample a source sanitized by every redaction, including
+    // those after the cached prefix. Their edits invalidate that dependency.
+    if shapes
+        .iter()
+        .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
+    {
+        *cache = None;
+        if stable_count > shapes.len() {
+            return Err("Ungültiger Vorschau-Präfix.".into());
+        }
+        return render_document(source, shapes);
+    }
     let prefix = shapes
         .get(..stable_count)
         .ok_or("Ungültiger Vorschau-Präfix.")?;
@@ -65,7 +77,11 @@ pub fn render_preview(
         });
     }
     let entry = cache.as_ref().ok_or("Vorschau-Cache fehlt.")?;
-    render_document_over(source, &entry.rendered, &shapes[stable_count..])
+    let mut result = render_document_over(source, &entry.rendered, &shapes[stable_count..])?;
+    // Later pixelation samples the original, so restore redactions from the
+    // cached prefix as well as those from the changing suffix.
+    apply_redactions(&mut result.pixels, source.width, source.height, shapes)?;
+    Ok(result)
 }
 
 fn render_document_over(
@@ -82,8 +98,30 @@ fn render_document_over(
         .map_err(|_| "Nicht genug Speicher für das gerenderte Dokument.".to_owned())?;
     output_pixels.extend_from_slice(&initial.pixels);
 
+    // A later blur must not spread redacted source pixels outside the black
+    // rectangle through its block averages. Sanitize the sampling source.
+    let sanitized_source = if shapes
+        .iter()
+        .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
+    {
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(source.pixels.len()).map_err(|_| {
+            "Nicht genug Speicher für die geschwärzte Pixelationsquelle.".to_owned()
+        })?;
+        pixels.extend_from_slice(&source.pixels);
+        apply_redactions(&mut pixels, source.width, source.height, shapes)?;
+        Some(
+            Image::new(source.width, source.height, pixels)
+                .map_err(|error| format!("Geschwärzte Pixelationsquelle ist ungültig: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let pixelation_source = sanitized_source.as_ref().unwrap_or(source);
+
     for shape in shapes {
         match &shape.kind {
+            ShapeKind::Redact { .. } => {}
             ShapeKind::Blur { start, end } => {
                 let Some(region) =
                     clipped_region(source.width, source.height, start.x, start.y, end.x, end.y)?
@@ -94,7 +132,7 @@ fn render_document_over(
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
                 let block_size = ((shape.style.width * 3.0) as usize).clamp(12, 4096);
-                let pixelated = pixelate_region(source, region, block_size)
+                let pixelated = pixelate_region(pixelation_source, region, block_size)
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
                 copy_region(&pixelated, &mut output_pixels, region)?;
             }
@@ -165,8 +203,32 @@ fn render_document_over(
         }
     }
 
+    apply_redactions(&mut output_pixels, source.width, source.height, shapes)?;
     Image::new(source.width, source.height, output_pixels)
         .map_err(|error| format!("Gerendertes Bild ist ungültig: {error}"))
+}
+
+// Redactions are applied last, independent of annotation order. Never composite
+// them: an opaque replacement prevents alpha or antialiasing from exposing data.
+fn apply_redactions(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    shapes: &[Shape],
+) -> Result<(), String> {
+    for shape in shapes {
+        if let ShapeKind::Redact { start, end } = &shape.kind {
+            if let Some(region) = clipped_region(width, height, start.x, start.y, end.x, end.y)? {
+                for y in region.y..region.y + region.height {
+                    let row = (y * width + region.x) * 4;
+                    for pixel in pixels[row..row + region.width * 4].as_chunks_mut::<4>().0 {
+                        pixel.copy_from_slice(&[0, 0, 0, 255]);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_image(image: &Image) -> Result<(), String> {
@@ -254,6 +316,74 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn redaction_prevents_pixelation_leaking_source_across_region_and_cache() {
+        use crate::shapes::{Color, Point};
+        let mut one = Image::new(30, 20, [200, 180, 160, 255].repeat(600)).unwrap();
+        let mut two = one.clone();
+        // Fractional rectangle is rounded outward to cover all touched pixels.
+        for y in 3..9 {
+            for x in 4..10 {
+                let i = (y * 30 + x) * 4;
+                one.pixels[i..i + 4].copy_from_slice(&[1, 2, 3, 4]);
+                two.pixels[i..i + 4].copy_from_slice(&[240, 230, 220, 210]);
+            }
+        }
+        let mut redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(9.2, 8.2),
+            end: Point::new(4.1, 3.1),
+        });
+        redact.style.color = Color::rgba(255, 0, 0, 0);
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(30.0, 20.0),
+        });
+        for shapes in [
+            vec![redact.clone(), blur.clone()],
+            vec![blur.clone(), redact.clone()],
+        ] {
+            let result = render_document(&one, &shapes).unwrap();
+            assert_eq!(result, render_document(&two, &shapes).unwrap());
+            for y in 3..9 {
+                for x in 4..10 {
+                    let i = (y * 30 + x) * 4;
+                    assert_eq!(&result.pixels[i..i + 4], &[0, 0, 0, 255]);
+                }
+            }
+            let source = Arc::new(one.clone());
+            let mut cache = None;
+            for split in 0..=shapes.len() {
+                assert_eq!(
+                    render_preview(&source, &shapes, split, &mut cache).unwrap(),
+                    result
+                );
+                assert!(cache.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn redaction_clips_and_leaves_outside_unchanged() {
+        use crate::shapes::Point;
+        let source = Image::new(4, 4, [11, 22, 33, 44].repeat(16)).unwrap();
+        let shape = Shape::new(ShapeKind::Redact {
+            start: Point::new(-3.0, -2.0),
+            end: Point::new(1.2, 1.2),
+        });
+        let result = render_document(&source, &[shape]).unwrap();
+        for y in 0..4 {
+            for x in 0..4 {
+                let i = (y * 4 + x) * 4;
+                let expected = if x < 2 && y < 2 {
+                    [0, 0, 0, 255]
+                } else {
+                    [11, 22, 33, 44]
+                };
+                assert_eq!(&result.pixels[i..i + 4], &expected);
+            }
+        }
+    }
 
     #[test]
     fn preview_cache_preserves_pixelation_source_and_invalidates_changes() {

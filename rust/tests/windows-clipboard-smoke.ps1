@@ -4,7 +4,8 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $ExePath,
     [ValidateRange(10, 120)]
-    [int] $TimeoutSeconds = 30
+    [int] $TimeoutSeconds = 30,
+    [switch] $AllowHistory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +64,21 @@ namespace ShotKitClipboardSmoke {
     [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+    public static void AssertPrivacyMarkers(bool expected) {
+      if (!OpenClipboard(IntPtr.Zero)) throw new Exception("Cannot open clipboard to inspect privacy markers");
+      try {
+        foreach (string name in new string[] { "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard" }) {
+          uint format = RegisterClipboardFormatW(name);
+          IntPtr memory = GetClipboardData(format);
+          if (!expected) { if (memory != IntPtr.Zero) throw new Exception("Unexpected privacy marker: " + name); continue; }
+          if (format == 0 || memory == IntPtr.Zero || GlobalSize(memory).ToUInt64() < 4) throw new Exception("Missing DWORD privacy marker: " + name);
+          IntPtr value = GlobalLock(memory);
+          if (value == IntPtr.Zero) throw new Exception("Cannot lock privacy marker: " + name);
+          try { if (Marshal.ReadInt32(value) != 0) throw new Exception("Privacy marker is not zero: " + name); }
+          finally { GlobalUnlock(memory); }
+        }
+      } finally { CloseClipboard(); }
+    }
     public static uint ClipboardSequence() { return GetClipboardSequenceNumber(); }
     public static string ControlKeyState() { return "GetAsyncKeyState="+GetAsyncKeyState(0x11)+", GetKeyState="+GetKeyState(0x11); }
     static string DescribeWindow(IntPtr hwnd) { return "HWND="+hwnd+" PID="+OwnerPid(hwnd)+" class='"+GetText(hwnd,false)+"' title='"+GetText(hwnd,true)+"'"; }
@@ -202,6 +218,11 @@ $cleanupFailures = @()
 
 try {
     New-Item -ItemType Directory -Path $root, $appData, $localAppData -Force | Out-Null
+    if ($AllowHistory) {
+        $settingsDir = Join-Path $appData 'ShotKitRust'
+        New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $settingsDir 'settings.json'), '{"version":1,"exclude_from_clipboard_history":false}')
+    }
     $fixture = [Drawing.Bitmap]::new(32, 24, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
         $g = [Drawing.Graphics]::FromImage($fixture)
@@ -288,6 +309,7 @@ try {
     }
     if ($sequenceAfterCopy -eq $sequenceBeforeCopy) { throw 'CLIPBOARD_SEQUENCE_INVALID: the clipboard did not change after Ctrl+C.' }
     Assert-DibV5MatchesFixture $dibv5 $expectedPixels 'CLIPBOARD'
+    [ShotKitClipboardSmoke.Native]::AssertPrivacyMarkers(-not $AllowHistory)
     # Exercise ShotKit's actual clipboard import path (Ctrl+V), which invokes
     # clipboard::read_image and opens a second editor for the copied image.
     if (-not [ShotKitClipboardSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'PASTE_FOCUS_FAILED: could not refocus the owned source editor.' }

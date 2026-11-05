@@ -71,6 +71,11 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 
 ## Nach Alpha 20 – in Entwicklung
 
+- Das Undo-Speicherbudget berücksichtigt nach Bildänderungen auch das bisherige Bild ([#47](https://github.com/BomBastikDE/shotkit/issues/47)); schmaler bewegter Inhalt wird bei der Scrollaufnahme nicht mehr als sicherer Stillstand gewertet ([#48](https://github.com/BomBastikDE/shotkit/issues/48)).
+- Der Bildimport begrenzt die tatsächlich gelesenen Bytes; die Messung des Spitzenbedarfs bleibt offen ([#51](https://github.com/BomBastikDE/shotkit/issues/51)). Der interne Beenden-Ablauf nimmt Abschlussnachrichten nur nach bestätigtem Beenden an; Windows-Nachweis folgt ([#49](https://github.com/BomBastikDE/shotkit/issues/49)).
+- Eine standardmäßig aktive Einstellung fordert Windows auf, kopierte Bilder vom Zwischenablageverlauf und der Cloud-Synchronisierung auszunehmen. Sie bietet keine Garantie; bereits vorhandene Einträge bleiben erhalten.
+- Das neue Werkzeug „Schwärzen“ ist über `S` erreichbar. Es schwärzt den gerenderten Export, während Originalbild und editierbarer Editorzustand erhalten bleiben. Verpixeln ist weiterhin keine sichere Schwärzung.
+
 - Eine waagerechte oder senkrechte Ziehbewegung ohne Fläche lässt die Bereichsauswahl offen; danach wird der Vorschlag am Endpunkt neu ermittelt ([#27](https://github.com/BomBastikDE/shotkit/issues/27), [#43](https://github.com/BomBastikDE/shotkit/issues/43)).
 - Die Auswahllupe zeigt den vergrößerten Bildinhalt wieder statt einer weißen Fläche ([#41](https://github.com/BomBastikDE/shotkit/issues/41)).
 - Textdialog und Infofenster passen Maße und Schrift bei Windows-DPI-Wechseln an; simulierte Wechsel sind getestet, reale gemischte DPI bleiben ein Praxistest ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).

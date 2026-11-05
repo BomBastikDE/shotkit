@@ -17,6 +17,7 @@ pub(super) enum Icon {
     Text,
     Marker,
     Pixelate,
+    Redact,
     Step,
     Pen,
     Crop,
@@ -37,7 +38,7 @@ pub(super) enum Icon {
     File,
     View,
 }
-pub(super) const ACTIONS: [Action; 27] = [
+pub(super) const ACTIONS: [Action; 28] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -84,6 +85,12 @@ pub(super) const ACTIONS: [Action; 27] = [
         id: ID_BLUR,
         label: "Verpixeln (B) – keine sichere Schwärzung",
         icon: Icon::Pixelate,
+        tool: true,
+    },
+    Action {
+        id: ID_REDACT,
+        label: "Schwärzen (S)",
+        icon: Icon::Redact,
         tool: true,
     },
     Action {

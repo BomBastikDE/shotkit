@@ -67,6 +67,7 @@ extern "system" {
     fn MoveToEx(dc: Hdc, x: i32, y: i32, old: *mut WinPoint) -> i32;
     fn LineTo(dc: Hdc, x: i32, y: i32) -> i32;
     fn Rectangle(dc: Hdc, l: i32, t: i32, r: i32, b: i32) -> i32;
+    fn PatBlt(dc: Hdc, x: i32, y: i32, w: i32, h: i32, rop: u32) -> i32;
     fn Ellipse(dc: Hdc, l: i32, t: i32, r: i32, b: i32) -> i32;
     fn Polygon(dc: Hdc, pts: *const WinPoint, count: i32) -> i32;
     fn SetBkMode(dc: Hdc, mode: i32) -> i32;
@@ -373,6 +374,11 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
         }
         ShapeKind::Highlight { start, end } => {
             translucent_highlight(dc, bounds(*start, *end), shape.style.color)
+        }
+        ShapeKind::Redact { start, end } => {
+            let r = bounds(*start, *end);
+            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            w <= 0 || h <= 0 || PatBlt(dc, r.left, r.top, w, h, 0x00000042) != 0
         }
         ShapeKind::Blur { start, end } => {
             let r = bounds(*start, *end);

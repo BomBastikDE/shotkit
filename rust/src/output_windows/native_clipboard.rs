@@ -1,7 +1,11 @@
 use super::*;
 
 #[cfg(windows)]
-pub fn copy_image_to_clipboard(owner: *mut c_void, image: &Image) -> Result<(), String> {
+pub fn copy_image_to_clipboard(
+    owner: *mut c_void,
+    image: &Image,
+    exclude_from_history: bool,
+) -> Result<(), String> {
     let _dib = validate_dib_image(image)?;
     unsafe {
         copy_bgra_clipboard(
@@ -12,6 +16,7 @@ pub fn copy_image_to_clipboard(owner: *mut c_void, image: &Image) -> Result<(), 
             image.width.checked_mul(4).ok_or("Bildzeile überläuft")?,
             true,
             Some(image),
+            exclude_from_history,
         )
     }
 }
@@ -30,8 +35,18 @@ pub unsafe fn copy_dib_section_to_clipboard(
     height: usize,
     source_stride: usize,
     top_down: bool,
+    exclude_from_history: bool,
 ) -> Result<(), String> {
-    copy_bgra_clipboard(owner, pixels, width, height, source_stride, top_down, None)
+    copy_bgra_clipboard(
+        owner,
+        pixels,
+        width,
+        height,
+        source_stride,
+        top_down,
+        None,
+        exclude_from_history,
+    )
 }
 
 #[cfg(windows)]
@@ -47,6 +62,7 @@ unsafe fn copy_bgra_clipboard(
     source_stride: usize,
     top_down: bool,
     image_for_png: Option<&Image>,
+    exclude_from_history: bool,
 ) -> Result<(), String> {
     use std::ptr::null_mut;
     type Handle = *mut c_void;
@@ -222,6 +238,22 @@ unsafe fn copy_bgra_clipboard(
         }
     }
 
+    // Register and prepare both DWORD markers before modifying the clipboard.
+    // A zero DWORD asks Windows not to retain or synchronize this item.
+    let mut privacy_markers = Vec::new();
+    if exclude_from_history {
+        for name in ["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"] {
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            let format = RegisterClipboardFormatW(wide.as_ptr());
+            if format == 0 {
+                return Err(format!("Zwischenablage-Schutzformat {name} konnte nicht registriert werden; Zwischenablage blieb unverändert"));
+            }
+            let memory = Memory::allocate(std::mem::size_of::<u32>())?;
+            // GMEM_ZEROINIT supplies the required DWORD zero.
+            privacy_markers.push((format, memory));
+        }
+    }
+
     if !crate::clipboard_retry::open_with_retry(|| OpenClipboard(owner) != 0) {
         return Err("OpenClipboard ist fehlgeschlagen; Clipboard blieb unverändert".into());
     }
@@ -231,6 +263,15 @@ unsafe fn copy_bgra_clipboard(
             "EmptyClipboard ist fehlgeschlagen; Clipboard-Inhalt konnte nicht ersetzt werden"
                 .into(),
         );
+    }
+
+    for (format, mut memory) in privacy_markers {
+        if SetClipboardData(format, memory.raw()).is_null() {
+            // No image has been published. Remove any marker already transferred.
+            let cleared = EmptyClipboard() != 0;
+            return Err(format!("Zwischenablage-Schutz konnte nicht gesetzt werden; kein Bild kopiert (Bereinigung: {})", if cleared { "erfolgreich" } else { "fehlgeschlagen" }));
+        }
+        memory.transferred();
     }
 
     let mut alpha_success = false;

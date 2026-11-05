@@ -93,7 +93,11 @@ pub fn execute_action(
             }
             #[cfg(windows)]
             {
-                copy_image_to_clipboard(clipboard_owner, image)?;
+                copy_image_to_clipboard(
+                    clipboard_owner,
+                    image,
+                    settings.exclude_from_clipboard_history,
+                )?;
                 Ok(OutputResult { saved_path: None })
             }
             #[cfg(not(windows))]

@@ -108,6 +108,7 @@ pub unsafe fn copy_bitmap(
     bitmap: *mut c_void,
     width: i32,
     height: i32,
+    exclude_from_history: bool,
 ) -> Result<(), String> {
     if bitmap.is_null() {
         return Err("bitmap handle is null".into());
@@ -162,6 +163,7 @@ pub unsafe fn copy_bitmap(
                 // Use that creation contract directly; GetObject's BITMAP
                 // dimensions are not the row-order contract for this buffer.
                 true,
+                exclude_from_history,
             );
         }
     }
@@ -214,7 +216,7 @@ pub unsafe fn copy_bitmap(
     }
     drop(dc);
     let image = shotkit::stitch::Image::new(w, h, pixels).map_err(str::to_owned)?;
-    shotkit::output_windows::copy_image_to_clipboard(owner, &image)
+    shotkit::output_windows::copy_image_to_clipboard(owner, &image, exclude_from_history)
 }
 
 struct ClipboardGuard(bool);

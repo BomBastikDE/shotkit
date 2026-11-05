@@ -317,6 +317,9 @@ pub(super) unsafe fn draw_icon(
                 }
             }
         }
+        Icon::Redact => {
+            icon_fill_rect(hdc, rect(2, 5, 18, 15), 0x00000000);
+        }
         Icon::Step => {
             let hc = high_contrast_enabled();
             let circle = if hc { GetSysColor(13) } else { 0x000000FF };

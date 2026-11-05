@@ -52,6 +52,7 @@ pub const ID_BLUR: usize = 0x5108;
 pub const ID_STEP: usize = 0x5109;
 pub const ID_PEN: usize = 0x510A;
 pub const ID_CROP: usize = 0x510B;
+pub const ID_REDACT: usize = 0x510C;
 pub const ID_SAVE: usize = 0x5110;
 pub const ID_COPY: usize = 0x5111;
 pub const ID_UNDO: usize = 0x5112;

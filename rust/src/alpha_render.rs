@@ -30,6 +30,11 @@ pub enum RenderError {
 /// Render a shape to a transparent straight-alpha BGRA layer of `width` x `height`.
 /// Shape coordinates are image-space pixels. Output bounds are clipped by GDI+.
 pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image, RenderError> {
+    if matches!(shape.kind, ShapeKind::Redact { .. }) {
+        return Err(RenderError::UnsupportedShape(
+            "Schwärzen ist eine Dokumentoperation",
+        ));
+    }
     if matches!(shape.kind, ShapeKind::Blur { .. }) {
         return Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
@@ -499,6 +504,9 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             let text_color = step_text_color(shape.style.color);
             draw_centered_text(g, *center, radius, &text, text_color)
         }
+        ShapeKind::Redact { .. } => Err(RenderError::UnsupportedShape(
+            "Schwärzen ist eine Dokumentoperation",
+        )),
         ShapeKind::Blur { .. } => Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
         )),

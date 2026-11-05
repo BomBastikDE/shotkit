@@ -41,6 +41,9 @@ pub struct Settings {
     pub open_editor: bool,
     #[serde(default)]
     pub copy_to_clipboard: bool,
+    /// Request that Windows excludes copied images from history and cloud sync.
+    #[serde(default = "default_exclude_from_clipboard_history")]
+    pub exclude_from_clipboard_history: bool,
     #[serde(default)]
     pub auto_save: bool,
     #[serde(default)]
@@ -51,6 +54,10 @@ fn default_open_editor() -> bool {
     true
 }
 
+fn default_exclude_from_clipboard_history() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -58,6 +65,7 @@ impl Default for Settings {
             save_folder: None,
             open_editor: true,
             copy_to_clipboard: false,
+            exclude_from_clipboard_history: true,
             auto_save: false,
             scroll_direction: ScrollDirection::Down,
         }
@@ -305,6 +313,7 @@ mod tests {
             save_folder: Some(dir.join("Bilder ä 日本語")),
             open_editor: false,
             copy_to_clipboard: true,
+            exclude_from_clipboard_history: false,
             auto_save: true,
             scroll_direction: ScrollDirection::Left,
             ..Settings::default()
@@ -322,6 +331,7 @@ mod tests {
         assert!(settings.save_folder.is_none());
         assert!(settings.open_editor);
         assert!(!settings.copy_to_clipboard);
+        assert!(settings.exclude_from_clipboard_history);
         assert!(!settings.auto_save);
         assert_eq!(settings.scroll_direction, ScrollDirection::Down);
     }
@@ -340,6 +350,7 @@ mod tests {
         assert_eq!(settings.version, CURRENT_VERSION);
         assert!(!settings.open_editor);
         assert!(settings.copy_to_clipboard);
+        assert!(settings.exclude_from_clipboard_history);
         assert_eq!(settings.save_folder, None);
         assert!(!settings.auto_save);
         assert_eq!(settings.scroll_direction, ScrollDirection::Down);

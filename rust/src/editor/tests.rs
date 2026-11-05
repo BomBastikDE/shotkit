@@ -50,7 +50,13 @@ fn csharp_midpoint_rounding_is_ties_to_even_for_positive_and_negative_angles() {
 
 #[test]
 fn shift_modifier_is_applied_to_preview_and_final_mouse_up() {
-    for tool in [Tool::Rectangle, Tool::Ellipse, Tool::Highlight, Tool::Blur] {
+    for tool in [
+        Tool::Rectangle,
+        Tool::Ellipse,
+        Tool::Highlight,
+        Tool::Blur,
+        Tool::Redact,
+    ] {
         let mut e = editor();
         e.set_tool(tool);
         e.mouse_down(p(10.0, 10.0));
@@ -772,4 +778,23 @@ fn undo_redo_keeps_selection_valid_across_crop() {
     assert!(e.redo());
     assert_eq!(e.selected_index(), Some(0));
     assert!(e.selection().is_some());
+}
+
+#[test]
+fn redact_tool_creates_and_moves_a_redaction() {
+    let mut e = editor();
+    e.set_tool(Tool::Redact);
+    e.mouse_down(p(10.0, 12.0));
+    e.mouse_move(p(40.0, 35.0));
+    assert!(matches!(
+        e.preview().unwrap().kind,
+        ShapeKind::Redact { .. }
+    ));
+    e.mouse_up(p(40.0, 35.0));
+    assert!(matches!(e.shapes()[0].kind, ShapeKind::Redact { .. }));
+    e.set_tool(Tool::Select);
+    e.mouse_down(p(25.0, 23.0));
+    e.mouse_up(p(25.0, 23.0));
+    assert!(e.nudge_selected(2.0, 3.0));
+    assert_eq!(e.shapes()[0].bounds().x, 12.0);
 }

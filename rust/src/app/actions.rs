@@ -26,7 +26,13 @@ pub(super) unsafe fn copy_current(h: H) {
         return;
     }
     let copied = composited_bitmap(h, false).and_then(|bmp| {
-        let result = clipboard::copy_bitmap(h, bmp, window_state(h).width, window_state(h).height);
+        let result = clipboard::copy_bitmap(
+            h,
+            bmp,
+            window_state(h).width,
+            window_state(h).height,
+            active_settings().exclude_from_clipboard_history,
+        );
         DeleteObject(bmp);
         result
     });
@@ -242,6 +248,7 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
         Tool::Text => toolbar::ID_TEXT,
         Tool::Highlight => toolbar::ID_MARKER,
         Tool::Blur => toolbar::ID_BLUR,
+        Tool::Redact => toolbar::ID_REDACT,
         Tool::Step => toolbar::ID_STEP,
         Tool::Pen => toolbar::ID_PEN,
         Tool::Crop => toolbar::ID_CROP,
@@ -298,6 +305,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         toolbar::ID_TEXT => Some(Tool::Text),
         toolbar::ID_MARKER => Some(Tool::Highlight),
         toolbar::ID_BLUR => Some(Tool::Blur),
+        toolbar::ID_REDACT => Some(Tool::Redact),
         toolbar::ID_STEP => Some(Tool::Step),
         toolbar::ID_PEN => Some(Tool::Pen),
         toolbar::ID_CROP => Some(Tool::Crop),

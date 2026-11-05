@@ -206,10 +206,14 @@ pub fn dirty_shape_region(
     if shapes.is_empty() {
         return None;
     }
-    if shapes
-        .iter()
-        .any(|shape| matches!(shape.kind, ShapeKind::Text { .. }))
-    {
+    // Redaction changes the source sampled by pixelation, potentially changing
+    // entire blocks outside the rectangle. Repaint the full image view.
+    if shapes.iter().any(|shape| {
+        matches!(
+            shape.kind,
+            ShapeKind::Text { .. } | ShapeKind::Redact { .. }
+        )
+    }) {
         return Some(view);
     }
     let sx = f64::from(view.width) / f64::from(image.0.max(1));
@@ -375,6 +379,18 @@ mod tests {
         assert!(region.width >= 300 && region.width < v.width);
         assert!(region.height >= 110 && region.height < v.height);
         assert_eq!(dirty_shape_region(v, (1000, 500), None, None), None);
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(10.0, 10.0),
+            end: Point::new(20.0, 20.0),
+        });
+        assert_eq!(
+            dirty_shape_region(v, (1000, 500), None, Some(&redact)),
+            Some(v)
+        );
+        assert_eq!(
+            dirty_shape_region(v, (1000, 500), Some(&redact), None),
+            Some(v)
+        );
         let text = Shape::new(ShapeKind::Text {
             location: Point::new(1.0, 1.0),
             text: "text".into(),
@@ -449,6 +465,7 @@ mod tests {
             ShapeKind::Ellipse { start: a, end: b },
             ShapeKind::Highlight { start: a, end: b },
             ShapeKind::Blur { start: a, end: b },
+            ShapeKind::Redact { start: a, end: b },
             ShapeKind::Freehand {
                 points: vec![a, Point::new(48.0, 70.0), b],
             },
