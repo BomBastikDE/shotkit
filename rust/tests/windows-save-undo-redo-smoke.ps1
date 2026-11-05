@@ -140,11 +140,10 @@ try {
     [void][ShotKitSaveHistorySmoke.N]::ShowWindow($main.H,3);[void][ShotKitSaveHistorySmoke.N]::SetForegroundWindow($main.H)
     $notice=Wait-Value { [ShotKitSaveHistorySmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
     $noticeHandle=$notice.H
-    $ok=[ShotKitSaveHistorySmoke.N]::Buttons($notice.H)|?{$_.Text.Trim() -eq 'OK'}|select -First 1
-    if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING'};[ShotKitSaveHistorySmoke.N]::Click($ok.H)
+    if(-not [ShotKitSaveHistorySmoke.N]::PostMessageW($noticeHandle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_POST_FAILED'}
     $noticeCloseDeadline=[DateTime]::UtcNow.AddSeconds(5)
     while([DateTime]::UtcNow -lt $noticeCloseDeadline -and [ShotKitSaveHistorySmoke.N]::IsWindow($noticeHandle)){Start-Sleep -Milliseconds 50}
-    if([ShotKitSaveHistorySmoke.N]::IsWindow($noticeHandle)){throw "STARTUP_NOTICE_CLOSE_TIMEOUT: OK was activated but startup dialog '$($notice.Title)' HWND=$noticeHandle was not destroyed."}
+    if([ShotKitSaveHistorySmoke.N]::IsWindow($noticeHandle)){throw "STARTUP_NOTICE_CLOSE_TIMEOUT: WM_CLOSE was posted but startup dialog '$($notice.Title)' HWND=$noticeHandle was not destroyed."}
     $main=Wait-Value {Get-Main} 'editor after startup notice'
     $client=[Activator]::CreateInstance([ShotKitSaveHistorySmoke.Rect]);[void][ShotKitSaveHistorySmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitSaveHistorySmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
