@@ -104,7 +104,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         rendered
     };
     let output = create_bitmap(&display_image)?;
-    if !preview || (tool != Tool::Crop && tool != Tool::Select) {
+    if !preview || (tool != Tool::Crop && tool != Tool::Select && !moving_selection) {
         return Ok(output);
     }
     let screen = GetDC(null_mut());
