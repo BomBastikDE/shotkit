@@ -401,7 +401,7 @@ mod tests {
         assert_eq!((result.width, result.height), (4, 4));
         assert_eq!(&result.pixels[0..4], &rgba_pixel(200, 100, 50, 255));
         assert_eq!(
-            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 8],
+            &result.pixels[20..28],
             &source.pixels[..8]
         );
         assert_eq!(
@@ -409,7 +409,7 @@ mod tests {
             &source.pixels[8..]
         );
         assert_eq!(
-            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 4],
+            &result.pixels[20..24],
             &[0, 0, 0, 0]
         );
     }
@@ -434,10 +434,12 @@ mod tests {
         assert_eq!((result.width, result.height), (4, 3));
         assert!(result
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] > 0 && p[3] < 128));
         assert_eq!(
-            &result.pixels[(1 * 4 + 1) * 4..(1 * 4 + 1) * 4 + 4],
+            &result.pixels[20..24],
             &source.pixels[..]
         );
     }

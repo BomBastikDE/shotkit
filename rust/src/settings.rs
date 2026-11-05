@@ -472,8 +472,10 @@ mod tests {
             load(&path),
             Err(SettingsError::UnsupportedVersion { found: 2, .. })
         ));
-        let mut settings = Settings::default();
-        settings.version = 2;
+        let settings = Settings {
+            version: 2,
+            ..Settings::default()
+        };
         assert!(matches!(
             save_atomic(&path, &settings),
             Err(SettingsError::UnsupportedVersion { found: 2, .. })

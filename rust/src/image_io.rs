@@ -213,7 +213,7 @@ mod tests {
     fn tiff_round_trip_preserves_pixels_without_enabling_tiff_export_paths() {
         let src = sample();
         let mut rgba = src.pixels.clone();
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
         let tiff_image = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 2, rgba).unwrap());
@@ -242,7 +242,7 @@ mod tests {
         let quality_92 = decode(&encode(&src, ImageFormat::Jpeg).unwrap()).unwrap();
 
         let mut rgb = Vec::with_capacity(64 * 64 * 3);
-        for px in src.pixels.chunks_exact(4) {
+        for px in src.pixels.as_chunks::<4>().0 {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
         }
         let rgb = RgbImage::from_raw(64, 64, rgb).unwrap();
@@ -254,8 +254,10 @@ mod tests {
 
         let mean_squared_error = |decoded: &Image| -> u64 {
             src.pixels
-                .chunks_exact(4)
-                .zip(decoded.pixels.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(decoded.pixels.as_chunks::<4>().0.iter())
                 .flat_map(|(a, b)| {
                     (0..3).map(move |channel| {
                         let delta = i64::from(a[channel]) - i64::from(b[channel]);

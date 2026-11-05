@@ -122,24 +122,28 @@ mod tests {
     #[test]
     fn checkerboard_flattens_only_transparent_pixels_without_changing_output() {
         let mut pixels = vec![0; 25 * 2 * 4];
-        for (i, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(&[i as u8, 100, 200, [0, 128, 255][i % 3]]);
         }
         let image = Image::new(25, 2, pixels).unwrap();
         let result = flatten_checkerboard(&image).unwrap();
         for (index, (src, dst)) in image
             .pixels
-            .chunks_exact(4)
-            .zip(result.pixels.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(result.pixels.as_chunks::<4>().0.iter())
             .enumerate()
         {
-            let gray = if (((index % image.width) / 12) + ((index / image.width) / 12)) % 2 == 0 {
+            let gray = if (((index % image.width) / 12) + ((index / image.width) / 12))
+                .is_multiple_of(2)
+            {
                 236
             } else {
                 196
             };
             assert_eq!(
-                dst,
+                *dst,
                 source_over(
                     [gray, gray, gray, 255],
                     [src[0], src[1], src[2], src[3]],

@@ -208,10 +208,7 @@ fn failed_partial_write_removes_temp_without_publishing_final_path() {
         .unwrap();
     let error = write_and_publish(&temp_path, &final_path, file, |file| {
         file.write_all(b"partial")?;
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "injected write failure",
-        ))
+        Err(io::Error::other("injected write failure"))
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Other);
