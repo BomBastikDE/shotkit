@@ -82,13 +82,11 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6b || w == 0xbb) => {
-            window_state(h).zoom = (window_state(h).zoom * 1.25).clamp(0.05, 64.0);
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_IN);
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6d || w == 0xbd) => {
-            window_state(h).zoom = (window_state(h).zoom * 0.8).clamp(0.05, 64.0);
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_OUT);
             0
         }
         0x020a if !window_state(h).bitmap.is_null() => {
@@ -122,37 +120,11 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && w == 0x30 => {
-            window_state(h).zoom = 1.0;
-            window_state(h).pan_x = 0;
-            window_state(h).pan_y = 0;
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_ORIGINAL);
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !window_state(h).bitmap.is_null() => {
-            let v = view::layout(
-                (window_state(h).width as u32, window_state(h).height as u32),
-                (
-                    0,
-                    toolbar_height(h),
-                    {
-                        let mut r: Rect = zeroed();
-                        GetClientRect(h, &mut r);
-                        r.right
-                    },
-                    {
-                        let mut r: Rect = zeroed();
-                        GetClientRect(h, &mut r);
-                        r.bottom - toolbar_height(h)
-                    },
-                ),
-                1.0,
-                (0, 0),
-            );
-            window_state(h).zoom =
-                (window_state(h).width as f64 / v.width as f64).clamp(0.05, 64.0);
-            window_state(h).pan_x = 0;
-            window_state(h).pan_y = 0;
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_FIT);
             0
         }
         toolbar::WM_COMMAND => {

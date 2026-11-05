@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$ExePath,
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$ScreenshotPath,
-    [ValidateRange(10,120)][int]$StartupTimeoutSeconds=30
+    [ValidateRange(10,120)][int]$StartupTimeoutSeconds=30,
+    [switch]$ResponsiveOnly
 )
 $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1'){throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'}
@@ -18,6 +19,7 @@ namespace ShotKitToolbarVisual {
  public struct Rect { public int Left,Top,Right,Bottom; }
  public struct Point { public int X,Y; }
  public sealed class Win { public IntPtr H; public string ClassName,Title; public bool Visible; }
+ public sealed class MenuItem { public int Id; public string Text; public IntPtr Submenu; }
  public sealed class Button { public IntPtr H; public int Id; public string Text; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyId { public uint Size; public IntPtr Hwnd; public uint Id; public Guid Guid; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyData {
@@ -47,6 +49,14 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int width,int height,uint flags);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect r);
+  [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
+  [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu,int position);
+  [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr menu,int position);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu,uint position,StringBuilder text,int count,uint flags);
+  public static MenuItem[] MenuItems(IntPtr menu){var a=new List<MenuItem>();for(int n=0;n<GetMenuItemCount(menu);n++){var text=new StringBuilder(512);GetMenuStringW(menu,(uint)n,text,text.Capacity,0x400);a.Add(new MenuItem{Id=unchecked((int)GetMenuItemID(menu,n)),Text=text.ToString(),Submenu=GetSubMenu(menu,n)});}return a.ToArray();}
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
@@ -61,6 +71,28 @@ namespace ShotKitToolbarVisual {
    return Shell_NotifyIconW(1,ref n); // NIM_MODIFY of the existing tooltip; fails for an unknown icon.
   }
   [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d,int x,int y,int w,int h,IntPtr s,int sx,int sy,int op);
+  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+  [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc,int x,int y);
+  [DllImport("user32.dll")] public static extern uint GetSysColor(int index);
+  public static uint ClientPixel(IntPtr h,int x,int y) {
+   Rect client;if(!GetClientRect(h,out client)||x<0||y<0||x>=client.Right||y>=client.Bottom)throw new InvalidOperationException("ZOOM_PIXEL_OUTSIDE_CLIENT");
+   var dc=GetDC(h);if(dc==IntPtr.Zero)throw new InvalidOperationException("ZOOM_CLIENT_DC_FAILED");
+   try { var color=GetPixel(dc,x,y);if(color==0xffffffff)throw new InvalidOperationException("ZOOM_GET_PIXEL_FAILED");return color; }
+   finally { ReleaseDC(h,dc); }
+  }
+  // Read actual painted pixels through the center of the controlled opaque
+  // fixture. Its cream base differs from COLOR_WINDOW throughout both axes.
+  public static Rect ImageBounds(IntPtr h,int toolbarHeight,out uint center) {
+   Rect client;if(!GetClientRect(h,out client)||client.Right<=0||client.Bottom<=toolbarHeight)throw new InvalidOperationException("ZOOM_CLIENT_BOUNDS_INVALID");
+   var dc=GetDC(h);if(dc==IntPtr.Zero)throw new InvalidOperationException("ZOOM_CLIENT_DC_FAILED");
+   try {
+    var background=GetSysColor(5);int cx=client.Right/2,cy=toolbarHeight+(client.Bottom-toolbarHeight)/2;
+    var bounds=new Rect {Left=-1,Top=-1,Right=-1,Bottom=-1};
+    for(int x=0;x<client.Right;x++){var color=GetPixel(dc,x,cy);if(color==0xffffffff)throw new InvalidOperationException("ZOOM_ROW_READ_FAILED");if(color!=background){if(bounds.Left<0)bounds.Left=x;bounds.Right=x+1;}}
+    for(int y=toolbarHeight;y<client.Bottom;y++){var color=GetPixel(dc,cx,y);if(color==0xffffffff)throw new InvalidOperationException("ZOOM_COLUMN_READ_FAILED");if(color!=background){if(bounds.Top<0)bounds.Top=y;bounds.Bottom=y+1;}}
+    center=GetPixel(dc,cx,cy);return bounds;
+   } finally { ReleaseDC(h,dc); }
+  }
   [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr h);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h,IntPtr dc);
   public static Win[] Windows(int pid){var a=new List<Win>(); EnumWindows((h,p)=>{uint q;GetWindowThreadProcessId(h,out q);if(q==(uint)pid){var c=new StringBuilder(256);var t=new StringBuilder(512);GetClassNameW(h,c,c.Capacity);GetWindowTextW(h,t,t.Capacity);a.Add(new Win{H=h,ClassName=c.ToString(),Title=t.ToString(),Visible=IsWindowVisible(h)});}return true;},IntPtr.Zero);return a.ToArray();}
@@ -78,6 +110,106 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Toolbar-Visual-'+[guid]::Ne
 $app=Join-Path $root 'appdata';$local=Join-Path $root 'localappdata';$fixture=Join-Path $root 'fixture.png'
 $oldA=$env:APPDATA;$oldL=$env:LOCALAPPDATA;$p=$null;$ticks=0;$mouse=$false;$controlDown=$false;$stopped=$true;$failure=$null;$cleanup=@()
 function Owned-Windows { if($null -eq $script:p -or $script:p.HasExited){return @()} @([ShotKitToolbarVisual.Native]::Windows($script:p.Id)) }
+function Wait-ToolbarCondition([scriptblock]$Condition,[string]$Failure) {
+ $deadline=[DateTime]::UtcNow.AddSeconds(5)
+ do { if(& $Condition){return}; if($script:p.HasExited){throw 'PROCESS_EXITED_DURING_RESPONSIVE_TEST'}; Start-Sleep -Milliseconds 50 } while([DateTime]::UtcNow -lt $deadline)
+ throw $Failure
+}
+function Press-ToolbarKey([byte]$Key) {
+ [ShotKitToolbarVisual.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
+ [ShotKitToolbarVisual.Native]::keybd_event($Key,0,2,[UIntPtr]::Zero)
+}
+function Click-ToolbarButton($Button) {
+ $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+ if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($Button.H,[ref]$r)){throw 'RESPONSIVE_BUTTON_RECT_FAILED'}
+ $x=[int](($r.Left+$r.Right)/2);$y=[int](($r.Top+$r.Bottom)/2)
+ if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($x,$y)){throw 'RESPONSIVE_CURSOR_FAILED'}
+ $point=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);[void][ShotKitToolbarVisual.Native]::GetCursorPos([ref]$point)
+ if([ShotKitToolbarVisual.Native]::WindowFromPoint($point) -ne $Button.H){throw 'RESPONSIVE_CLICK_TARGET_MISMATCH'}
+ [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
+ [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
+}
+function Read-ToolbarPopup {
+ $popup=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32768'}|Select-Object -First 1
+ if(-not $popup){return $null}
+ $menu=[ShotKitToolbarVisual.Native]::SendMessageW($popup.H,0x01e1,[IntPtr]::Zero,[IntPtr]::Zero)
+ if($menu -eq [IntPtr]::Zero){throw 'RESPONSIVE_NATIVE_MENU_HANDLE_MISSING'}
+ return @([ShotKitToolbarVisual.Native]::MenuItems($menu))
+}
+function Assert-ToolbarRow($Toolbar,$Buttons) {
+ $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);[void][ShotKitToolbarVisual.Native]::GetWindowRect($Toolbar.H,[ref]$r)
+ $rects=@(foreach($button in $Buttons){$b=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($button.H,[ref]$b)){throw 'RESPONSIVE_BUTTON_RECT_FAILED'};[pscustomobject]@{Id=$button.Id;R=$b}})|Sort-Object{$_.R.Left}
+ $top=$rects[0].R.Top
+ for($i=0;$i -lt $rects.Count;$i++){
+  $b=$rects[$i].R
+  if($b.Top -ne $top -or $b.Left -lt $r.Left -or $b.Right -gt $r.Right -or $b.Bottom -gt $r.Bottom){throw 'RESPONSIVE_ROW_BOUNDS_OR_WRAP_FAILED'}
+  if($i -gt 0 -and $rects[$i-1].R.Right -ge $b.Left){throw 'RESPONSIVE_BUTTON_OVERLAP'}
+ }
+ $fixed=@(0x5114,0x5111,0x5110,0x5131)
+ $right=@($rects|Select-Object -Last 4|ForEach-Object{$_.Id})
+ if(($right -join ',') -ne ($fixed -join ',')){throw "RESPONSIVE_FIXED_ACTION_ORDER_FAILED: $($right -join ',')"}
+ $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($Toolbar.H)
+ $margin=[int][Math]::Round(4*$dpi/96)
+ if([Math]::Abs($r.Right-$rects[-1].R.Right-$margin) -gt 1){throw 'RESPONSIVE_ACTIONS_NOT_RIGHT_ALIGNED'}
+ return $r.Bottom-$r.Top
+}
+
+
+function Press-ToolbarControlKey([byte]$Key) {
+ [ShotKitToolbarVisual.Native]::keybd_event(0x11,0,0,[UIntPtr]::Zero);$script:controlDown=$true
+ try { Press-ToolbarKey $Key }
+ finally { [ShotKitToolbarVisual.Native]::keybd_event(0x11,0,2,[UIntPtr]::Zero);$script:controlDown=$false }
+}
+function Invoke-ToolbarViewMenu([int]$CommandId) {
+ $view=[ShotKitToolbarVisual.Native]::Buttons($script:toolbar.H)|Where-Object{$_.Id -eq 0x5132}|Select-Object -First 1
+ if(-not $view){throw 'ZOOM_VIEW_BUTTON_MISSING'}
+ [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($script:main.H)
+ Click-ToolbarButton $view
+ Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'ZOOM_VIEW_MENU_NOT_VISIBLE'
+ $entries=@(Read-ToolbarPopup);$index=-1
+ for($i=0;$i -lt $entries.Count;$i++){if($entries[$i].Id -eq $CommandId){$index=$i;break}}
+ if($index -lt 0){throw "ZOOM_VIEW_COMMAND_MISSING: $CommandId"}
+ Press-ToolbarKey 0x24
+ for($i=0;$i -lt $index;$i++){Press-ToolbarKey 0x28}
+ Press-ToolbarKey 0x0d
+ Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'ZOOM_VIEW_MENU_DID_NOT_CLOSE'
+}
+function Get-ExpectedFixtureView([double]$Factor) {
+ $client=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+ if(-not [ShotKitToolbarVisual.Native]::GetClientRect($script:main.H,[ref]$client)){throw 'ZOOM_CLIENT_RECT_FAILED'}
+ $viewportHeight=$client.Bottom-$script:wideHeight
+ $width=[int][Math]::Floor(640*$Factor+0.5);$height=[int][Math]::Floor(360*$Factor+0.5)
+ # These checks use centered images smaller than the viewport; no pan is needed.
+ if($width -gt $client.Right -or $height -gt $viewportHeight){throw 'ZOOM_EXPECTED_VIEW_EXCEEDS_CLIENT'}
+ $left=[int][Math]::Floor(($client.Right-$width)/2)
+ $top=$script:wideHeight+[int][Math]::Floor(($viewportHeight-$height)/2)
+ return [pscustomobject]@{Left=$left;Top=$top;Right=$left+$width;Bottom=$top+$height}
+}
+function Test-ToolbarFixturePixels($Expected,$ClearedPoints=@()) {
+ [uint32]$center=0
+ $actual=[ShotKitToolbarVisual.Native]::ImageBounds($script:main.H,$script:wideHeight,[ref]$center)
+ if($actual.Left -ne $Expected.Left -or $actual.Top -ne $Expected.Top -or $actual.Right -ne $Expected.Right -or $actual.Bottom -ne $Expected.Bottom -or $center -ne 0x00f0f6f8){return $false}
+ $background=[ShotKitToolbarVisual.Native]::GetSysColor(5)
+ foreach($point in $ClearedPoints){if([ShotKitToolbarVisual.Native]::ClientPixel($script:main.H,$point.X,$point.Y) -ne $background){return $false}}
+ return $true
+}
+function Get-FixtureShrinkProbes($Before,$After) {
+ $cx=[int][Math]::Floor(($After.Left+$After.Right)/2);$cy=[int][Math]::Floor(($After.Top+$After.Bottom)/2)
+ $probes=@(
+  [pscustomobject]@{X=[int][Math]::Floor(($Before.Left+$After.Left)/2);Y=$cy},
+  [pscustomobject]@{X=[int][Math]::Floor(($Before.Right+$After.Right)/2);Y=$cy},
+  [pscustomobject]@{X=$cx;Y=[int][Math]::Floor(($Before.Top+$After.Top)/2)},
+  [pscustomobject]@{X=$cx;Y=[int][Math]::Floor(($Before.Bottom+$After.Bottom)/2)}
+ )
+ $background=[ShotKitToolbarVisual.Native]::GetSysColor(5)
+ foreach($point in $probes){
+  if($point.X -lt $Before.Left -or $point.X -ge $Before.Right -or $point.Y -lt $Before.Top -or $point.Y -ge $Before.Bottom){throw 'ZOOM_SHRINK_PROBE_OUTSIDE_PREVIOUS_IMAGE'}
+  if($point.X -ge $After.Left -and $point.X -lt $After.Right -and $point.Y -ge $After.Top -and $point.Y -lt $After.Bottom){throw 'ZOOM_SHRINK_PROBE_INSIDE_NEW_IMAGE'}
+  if([ShotKitToolbarVisual.Native]::ClientPixel($script:main.H,$point.X,$point.Y) -eq $background){throw 'ZOOM_SHRINK_PROBE_WAS_NOT_PAINTED_IMAGE'}
+ }
+ return $probes
+}
+
 try {
  New-Item -ItemType Directory -Path $root,$app,$local,(Split-Path -Parent $ScreenshotPath) -Force|Out-Null
  $b=[Drawing.Bitmap]::new(640,360);try{$g=[Drawing.Graphics]::FromImage($b);try{$g.Clear([Drawing.Color]::FromArgb(255,248,246,240));$f=[Drawing.Font]::new('Segoe UI',22);try{$g.DrawString('ShotKit visual smoke fixture',$f,[Drawing.Brushes]::DarkSlateBlue,28,26);$g.DrawRectangle([Drawing.Pens]::DarkOrange,50,100,420,210)}finally{$f.Dispose()}}finally{$g.Dispose()};$b.Save($fixture,[Drawing.Imaging.ImageFormat]::Png)}finally{$b.Dispose()}
@@ -102,9 +234,107 @@ try {
  Start-Sleep -Milliseconds 500
  $toolbar=[ShotKitToolbarVisual.Native]::Children($main.H)|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
- $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H));if($buttons.Count -ne 24){throw "TOOLBAR_BUTTONS_INCOMPLETE: expected exactly 24 native visible buttons, got $($buttons.Count)."}
- $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen')
+
+ $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
+ $wide=[int][Math]::Round(1000*$dpi/96);$tall=[int][Math]::Round(600*$dpi/96)
+ if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
+ Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 26 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
+ $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
+ $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
+ $wideHeight=Assert-ToolbarRow $toolbar $buttons
+ if($ResponsiveOnly) {
+  $allOriginalIds=@($buttons|Where-Object{$_.Id -notin @(0x5131,0x5132)}|ForEach-Object{$_.Id})
+  # Repeat shrink/grow to catch stale hidden controls and one-way stage state.
+  foreach($logicalWidth in @(900,800,700,500,430)) {
+   $narrow=[int][Math]::Round($logicalWidth*$dpi/96)
+   if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$narrow,$tall,4)){throw 'RESPONSIVE_NARROW_RESIZE_FAILED'}
+   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)|Where-Object{$_.Id -eq 0x5130}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_NOT_VISIBLE'
+   $narrowButtons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
+   if((Assert-ToolbarRow $toolbar $narrowButtons) -ne $wideHeight){throw 'RESPONSIVE_TOOLBAR_HEIGHT_CHANGED'}
+   foreach($id in @(0x5114,0x5111,0x5110,0x5131)){if(-not($narrowButtons|Where-Object{$_.Id -eq $id})){throw "RESPONSIVE_FIXED_ACTION_HIDDEN: $id"}}
+   $visibleIds=@($narrowButtons|ForEach-Object{$_.Id})
+   if($logicalWidth -eq 900 -and (0x5123 -in $visibleIds -or 0x5132 -in $visibleIds -or 0x5121 -notin $visibleIds)){throw 'RESPONSIVE_STAGE1_GROUPS_FAILED'}
+   if($logicalWidth -eq 800 -and (0x5121 -in $visibleIds -or 0x5122 -in $visibleIds -or 0x5112 -in $visibleIds -or 0x5113 -in $visibleIds -or 0x5124 -notin $visibleIds)){throw 'RESPONSIVE_STAGE2_GROUPS_FAILED'}
+   if($logicalWidth -eq 700 -and (0x5124 -in $visibleIds -or 0x5125 -in $visibleIds -or 0x5126 -in $visibleIds -or 0x5127 -in $visibleIds)){throw 'RESPONSIVE_STAGE3_GROUPS_FAILED'}
+   $more=$narrowButtons|Where-Object{$_.Id -eq 0x5130}|Select-Object -First 1
+   [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
+   Click-ToolbarButton $more
+   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'RESPONSIVE_OVERFLOW_MENU_DID_NOT_OPEN'
+   $entries=@(Read-ToolbarPopup)
+   $viewEntry=$entries|Where-Object{$_.Text -ceq 'Ansicht'}|Select-Object -First 1
+   if(-not $viewEntry -or $viewEntry.Submenu -eq [IntPtr]::Zero){throw 'RESPONSIVE_VIEW_SUBMENU_MISSING'}
+   $viewEntries=@([ShotKitToolbarVisual.Native]::MenuItems($viewEntry.Submenu))
+   if((@($viewEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5150,0x5151,0x5152,0x5153) -join ',')){throw 'RESPONSIVE_VIEW_ACTIONS_INCOMPLETE'}
+   $reachable=@($narrowButtons|ForEach-Object{$_.Id})+@($entries|ForEach-Object{$_.Id})
+   foreach($id in $allOriginalIds){if($id -notin $reachable){throw "RESPONSIVE_ACTION_UNREACHABLE: $id at $logicalWidth"}}
+   if($logicalWidth -eq 430) {
+    # Crop is hidden here. Activate its actual menu item using real keyboard input.
+    $index=-1;for($i=0;$i -lt $entries.Count;$i++){if($entries[$i].Id -eq 0x510b){$index=$i;break}}
+    if($index -lt 0){throw 'RESPONSIVE_CROP_NOT_IN_OVERFLOW'}
+    Press-ToolbarKey 0x24
+    for($i=0;$i -lt $index;$i++){Press-ToolbarKey 0x28}
+    Press-ToolbarKey 0x0d
+    Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.H -eq $main.H -and $_.Title -like '*Werkzeug Crop*'}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_CROP_DID_NOT_EXECUTE'
+   } else { Press-ToolbarKey 0x1b }
+   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_OVERFLOW_MENU_STILL_OPEN'
+   # Datei must be usable at every narrow width, including a real Open workflow.
+   $file=$narrowButtons|Where-Object{$_.Id -eq 0x5131}|Select-Object -First 1
+   Click-ToolbarButton $file
+   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_DID_NOT_OPEN'
+   $fileEntries=@(Read-ToolbarPopup)
+   if((@($fileEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5110,0x5140,0x5141,0x5142,0x5143) -join ',')){throw 'RESPONSIVE_FILE_ACTIONS_INCOMPLETE'}
+   if($logicalWidth -eq 430) {
+    Press-ToolbarKey 0x24;Press-ToolbarKey 0x28;Press-ToolbarKey 0x28;Press-ToolbarKey 0x0d
+    Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}).Count -eq 1 } 'RESPONSIVE_FILE_OPEN_DID_NOT_EXECUTE'
+    $dialog=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}|Select-Object -First 1
+    $cancel=[ShotKitToolbarVisual.Native]::Buttons($dialog.H)|Where-Object{$_.Id -eq 2}|Select-Object -First 1
+    if(-not $cancel){throw 'RESPONSIVE_OPEN_CANCEL_MISSING'}
+    [void][ShotKitToolbarVisual.Native]::PostMessageW($cancel.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+    Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.H -eq $dialog.H}).Count -eq 0 } 'RESPONSIVE_OPEN_CANCEL_FAILED'
+   } else { Press-ToolbarKey 0x1b }
+   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_STILL_OPEN'
+   if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_RESTORE_RESIZE_FAILED'}
+   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 26 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
+   $restored=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
+   foreach($label in $expected){if(-not($restored|Where-Object{$_.Text -ceq $label})){throw "RESPONSIVE_RESTORED_LABEL_MISSING: $label"}}
+   if((Assert-ToolbarRow $toolbar $restored) -ne $wideHeight){throw 'RESPONSIVE_RESTORED_HEIGHT_CHANGED'}
+  }
+  # A controlled 640x360 fixture provides an observable oracle independent of
+  # application zoom state: actual client pixels must occupy the expected size.
+  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
+  $client=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+  if(-not [ShotKitToolbarVisual.Native]::GetClientRect($main.H,[ref]$client)){throw 'ZOOM_CLIENT_RECT_FAILED'}
+  $fitFactor=[Math]::Min($client.Right/640.0,($client.Bottom-$wideHeight)/360.0)
+  if($fitFactor -lt 1.2){throw 'ZOOM_FIXTURE_VIEWPORT_TOO_SMALL_TO_DISTINGUISH_FIT_FROM_ORIGINAL'}
+  if([ShotKitToolbarVisual.Native]::GetSysColor(5) -eq 0x00f0f6f8){throw 'ZOOM_FIXTURE_BACKGROUND_NOT_DISTINGUISHABLE'}
+  $fitView=Get-ExpectedFixtureView $fitFactor
+  $originalView=Get-ExpectedFixtureView 1.0
+  # Move off the client before pixel reads so native tooltips cannot obscure it.
+  [void][ShotKitToolbarVisual.Native]::SetCursorPos(5,5)
+  Press-ToolbarControlKey 0x39
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $fitView } 'ZOOM_CTRL9_FIT_PIXEL_BOUNDS_FAILED'
+  $originalProbes=@(Get-FixtureShrinkProbes $fitView $originalView)
+  Invoke-ToolbarViewMenu 0x5152
+  [void][ShotKitToolbarVisual.Native]::SetCursorPos(5,5)
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $originalView $originalProbes } 'ZOOM_MENU_ORIGINAL_640X360_OR_BACKGROUND_CLEANUP_FAILED'
+  Press-ToolbarControlKey 0x39
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $fitView } 'ZOOM_CTRL9_RESTORE_FIT_PIXELS_FAILED'
+  $originalProbes=@(Get-FixtureShrinkProbes $fitView $originalView)
+  Press-ToolbarControlKey 0x30
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $originalView $originalProbes } 'ZOOM_CTRL0_ORIGINAL_640X360_OR_BACKGROUND_CLEANUP_FAILED'
+  # Exercise the Fit and Verkleinern menu actions, including a reduction that
+  # must erase pixels previously painted outside the newly smaller image.
+  Invoke-ToolbarViewMenu 0x5153
+  [void][ShotKitToolbarVisual.Native]::SetCursorPos(5,5)
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $fitView } 'ZOOM_MENU_FIT_PIXEL_BOUNDS_FAILED'
+  $reducedView=Get-ExpectedFixtureView ($fitFactor*0.8)
+  $reductionProbes=@(Get-FixtureShrinkProbes $fitView $reducedView)
+  Invoke-ToolbarViewMenu 0x5151
+  [void][ShotKitToolbarVisual.Native]::SetCursorPos(5,5)
+  Wait-ToolbarCondition { Test-ToolbarFixturePixels $reducedView $reductionProbes } 'ZOOM_MENU_REDUCE_PIXEL_BOUNDS_OR_BACKGROUND_CLEANUP_FAILED'
+  $pass='PASS: actual narrow/wide native resize; fixed right-side Aufnahme/Kopieren/Speichern/Datei; all existing commands reachable; real overflow Crop and Datei/Open activation; Ansicht/Originalgröße/Fit/Verkleinern and Ctrl+9/0 verified through actual image bounds and cleared background pixels; restoration verified.'
+ } else {
  # Hover native buttons and read the visible tooltip through UI Automation.
  foreach($tipLabel in @('Rechteck (R)','Rot','Farbe…','Neue Aufnahme (Strg+N)')) {
   $hover=$buttons|Where-Object{$_.Text -ceq $tipLabel}|Select-Object -First 1
@@ -197,7 +427,8 @@ try {
   }
   if($edgePixels -eq 0){throw 'SMOOTH_ICON_EDGES_MISSING: no intermediate grayscale pixels in inactive line icon.'}
  } finally { $verify.Dispose() }
- $pass="PASS: owned 24-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
+ $pass="PASS: owned 26-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
+ }
 } catch {$failure=$_} finally {
  if($mouse){try{[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}
  if($controlDown){try{[ShotKitToolbarVisual.Native]::keybd_event(17,0,2,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}

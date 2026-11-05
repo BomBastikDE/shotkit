@@ -238,6 +238,23 @@ pub(super) unsafe fn draw_icon(
     let old_brush = SelectObject(hdc, GetStockObject(5)); // HOLLOW_BRUSH
 
     match icon {
+        Icon::More => {
+            for shift in [0, 7] {
+                icon_line(hdc, ox + 5 + shift, oy + 5, ox + 10 + shift, oy + 10);
+                icon_line(hdc, ox + 10 + shift, oy + 10, ox + 5 + shift, oy + 15);
+            }
+        }
+        Icon::File => {
+            Rectangle(hdc, ox + 3, oy + 3, ox + 17, oy + 18);
+            for y in [7, 10, 13] {
+                icon_line(hdc, ox + 6, oy + y, ox + 14, oy + y);
+            }
+        }
+        Icon::View => {
+            Rectangle(hdc, ox + 2, oy + 3, ox + 18, oy + 17);
+            icon_line(hdc, ox + 10, oy + 6, ox + 10, oy + 14);
+            icon_line(hdc, ox + 6, oy + 10, ox + 14, oy + 10);
+        }
         Icon::Select => icon_polygon(
             hdc,
             &[

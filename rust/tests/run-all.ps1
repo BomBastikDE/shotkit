@@ -31,6 +31,7 @@ $pwsh = (Get-Process -Id $PID).Path
 $cases = @(
     @{ Name = 'Interactive Windows About dialog smoke test'; Script = 'windows-about-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows toolbar and icon visual smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath); TimeoutSeconds = 300; Toolbar = $true },
+    @{ Name = 'Required interactive Windows responsive toolbar smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath, '-ResponsiveOnly'); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Windows step number visibility smoke test'; Script = 'windows-step-visibility-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows clipboard alpha round-trip smoke test'; Script = 'windows-clipboard-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows capture smoke test'; Script = 'windows-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },

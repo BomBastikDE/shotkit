@@ -256,6 +256,17 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
 // Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
 // Nachrichten: Fenster-, Dialog- und Aufnahmeaktionen können Nachrichten auslösen.
 pub(super) unsafe fn toolbar_action(h: H, id: usize) {
+    // Native popup loops run inside the parent's existing ModalGuard. Return
+    // only validated ordinary commands and reuse their exact editor workflows.
+    let id = if matches!(id, toolbar::ID_MORE | toolbar::ID_FILE | toolbar::ID_VIEW) {
+        let Some(selected) = toolbar::popup(h, id) else {
+            SetFocus(h);
+            return;
+        };
+        selected
+    } else {
+        id
+    };
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
         toolbar::ID_ARROW => Some(Tool::Arrow),
@@ -322,6 +333,16 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             toolbar::ID_SAVE => {
                 save(h, false);
             }
+            toolbar::ID_SAVE_AS => {
+                save(h, true);
+            }
+            toolbar::ID_OPEN => open_image(h),
+            toolbar::ID_PASTE => paste_image(h),
+            toolbar::ID_FOLDER => open_storage_folder(h),
+            toolbar::ID_ZOOM_IN => apply_zoom(h, view::ZoomAction::In),
+            toolbar::ID_ZOOM_OUT => apply_zoom(h, view::ZoomAction::Out),
+            toolbar::ID_ZOOM_ORIGINAL => apply_zoom(h, view::ZoomAction::Original),
+            toolbar::ID_ZOOM_FIT => apply_zoom(h, view::ZoomAction::Fit),
             toolbar::ID_COPY => copy_current(h),
             toolbar::ID_UNDO => history(h, false),
             toolbar::ID_REDO => history(h, true),
@@ -331,4 +352,30 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     report_editor_error(h);
     SetFocus(h);
     InvalidateRect(h, std::ptr::null(), 0);
+}
+
+// SAFETY CONTRACT: h is a live editor on the UI thread. State values are copied
+// before GetClientRect; no WindowState reference spans a native call.
+unsafe fn apply_zoom(h: H, action: view::ZoomAction) {
+    let image = (window_state(h).width as u32, window_state(h).height as u32);
+    let current = window_state(h).zoom;
+    let top = toolbar_height(h);
+    let mut client: Rect = zeroed();
+    GetClientRect(h, &mut client);
+    let zoom = view::zoom_for_action(
+        action,
+        image,
+        (0, top, client.right, client.bottom - top),
+        current,
+    );
+    {
+        let state = window_state(h);
+        state.zoom = zoom;
+        if matches!(action, view::ZoomAction::Original | view::ZoomAction::Fit) {
+            state.pan_x = 0;
+            state.pan_y = 0;
+        }
+    }
+    // A smaller image exposes background outside the new image rectangle.
+    InvalidateRect(h, std::ptr::null(), 1);
 }

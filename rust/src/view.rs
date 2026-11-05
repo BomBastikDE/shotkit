@@ -14,6 +14,41 @@ pub fn smooth_preview(image: (i32, i32), displayed: (i32, i32)) -> bool {
         && displayed.1 > 0
         && (displayed.0 < image.0 || displayed.1 < image.1)
 }
+/// Toolbar menus and their keyboard equivalents share these view operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomAction {
+    In,
+    Out,
+    Original,
+    Fit,
+}
+
+/// The stored zoom is relative to fit-to-window, so original size uses the
+/// reciprocal of the unrounded fit factor. Computing it from rounded preview
+/// dimensions would introduce pixel errors for odd-sized source images.
+pub fn zoom_for_action(
+    action: ZoomAction,
+    image: (u32, u32),
+    viewport: (i32, i32, i32, i32),
+    current: f64,
+) -> f64 {
+    let next = match action {
+        ZoomAction::In => current * 1.25,
+        ZoomAction::Out => current * 0.8,
+        ZoomAction::Fit => 1.0,
+        ZoomAction::Original => {
+            let fit = (f64::from(viewport.2.max(1)) / f64::from(image.0.max(1)))
+                .min(f64::from(viewport.3.max(1)) / f64::from(image.1.max(1)));
+            1.0 / fit
+        }
+    };
+    if next.is_finite() {
+        next.clamp(0.05, 64.0)
+    } else {
+        1.0
+    }
+}
+
 /// `zoom` multiplies fit-to-window; `pan` is the scroll offset in screen pixels.
 pub fn layout(
     image: (u32, u32),
@@ -184,6 +219,39 @@ pub fn dirty_shape_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_and_fit_are_distinct_for_small_large_and_odd_sized_images() {
+        for (image, viewport) in [
+            ((320, 240), (0, 44, 1280, 960)),
+            ((4000, 2000), (0, 44, 800, 600)),
+            ((4037, 1234), (0, 44, 517, 401)),
+            ((1234, 4037), (0, 44, 517, 401)),
+        ] {
+            let original = zoom_for_action(ZoomAction::Original, image, viewport, 2.0);
+            let rendered = layout(image, viewport, original, (0, 0));
+            assert_eq!((rendered.width as u32, rendered.height as u32), image);
+            let fit = zoom_for_action(ZoomAction::Fit, image, viewport, original);
+            assert_eq!(fit, 1.0);
+            let rendered = layout(image, viewport, fit, (0, 0));
+            assert!(rendered.width <= viewport.2 && rendered.height <= viewport.3);
+            assert!(rendered.width == viewport.2 || rendered.height == viewport.3);
+        }
+    }
+    #[test]
+    fn view_actions_preserve_step_sizes_and_existing_zoom_limits() {
+        let image = (4000, 2000);
+        let viewport = (0, 44, 800, 600);
+        let zoom = zoom_for_action(ZoomAction::In, image, viewport, 2.0);
+        assert_eq!(zoom, 2.5);
+        assert_eq!(zoom_for_action(ZoomAction::Out, image, viewport, zoom), 2.0);
+        assert_eq!(zoom_for_action(ZoomAction::In, image, viewport, 64.0), 64.0);
+        assert_eq!(
+            zoom_for_action(ZoomAction::Out, image, viewport, 0.05),
+            0.05
+        );
+        assert!(zoom_for_action(ZoomAction::Original, (0, 0), (0, 0, 0, 0), 1.0).is_finite());
+    }
+
     #[test]
     fn dirty_region_covers_old_and_new_shapes_and_clips_to_image_view() {
         use crate::shapes::{Point, Shape, ShapeKind};
