@@ -37,6 +37,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb,IntPtr p);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h,EnumProc cb,IntPtr p);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h,StringBuilder s,int n);
+  public static string WindowClass(IntPtr h){var s=new StringBuilder(256);GetClassNameW(h,s,s.Capacity);return s.ToString();}
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h,StringBuilder s,int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
@@ -135,8 +136,13 @@ function Click-ToolbarButton($Button) {
  $x=[int](($r.Left+$r.Right)/2);$y=[int](($r.Top+$r.Bottom)/2)
  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($x,$y)){throw 'RESPONSIVE_CURSOR_FAILED'}
  $point=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);[void][ShotKitToolbarVisual.Native]::GetCursorPos([ref]$point)
- $hit=[ShotKitToolbarVisual.Native]::WindowFromPoint($point)
- if($hit -ne $Button.H){throw "RESPONSIVE_CLICK_TARGET_MISMATCH: button=$($Button.Id) expected=$($Button.H) hit=$hit point=$($point.X),$($point.Y) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom); $(Get-ToolbarInteractionDiagnostic)"}
+ $deadline=[DateTime]::UtcNow.AddMilliseconds(500)
+ do {
+  $hit=[ShotKitToolbarVisual.Native]::WindowFromPoint($point)
+  if($hit -eq $Button.H){break}
+  Start-Sleep -Milliseconds 20
+ } while([DateTime]::UtcNow -lt $deadline)
+ if($hit -ne $Button.H){throw "RESPONSIVE_CLICK_TARGET_MISMATCH: button=$($Button.Id) expected=$($Button.H) hit=$hit class=$([ShotKitToolbarVisual.Native]::WindowClass($hit)) point=$($point.X),$($point.Y) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom); $(Get-ToolbarInteractionDiagnostic)"}
  [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
  [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
 }
