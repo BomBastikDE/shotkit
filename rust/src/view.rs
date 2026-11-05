@@ -64,6 +64,25 @@ pub fn zoom_for_action(
     }
 }
 
+/// Decode the modifier state carried with a Windows mouse-wheel message.
+/// Control takes precedence over Shift, as in the editor's input handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelAction {
+    Zoom,
+    PanHorizontal,
+    PanVertical,
+}
+
+pub fn wheel_action(message_keys: usize) -> WheelAction {
+    if message_keys & 0x0008 != 0 {
+        WheelAction::Zoom
+    } else if message_keys & 0x0004 != 0 {
+        WheelAction::PanHorizontal
+    } else {
+        WheelAction::PanVertical
+    }
+}
+
 /// `zoom` multiplies fit-to-window; `pan` is the scroll offset in screen pixels.
 pub fn layout(
     image: (u32, u32),
@@ -278,6 +297,18 @@ mod tests {
         assert_eq!(zoom_after_wheel(2.5, -120), 2.0);
         assert_eq!(zoom_after_wheel(64.0, 120), 64.0);
         assert_eq!(zoom_after_wheel(0.05, -120), 0.05);
+    }
+
+    #[test]
+    fn wheel_message_modifiers_select_zoom_or_pan() {
+        assert_eq!(wheel_action(0), WheelAction::PanVertical);
+        assert_eq!(wheel_action(0x0004), WheelAction::PanHorizontal);
+        assert_eq!(wheel_action(0x0008), WheelAction::Zoom);
+        assert_eq!(wheel_action(0x000c), WheelAction::Zoom);
+        assert_eq!(
+            wheel_action((120usize << 16) | 0x0004),
+            WheelAction::PanHorizontal
+        );
     }
 
     #[test]

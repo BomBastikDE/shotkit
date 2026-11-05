@@ -91,7 +91,8 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
         }
         0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
-            if GetKeyState(0x11) < 0 {
+            let action = view::wheel_action(w);
+            if action == view::WheelAction::Zoom {
                 window_state(h).zoom = view::zoom_after_wheel(window_state(h).zoom, delta);
             } else {
                 let mut client: Rect = zeroed();
@@ -109,7 +110,7 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
                     state.zoom,
                     (state.pan_x, state.pan_y),
                     delta,
-                    GetKeyState(0x10) < 0,
+                    action == view::WheelAction::PanHorizontal,
                 );
                 state.pan_x = pan.0;
                 state.pan_y = pan.1;
