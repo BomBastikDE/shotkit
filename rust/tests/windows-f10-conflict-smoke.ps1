@@ -65,7 +65,22 @@ function Start-ShotKit {try{$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppDat
 function Close-Dialog($Dialog,[string]$Description){if([ShotKitHotkeyConflictSmoke.N]::Owner($Dialog.H) -ne $shotKit.Id){throw "DIALOG_OWNER_MISMATCH for $Description HWND=$($Dialog.H)."};if(-not [ShotKitHotkeyConflictSmoke.N]::Close($Dialog.H)){throw "DIALOG_CLOSE_POST_FAILED for $Description HWND=$($Dialog.H)."};[void](Wait-For {-not [ShotKitHotkeyConflictSmoke.N]::Exists($Dialog.H)} "$Description close" 8 $shotKit)}
 function Set-ReservationForeground {if($null -eq $script:helperWindow -or -not $script:helperWindow.Visible -or [ShotKitHotkeyConflictSmoke.N]::Owner($script:helperWindow.H) -ne $helper.Id){throw 'RESERVATION_WINDOW_IDENTITY_INVALID.'};[void][ShotKitHotkeyConflictSmoke.N]::SetForegroundWindow($script:helperWindow.H);try{[void](Wait-For {[ShotKitHotkeyConflictSmoke.N]::GetForegroundWindow() -eq $script:helperWindow.H} "reservation window to become foreground (expected HWND=$($script:helperWindow.H))" 5 $helper)}catch{throw "RESERVATION_WINDOW_NOT_FOREGROUND: $($_.Exception.Message); actual HWND=$([ShotKitHotkeyConflictSmoke.N]::GetForegroundWindow())."}}
 function Send-ConflictChord {Set-ReservationForeground;[ShotKitHotkeyConflictSmoke.N]::SendF10()}
-function Wait-EventCount([int]$Expected){Wait-For {if(Test-Path -LiteralPath $eventFile){$v=[IO.File]::ReadAllText($eventFile).Trim();if($v -match '^\d+$' -and [int]$v -ge $Expected){return [int]$v}};return $null} "reservation helper WM_HOTKEY count >= $Expected" 8 $helper}
+# Share delete so the helper can atomically replace a complete snapshot while it is read.
+function Read-ReservationFile([string]$Path){
+ $deadline=[DateTime]::UtcNow.AddSeconds(1)
+ while($true){
+  try{
+   $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+   try{$reader=[IO.StreamReader]::new($stream);try{return $reader.ReadToEnd().Trim()}finally{$reader.Dispose()}}finally{$stream.Dispose()}
+  }catch{
+   $errorCause=$_.Exception
+   while($errorCause.InnerException){$errorCause=$errorCause.InnerException}
+   if($errorCause -isnot [IO.IOException] -or ($errorCause.HResult -band 0xffff) -notin @(32,33) -or [DateTime]::UtcNow -ge $deadline){throw}
+   Start-Sleep -Milliseconds 50
+  }
+ }
+}
+function Wait-EventCount([int]$Expected){Wait-For {if(Test-Path -LiteralPath $eventFile){$v=(Read-ReservationFile $eventFile);if($v -match '^\d+$' -and [int]$v -ge $Expected){return [int]$v}};return $null} "reservation helper WM_HOTKEY count >= $Expected" 8 $helper}
 function Start-AppAndCloseWelcome([switch]$ExpectConflict){
  $script:shotKit=Start-ShotKit
  $main=Wait-For {Owned-Windows $shotKit|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1} 'ShotKit primary window' $StartupTimeoutSeconds $shotKit
@@ -117,14 +132,20 @@ namespace ShotKitHotkeyReservationHelper {
   [DllImport("user32.dll",SetLastError=true)] static extern bool RegisterHotKey(IntPtr h,int id,uint mods,uint key);
   [DllImport("user32.dll",SetLastError=true)] static extern bool UnregisterHotKey(IntPtr h,int id);
   readonly string ready,events,released; bool registered; int count;
+  // Publish only complete snapshots. There is one writer, and temp files are on the same volume.
+  static void Publish(string path,string value){
+   string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+   try{System.IO.File.WriteAllText(temp,value);if(System.IO.File.Exists(path))System.IO.File.Replace(temp,path,null);else System.IO.File.Move(temp,path);}
+   finally{if(System.IO.File.Exists(temp))System.IO.File.Delete(temp);}
+  }
   public ReservationForm(string readyPath,string eventPath,string releasedPath,string title){
    ready=readyPath;events=eventPath;released=releasedPath;Text=title;StartPosition=FormStartPosition.CenterScreen;FormBorderStyle=FormBorderStyle.FixedDialog;ClientSize=new Size(440,120);MaximizeBox=false;MinimizeBox=false;ShowInTaskbar=false;
    var label=new Label();label.Dock=DockStyle.Fill;label.TextAlign=ContentAlignment.MiddleCenter;label.Text="ShotKit hotkey-conflict test window\\r\\nF10 is reserved by this test process.";Controls.Add(label);
-   Shown+=delegate{registered=RegisterHotKey(Handle,HotkeyId,HotkeyModifiers,HotkeyKey);int error=registered?0:Marshal.GetLastWin32Error();System.IO.File.WriteAllText(ready,String.Format("{0},{1},{2}",System.Diagnostics.Process.GetCurrentProcess().Id,registered?1:0,error));if(registered)System.IO.File.WriteAllText(events,"0");};
+   Shown+=delegate{registered=RegisterHotKey(Handle,HotkeyId,HotkeyModifiers,HotkeyKey);int error=registered?0:Marshal.GetLastWin32Error();Publish(ready,String.Format("{0},{1},{2}",System.Diagnostics.Process.GetCurrentProcess().Id,registered?1:0,error));if(registered)Publish(events,"0");};
   }
   protected override void WndProc(ref Message m){
-   if(m.Msg==WmHotkey&&m.WParam.ToInt32()==HotkeyId){count++;System.IO.File.WriteAllText(events,count.ToString());m.Result=IntPtr.Zero;return;}
-   if(m.Msg==WmRelease){bool ok=UnregisterHotKey(Handle,HotkeyId);registered=false;System.IO.File.WriteAllText(released,ok?"1":"0");m.Result=IntPtr.Zero;return;}
+   if(m.Msg==WmHotkey&&m.WParam.ToInt32()==HotkeyId){count++;Publish(events,count.ToString());m.Result=IntPtr.Zero;return;}
+   if(m.Msg==WmRelease){bool ok=UnregisterHotKey(Handle,HotkeyId);registered=false;Publish(released,ok?"1":"0");m.Result=IntPtr.Zero;return;}
    if(m.Msg==WmExit){Close();m.Result=IntPtr.Zero;return;}
    base.WndProc(ref m);
   }
@@ -141,7 +162,7 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  $helperArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Ready "{1}" -Events "{2}" -Released "{3}" -WindowTitle "{4}"' -f $helperFile,$readyFile,$eventFile,$releasedFile,$helperTitle
  $helper=Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $helperStdout -RedirectStandardError $helperStderr -PassThru
  try {
-  $ready=Wait-For {if(Test-Path -LiteralPath $readyFile){[IO.File]::ReadAllText($readyFile).Trim()}} 'reservation helper readiness' 10 $helper
+  $ready=Wait-For {if(Test-Path -LiteralPath $readyFile){(Read-ReservationFile $readyFile)}} 'reservation helper readiness' 10 $helper
  } catch {
   $stdout=if(Test-Path -LiteralPath $helperStdout){Get-Content -LiteralPath $helperStdout -Raw}else{''}
   $stderr=if(Test-Path -LiteralPath $helperStderr){Get-Content -LiteralPath $helperStderr -Raw}else{''}
@@ -151,11 +172,11 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  if($readyParts[1] -ne '1'){throw "PREEXISTING_HOTKEY_CONFLICT: test helper could not reserve F10 (RegisterHotKey error $($readyParts[2])). No ShotKit process was started."}
  $script:helperWindow=Wait-For {Owned-Windows $helper|Where-Object{$_.Visible -and $_.Title -ceq $helperTitle}|Select-Object -First 1} 'visible reservation helper window' 8 $helper
  if([ShotKitHotkeyConflictSmoke.N]::Owner($script:helperWindow.H) -ne $helper.Id){throw "RESERVATION_WINDOW_OWNER_MISMATCH HWND=$($script:helperWindow.H)."}
- [void](Wait-For {if(Test-Path -LiteralPath $eventFile){[IO.File]::ReadAllText($eventFile).Trim()}} 'reservation event log' 5 $helper)
+ [void](Wait-For {if(Test-Path -LiteralPath $eventFile){(Read-ReservationFile $eventFile)}} 'reservation event log' 5 $helper)
 
  Start-AppAndCloseWelcome -ExpectConflict
  foreach($expected in 1..2){Send-ConflictChord;[void](Wait-EventCount $expected);Start-Sleep -Milliseconds 100}
- $reservationCount=[IO.File]::ReadAllText($eventFile).Trim()
+ $reservationCount=(Read-ReservationFile $eventFile)
  if($reservationCount -cne '2'){throw "RESERVATION_CHANGED_OR_REPEATED: expected exactly two helper WM_HOTKEY messages, got '$reservationCount'."}
  $unexpected=@(Owned-Windows $shotKit|Where-Object{$_.Visible -and (($_.ClassName -eq '#32770' -and $_.Title -eq 'Scroll-Richtung') -or $_.ClassName -eq 'ShotKitSelectionOverlay')})
  if($unexpected.Count){throw "CONFLICTING_SHORTCUT_DISPATCHED_INTO_SHOTKIT: $($unexpected[0].ClassName) '$($unexpected[0].Title)'."}
@@ -163,7 +184,7 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
 
  Stop-ShotKit
  if([ShotKitHotkeyConflictSmoke.N]::Owner($script:helperWindow.H) -ne $helper.Id -or -not [ShotKitHotkeyConflictSmoke.N]::PostMessageW($script:helperWindow.H,0x8001,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'COULD_NOT_POST_RESERVATION_RELEASE_TO_OWNED_WINDOW.'}
- $released=Wait-For {if(Test-Path -LiteralPath $releasedFile){[IO.File]::ReadAllText($releasedFile).Trim()}} 'helper UnregisterHotKey acknowledgement' 8 $helper
+ $released=Wait-For {if(Test-Path -LiteralPath $releasedFile){(Read-ReservationFile $releasedFile)}} 'helper UnregisterHotKey acknowledgement' 8 $helper
  if($released -cne '1'){throw "HELPER_UNREGISTER_FAILED: ack='$released'."}
 
  Start-AppAndCloseWelcome
