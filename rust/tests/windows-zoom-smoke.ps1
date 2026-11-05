@@ -38,6 +38,8 @@ namespace ShotKitZoomSmoke {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
   [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
+  [DllImport("user32.dll",SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h,uint m,UIntPtr w,IntPtr l,uint flags,uint timeout,out UIntPtr result);
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
   [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint f,bool inherit,uint access);
   [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformationW(IntPtr h,int i,StringBuilder s,uint n,out uint needed);
@@ -49,6 +51,17 @@ namespace ShotKitZoomSmoke {
   public static void CtrlKey(byte k){try{keybd_event(0x11,0,0,UIntPtr.Zero);keybd_event(k,0,0,UIntPtr.Zero);}finally{keybd_event(k,0,2,UIntPtr.Zero);keybd_event(0x11,0,2,UIntPtr.Zero);}}
   public static void CtrlNumpad(byte k){try{keybd_event(0x11,0,0,UIntPtr.Zero);keybd_event(k,0,0,UIntPtr.Zero);}finally{keybd_event(k,0,2,UIntPtr.Zero);keybd_event(0x11,0,2,UIntPtr.Zero);}}
   public static void Wheel(int x,int y,int delta){SetCursorPos(x,y);mouse_event(0x0800,0,0,(uint)delta,UIntPtr.Zero);}
+  public static void ShiftWheelMessage(IntPtr h,int x,int y,int delta){
+   if(!IsWindow(h))throw new InvalidOperationException("MESSAGE_TARGET_NOT_WINDOW");
+   if(delta!=120&&delta!=-120)throw new ArgumentOutOfRangeException("delta");
+   if((GetAsyncKeyState(0x10)&0x8000)!=0)throw new InvalidOperationException("SHIFT_PHYSICALLY_DOWN_BEFORE_MESSAGE");
+   long packed=((long)(ushort)(short)y<<16)|(ushort)(short)x;
+   ulong wp=((ulong)(ushort)(short)delta<<16)|0x0004UL; // MK_SHIFT in low word; signed delta bits in high word.
+   UIntPtr result;UIntPtr wparam=UIntPtr.Size==8?new UIntPtr(wp):new UIntPtr((uint)wp);IntPtr lparam=IntPtr.Size==8?new IntPtr(packed):new IntPtr(unchecked((int)packed));
+   IntPtr sent=SendMessageTimeoutW(h,0x020A,wparam,lparam,0x0001|0x0002|0x0020,1000,out result);
+   if(sent==IntPtr.Zero)throw new InvalidOperationException("SHIFT_WHEEL_SENDMESSAGE_TIMEOUT_OR_FAILURE");
+   if((GetAsyncKeyState(0x10)&0x8000)!=0)throw new InvalidOperationException("SHIFT_PHYSICALLY_DOWN_AFTER_MESSAGE");
+  }
  }
 }
 '@
@@ -63,6 +76,7 @@ function Get-VisibleBounds($H){$r=[Activator]::CreateInstance([ShotKitZoomSmoke.
 function Get-LimeMarker($H){$r=[Activator]::CreateInstance([ShotKitZoomSmoke.Rect]);if(-not[ShotKitZoomSmoke.N]::GetWindowRect($H,[ref]$r)){throw 'WINDOW_RECT_FAILED'};$vx=[ShotKitZoomSmoke.N]::GetSystemMetrics(76);$vy=[ShotKitZoomSmoke.N]::GetSystemMetrics(77);$x0=[Math]::Max($vx,$r.Left);$y0=[Math]::Max($vy,$r.Top);$x1=[Math]::Min($vx+[ShotKitZoomSmoke.N]::GetSystemMetrics(78),$r.Right);$y1=[Math]::Min($vy+[ShotKitZoomSmoke.N]::GetSystemMetrics(79),$r.Bottom);$bmp=[Drawing.Bitmap]::new($x1-$x0,$y1-$y0);$g=[Drawing.Graphics]::FromImage($bmp);try{$g.CopyFromScreen($x0,$y0,0,0,$bmp.Size)}finally{$g.Dispose()};try{$sx=0;$sy=0;$n=0;for($y=0;$y -lt $bmp.Height;$y++){for($x=0;$x -lt $bmp.Width;$x++){$c=$bmp.GetPixel($x,$y);if($c.G -gt 190 -and $c.R -lt 100 -and $c.B -lt 100){$sx+=$x;$sy+=$y;$n++}}};if($n -lt 100){throw "FIXTURE_LIME_MARKER_NOT_VISIBLE: pixels=$n"};return [pscustomobject]@{X=[int][Math]::Round($sx/$n)+$x0;Y=[int][Math]::Round($sy/$n)+$y0;Pixels=$n}}finally{$bmp.Dispose()}}
 function Assert-OwnedInputTarget($H,$X,$Y){if([ShotKitZoomSmoke.N]::Owner($H) -ne $proc.Id -or [ShotKitZoomSmoke.N]::GetForegroundWindow() -ne $H){throw 'INPUT_TARGET_NOT_OWNED_FOREGROUND'};$r=[Activator]::CreateInstance([ShotKitZoomSmoke.Rect]);if(-not[ShotKitZoomSmoke.N]::GetWindowRect($H,[ref]$r) -or $X -lt $r.Left -or $X -ge $r.Right -or $Y -lt $r.Top -or $Y -ge $r.Bottom){throw 'INPUT_CURSOR_OUTSIDE_OWNED_EDITOR'};if(-not[ShotKitZoomSmoke.N]::SetCursorPos($X,$Y)){throw 'CURSOR_POSITION_FAILED'};$p=[Activator]::CreateInstance([ShotKitZoomSmoke.Point]);$p.X=$X;$p.Y=$Y;if([ShotKitZoomSmoke.N]::WindowFromPoint($p) -ne $H){throw 'INPUT_CURSOR_TARGET_NOT_OWNED_EDITOR'}}
 function Send-PanWheel($H,[int]$Delta,[bool]$Shift){Focus-Editor $H;$m=Get-LimeMarker $H;Assert-OwnedInputTarget $H $m.X $m.Y;if($Shift){Focus-Editor $H;Assert-OwnedInputTarget $H $m.X $m.Y;[ShotKitZoomSmoke.N]::keybd_event(0x10,0,0,[UIntPtr]::Zero)};try{Focus-Editor $H;Assert-OwnedInputTarget $H $m.X $m.Y;[ShotKitZoomSmoke.N]::Wheel($m.X,$m.Y,$Delta)}finally{if($Shift){[ShotKitZoomSmoke.N]::keybd_event(0x10,0,2,[UIntPtr]::Zero)}};Start-Sleep -Milliseconds 300;Get-LimeMarker $H}
+function Send-ShiftWheelMessage($H,[int]$Delta){if([ShotKitZoomSmoke.N]::Owner($H) -ne $proc.Id){throw 'MESSAGE_TARGET_OWNER_MISMATCH'};if(-not[ShotKitZoomSmoke.N]::IsWindow($H)){throw 'MESSAGE_TARGET_NOT_WINDOW'};$m=Get-LimeMarker $H;[ShotKitZoomSmoke.N]::ShiftWheelMessage($H,$m.X,$m.Y,$Delta);Start-Sleep -Milliseconds 300;Get-LimeMarker $H}
 function Assert-PanPair([string]$Name,$Start,$Moved,$Returned,[string]$Axis){$primary=if($Axis -eq 'Y'){'Y'}else{'X'};$other=if($Axis -eq 'Y'){'X'}else{'Y'};$step=[int]$Start.$primary-[int]$Moved.$primary;$returnError=[Math]::Abs([int]$Returned.$primary-[int]$Start.$primary);$crossMove=[Math]::Abs([int]$Moved.$other-[int]$Start.$other);$crossReturn=[Math]::Abs([int]$Returned.$other-[int]$Start.$other);if($step -lt 3 -or $returnError -gt 3 -or $crossMove -gt 3 -or $crossReturn -gt 3){throw "$Name visible marker motion failed: start=($($Start.X),$($Start.Y)) moved=($($Moved.X),$($Moved.Y)) returned=($($Returned.X),$($Returned.Y)); expected negative $Axis-only motion on wheel down and return within 3px."};Write-Output ("PASS_ACTION {0}: visible lime marker {1} step {2}px; opposite step returned within {3}px; cross-axis <= {4}px." -f $Name,$Axis,$step,$returnError,[Math]::Max($crossMove,$crossReturn))}
 function Measure-After([string]$Name,[scriptblock]$Action,$Before,$H){Focus-Editor $H;&$Action;Start-Sleep -Milliseconds 350;[void](Wait-For {try{$m=Get-VisibleBounds $H;($m.Width -ne $Before.Width -or $m.Height -ne $Before.Height)}catch{$false}} "$Name visible image extent change");$after=Get-VisibleBounds $H;if($after.Width -le $Before.Width -or $after.Height -le $Before.Height){throw "$Name did not enlarge visible image bounds: before=$($Before.Width)x$($Before.Height), after=$($after.Width)x$($after.Height)."};Write-Output ("PASS_ACTION {0}: visible magenta bounds {1}x{2} -> {3}x{4}" -f $Name,$Before.Width,$Before.Height,$after.Width,$after.Height);return $after}
 function Assert-Smaller([string]$Name,$Before,$After){if($After.Width -ge $Before.Width -or $After.Height -ge $Before.Height){throw "$Name did not reduce visible image extent: before=$($Before.Width)x$($Before.Height), after=$($After.Width)x$($After.Height)."};Write-Output ("PASS_ACTION {0}: visible magenta bounds {1}x{2} -> {3}x{4}" -f $Name,$Before.Width,$Before.Height,$After.Width,$After.Height)}
@@ -88,6 +102,7 @@ try {
  Start-Sleep -Milliseconds 350;$panStart=Get-LimeMarker $main.H
  $vMoved=Send-PanWheel $main.H -120 $false;$vReturned=Send-PanWheel $main.H 120 $false;Assert-PanPair 'vertical wheel down/up' $panStart $vMoved $vReturned 'Y'
  $hStart=Get-LimeMarker $main.H;$hMoved=Send-PanWheel $main.H -120 $true;$hReturned=Send-PanWheel $main.H 120 $true;Assert-PanPair 'Shift+wheel down/up' $hStart $hMoved $hReturned 'X'
+ $msgStart=Get-LimeMarker $main.H;$msgMoved=Send-ShiftWheelMessage $main.H -120;$msgReturned=Send-ShiftWheelMessage $main.H 120;Assert-PanPair 'WM_MOUSEWHEEL MK_SHIFT down/up (no Shift key)' $msgStart $msgMoved $msgReturned 'X'
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0x30);Start-Sleep -Milliseconds 350;$zoomBase=Get-VisibleBounds $main.H
  $s=Measure-After 'Ctrl+Plus (OEM plus)' { [ShotKitZoomSmoke.N]::CtrlKey(0xBB) } $zoomBase $main.H
  $smaller=Get-VisibleBounds $main.H;Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0xBD);Start-Sleep -Milliseconds 350;$after=Get-VisibleBounds $main.H;Assert-Smaller 'Ctrl+Minus (OEM minus)' $smaller $after
