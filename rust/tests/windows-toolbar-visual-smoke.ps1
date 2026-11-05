@@ -131,7 +131,8 @@ function Click-ToolbarButton($Button) {
  $x=[int](($r.Left+$r.Right)/2);$y=[int](($r.Top+$r.Bottom)/2)
  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($x,$y)){throw 'RESPONSIVE_CURSOR_FAILED'}
  $point=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);[void][ShotKitToolbarVisual.Native]::GetCursorPos([ref]$point)
- if([ShotKitToolbarVisual.Native]::WindowFromPoint($point) -ne $Button.H){throw 'RESPONSIVE_CLICK_TARGET_MISMATCH'}
+ $hit=[ShotKitToolbarVisual.Native]::WindowFromPoint($point)
+ if($hit -ne $Button.H){throw "RESPONSIVE_CLICK_TARGET_MISMATCH: button=$($Button.Id) expected=$($Button.H) hit=$hit point=$($point.X),$($point.Y) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom); $(Get-ToolbarInteractionDiagnostic)"}
  [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
  [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
 }
@@ -323,6 +324,7 @@ try {
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
  if($PopupOnly) {
+  $script:lastMenuInteraction='popup: initial frame button'
   # Exercise the two editor-popup paths from actual toolbar mouse input.
   $frameButton=$buttons|Where-Object{$_.Id -eq 0x5123}|Select-Object -First 1
   $widthButton=$buttons|Where-Object{$_.Id -eq 0x5121}|Select-Object -First 1
@@ -335,6 +337,7 @@ try {
   Click-OutsideToolbarPopup
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_OUTSIDE_DISMISS_FAILED'
 
+  $script:lastMenuInteraction='popup: reopen frame after outside dismissal'
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_REOPEN_FAILED'
   Click-ToolbarMenuItem 1
@@ -346,6 +349,7 @@ try {
 
   # Reopen, select the frame action, then select a width. Reaching the native
   # color dialog proves both TrackPopupMenu return values reached their callers.
+  $script:lastMenuInteraction='popup: reopen frame after width dismissal'
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_SECOND_REOPEN_FAILED'
   Click-ToolbarMenuItem 1
@@ -359,12 +363,14 @@ try {
   [void][ShotKitToolbarVisual.Native]::SendMessageW($cancel.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
   Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.H -eq $colorDialog.H}).Count -eq 0 } 'POPUP_FRAME_COLOR_DIALOG_CANCEL_FAILED'
 
+  $script:lastMenuInteraction='popup: initial line width button'
   Click-ToolbarButton $widthButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_NUMBER_MENU_FIRST_OPEN_FAILED'
   $entries=@(Read-ToolbarPopup)
   if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4,5,6,7,8' -or (@($entries|ForEach-Object{$_.Text}) -join ',') -ne '1,2,3,4,6,8,12,16'){throw "POPUP_NUMBER_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
   Click-OutsideToolbarPopup
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_NUMBER_OUTSIDE_DISMISS_FAILED'
+  $script:lastMenuInteraction='popup: reopen line width after outside dismissal'
   Click-ToolbarButton $widthButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_NUMBER_MENU_REOPEN_FAILED'
   Click-ToolbarMenuItem 2
