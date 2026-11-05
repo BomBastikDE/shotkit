@@ -309,6 +309,28 @@ mod tests {
         assert_eq!(find_offset(&a, &b, 5).unwrap().dy, 5);
     }
     #[test]
+    fn majority_of_scroll_bands_wins_over_one_conflicting_band() {
+        const WIDTH: usize = 120;
+        const HEIGHT: usize = 240;
+        const OFFSET: usize = 7;
+        let first = image(HEIGHT, 0);
+        let mut second = image(HEIGHT, OFFSET);
+
+        // Simulate an animated or otherwise unmatchable 40-row band. The other
+        // five bands still contain the same translated content.
+        for y in 80..120 {
+            for x in 0..WIDTH {
+                let value = ((y * 17 + x * 53 + y * x * 7) % 256) as u8;
+                let pixel = (y * WIDTH + x) * 4;
+                second[pixel..pixel + 4].copy_from_slice(&[value, value, value, 255]);
+            }
+        }
+
+        let a = Frame::analyze(WIDTH, HEIGHT, &first).unwrap();
+        let b = Frame::analyze(WIDTH, HEIGHT, &second).unwrap();
+        assert_eq!(find_offset(&a, &b, OFFSET).unwrap().dy, OFFSET);
+    }
+    #[test]
     fn dimension_mismatch_is_rejected() {
         let a = Frame::analyze(120, 80, &image(80, 0)).unwrap();
         let b = Frame::analyze(120, 81, &image(81, 0)).unwrap();
