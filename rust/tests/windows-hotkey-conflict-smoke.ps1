@@ -75,7 +75,10 @@ function Read-ReservationFile([string]$Path){
   }catch{
    $errorCause=$_.Exception
    while($errorCause.InnerException){$errorCause=$errorCause.InnerException}
-   if($errorCause -isnot [IO.IOException] -or ($errorCause.HResult -band 0xffff) -notin @(32,33) -or [DateTime]::UtcNow -ge $deadline){throw}
+   # Only events is replaced after its initial publication; a missing snapshot can be transient during that replace.
+   $transientMissingEvent=($Path -ceq $eventFile -and $errorCause -is [IO.FileNotFoundException] -and ($errorCause.HResult -band 0xffff) -eq 2)
+   $sharingViolation=($errorCause -is [IO.IOException] -and ($errorCause.HResult -band 0xffff) -in @(32,33))
+   if(( -not $transientMissingEvent -and -not $sharingViolation) -or [DateTime]::UtcNow -ge $deadline){throw}
    Start-Sleep -Milliseconds 50
   }
  }
