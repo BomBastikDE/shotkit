@@ -206,7 +206,38 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
                 )
             };
             ReleaseCapture();
+            // ReleaseCapture may synchronously destroy the overlay or start a
+            // new gesture. Never resume this gesture against a changed state.
+            if retry_drag {
+                if (*state).done
+                    || (*state).hwnd != hwnd
+                    || (*state).down
+                    || (*state).current.x != point.x
+                    || (*state).current.y != point.y
+                {
+                    return Some(0);
+                }
+                // The old outline may contain the release point (for example,
+                // a parent window around a child). Do not freeze it on a click
+                // while the new endpoint scan is still pending.
+                (*state).candidates.clear();
+                (*state).target_hwnd = 0;
+                (*state).hover_rect = None;
+                (*state).visible_hover_rect = None;
+                update_hover(state, point);
+            }
             move_magnifier(state);
+            // MoveWindow in move_magnifier can also reenter and finish or
+            // replace this gesture, so validate again before touching STATE.
+            if retry_drag
+                && ((*state).done
+                    || (*state).hwnd != hwnd
+                    || (*state).down
+                    || (*state).current.x != point.x
+                    || (*state).current.y != point.y)
+            {
+                return Some(0);
+            }
             crate::uia_picker::log_diagnostic(&format!(
                 "selection mouse_up point=({}, {}) click_pending={} cancelled={} result={:?}",
                 point.x, point.y, click_pending, click_cancelled, result

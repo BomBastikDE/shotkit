@@ -575,7 +575,87 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     finally { $rootBitmap.Dispose() }
 
     Assert-NoUnexpectedDialog $shotKit
-    $passMessage = "PASS: F11 selected synthetic child HWND $($geometry[4]) at $targetWidth`x$targetHeight without Ctrl, then Ctrl selected root HWND $surfaceRoot at $rootWidth`x$rootHeight; both captures contained the deterministic child pixels."
+
+    # Reproduce the empty-drag regression on a fresh overlay. Start on the
+    # parent form, then drag horizontally into the child. The old parent
+    # outline contains both points, so a stale selection would capture the
+    # larger form and fail the exact child dimensions below.
+    if (-not [ShotKitHoverSmoke.Native]::PostMessageW($ctrlEditor.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw 'Could not close the Ctrl capture editor before the empty-drag scenario.'
+    }
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'the Ctrl editor to close' -OwnedProcess $shotKit -Condition {
+        -not (Get-ProcessWindows $shotKit | Where-Object { $_.Handle -eq $ctrlEditor.Handle -and $_.Visible })
+    })
+    Remove-Item -LiteralPath $ctrlPng.FullName -Force -ErrorAction Stop
+    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($surfaceRoot)) {
+        throw 'Could not reactivate the synthetic form for the empty-drag scenario.'
+    }
+    $startX = $targetX - 30
+    if ($startX -le $rootLeft -or $startX -ge $targetX) {
+        throw 'The synthetic form does not provide a safe drag start outside the child.'
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetCursorPos($startX, $pointY)) {
+        throw 'Could not move the pointer to the parent form.'
+    }
+    [ShotKitHoverSmoke.Native]::keybd_event(0x7A, 0, 0, [UIntPtr]::Zero)
+    [ShotKitHoverSmoke.Native]::keybd_event(0x7A, 0, 0x0002, [UIntPtr]::Zero)
+    $retryOverlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the empty-drag selection overlay' -OwnedProcess $shotKit -Condition {
+        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($retryOverlay.Handle)) {
+        throw 'Could not activate the empty-drag selection overlay.'
+    }
+    Start-Sleep -Milliseconds 1500
+    try {
+        [ShotKitHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 180
+        if (-not [ShotKitHoverSmoke.Native]::SetCursorPos($pointX, $pointY)) {
+            throw 'Could not drag horizontally into the synthetic child.'
+        }
+        Start-Sleep -Milliseconds 180
+    }
+    finally {
+        [ShotKitHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    # No pointer movement after release: the overlay must scan the endpoint.
+    Start-Sleep -Milliseconds 1500
+    if (-not [ShotKitHoverSmoke.Native]::IsWindowVisible($retryOverlay.Handle)) {
+        throw 'The selection overlay closed after an empty drag.'
+    }
+    [ShotKitHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 180
+    [ShotKitHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    $retryPng = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'the child PNG after the empty drag' -OwnedProcess $shotKit -Condition {
+        Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
+    }
+    $retryEditor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the editor after the empty-drag retry' -OwnedProcess $shotKit -Condition {
+        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*speichern*' } | Select-Object -First 1
+    }
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [Drawing.Bitmap]::new($retryPng.FullName)
+    try {
+        if ($bitmap.Width -ne $targetWidth -or $bitmap.Height -ne $targetHeight) {
+            throw "Selection produced $($bitmap.Width)x$($bitmap.Height), expected hovered control $targetWidth`x$targetHeight. This indicates a different candidate or rectangle fallback."
+        }
+        $samples = @(
+            @{ X = [int]($targetWidth * 0.25); Y = [int]($targetHeight * 0.25); R = 220; G = 35; B = 45; Name = 'top-left red' },
+            @{ X = [int]($targetWidth * 0.75); Y = [int]($targetHeight * 0.25); R = 30; G = 190; B = 65; Name = 'top-right green' },
+            @{ X = [int]($targetWidth * 0.25); Y = [int]($targetHeight * 0.75); R = 35; G = 70; B = 220; Name = 'bottom-left blue' },
+            @{ X = [int]($targetWidth * 0.75); Y = [int]($targetHeight * 0.75); R = 235; G = 205; B = 35; Name = 'bottom-right yellow' }
+        )
+        foreach ($sample in $samples) {
+            $actual = $bitmap.GetPixel($sample.X, $sample.Y)
+            if ([Math]::Abs($actual.R - $sample.R) -gt 3 -or
+                [Math]::Abs($actual.G - $sample.G) -gt 3 -or
+                [Math]::Abs($actual.B - $sample.B) -gt 3) {
+                throw "Retry hovered-control pixel '$($sample.Name)' at ($($sample.X),$($sample.Y)) was RGB=$($actual.R),$($actual.G),$($actual.B), expected $($sample.R),$($sample.G),$($sample.B)."
+            }
+        }
+    }
+    finally { $bitmap.Dispose() }
+
+    Assert-NoUnexpectedDialog $shotKit
+    $passMessage = "PASS: F11 selected synthetic child HWND $($geometry[4]) at $targetWidth`x$targetHeight without Ctrl, then Ctrl selected root HWND $surfaceRoot at $rootWidth`x$rootHeight; both captures contained the deterministic child pixels; a horizontal empty drag from the form into the child also selected the child without further pointer movement."
 }
 finally {
     [ShotKitHoverSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
