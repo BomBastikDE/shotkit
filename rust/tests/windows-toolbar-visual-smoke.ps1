@@ -90,6 +90,9 @@ namespace ShotKitToolbarVisual {
   // fixture. Its cream base differs from COLOR_WINDOW throughout both axes.
   public static Rect ImageBounds(IntPtr h,int toolbarHeight,out uint center) {
    Rect client;if(!GetClientRect(h,out client)||client.Right<=0||client.Bottom<=toolbarHeight)throw new InvalidOperationException("ZOOM_CLIENT_BOUNDS_INVALID");
+   var origin=new Point { X=0,Y=0 };
+   if(!ClientToScreen(h,ref origin)||origin.X<0||origin.Y<0||origin.X+client.Right>GetSystemMetrics(0)||origin.Y+client.Bottom>GetSystemMetrics(1))
+    throw new InvalidOperationException("ZOOM_CLIENT_OUTSIDE_PRIMARY_DISPLAY: origin="+origin.X+","+origin.Y+" client="+client.Right+"x"+client.Bottom+" display="+GetSystemMetrics(0)+"x"+GetSystemMetrics(1));
    var dc=GetDC(h);if(dc==IntPtr.Zero)throw new InvalidOperationException("ZOOM_CLIENT_DC_FAILED");
    try {
     var background=GetSysColor(5);int cx=client.Right/2,cy=toolbarHeight+(client.Bottom-toolbarHeight)/2;
@@ -330,7 +333,19 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- $wide=[int][Math]::Round(1040*$dpi/96);$tall=[int][Math]::Round(600*$dpi/96)
+ # Stage 0 requires 28 buttons: 2*4 + 28*(32+3) - 3 = 985 logical
+ # client pixels. Include measured nonclient borders, and keep the complete
+ # window on the primary display so every GetPixel sample is screen-backed.
+ $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+ $initialClient=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+ if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$outer) -or -not [ShotKitToolbarVisual.Native]::GetClientRect($main.H,[ref]$initialClient)){throw 'RESPONSIVE_INITIAL_GEOMETRY_FAILED'}
+ # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
+ $margin=[int][Math]::Floor((4*$dpi+48)/96)
+ $size=[int][Math]::Floor((32*$dpi+48)/96);$gap=[int][Math]::Floor((3*$dpi+48)/96)
+ $wide=2*$margin+28*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
+ $tall=[int][Math]::Round(600*$dpi/96)
+ $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
+ if($wide -gt $screenWidth -or $tall -gt $screenHeight){throw "RESPONSIVE_DISPLAY_TOO_SMALL: required outer=${wide}x${tall}; primary display=${screenWidth}x${screenHeight}; dpi=$dpi"}
  if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
  Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 28 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
@@ -347,7 +362,7 @@ try {
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_FIRST_OPEN_FAILED'
   $entries=@(Read-ToolbarPopup)
-  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3' -or (@($entries|ForEach-Object{$_.Text}) -join '|') -ne 'Rahmen hinzufügen|Schlagschatten hinzufügen|Rahmen und Schlagschatten hinzufügen'){throw "POPUP_FRAME_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
+  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4' -or (@($entries|ForEach-Object{$_.Text}) -join '|') -ne 'Rahmen hinzufügen|Schlagschatten hinzufügen|Rahmen und Schlagschatten hinzufügen|Leinwandgröße ändern…'){throw "POPUP_FRAME_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
   Click-OutsideToolbarPopup
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_OUTSIDE_DISMISS_FAILED'
 

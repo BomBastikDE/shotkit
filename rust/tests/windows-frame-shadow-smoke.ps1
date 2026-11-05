@@ -31,6 +31,7 @@ namespace ShotKitFrameShadowSmoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr SendMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
@@ -124,6 +125,14 @@ try{
  [void](Wait-For {if(-not [ShotKitFrameShadowSmoke.N]::IsWindow($welcome.H)){return $true};return $null} 'startup notice close' 8)
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 'loaded editor title' 10
  if(@(Owned-Dialogs).Count){throw "UNEXPECTED_STARTUP_DIALOG: $((Owned-Dialogs|ForEach-Object{$_.Title}) -join ', ')"}
+ # The 28-action toolbar needs 985 logical client pixels; the default 1000px
+ # outer window has only 984 at 96 DPI, so Frame correctly enters overflow.
+ # These document tests need the full toolbar; retain exact visible identity checks.
+ [void][ShotKitFrameShadowSmoke.N]::ShowWindow($main.H,3) # SW_MAXIMIZE
+ [void](Wait-For {
+  $matches=@([ShotKitFrameShadowSmoke.N]::Buttons($main.H)|Where-Object{$_.Visible -and $_.Id -eq 0x5123 -and $_.Text -ceq 'Rahmen / Schatten / Leinwand…'})
+  if($matches.Count -eq 1){return $true}
+ } 'maximized editor with visible frame/canvas button' $ActionTimeoutSeconds)
  Click-EditorButton 0x5124 'Rot'
  # TrackPopupMenu runs a modal loop on the UI thread; queue BM_CLICK so this
  # test thread can observe/select the resulting native popup.

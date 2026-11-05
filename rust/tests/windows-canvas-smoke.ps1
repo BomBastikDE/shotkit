@@ -33,6 +33,7 @@ namespace ShotKitCanvasSmoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
   [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr h);
@@ -194,6 +195,14 @@ try {
  [void](Wait-For {if(-not [ShotKitCanvasSmoke.N]::IsWindow($welcome.H)){return $true}} 'startup notice close' $ActionTimeoutSeconds)
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 'loaded editor' $ActionTimeoutSeconds
  if(@(Owned-Dialogs).Count){throw 'UNEXPECTED_STARTUP_DIALOG'}
+ # The 28-action toolbar needs 985 logical client pixels; the default 1000px
+ # outer window has only 984 at 96 DPI, so Frame correctly enters overflow.
+ # These document tests need the full toolbar; retain exact visible identity checks.
+ [void][ShotKitCanvasSmoke.N]::ShowWindow($main.H,3) # SW_MAXIMIZE
+ [void](Wait-For {
+  $matches=@([ShotKitCanvasSmoke.N]::Buttons($main.H)|Where-Object{$_.Visible -and $_.Id -eq 0x5123 -and $_.Text -ceq 'Rahmen / Schatten / Leinwand…'})
+  if($matches.Count -eq 1){return $true}
+ } 'maximized editor with visible frame/canvas button' $ActionTimeoutSeconds)
 
  $d=Canvas-Dialog
  $initialWidth=[ShotKitCanvasSmoke.N]::EditText([ShotKitCanvasSmoke.N]::Control($d.H,101,'Edit',$process.Id))
