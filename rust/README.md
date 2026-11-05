@@ -54,7 +54,7 @@ cargo build --locked --release
 pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit.exe -AllowLocalInteractive
 ```
 
-Das Skript führt derzeit 42 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test und der zusätzliche Test der schmalen Leiste sind in der CI verbindlich. Die vorherige Ausnahme für den Toolbar-Test wurde nach wiederholten erfolgreichen CI-Läufen entfernt ([42004167628](https://github.com/BomBastikDE/shotkit/actions/runs/42004167628), [42006367024](https://github.com/BomBastikDE/shotkit/actions/runs/42006367024), [42007837556](https://github.com/BomBastikDE/shotkit/actions/runs/42007837556), [42015861642](https://github.com/BomBastikDE/shotkit/actions/runs/42015861642), [42017257158](https://github.com/BomBastikDE/shotkit/actions/runs/42017257158)).
+Das Skript führt derzeit 43 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test und der zusätzliche Test der schmalen Leiste sind in der CI verbindlich. Die vorherige Ausnahme für den Toolbar-Test wurde nach wiederholten erfolgreichen CI-Läufen entfernt ([42004167628](https://github.com/BomBastikDE/shotkit/actions/runs/42004167628), [42006367024](https://github.com/BomBastikDE/shotkit/actions/runs/42006367024), [42007837556](https://github.com/BomBastikDE/shotkit/actions/runs/42007837556), [42015861642](https://github.com/BomBastikDE/shotkit/actions/runs/42015861642), [42017257158](https://github.com/BomBastikDE/shotkit/actions/runs/42017257158)).
 
 ## Lizenz
 
