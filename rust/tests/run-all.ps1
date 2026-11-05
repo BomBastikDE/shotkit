@@ -30,6 +30,7 @@ foreach ($name in $processNames) {
 $pwsh = (Get-Process -Id $PID).Path
 $cases = @(
     @{ Name = 'Interactive Windows About dialog smoke test'; Script = 'windows-about-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows delayed capture smoke test'; Script = 'windows-delayed-capture-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows storage folder open smoke test'; Script = 'windows-storage-folder-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows toolbar and icon visual smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath); TimeoutSeconds = 300; Toolbar = $true },
     @{ Name = 'Required interactive Windows responsive toolbar smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath, '-ResponsiveOnly'); TimeoutSeconds = 180; Toolbar = $false },
