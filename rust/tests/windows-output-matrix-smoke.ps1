@@ -68,6 +68,58 @@ namespace ShotKitOutputMatrixSmoke {
                 byte[] bytes=new byte[(int)size]; Marshal.Copy(ptr,bytes,0,bytes.Length); return bytes;
             } finally { if(ptr!=IntPtr.Zero)GlobalUnlock(memory); if(!CloseClipboard())throw new InvalidOperationException("CloseClipboard failed: "+Marshal.GetLastWin32Error()); }
         }
+        public struct Rect { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr m);
+        [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr m, int pos);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern uint GetMenuStringW(IntPtr m, uint pos, StringBuilder text, int max, uint flags);
+        [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr m, int pos);
+        [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr m, uint id, uint flags);
+        [DllImport("user32.dll")] static extern bool GetMenuItemRect(IntPtr h, IntPtr m, uint pos, out Rect r);
+        public static IntPtr PopupMenu(IntPtr popup) {
+            UIntPtr result;
+            if(SendMessageTimeoutW(popup,0x01e1,IntPtr.Zero,IntPtr.Zero,2,2000,out result)==IntPtr.Zero)
+                throw new InvalidOperationException("Popup menu query failed or timed out.");
+            return new IntPtr(unchecked((long)result.ToUInt64()));
+        }
+        static int FindItem(IntPtr m, string expected, uint? id) {
+            int found=-1, count=GetMenuItemCount(m);
+            if(count<0) throw new InvalidOperationException("Cannot inspect menu.");
+            for(int i=0;i<count;i++) {
+                var s=new StringBuilder(256); GetMenuStringW(m,(uint)i,s,s.Capacity,0x400);
+                if(s.ToString()==expected && (!id.HasValue || GetMenuItemID(m,i)==id.Value)) {
+                    if(found>=0) throw new InvalidOperationException("Duplicate menu entry: "+expected);
+                    found=i;
+                }
+            }
+            if(found<0) throw new InvalidOperationException("Missing menu entry: "+expected);
+            return found;
+        }
+        static void MoveToItem(IntPtr popup, IntPtr m, int pos, int expectedPid) {
+            uint pid; GetWindowThreadProcessId(popup,out pid);
+            if(pid!=(uint)expectedPid || !IsWindow(popup) || !IsWindowVisible(popup) || PopupMenu(popup)!=m)
+                throw new InvalidOperationException("Popup no longer identifies the expected visible menu.");
+            Rect r; if(!GetMenuItemRect(IntPtr.Zero,m,(uint)pos,out r) || r.Right<=r.Left || r.Bottom<=r.Top)
+                throw new InvalidOperationException("Menu entry has no visible screen rectangle.");
+            int x=r.Left+(r.Right-r.Left)/2, y=r.Top+(r.Bottom-r.Top)/2;
+            if(!SetCursorPos(x,y)) throw new InvalidOperationException("Cannot move cursor to menu entry.");
+            if(WindowFromPoint(new Point(x,y))!=popup)
+                throw new InvalidOperationException("Menu entry is obscured or no longer belongs to the expected popup.");
+        }
+        public static IntPtr OpenSettingsSubmenu(IntPtr popup, int expectedPid) {
+            IntPtr m=PopupMenu(popup); if(m==IntPtr.Zero) throw new InvalidOperationException("No root menu.");
+            int pos=FindItem(m,"Einstellungen",null); IntPtr sub=GetSubMenu(m,pos);
+            if(sub==IntPtr.Zero) throw new InvalidOperationException("No settings submenu.");
+            MoveToItem(popup,m,pos,expectedPid); return sub;
+        }
+        public static void ClickSetting(IntPtr popup, IntPtr expectedMenu, uint id, string label, bool checkedBefore, int expectedPid) {
+            IntPtr m=PopupMenu(popup); if(m!=expectedMenu) throw new InvalidOperationException("Wrong submenu.");
+            int pos=FindItem(m,label,id); uint state=GetMenuState(m,id,0);
+            if(state==0xffffffff || ((state & 8)!=0)!=checkedBefore)
+                throw new InvalidOperationException("Unexpected checked state for "+label+": "+state);
+            MoveToItem(popup,m,pos,expectedPid);
+            try { mouse_event(2,0,0,0,UIntPtr.Zero); }
+            finally { mouse_event(4,0,0,0,UIntPtr.Zero); }
+        }
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
         [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
@@ -108,6 +160,32 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
         $v=& $Condition; if($null -ne $v -and $v){return $v}; Start-Sleep -Milliseconds 100
     }
     throw "Timed out waiting for $Description."
+}
+# This path intentionally reads the ephemeral runner's autostart status when the
+# native menu is built; it never selects or writes the autostart entry.
+function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [uint32] $Id, [string] $Label, [bool] $Before) {
+    if ($env:GITHUB_ACTIONS -cne 'true') { throw 'TRAY_SETTINGS_CI_ONLY: refusing to open the menu outside GitHub Actions.' }
+    if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($Main,0x8001,[IntPtr]1,[IntPtr]0x0205)) { throw 'Could not post tray callback.' }
+    $popup=Wait-ForCondition -Seconds 10 -Description 'native tray menu' -OwnedProcess $Process -Condition {
+        Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'} | Select-Object -First 1
+    }
+    $submenu=[ShotKitOutputMatrixSmoke.Native]::OpenSettingsSubmenu($popup.Handle,$Process.Id)
+    $child=Wait-ForCondition -Seconds 10 -Description 'native settings submenu' -OwnedProcess $Process -Condition {
+        Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32768' -and $_.Handle -ne $popup.Handle -and [ShotKitOutputMatrixSmoke.Native]::PopupMenu($_.Handle) -eq $submenu} | Select-Object -First 1
+    }
+    [ShotKitOutputMatrixSmoke.Native]::ClickSetting($child.Handle,$submenu,$Id,$Label,$Before,$Process.Id)
+    [void](Wait-ForCondition -Seconds 10 -Description 'tray menu dismissal' -OwnedProcess $Process -Condition {-not [ShotKitOutputMatrixSmoke.Native]::WindowVisible($popup.Handle)})
+}
+function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder) {
+    $deadline=[DateTime]::UtcNow.AddSeconds(10)
+    do {
+        if($shotKit.HasExited){throw 'ShotKit exited while waiting for persisted settings.'}
+        $raw=Get-Content -LiteralPath $Path -Raw
+        $value=$raw | ConvertFrom-Json
+        if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
+        Start-Sleep -Milliseconds 100
+    } while([DateTime]::UtcNow -lt $deadline)
+    throw "Timed out waiting for expected persisted settings; last value: $raw"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
@@ -218,7 +296,13 @@ namespace ShotKitOutputMatrixSurface {
     New-Item -ItemType Directory -Path $appData,$localAppData,$saveFolder -Force | Out-Null
     $settingsPath=Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
-    $settings=@{version=1;save_folder=$saveFolder;open_editor=$openEditor;copy_to_clipboard=$copy;auto_save=$save;scroll_direction='down'} | ConvertTo-Json
+    # One matrix case derives every output option from actual native tray clicks.
+    # Local opt-in matrix runs remain unchanged; the tray path is CI-only.
+    $trayCase=($env:GITHUB_ACTIONS -ceq 'true' -and -not $openEditor -and -not $copy -and $save)
+    $initialEditor=if($trayCase){-not $openEditor}else{$openEditor}
+    $initialCopy=if($trayCase){-not $copy}else{$copy}
+    $initialSave=if($trayCase){-not $save}else{$save}
+    $settings=@{version=1;save_folder=$saveFolder;open_editor=$initialEditor;copy_to_clipboard=$initialCopy;auto_save=$initialSave;scroll_direction='down'} | ConvertTo-Json
     [IO.File]::WriteAllText($settingsPath,$settings,[Text.UTF8Encoding]::new($false))
     try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
@@ -226,6 +310,28 @@ namespace ShotKitOutputMatrixSurface {
     $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
     [void](Wait-ForCondition -Seconds 8 -Description 'startup dialog to close' -OwnedProcess $shotKit -Condition {-not [ShotKitOutputMatrixSmoke.Native]::IsWindow($welcome.Handle)})
+    if($trayCase) {
+        $owner=Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1
+        if($null -eq $owner){throw 'ShotKit owner window missing.'}
+        Set-TrayOutputOption $shotKit $owner.Handle 101 'Nach Aufnahme Editor öffnen' $true
+        Assert-TraySettings $settingsPath $false $true $false $saveFolder
+        Set-TrayOutputOption $shotKit $owner.Handle 102 'In Zwischenablage kopieren' $true
+        Assert-TraySettings $settingsPath $false $false $false $saveFolder
+        Set-TrayOutputOption $shotKit $owner.Handle 103 'Automatisch als PNG speichern' $false
+        Assert-TraySettings $settingsPath $false $false $true $saveFolder
+        $shotKit.Kill()
+        if(-not $shotKit.WaitForExit(5000) -or -not $shotKit.HasExited){throw 'ShotKit did not exit before persistence restart.'}
+        $shotKit.Dispose(); $shotKit=$null
+        try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
+        finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+        [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
+        $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
+        if(-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close restarted startup dialog.'}
+        [void](Wait-ForCondition -Seconds 8 -Description 'restarted startup dialog to close' -OwnedProcess $shotKit -Condition {-not [ShotKitOutputMatrixSmoke.Native]::IsWindow($welcome.Handle)})
+        Assert-TraySettings $settingsPath $false $false $true $saveFolder
+        Write-Output 'PASS: native tray settings selected and persisted across process restart; checking capture effects next.'
+    }
+
     [void][ShotKitOutputMatrixSmoke.Native]::SetForegroundWindow($fixtureWindow.Handle)
     [void](Wait-ForCondition -Seconds 5 -Description 'owned fixture foreground' -OwnedProcess $surface -Condition {[ShotKitOutputMatrixSmoke.Native]::GetForegroundWindow() -eq $fixtureWindow.Handle})
 
