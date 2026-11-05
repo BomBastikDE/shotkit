@@ -53,6 +53,7 @@ if($inputDesktop -cne 'Default'){throw "INTERACTIVE_DEFAULT_DESKTOP_REQUIRED: cu
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Hotkey-Conflict-Smoke-'+[Guid]::NewGuid().ToString('N'))
 $appData=Join-Path $root 'appdata';$localAppData=Join-Path $root 'localappdata';$settingsDir=Join-Path $appData 'ShotKitRust'
 $helperFile=Join-Path $root 'reservation-helper.ps1';$readyFile=Join-Path $root 'reservation.ready';$eventFile=Join-Path $root 'reservation.events';$releasedFile=Join-Path $root 'reservation.released'
+$helperStdout=Join-Path $root 'helper.stdout';$helperStderr=Join-Path $root 'helper.stderr'
 $helperTitle='ShotKit Hotkey Reservation '+[Guid]::NewGuid().ToString('N')
 $oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA
 $helper=$null;$shotKit=$null;$script:helperWindow=$null;$failure=$null;$cleanupFailure=$null;$rootCanBeDeleted=$true
@@ -138,8 +139,14 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  $powershellExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
  if(-not(Test-Path -LiteralPath $powershellExe -PathType Leaf)){throw "Windows PowerShell 5.1 was not found at '$powershellExe'."}
  $helperArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Ready "{1}" -Events "{2}" -Released "{3}" -WindowTitle "{4}"' -f $helperFile,$readyFile,$eventFile,$releasedFile,$helperTitle
- $helper=Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru
- $ready=Wait-For {if(Test-Path -LiteralPath $readyFile){[IO.File]::ReadAllText($readyFile).Trim()}} 'reservation helper readiness' 10 $null
+ $helper=Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $helperStdout -RedirectStandardError $helperStderr -PassThru
+ try {
+  $ready=Wait-For {if(Test-Path -LiteralPath $readyFile){[IO.File]::ReadAllText($readyFile).Trim()}} 'reservation helper readiness' 10 $helper
+ } catch {
+  $stdout=if(Test-Path -LiteralPath $helperStdout){Get-Content -LiteralPath $helperStdout -Raw}else{''}
+  $stderr=if(Test-Path -LiteralPath $helperStderr){Get-Content -LiteralPath $helperStderr -Raw}else{''}
+  throw "RESERVATION_HELPER_START_FAILED: $($_.Exception.Message); stdout='$stdout'; stderr='$stderr'"
+ }
  $readyParts=$ready.Split(',');if($readyParts.Count -ne 3 -or [int]$readyParts[0] -ne $helper.Id){throw "RESERVATION_HELPER_IDENTITY_MISMATCH: '$ready', process PID=$($helper.Id)."}
  if($readyParts[1] -ne '1'){throw "PREEXISTING_HOTKEY_CONFLICT: test helper could not reserve Ctrl+Shift+4 (RegisterHotKey error $($readyParts[2])). No ShotKit process was started."}
  $script:helperWindow=Wait-For {Owned-Windows $helper|Where-Object{$_.Visible -and $_.Title -ceq $helperTitle}|Select-Object -First 1} 'visible reservation helper window' 8 $helper
