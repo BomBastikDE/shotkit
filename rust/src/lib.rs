@@ -7,6 +7,7 @@ pub mod clipboard_retry;
 pub mod delayed_capture;
 pub mod document;
 pub mod editor;
+pub mod gaussian_blur;
 pub mod hotkey_action;
 pub mod image_edit;
 pub mod image_io;

@@ -40,6 +40,11 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
             "Verpixeln benötigt das Originalbild als Quelle",
         ));
     }
+    if matches!(shape.kind, ShapeKind::GaussianBlur { .. }) {
+        return Err(RenderError::UnsupportedShape(
+            "Weichzeichnen benötigt das Originalbild als Quelle",
+        ));
+    }
     let bytes = width
         .checked_mul(height)
         .and_then(|n| n.checked_mul(4))
@@ -519,6 +524,9 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
         )),
         ShapeKind::Blur { .. } => Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
+        )),
+        ShapeKind::GaussianBlur { .. } => Err(RenderError::UnsupportedShape(
+            "Weichzeichnen benötigt das Originalbild als Quelle",
         )),
     }
 }

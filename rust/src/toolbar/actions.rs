@@ -17,6 +17,7 @@ pub(super) enum Icon {
     Text,
     Marker,
     Pixelate,
+    GaussianBlur,
     Redact,
     Step,
     Pen,
@@ -38,7 +39,7 @@ pub(super) enum Icon {
     File,
     View,
 }
-pub(super) const ACTIONS: [Action; 28] = [
+pub(super) const ACTIONS: [Action; 29] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -85,6 +86,12 @@ pub(super) const ACTIONS: [Action; 28] = [
         id: ID_BLUR,
         label: "Verpixeln (B) – keine sichere Schwärzung",
         icon: Icon::Pixelate,
+        tool: true,
+    },
+    Action {
+        id: ID_GAUSSIAN_BLUR,
+        label: "Weichzeichnen (W) – keine sichere Schwärzung",
+        icon: Icon::GaussianBlur,
         tool: true,
     },
     Action {
@@ -240,7 +247,7 @@ mod tests {
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [(1000, 0), (930, 1), (850, 2), (700, 3), (430, 3), (180, 3)] {
+        for (width, stage) in [(1040, 0), (970, 1), (890, 2), (700, 3), (430, 3), (180, 3)] {
             let plan = layout(width, 96, &items);
             assert_eq!(plan.stage, stage);
             let mut reachable: Vec<_> = plan

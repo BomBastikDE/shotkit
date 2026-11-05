@@ -472,6 +472,7 @@ impl EditorController {
             Tool::Ellipse => ShapeKind::Ellipse { start: at, end: at },
             Tool::Highlight => ShapeKind::Highlight { start: at, end: at },
             Tool::Blur => ShapeKind::Blur { start: at, end: at },
+            Tool::GaussianBlur => ShapeKind::GaussianBlur { start: at, end: at },
             Tool::Redact => ShapeKind::Redact { start: at, end: at },
             Tool::Pen => ShapeKind::Freehand { points: vec![at] },
             Tool::Step => ShapeKind::Step {
@@ -513,6 +514,7 @@ impl EditorController {
                 | ShapeKind::Ellipse { start, end }
                 | ShapeKind::Highlight { start, end }
                 | ShapeKind::Blur { start, end }
+                | ShapeKind::GaussianBlur { start, end }
                 | ShapeKind::Redact { start, end } => {
                     *end = if shift {
                         constrain_endpoint(*start, at, true)

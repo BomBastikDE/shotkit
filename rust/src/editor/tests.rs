@@ -55,6 +55,7 @@ fn shift_modifier_is_applied_to_preview_and_final_mouse_up() {
         Tool::Ellipse,
         Tool::Highlight,
         Tool::Blur,
+        Tool::GaussianBlur,
         Tool::Redact,
     ] {
         let mut e = editor();
@@ -797,4 +798,77 @@ fn redact_tool_creates_and_moves_a_redaction() {
     e.mouse_up(p(25.0, 23.0));
     assert!(e.nudge_selected(2.0, 3.0));
     assert_eq!(e.shapes()[0].bounds().x, 12.0);
+}
+
+#[test]
+fn gaussian_blur_gesture_resize_move_and_history_preserve_style() {
+    let mut e = editor();
+    e.set_tool(Tool::GaussianBlur);
+    e.mouse_down(p(10.0, 12.0));
+    e.mouse_move(p(40.0, 35.0));
+    assert!(matches!(
+        e.preview().unwrap().kind,
+        ShapeKind::GaussianBlur { .. }
+    ));
+    e.mouse_up(p(40.0, 35.0));
+    let original = e.shapes()[0].clone();
+    assert_eq!(original.handles().len(), 4);
+    e.set_tool(Tool::Select);
+    e.mouse_down(p(25.0, 23.0));
+    e.mouse_up(p(25.0, 23.0));
+    assert!(e.nudge_selected(2.0, 3.0));
+    let moved = e.shapes()[0].clone();
+    assert_eq!(moved.bounds().x, 12.0);
+    assert_eq!(moved.style, original.style);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], original);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], moved);
+    e.mouse_down(moved.handles()[2]);
+    e.mouse_up(p(60.0, 55.0));
+    let resized = e.shapes()[0].clone();
+    assert_eq!(resized.bounds().width, 48.0);
+    assert_eq!(resized.style, original.style);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], moved);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], resized);
+}
+
+#[test]
+fn gaussian_blur_crop_and_frame_offset_and_history_are_consistent() {
+    let mut e = editor();
+    e.set_tool(Tool::GaussianBlur);
+    e.mouse_down(p(20.0, 25.0));
+    e.mouse_up(p(55.0, 60.0));
+    let original = e.shapes()[0].clone();
+    let source = e.image_arc();
+    e.crop(CropRect {
+        x: 10,
+        y: 15,
+        width: 70,
+        height: 65,
+    })
+    .unwrap();
+    let mut cropped = original.clone();
+    cropped.offset(-10.0, -15.0);
+    assert_eq!(e.shapes()[0], cropped);
+    e.add_frame(FrameOptions {
+        width: 5,
+        color: Color::rgba(255, 255, 255, 128),
+        shadow: None,
+    })
+    .unwrap();
+    let mut framed = cropped.clone();
+    framed.offset(5.0, 5.0);
+    assert_eq!(e.shapes()[0], framed);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], cropped);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], original);
+    assert!(Arc::ptr_eq(&source, &e.image_arc()));
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], cropped);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], framed);
 }

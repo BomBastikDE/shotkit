@@ -465,6 +465,7 @@ mod tests {
             ShapeKind::Ellipse { start: a, end: b },
             ShapeKind::Highlight { start: a, end: b },
             ShapeKind::Blur { start: a, end: b },
+            ShapeKind::GaussianBlur { start: a, end: b },
             ShapeKind::Redact { start: a, end: b },
             ShapeKind::Freehand {
                 points: vec![a, Point::new(48.0, 70.0), b],

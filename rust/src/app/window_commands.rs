@@ -250,6 +250,7 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x54 => Some(Tool::Text),
                 0x4d => Some(Tool::Highlight),
                 0x42 => Some(Tool::Blur),
+                0x57 => Some(Tool::GaussianBlur),
                 0x53 => Some(Tool::Redact),
                 0x4e => Some(Tool::Step),
                 0x50 => Some(Tool::Pen),

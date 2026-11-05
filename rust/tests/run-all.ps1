@@ -57,6 +57,7 @@ $cases = @(
     @{ Name = 'Interactive Windows horizontal scroll smoke test'; Script = 'windows-horizontal-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows quit message security smoke test'; Script = 'windows-quit-security-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows redaction export smoke test'; Script = 'windows-redaction-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows soft blur export smoke test'; Script = 'windows-gaussian-blur-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows single-instance smoke test'; Script = 'windows-instance-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hover suggestion smoke test'; Script = 'windows-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser hover smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },

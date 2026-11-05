@@ -8,7 +8,8 @@ use super::*;
 /// | --- | --- |
 /// | `ID_SELECT` / `ID_ARROW` / `ID_LINE` | Auswahl / Pfeil / Linie |
 /// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
-/// | `ID_MARKER` / `ID_BLUR` / `ID_STEP` / `ID_PEN` | Marker / Verpixeln / Nummer / Stift |
+/// | `ID_MARKER` / `ID_BLUR` / `ID_GAUSSIAN_BLUR` | Marker / Verpixeln / Weichzeichnen |
+/// | `ID_REDACT` / `ID_STEP` / `ID_PEN` | Schwärzen / Nummer / Stift |
 /// | `ID_CROP` | Zuschneiden |
 /// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` / `ID_FRAME` | Farbe / Linienbreite / Schriftgröße / Rahmen und Schatten |
 /// | `ID_SAVE` / `ID_CAPTURE` / `ID_COPY` / `ID_UNDO` / `ID_REDO` | Speichern / Aufnahme / Kopieren / Zurück / Wiederholen |

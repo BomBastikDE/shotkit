@@ -80,3 +80,17 @@ fn render_sizes_keep_nan_fallback_and_clamp_extremes() {
         assert_eq!(bounded_size(f32::INFINITY, maximum), maximum);
     }
 }
+
+#[test]
+fn gaussian_blur_requires_document_sampling_source() {
+    let shape = Shape::new(ShapeKind::GaussianBlur {
+        start: Point::new(1.0, 1.0),
+        end: Point::new(8.0, 8.0),
+    });
+    assert_eq!(
+        render_shape(16, 16, &shape),
+        Err(RenderError::UnsupportedShape(
+            "Weichzeichnen benötigt das Originalbild als Quelle"
+        ))
+    );
+}

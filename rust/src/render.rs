@@ -388,6 +388,9 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
             let (w, h) = (r.right - r.left, r.bottom - r.top);
             w <= 0 || h <= 0 || PatBlt(dc, r.left, r.top, w, h, 0x00000042) != 0
         }
+        // Soft blur is a document operation: the GDI primitive path cannot
+        // guarantee alpha-correct filtering or sanitize all redactions.
+        ShapeKind::GaussianBlur { .. } => false,
         ShapeKind::Blur { start, end } => {
             let r = bounds(*start, *end);
             let Some(src) = source else {

@@ -330,11 +330,11 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- $wide=[int][Math]::Round(1000*$dpi/96);$tall=[int][Math]::Round(600*$dpi/96)
+ $wide=[int][Math]::Round(1040*$dpi/96);$tall=[int][Math]::Round(600*$dpi/96)
  if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
- Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 27 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
+ Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 28 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
- $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
+ $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Weichzeichnen (W) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
  if($PopupOnly) {
@@ -396,7 +396,7 @@ try {
  } elseif($ResponsiveOnly) {
   $allOriginalIds=@($buttons|Where-Object{$_.Id -notin @(0x5131,0x5132)}|ForEach-Object{$_.Id})
   # Repeat shrink/grow to catch stale hidden controls and one-way stage state.
-  foreach($logicalWidth in @(945,800,700,500,430)) {
+  foreach($logicalWidth in @(970,890,700,500,430)) {
    $narrow=[int][Math]::Round($logicalWidth*$dpi/96)
    if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$narrow,$tall,4)){throw 'RESPONSIVE_NARROW_RESIZE_FAILED'}
    Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)|Where-Object{$_.Id -eq 0x5130}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_NOT_VISIBLE'
@@ -404,8 +404,8 @@ try {
    if((Assert-ToolbarRow $toolbar $narrowButtons) -ne $wideHeight){throw 'RESPONSIVE_TOOLBAR_HEIGHT_CHANGED'}
    foreach($id in @(0x5114,0x5111,0x5110,0x5131)){if(-not($narrowButtons|Where-Object{$_.Id -eq $id})){throw "RESPONSIVE_FIXED_ACTION_HIDDEN: $id"}}
    $visibleIds=@($narrowButtons|ForEach-Object{$_.Id})
-   if($logicalWidth -eq 945 -and (0x5123 -in $visibleIds -or 0x5132 -in $visibleIds -or 0x5121 -notin $visibleIds)){throw 'RESPONSIVE_STAGE1_GROUPS_FAILED'}
-   if($logicalWidth -eq 800 -and (0x5121 -in $visibleIds -or 0x5122 -in $visibleIds -or 0x5112 -in $visibleIds -or 0x5113 -in $visibleIds -or 0x5124 -notin $visibleIds)){throw 'RESPONSIVE_STAGE2_GROUPS_FAILED'}
+   if($logicalWidth -eq 970 -and (0x5123 -in $visibleIds -or 0x5132 -in $visibleIds -or 0x5121 -notin $visibleIds)){throw 'RESPONSIVE_STAGE1_GROUPS_FAILED'}
+   if($logicalWidth -eq 890 -and (0x5121 -in $visibleIds -or 0x5122 -in $visibleIds -or 0x5112 -in $visibleIds -or 0x5113 -in $visibleIds -or 0x5124 -notin $visibleIds)){throw 'RESPONSIVE_STAGE2_GROUPS_FAILED'}
    if($logicalWidth -eq 700 -and (0x5124 -in $visibleIds -or 0x5125 -in $visibleIds -or 0x5126 -in $visibleIds -or 0x5127 -in $visibleIds)){throw 'RESPONSIVE_STAGE3_GROUPS_FAILED'}
    $more=$narrowButtons|Where-Object{$_.Id -eq 0x5130}|Select-Object -First 1
    [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
@@ -441,7 +441,7 @@ try {
    } else { Press-ToolbarKey 0x1b }
    Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_STILL_OPEN'
    if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_RESTORE_RESIZE_FAILED'}
-   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 27 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
+   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 28 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
    $restored=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
    foreach($label in $expected){if(-not($restored|Where-Object{$_.Text -ceq $label})){throw "RESPONSIVE_RESTORED_LABEL_MISSING: $label"}}
    if((Assert-ToolbarRow $toolbar $restored) -ne $wideHeight){throw 'RESPONSIVE_RESTORED_HEIGHT_CHANGED'}
@@ -573,7 +573,7 @@ try {
   }
   if($edgePixels -eq 0){throw 'SMOOTH_ICON_EDGES_MISSING: no intermediate grayscale pixels in inactive line icon.'}
  } finally { $verify.Dispose() }
- $pass="PASS: owned 27-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
+ $pass="PASS: owned 28-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
  }
 } catch {$failure=$_} finally {
  if($mouse){try{[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}

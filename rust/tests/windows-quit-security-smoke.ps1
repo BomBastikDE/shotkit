@@ -37,6 +37,7 @@ namespace ShotKitQuitSecuritySmoke {
   [DllImport("user32.dll")] static extern bool SendMessageTimeoutW(IntPtr h, uint m, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint command);
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
   [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr desktop);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool GetUserObjectInformationW(IntPtr obj, int index, StringBuilder info, uint length, out uint needed);
@@ -54,6 +55,7 @@ namespace ShotKitQuitSecuritySmoke {
   static string Txt(IntPtr h) { var b=new StringBuilder(512); GetWindowTextW(h,b,b.Capacity); return b.ToString(); }
   static string Cls(IntPtr h) { var b=new StringBuilder(256); GetClassNameW(h,b,b.Capacity); return b.ToString(); }
   public static uint Pid(IntPtr h) { uint p; GetWindowThreadProcessId(h,out p); return p; }
+  public static IntPtr Owner(IntPtr h) { return GetWindow(h,4); }
   public static Win[] Windows(int pid) { var a=new List<Win>(); EnumProc cb=(h,p)=>{ if(Pid(h)==(uint)pid) a.Add(new Win{H=h,ClassName=Cls(h),Title=Txt(h),Visible=IsWindowVisible(h)}); return true; }; EnumWindows(cb,IntPtr.Zero); GC.KeepAlive(cb); return a.ToArray(); }
   public static Win[] Children(IntPtr parent) { var a=new List<Win>(); EnumProc cb=(h,p)=>{ a.Add(new Win{H=h,ClassName=Cls(h),Title=Txt(h),Visible=IsWindowVisible(h)}); return true; }; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return a.ToArray(); }
   public static Btn[] Buttons(IntPtr parent) { var a=new List<Btn>(); EnumProc cb=(h,p)=>{ if(IsWindowVisible(h) && Cls(h).Equals("Button",StringComparison.OrdinalIgnoreCase)) a.Add(new Btn{H=h,Text=Txt(h)}); return true; }; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return a.ToArray(); }
@@ -142,6 +144,14 @@ try {
     # The normal primary-window close must still ask about unsaved edits.
     if(-not [ShotKitQuitSecuritySmoke.N]::PostMessageW($primary.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'QUIT_POST_FAILED'}
     $dialog=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit Rust'}|Select-Object -First 1 } 'unsaved changes confirmation'
+    if([ShotKitQuitSecuritySmoke.N]::Owner($dialog.H) -ne $primary.H){throw 'UNSAVED_DIALOG_NOT_OWNED_BY_PRIMARY'}
+    # The owned MessageBox runs a modal loop on PRIMARY. A foreign synchronous
+    # barrier proves WM_FINISH_QUIT was dispatched while that loop was active.
+    [ShotKitQuitSecuritySmoke.N]::SendBarrier($primary.H, 0x8005)
+    Start-Sleep -Milliseconds 300
+    if($process.HasExited -or -not [ShotKitQuitSecuritySmoke.N]::IsWindow($primary.H) -or -not [ShotKitQuitSecuritySmoke.N]::IsWindow($editorHandle) -or -not [ShotKitQuitSecuritySmoke.N]::IsWindow($dialog.H)){throw 'MODAL_FOREIGN_QUIT_DESTROYED_WINDOW: foreign WM_FINISH_QUIT ended the process or destroyed PRIMARY, editor, or its modal dialog.'}
+    $main=Get-Main
+    if($null -eq $main -or -not $main.Title.StartsWith('* ')){throw 'DIRTY_DOCUMENT_NOT_PRESERVED after modal foreign WM_FINISH_QUIT.'}
     $cancel=[ShotKitQuitSecuritySmoke.N]::Buttons($dialog.H)|Where-Object {($_.Text -replace '&','').Trim() -in @('Cancel','Abbrechen')}|Select-Object -First 1
     if($null -eq $cancel){throw 'CANCEL_BUTTON_NOT_FOUND'}
     [ShotKitQuitSecuritySmoke.N]::Click($cancel.H)
@@ -154,7 +164,7 @@ try {
     [ShotKitQuitSecuritySmoke.N]::Click($discard.H)
     if(-not $process.WaitForExit($TimeoutSeconds*1000)){throw 'LEGITIMATE_QUIT_TIMEOUT'}
     if($process.ExitCode -ne 0){throw "LEGITIMATE_QUIT_FAILED: exit code $($process.ExitCode)"}
-    Write-Output 'PASS: foreign WM_FINISH_QUIT preserved the dirty document; normal quit prompted, cancel preserved it, and discard exited successfully.'
+    Write-Output 'PASS: foreign WM_FINISH_QUIT preserved the dirty document both normally and during PRIMARY modal confirmation; cancel preserved it, and discard exited successfully.'
 
 }
 catch { $failure=$_ }

@@ -1,7 +1,8 @@
 //! Alpha-correct document rendering for Windows annotation images.
 //!
 //! Ordinary annotations are rendered to straight-alpha BGRA layers and
-//! composited in document order. Pixelation samples the unchanged source image
+//! composited in document order. Pixelation and soft blur sample the source image
+//! sanitized by every redaction, independent of their document order,
 //! and replaces only its clipped region in the accumulated result.
 
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use crate::{
     alpha_composite::source_over,
     alpha_render,
+    gaussian_blur::gaussian_blur_region,
     pixelate::{pixelate_region, PixelateRect},
     shapes::{Shape, ShapeKind},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
@@ -99,7 +101,7 @@ fn render_document_over(
     output_pixels.extend_from_slice(&initial.pixels);
 
     // A later blur must not spread redacted source pixels outside the black
-    // rectangle through its block averages. Sanitize the sampling source.
+    // rectangle through averaging. Sanitize the sampling source.
     let sanitized_source = if shapes
         .iter()
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
@@ -117,7 +119,7 @@ fn render_document_over(
     } else {
         None
     };
-    let pixelation_source = sanitized_source.as_ref().unwrap_or(source);
+    let sampling_source = sanitized_source.as_ref().unwrap_or(source);
 
     for shape in shapes {
         match &shape.kind {
@@ -132,9 +134,31 @@ fn render_document_over(
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
                 let block_size = ((shape.style.width * 3.0) as usize).clamp(12, 4096);
-                let pixelated = pixelate_region(pixelation_source, region, block_size)
+                let pixelated = pixelate_region(sampling_source, region, block_size)
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
                 copy_region(&pixelated, &mut output_pixels, region)?;
+            }
+            ShapeKind::GaussianBlur { start, end } => {
+                let Some(region) =
+                    clipped_region(source.width, source.height, start.x, start.y, end.x, end.y)?
+                else {
+                    continue;
+                };
+                if !shape.style.width.is_finite() || shape.style.width <= 0.0 {
+                    return Err("Ungültige Weichzeichnungsstärke.".into());
+                }
+                // Reuse the width selector as filter strength. The kernel is
+                // bounded independently of image dimensions and style color.
+                let radius = (shape.style.width * 2.0).round().clamp(1.0, 64.0) as usize;
+                let blurred = gaussian_blur_region(sampling_source, region, radius)
+                    .map_err(|error| format!("Weichzeichnen fehlgeschlagen: {error:?}"))?;
+                // The filter returns a compact region rather than a full image.
+                for row in 0..region.height {
+                    let dst = ((region.y + row) * source.width + region.x) * 4;
+                    let src = row * region.width * 4;
+                    output_pixels[dst..dst + region.width * 4]
+                        .copy_from_slice(&blurred.pixels[src..src + region.width * 4]);
+                }
             }
             ShapeKind::Freehand { points }
                 if points.len() >= 2
@@ -266,7 +290,7 @@ fn clipped_region(
     y2: f32,
 ) -> Result<Option<PixelateRect>, String> {
     if ![x1, y1, x2, y2].into_iter().all(f32::is_finite) {
-        return Err("Pixelationsregion enthält ungültige Koordinaten.".into());
+        return Err("Bildregion enthält ungültige Koordinaten.".into());
     }
 
     let left = (x1.min(x2) as f64).floor().clamp(0.0, width as f64) as usize;
@@ -316,6 +340,156 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn gaussian_blur_matches_kernel_preserves_outside_and_ignores_style_color() {
+        use crate::shapes::{Color, Point};
+        let source = Image::new(
+            25,
+            19,
+            (0..25 * 19)
+                .flat_map(|i| [(i * 17) as u8, (i * 3) as u8, 90, [0, 96, 255][i % 3]])
+                .collect(),
+        )
+        .unwrap();
+        let before = source.clone();
+        let mut shape = Shape::new(ShapeKind::GaussianBlur {
+            start: Point::new(20.2, 15.1),
+            end: Point::new(3.2, 2.8),
+        });
+        shape.style.width = 3.0;
+        shape.style.color = Color::rgba(255, 0, 0, 0);
+        let region = PixelateRect {
+            x: 3,
+            y: 2,
+            width: 18,
+            height: 14,
+        };
+        let filtered = gaussian_blur_region(&source, region, 6).unwrap();
+        let rendered = render_document(&source, &[shape.clone()]).unwrap();
+        for y in 0..source.height {
+            for x in 0..source.width {
+                let i = (y * source.width + x) * 4;
+                let expected = if (3..21).contains(&x) && (2..16).contains(&y) {
+                    let j = ((y - 2) * region.width + x - 3) * 4;
+                    &filtered.pixels[j..j + 4]
+                } else {
+                    &source.pixels[i..i + 4]
+                };
+                assert_eq!(&rendered.pixels[i..i + 4], expected);
+            }
+        }
+        shape.style.color = Color::rgba(0, 255, 0, 255);
+        assert_eq!(
+            rendered,
+            render_document(&source, &[shape.clone()]).unwrap()
+        );
+        shape.style.width = 8.0;
+        assert_ne!(
+            rendered,
+            render_document(&source, &[shape.clone()]).unwrap()
+        );
+        for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            shape.style.width = width;
+            assert!(render_document(&source, &[shape.clone()]).is_err());
+        }
+        assert_eq!(source, before);
+    }
+
+    #[test]
+    fn overlapping_filters_cannot_expose_redacted_pixels_in_any_order_or_preview() {
+        use crate::shapes::Point;
+        let source = Image::new(30, 20, [200, 180, 160, 128].repeat(600)).unwrap();
+        let mut secret = source.clone();
+        for y in 3..9 {
+            for x in 4..10 {
+                let i = (y * 30 + x) * 4;
+                secret.pixels[i..i + 4].copy_from_slice(&[1, 240, 30, 255]);
+            }
+        }
+        let filters = [
+            Shape::new(ShapeKind::GaussianBlur {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(22.0, 16.0),
+            }),
+            Shape::new(ShapeKind::GaussianBlur {
+                start: Point::new(2.0, 1.0),
+                end: Point::new(30.0, 20.0),
+            }),
+            Shape::new(ShapeKind::Blur {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(30.0, 20.0),
+            }),
+        ];
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(9.2, 8.2),
+            end: Point::new(4.1, 3.1),
+        });
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            for position in 0..=3 {
+                let mut shapes: Vec<_> = order.iter().map(|&i| filters[i].clone()).collect();
+                shapes.insert(position, redact.clone());
+                let expected = render_document(&source, &shapes).unwrap();
+                assert_eq!(expected, render_document(&secret, &shapes).unwrap());
+                for y in 3..9 {
+                    for x in 4..10 {
+                        let i = (y * 30 + x) * 4;
+                        assert_eq!(&expected.pixels[i..i + 4], &[0, 0, 0, 255]);
+                    }
+                }
+                let original = Arc::new(secret.clone());
+                let mut cache = None;
+                for split in 0..=shapes.len() {
+                    assert_eq!(
+                        render_preview(&original, &shapes, split, &mut cache).unwrap(),
+                        expected
+                    );
+                    assert!(cache.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gaussian_preview_cache_matches_export_across_strength_edits_and_overlaps() {
+        use crate::shapes::Point;
+        let source = Arc::new(
+            Image::new(
+                30,
+                20,
+                (0..600)
+                    .flat_map(|i| [i as u8, (i * 11) as u8, 42, [0, 128, 255][i % 3]])
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let first = Shape::new(ShapeKind::GaussianBlur {
+            start: Point::new(1.0, 2.0),
+            end: Point::new(24.0, 18.0),
+        });
+        let mut second = Shape::new(ShapeKind::GaussianBlur {
+            start: Point::new(5.0, 0.0),
+            end: Point::new(29.0, 20.0),
+        });
+        let mut cache = None;
+        for width in [1.0, 4.0, 8.0, 2.0] {
+            second.style.width = width;
+            let shapes = [first.clone(), second.clone()];
+            for split in 0..=shapes.len() {
+                assert_eq!(
+                    render_preview(&source, &shapes, split, &mut cache).unwrap(),
+                    render_document(&source, &shapes).unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn redaction_prevents_pixelation_leaking_source_across_region_and_cache() {

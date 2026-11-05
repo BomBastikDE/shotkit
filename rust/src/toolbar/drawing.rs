@@ -317,6 +317,18 @@ pub(super) unsafe fn draw_icon(
                 }
             }
         }
+        Icon::GaussianBlur => {
+            // Concentric soft bands distinguish blur from the pixel grid.
+            let high_contrast = high_contrast_enabled();
+            for (inset, gray) in [(1, 210u32), (4, 155), (7, 100)] {
+                let color = if high_contrast {
+                    GetSysColor(18)
+                } else {
+                    gray | (gray << 8) | (gray << 16)
+                };
+                icon_fill_ellipse(hdc, rect(inset, inset, 20 - inset, 20 - inset), color);
+            }
+        }
         Icon::Redact => {
             icon_fill_rect(hdc, rect(2, 5, 18, 15), 0x00000000);
         }

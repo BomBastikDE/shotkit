@@ -97,6 +97,7 @@ pub enum Tool {
     Text,
     Highlight,
     Blur,
+    GaussianBlur,
     Redact,
     Step,
     Pen,
@@ -145,6 +146,11 @@ pub enum ShapeKind {
         start: Point,
         end: Point,
     },
+    /// Gaussian-like softening; samples the sanitized original image.
+    GaussianBlur {
+        start: Point,
+        end: Point,
+    },
     /// Opaque black area applied after all other annotations.
     Redact {
         start: Point,
@@ -182,6 +188,7 @@ impl Shape {
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
             | ShapeKind::Blur { start, end }
+            | ShapeKind::GaussianBlur { start, end }
             | ShapeKind::Redact { start, end } => Rect::from_points(*start, *end),
             ShapeKind::Freehand { points } => points
                 .iter()
@@ -228,6 +235,7 @@ impl Shape {
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
             | ShapeKind::Blur { start, end }
+            | ShapeKind::GaussianBlur { start, end }
             | ShapeKind::Redact { start, end } => {
                 (start.x - end.x).abs() < 3.0 && (start.y - end.y).abs() < 3.0
             }
@@ -247,6 +255,7 @@ impl Shape {
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
             | ShapeKind::Blur { start, end }
+            | ShapeKind::GaussianBlur { start, end }
             | ShapeKind::Redact { start, end } => {
                 add(start);
                 add(end)
@@ -268,6 +277,7 @@ impl Shape {
             | ShapeKind::Ellipse { .. }
             | ShapeKind::Highlight { .. }
             | ShapeKind::Blur { .. }
+            | ShapeKind::GaussianBlur { .. }
             | ShapeKind::Redact { .. } => self.bounds().corners().to_vec(),
             _ => vec![],
         }
@@ -284,6 +294,7 @@ impl Shape {
             | ShapeKind::Ellipse { start, end }
             | ShapeKind::Highlight { start, end }
             | ShapeKind::Blur { start, end }
+            | ShapeKind::GaussianBlur { start, end }
             | ShapeKind::Redact { start, end } => {
                 let r = Rect::from_points(*start, *end);
                 let (mut l, mut t, mut right, mut b) = (r.x, r.y, r.x + r.width, r.y + r.height);
