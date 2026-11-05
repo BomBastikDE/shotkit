@@ -53,6 +53,7 @@ $cases = @(
     @{ Name = 'Interactive Edge browser unchanged hover Enter acceptance smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @('-EnterAccept'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor Shift constraints and pixel smoke test'; Script = 'windows-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor pixelation and undo smoke test'; Script = 'windows-editor-pixelate-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows frame and shadow smoke test'; Script = 'windows-frame-shadow-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor selected-handle parity smoke test'; Script = 'windows-editor-handles-smoke.ps1'; Extra = @('-PreviewScreenshotPath', $PreviewScreenshotPath); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor text edit smoke test'; Script = 'windows-editor-text-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows original image save protection smoke test'; Script = 'windows-save-original-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
