@@ -220,7 +220,11 @@ try {
     $fileButton = [ShotKitStorageFolderSmoke.Native]::Buttons($main.Handle) |
         Where-Object { $_.Id -eq 0x5131 } | Select-Object -First 1
     if ($null -eq $fileButton) { throw 'FILE_MENU_BUTTON_MISSING: editor child button ID 0x5131 was not found.' }
-    [ShotKitStorageFolderSmoke.Native]::Click($fileButton.Handle)
+    # The File menu runs a modal message loop, so a synchronous BM_CLICK could
+    # block the test before it can inspect and select the popup item.
+    if (-not [ShotKitStorageFolderSmoke.Native]::PostMessageW($fileButton.Handle,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)) {
+        throw 'FILE_MENU_CLICK_FAILED: could not post BM_CLICK to the owned File button.'
+    }
     $popup = Wait-For -Seconds 8 -Description 'owned native File popup' -Probe {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
             Where-Object { $_.ClassName -eq '#32768' -and $_.Visible } | Select-Object -First 1
