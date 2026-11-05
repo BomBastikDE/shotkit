@@ -47,6 +47,15 @@ namespace ShotKitHandlesSmoke {
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
+        [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+        [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr owner, IntPtr menu, uint position, out Rect r);
+        [DllImport("user32.dll")] public static extern int MenuItemFromPoint(IntPtr owner, IntPtr menu, Point p);
+        [DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr menu, int position);
+        [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+        [DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr menu, uint position, uint flags);
+        [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu, uint position, StringBuilder text, int count, uint flags);
+        public static string MenuText(IntPtr menu, uint position) { var text=new StringBuilder(64); GetMenuStringW(menu,position,text,text.Capacity,0x400); return text.ToString(); }
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
@@ -63,6 +72,7 @@ namespace ShotKitHandlesSmoke {
         }
         public static bool ClientRect(IntPtr h,out Rect r) { return GetClientRect(h,out r); }
         public static void Click(IntPtr h) { SendMessageW(h,0x00F5,IntPtr.Zero,IntPtr.Zero); }
+        public static IntPtr Menu(IntPtr h) { IntPtr result; return SendMessageTimeoutW(h,0x01e1,IntPtr.Zero,IntPtr.Zero,0x0002,500,out result)==IntPtr.Zero ? IntPtr.Zero : result; }
         public static int Owner(IntPtr h) { uint pid; GetWindowThreadProcessId(h,out pid); return (int)pid; }
     }
 }
@@ -84,6 +94,55 @@ function Wait-For([scriptblock]$Probe, [int]$Seconds, [string]$What) {
 function Click-Button([string]$Text) {
     $b=[ShotKitHandlesSmoke.Native]::Buttons($main.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq $Text } | Select-Object -First 1
     if($null -eq $b) { throw "BUTTON_NOT_FOUND: $Text" }; [ShotKitHandlesSmoke.Native]::Click($b.Handle)
+}
+# Use physical mouse input for the native popup: synchronous BM_CLICK would
+# block this test thread while TrackPopupMenu runs its modal message loop.
+function Choose-LineWidth8 {
+    $button=[ShotKitHandlesSmoke.Native]::Buttons($main.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq 'Linienbreite…' } | Select-Object -First 1
+    if($null -eq $button){throw 'LINE_WIDTH_BUTTON_MISSING.'}
+    if(-not [ShotKitHandlesSmoke.Native]::SetForegroundWindow($main.Handle) -or [ShotKitHandlesSmoke.Native]::GetForegroundWindow() -ne $main.Handle){throw 'STYLE_EDITOR_FOCUS_FAILED.'}
+    $rect=[Activator]::CreateInstance([ShotKitHandlesSmoke.Rect])
+    if(-not [ShotKitHandlesSmoke.Native]::GetWindowRect($button.Handle,[ref]$rect)){throw 'LINE_WIDTH_BUTTON_RECT_FAILED.'}
+    $x=[int][Math]::Floor(($rect.Left+$rect.Right)/2); $y=[int][Math]::Floor(($rect.Top+$rect.Bottom)/2)
+    if(-not [ShotKitHandlesSmoke.Native]::SetCursorPos($x,$y)){throw 'LINE_WIDTH_BUTTON_CURSOR_FAILED.'}
+    $point=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point]); [void][ShotKitHandlesSmoke.Native]::GetCursorPos([ref]$point)
+    if([ShotKitHandlesSmoke.Native]::WindowFromPoint($point) -ne $button.Handle){throw 'LINE_WIDTH_BUTTON_TARGET_MISMATCH.'}
+    try {
+        [ShotKitHandlesSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$true
+    } finally {
+        [ShotKitHandlesSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$false
+    }
+    $popup=Wait-For { Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'} | Select-Object -First 1 } 5 'line width popup'
+    $menu=Wait-For { $m=[ShotKitHandlesSmoke.Native]::Menu($popup.Handle); if($m -ne [IntPtr]::Zero){$m} } 5 'line width menu handle'
+    # The width-8 entry has command ID 6 and position 5 in this menu.
+    if([ShotKitHandlesSmoke.Native]::GetMenuItemCount($menu) -ne 8 -or [ShotKitHandlesSmoke.Native]::GetMenuItemID($menu,5) -ne 6 -or [ShotKitHandlesSmoke.Native]::MenuText($menu,5) -ne '8'){throw 'LINE_WIDTH_MENU_IDENTITY_MISMATCH.'}
+    if(-not [ShotKitHandlesSmoke.Native]::GetMenuItemRect([IntPtr]::Zero,$menu,5,[ref]$rect) -or $rect.Right -le $rect.Left -or $rect.Bottom -le $rect.Top){throw 'LINE_WIDTH_MENU_RECT_FAILED.'}
+    $point.X=[int][Math]::Floor(($rect.Left+$rect.Right)/2); $point.Y=[int][Math]::Floor(($rect.Top+$rect.Bottom)/2)
+    if([ShotKitHandlesSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$point) -ne 5 -or -not [ShotKitHandlesSmoke.Native]::SetCursorPos($point.X,$point.Y)){throw 'LINE_WIDTH_MENU_TARGET_INVALID.'}
+    [void](Wait-For {
+        $actual=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point]); [void][ShotKitHandlesSmoke.Native]::GetCursorPos([ref]$actual)
+        $state=[ShotKitHandlesSmoke.Native]::GetMenuState($menu,5,0x400)
+        [ShotKitHandlesSmoke.Native]::WindowFromPoint($actual) -eq $popup.Handle -and [ShotKitHandlesSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$actual) -eq 5 -and $state -ne [uint32]::MaxValue -and ($state -band 0x83) -eq 0x80
+    } 5 'enabled highlighted line width 8')
+    $current=Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768' -and $_.Handle -eq $popup.Handle} | Select-Object -First 1
+    if($null -eq $current -or [ShotKitHandlesSmoke.Native]::Menu($current.Handle) -ne $menu -or [ShotKitHandlesSmoke.Native]::GetMenuItemID($menu,5) -ne 6 -or [ShotKitHandlesSmoke.Native]::MenuText($menu,5) -ne '8'){throw 'LINE_WIDTH_MENU_CHANGED.'}
+    $actual=[Activator]::CreateInstance([ShotKitHandlesSmoke.Point])
+    if(-not [ShotKitHandlesSmoke.Native]::GetCursorPos([ref]$actual) -or [ShotKitHandlesSmoke.Native]::WindowFromPoint($actual) -ne $popup.Handle -or [ShotKitHandlesSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$menu,$actual) -ne 5){throw 'LINE_WIDTH_MENU_TARGET_CHANGED.'}
+    try {
+        [ShotKitHandlesSmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$true
+    } finally {
+        [ShotKitHandlesSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $script:mouseDown=$false
+    }
+    [void](Wait-For { -not @(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'}).Count } 5 'line width popup close')
+}
+function Test-SameImage($a,$b) {
+    if($a.Width -ne $b.Width -or $a.Height -ne $b.Height){return $false}
+    for($i=0;$i -lt $a.Pixels.Length;$i++){if($a.Pixels[$i].ToArgb() -ne $b.Pixels[$i].ToArgb()){return $false}}
+    return $true
+}
+function Save-AndWaitImage([scriptblock]$Predicate,[string]$Description) {
+    Click-Button 'Speichern'
+    return Wait-For { try {$image=Read-Image $inputPath; if(&$Predicate $image){return $image}} catch {} } 15 $Description
 }
 function Read-Image([string]$Path) {
     $bmp=[Drawing.Bitmap]::new($Path)
@@ -239,6 +298,23 @@ try {
     $inside=0; for($y=92;$y -le 98;$y++){for($x=117;$x -le 123;$x++){$q=$saved.Pixels[$y*160+$x]; if($q.A -gt 0 -and $q.R -gt 200 -and $q.G -lt 80 -and $q.B -lt 80){$inside++}}}
     if($inside -lt 3){throw "RESIZED_CORNER_PIXELS_MISSING: found $inside red pixels near resized lower-right corner."}
     Write-Host "PASS: Rectangle stayed active while its selected visible handle resized saved bounds to ($left,$top)-($right,$bottom)."
+    # The just-created rectangle remains selected after saving. Check the real
+    # line-width menu and compare exported document pixels, excluding overlays.
+    Choose-LineWidth8
+    $thick=Save-AndWaitImage { param($image) -not (Test-SameImage $image $saved) } 'width 8 exported pixels'
+    $thinCount=0; $thickCount=0
+    for($y=15;$y -le 35;$y++){
+        $a=$saved.Pixels[$y*160+50]; $b=$thick.Pixels[$y*160+50]
+        if($a.A -gt 0 -and $a.R -gt 200 -and $a.G -lt 80 -and $a.B -lt 80){$thinCount++}
+        if($b.A -gt 0 -and $b.R -gt 200 -and $b.G -lt 80 -and $b.B -lt 80){$thickCount++}
+    }
+    if($thinCount -lt 1 -or $thickCount -lt ($thinCount+3)){throw "LINE_WIDTH_EXPORT_WRONG: original red span=$thinCount, width 8 span=$thickCount."}
+    Click-Button 'Zurück'
+    [void](Save-AndWaitImage { param($image) Test-SameImage $image $saved } 'undo restoring original rectangle pixels')
+    Click-Button 'Wiederholen'
+    [void](Save-AndWaitImage { param($image) Test-SameImage $image $thick } 'redo restoring width 8 pixels')
+    Write-Host "PASS: selected rectangle line width changed through the native menu (red span $thinCount to $thickCount), with exact exported pixel Undo and Redo."
+
 }
 catch { $failure=$_ }
 finally {
