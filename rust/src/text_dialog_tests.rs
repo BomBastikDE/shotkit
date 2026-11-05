@@ -58,7 +58,7 @@ extern "system" {
     fn GetCurrentThreadId() -> u32;
     fn GetDpiForWindow(hwnd: Hwnd) -> u32;
     fn SetThreadDpiAwarenessContext(context: Hwnd) -> Hwnd;
-    fn MapWindowPoints(from: Hwnd, to: Hwnd, points: *mut TestPoint, count: u32) -> i32;
+    fn MapWindowPoints(from: Hwnd, to: Hwnd, points: *mut c_void, count: u32) -> i32;
     fn SendMessageTimeoutW(
         hwnd: Hwnd,
         message: u32,
@@ -165,7 +165,7 @@ unsafe extern "system" fn collect_control(hwnd: Hwnd, data: isize) -> i32 {
             y: rect.bottom,
         },
     ];
-    MapWindowPoints(null_mut(), *parent, points.as_mut_ptr(), 2);
+    MapWindowPoints(null_mut(), *parent, points.as_mut_ptr().cast(), 2);
 
     let font = send_timeout(hwnd, WM_GETFONT, 0, 0, "WM_GETFONT");
     let mut log_font: LogFontW = zeroed();
