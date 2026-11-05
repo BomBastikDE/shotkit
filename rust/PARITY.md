@@ -65,7 +65,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 | Funktion der C#-Referenz | Status | Rust-Test / Beleg | Stand / Grenze |
 |---|---|---|---|
-| PNG, JPEG, BMP, GIF speichern | implementiert, nicht belegt | `image_io.rs::png_and_bmp_round_trip_color`, `gif_and_jpeg_are_readable` | Codec-Tests vorhanden; nicht alle vier Dateidialog-/Speicherpfade auf Windows nachgewiesen. |
+| PNG, JPEG, BMP, GIF speichern | fertig | `image_io.rs::png_and_bmp_round_trip_color`, `gif_and_jpeg_are_readable`; `windows-formats-smoke.ps1`; [Windows-/Linux-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41972469816) | Alle vier nativen Speicherfilter, Formatkennungen, Maße und Farbflächen geprüft; zusätzlich PNG-Transparenz und JPEG-Ausgabe auf Weiß. Nicht jeder Bildinhalt oder jede Metadatenvariante ist abgedeckt. |
 | Bild öffnen und Speichern unter | implementiert, nicht belegt | `windows-editor-smoke.ps1`, `image_io.rs`-Tests | Öffnen und konkreter Speicherablauf geprüft; vollständige Dialog-/Fehlermatrix fehlt. |
 | Bild in die Zwischenablage kopieren | fertig | `windows-clipboard-smoke.ps1`; Alpha-9-Lauf | Interaktiver Export inklusive Alpha-Daten. |
 | Bild aus Zwischenablage einfügen | fertig | `windows-clipboard-smoke.ps1`; Alpha-9-Lauf | Der Test fügt den kopierten Inhalt als weiteren Editor ein und prüft den erneuten Export. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 28 fertig, 15 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 29 fertig, 14 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
