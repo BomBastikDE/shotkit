@@ -30,6 +30,16 @@ fn pointer_gesture(start: Point, current: Point) -> PointerGesture {
     }
 }
 
+// Work in screen coordinates; saturating arithmetic avoids overflow at the
+// representable boundary. Windows applies its own cursor clipping.
+fn cursor_target(point: Point, direction: (i32, i32), shift: bool) -> Point {
+    let step = if shift { 10 } else { 1 };
+    Point {
+        x: point.x.saturating_add(direction.0 * step),
+        y: point.y.saturating_add(direction.1 * step),
+    }
+}
+
 /// End an active pointer gesture before any API that can synchronously send
 /// WM_CAPTURECHANGED. Returns whether there was a gesture to cancel.
 fn end_drag_for_capture_loss(state: &mut State) -> bool {
@@ -268,6 +278,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cursor_target_uses_screen_pixel_steps_and_saturates() {
+        let point = Point { x: -100, y: 200 };
+        for (direction, expected) in [
+            ((-1, 0), (-101, 200)),
+            ((1, 0), (-99, 200)),
+            ((0, -1), (-100, 199)),
+            ((0, 1), (-100, 201)),
+        ] {
+            let result = cursor_target(point, direction, false);
+            assert_eq!((result.x, result.y), expected);
+            let result = cursor_target(point, direction, true);
+            assert_eq!(
+                (result.x, result.y),
+                (point.x + direction.0 * 10, point.y + direction.1 * 10)
+            );
+        }
+        let result = cursor_target(
+            Point {
+                x: i32::MAX,
+                y: i32::MIN,
+            },
+            (1, -1),
+            true,
+        );
+        assert_eq!((result.x, result.y), (i32::MAX, i32::MIN));
+    }
+
+    #[test]
     fn one_dimensional_drags_are_empty_in_either_direction() {
         let start = Point { x: 100, y: 100 };
         for current in [
@@ -397,7 +435,24 @@ pub(super) unsafe fn handle_keyboard(hwnd: H, msg: u32, w: W, _l: L) -> Option<L
             0
         }
         WM_KEYDOWN if matches!(w, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN) => {
-            if !(*state).down {
+            if !(*state).down && is_control_down() {
+                let direction = match w {
+                    VK_LEFT => (-1, 0),
+                    VK_UP => (0, -1),
+                    VK_RIGHT => (1, 0),
+                    _ => (0, 1),
+                };
+                let shift = is_shift_down();
+                let mut point = Point::default();
+                // SAFETY CONTRACT: GetCursorPos receives a valid writable POINT.
+                // SetCursorPos receives integer screen coordinates; Windows clips them.
+                // No STATE reference is held across either call or resulting mouse messages.
+                // The requested DPI-awareness context is not independently verified here.
+                if GetCursorPos(&mut point) != 0 {
+                    let target = cursor_target(point, direction, shift);
+                    let _ = SetCursorPos(target.x, target.y);
+                }
+            } else if !(*state).down {
                 let bounds = desktop_rect(&*state);
                 let current = (*state)
                     .keyboard_rect

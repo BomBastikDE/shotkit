@@ -139,6 +139,7 @@ extern "system" {
     fn KillTimer(hwnd: H, id: W) -> i32;
     fn GetKeyState(key: i32) -> i16;
     fn GetCursorPos(point: *mut Point) -> i32;
+    fn SetCursorPos(x: i32, y: i32) -> i32;
     fn MonitorFromPoint(point: Point, flags: u32) -> H;
     fn GetMonitorInfoW(monitor: H, info: *mut MonitorInfo) -> i32;
 }
