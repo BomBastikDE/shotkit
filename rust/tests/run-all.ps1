@@ -42,6 +42,7 @@ $cases = @(
     @{ Name = 'Interactive Windows magnifier smoke test'; Script = 'windows-magnifier-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows active-window capture parity smoke test'; Script = 'windows-active-window-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hotkey conflict smoke test'; Script = 'windows-hotkey-conflict-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows F10 hotkey conflict smoke test'; Script = 'windows-f10-conflict-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows zoom input smoke test'; Script = 'windows-zoom-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows Ctrl+0 exact 10x10 image-pixel smoke test'; Script = 'windows-zoom-10x10-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Windows keyboard selection smoke test'; Script = 'windows-keyboard-selection-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
