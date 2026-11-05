@@ -35,7 +35,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Nach unten scrollen und zusammensetzen | fertig | `windows-scroll-smoke.ps1`, `windows-browser-scroll-smoke.ps1`; [Abbruch-/Browserlauf](https://github.com/BomBastikDE/shotkit/actions/runs/41464599131) | Synthetisches Fenster und lokale Edge-Testseite; keine Aussage über jede Webseite. |
 | Nach rechts und links scrollen | fertig | `windows-horizontal-scroll-smoke.ps1`; `scroll_capture.rs`-Tests `rightward_capture_rotates_back_to_output_orientation`, `leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order` | Testet beide Richtungen anhand kontrollierter Fenster-/Bilddaten. |
 | Esc: Teilbild nach Beginn erhalten | fertig | `windows-scroll-abort-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41464599131) | Interaktiver Abbruch nach verarbeitetem Schritt; Testbild und Bildzeilen geprüft. |
-| Mausbewegung: Teilbild nach Beginn erhalten | implementiert, nicht belegt | `scroll_capture.rs::mouse_movement_after_a_successful_stitch_keeps_the_pixel_exact_prefix` | Algorithmustest vorhanden; interaktiver Windows-Abbruch durch Mausbewegung fehlt. |
+| Mausbewegung: Teilbild nach Beginn erhalten | fertig | `scroll_capture.rs::mouse_movement_after_a_successful_stitch_keeps_the_pixel_exact_prefix`; `windows-scroll-abort-smoke.ps1 -MouseAbort`; [Windows-/Linux-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41975063120) | Im synthetischen Windows-Fenster löst eine Cursorbewegung nach einem übernommenen Schritt den Abbruch aus; das 600 × 520 Pixel große Teilbild wird pixelgenau geprüft. Physische Mausgeräte und andere Anwendungen sind damit nicht allgemein abgedeckt. |
 | Feste Kopf-/Fußleisten und Nahtstellen | fertig | `scroll_capture.rs::sticky_header_and_footer_are_not_duplicated_across_stitched_seams`; `windows-browser-scroll-smoke.ps1 -FixedHeaderFooter` | Kontrollierte Bilddaten und lokale Edge-Testseite; dynamische Webseiten sind nicht allgemein nachgewiesen. |
 | Referenzgrenze 30.000 Pixel und Abgleich mit Mehrheitsbändern | implementiert, nicht belegt | `scroll_match.rs`- und `stitch.rs`-Tests; `stitch.rs::MAX_LENGTH` | Die 30.000-Pixel-Grenze ist implementiert; Übereinstimmung der Fehlermeldungen und des gesamten Referenzverhaltens bleibt zu prüfen. |
 | Diagnosebilder und Kennwerte bei nicht zuordenbarem Schritt | fehlt | Direkter Windows-Test für Diagnoseablage fehlt | Referenzablage und Rust-Fehlerbehandlung vergleichen; derzeit kein Gleichheitsnachweis. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 29 fertig, 14 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 30 fertig, 13 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
