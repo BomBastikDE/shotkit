@@ -159,8 +159,8 @@ function Dismiss-StartupNotice {
         Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
     if([ShotKitDelayedCaptureSmoke.Native]::OwnerPid($notice.Handle) -ne $process.Id) { throw 'STARTUP_NOTICE_OWNER_MISMATCH.' }
-    if(-not [ShotKitDelayedCaptureSmoke.Native]::PostMessageW($notice.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)) {
-        throw 'STARTUP_NOTICE_CLOSE_FAILED: could not invoke the test-owned notice default OK action.'
+    if(-not [ShotKitDelayedCaptureSmoke.Native]::PostMessageW($notice.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
+        throw 'STARTUP_NOTICE_CLOSE_FAILED: could not close the test-owned startup notice.'
     }
     $deadline=[DateTime]::UtcNow.AddSeconds(8)
     while([DateTime]::UtcNow -lt $deadline -and [ShotKitDelayedCaptureSmoke.Native]::IsWindow($notice.Handle)) { Start-Sleep -Milliseconds 50 }
