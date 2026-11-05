@@ -197,4 +197,37 @@ mod tests {
     fn rejects_inconsistent_image() {
         assert!(Image::new(2, 3, vec![0; 8]).is_err());
     }
+
+    #[test]
+    fn scroll_capture_length_limit_accepts_30000_and_rejects_30001() {
+        let at_limit = Image::new(1, MAX_LENGTH, vec![0; MAX_LENGTH * 4]).unwrap();
+        assert!(Stitcher::new(at_limit).is_ok());
+
+        let over_limit = Image::new(1, MAX_LENGTH + 1, vec![0; (MAX_LENGTH + 1) * 4]).unwrap();
+        assert_eq!(
+            Stitcher::new(over_limit).err(),
+            Some("Aufnahmebereich überschreitet 30000 Pixel")
+        );
+    }
+
+    #[test]
+    fn stitched_length_limit_keeps_exact_limit_result_after_rejecting_next_step() {
+        let frame = image(1, &[1, 2, 3]);
+        let mut stitcher = Stitcher::new(frame.clone()).unwrap();
+        for _ in 0..(MAX_LENGTH - frame.height) {
+            stitcher
+                .advance(frame.clone(), 1, 0, 0)
+                .expect("each one-row step should reach the limit exactly");
+        }
+        assert_eq!(stitcher.length(), MAX_LENGTH);
+
+        assert_eq!(
+            stitcher.advance(frame, 1, 0, 0),
+            Err("Maximale Bildgröße erreicht")
+        );
+        let completed = stitcher
+            .finish()
+            .expect("the last valid partial result remains finishable");
+        assert_eq!(completed.height, MAX_LENGTH);
+    }
 }
