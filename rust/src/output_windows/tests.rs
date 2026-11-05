@@ -126,6 +126,50 @@ fn autosave_creates_distinct_png_files_in_configured_folder() {
 }
 
 #[test]
+fn autosave_only_plan_executes_and_completes_with_readable_png() {
+    let dir = temp_dir();
+    let settings = Settings {
+        open_editor: false,
+        auto_save: true,
+        save_folder: Some(dir.clone()),
+        ..Settings::default()
+    };
+    let mut plan = CaptureOutputState::new(&settings);
+
+    assert_eq!(
+        advance_output(
+            &mut plan,
+            &settings,
+            &image(),
+            #[cfg(windows)]
+            std::ptr::null_mut()
+        )
+        .unwrap(),
+        OutputProgress::Advanced(Advance::Complete)
+    );
+    assert_eq!(
+        advance_output(
+            &mut plan,
+            &settings,
+            &image(),
+            #[cfg(windows)]
+            std::ptr::null_mut()
+        )
+        .unwrap(),
+        OutputProgress::Complete
+    );
+
+    let mut entries = fs::read_dir(&dir).unwrap();
+    let saved_path = entries.next().unwrap().unwrap().path();
+    assert!(entries.next().is_none());
+    assert_eq!(
+        image_io::decode(&fs::read(saved_path).unwrap()).unwrap(),
+        image()
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn final_path_stays_absent_until_temp_file_is_complete_and_synced() {
     let dir = temp_dir();
     let temp_path = dir.join(".partial.tmp");
