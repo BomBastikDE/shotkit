@@ -10,6 +10,7 @@ pub mod editor;
 pub mod hotkey_action;
 pub mod image_edit;
 pub mod image_io;
+pub mod magnifier_label;
 pub mod mouse_history;
 pub mod network_path;
 pub mod output_windows;

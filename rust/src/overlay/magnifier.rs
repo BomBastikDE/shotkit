@@ -226,18 +226,7 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     }
 
     let pixel = GetPixel(state.source_dc, local_cursor.x, local_cursor.y);
-    let label = if pixel == 0xffff_ffff {
-        format!("{}, {}", point.x, point.y)
-    } else {
-        format!(
-            "{}, {}  #{:02X}{:02X}{:02X}",
-            point.x,
-            point.y,
-            pixel & 0xff,
-            (pixel >> 8) & 0xff,
-            (pixel >> 16) & 0xff
-        )
-    };
+    let label = shotkit::magnifier_label::format_label(point.x, point.y, pixel);
     let wide: Vec<u16> = label.encode_utf16().collect();
     let text_rect = Rect {
         left,
