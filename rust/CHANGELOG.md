@@ -1,6 +1,6 @@
 # Änderungsprotokoll der Rust-Version
 
-## Beta 1 – Vorbereitung, noch nicht veröffentlicht
+## Beta 1 – Stand vor Veröffentlichung
 
 Der Entwicklungszweig wird für `v2.0.0-beta.1` vorbereitet. Seit Alpha 20 wurden unter anderem Auswahlkorrektur und Scroll-Diagnose ergänzt sowie Fehler und Tests bearbeitet. Der [CI-Lauf 42056863647](https://github.com/BomBastikDE/shotkit/actions/runs/42056863647) bestand auf Linux und Windows mit 43 Windows-Szenarien für den Vorbereitungscommit `db5372e`. Die Freigabe des Release-Tags steht noch aus. Gemischte DPI, mehrere Monitore und visuelle Owner-Abnahmen bleiben offen; Verpixelung ist keine sichere Schwärzung.
 
