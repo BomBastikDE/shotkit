@@ -16,7 +16,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Funktion der C#-Referenz | Status | Rust-Test / Beleg | Stand / Grenze |
 |---|---|---|---|
 | Eine EXE starten, Tray-Menü und Einzelinstanz | fertig | `windows-instance-smoke.ps1`; Alpha-9-Lauf | Einzelinstanz und Weiterleitung im Test; echte Geräte separat. |
-| Globale Tastenkürzel einschließlich Druck-Modifikatoren und Ausweichkürzeln | implementiert, nicht belegt | `windows-smoke.ps1` prüft einen Aufnahmeweg; vollständige Modifier-/Konfliktmatrix fehlt | Registrierungen vorhanden; vollständiger einzelner Nachweis aller Kürzel und Konflikte fehlt. |
+| Globale Tastenkürzel einschließlich Druck-Modifikatoren und Ausweichkürzeln | implementiert, nicht belegt | `hotkey_action::tests::print_screen_matrix_matches_csharp_reference_and_dispatch_actions` prüft Tasten, Modifier und Aktionen; `windows-smoke.ps1` prüft einen Aufnahmeweg | Registrierung und Konfliktbehandlung für jedes Kürzel sind unter Windows noch nicht vollständig nachgewiesen. |
 | Bildschirm unter Mauszeiger aufnehmen | implementiert, nicht belegt | `capture_targets.rs`-Grenztests; Windows-Test für alle Monitoranordnungen fehlt | Implementierung vorhanden; mehrere echte Monitore sind Owner-Praxistest. |
 | Alle Bildschirme aufnehmen | implementiert, nicht belegt | `capture_targets.rs`-Grenztests; Mehrmonitor-Windows-Test fehlt | Implementierung vorhanden; Mehrmonitor-Nachweis fehlt. |
 | Aktives Fenster aufnehmen | implementiert, nicht belegt | Windows-Test für tatsächlich aktives Fremdfenster fehlt | Implementierung vorhanden; die Übernahme des korrekten Fensters braucht direkten Nachweis. |

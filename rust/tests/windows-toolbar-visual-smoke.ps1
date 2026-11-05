@@ -125,6 +125,10 @@ function Press-ToolbarKey([byte]$Key) {
  [ShotKitToolbarVisual.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
  [ShotKitToolbarVisual.Native]::keybd_event($Key,0,2,[UIntPtr]::Zero)
 }
+function Restore-EditorForeground {
+ [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($script:main.H)
+ Wait-ToolbarCondition { [ShotKitToolbarVisual.Native]::GetForegroundWindow() -eq $script:main.H } 'POPUP_EDITOR_FOREGROUND_RESTORE_FAILED'
+}
 function Click-ToolbarButton($Button) {
  $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
  if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($Button.H,[ref]$r)){throw 'RESPONSIVE_BUTTON_RECT_FAILED'}
@@ -338,6 +342,7 @@ try {
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_OUTSIDE_DISMISS_FAILED'
 
   $script:lastMenuInteraction='popup: reopen frame after outside dismissal'
+  Restore-EditorForeground
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_REOPEN_FAILED'
   Click-ToolbarMenuItem 1
@@ -350,6 +355,7 @@ try {
   # Reopen, select the frame action, then select a width. Reaching the native
   # color dialog proves both TrackPopupMenu return values reached their callers.
   $script:lastMenuInteraction='popup: reopen frame after width dismissal'
+  Restore-EditorForeground
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_SECOND_REOPEN_FAILED'
   Click-ToolbarMenuItem 1
@@ -371,6 +377,7 @@ try {
   Click-OutsideToolbarPopup
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_NUMBER_OUTSIDE_DISMISS_FAILED'
   $script:lastMenuInteraction='popup: reopen line width after outside dismissal'
+  Restore-EditorForeground
   Click-ToolbarButton $widthButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_NUMBER_MENU_REOPEN_FAILED'
   Click-ToolbarMenuItem 2
