@@ -123,7 +123,11 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
                 .get_or_init(|| Mutex::new(HashMap::new()))
                 .lock()
             {
-                colors.insert(parent as usize, 0x000000FF); // Style::default() is red.
+                let color = shotkit::shapes::Style::default().color;
+                colors.insert(
+                    parent as usize,
+                    u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16),
+                );
             }
         }
         if !tooltip.is_null() {
