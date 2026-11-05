@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$ExePath,
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$ScreenshotPath,
     [ValidateRange(10,120)][int]$StartupTimeoutSeconds=30,
-    [switch]$ResponsiveOnly
+    [switch]$ResponsiveOnly,
+    [switch]$PopupOnly
 )
 $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1'){throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'}
@@ -61,6 +62,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu,uint position,StringBuilder text,int count,uint flags);
   public static MenuItem[] MenuItems(IntPtr menu){var a=new List<MenuItem>();for(int n=0;n<GetMenuItemCount(menu);n++){var text=new StringBuilder(512);GetMenuStringW(menu,(uint)n,text,text.Capacity,0x400);a.Add(new MenuItem{Id=unchecked((int)GetMenuItemID(menu,n)),Position=n,Text=text.ToString(),Submenu=GetSubMenu(menu,n)});}return a.ToArray();}
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
@@ -191,6 +193,33 @@ function Click-ToolbarMenuItem([int]$CommandId) {
   [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
  } catch { throw "MENU_CLICK_FAILED: command=$CommandId; $($_.Exception.Message); $(Get-ToolbarInteractionDiagnostic)" }
 }
+function Click-OutsideToolbarPopup {
+ $popup=Get-ToolbarPopup
+ if($null -eq $popup){throw 'OUTSIDE_CLICK_MENU_NOT_VISIBLE'}
+ $pr=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$ownerRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+ if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($popup.H,[ref]$pr)){throw 'OUTSIDE_CLICK_POPUP_RECT_FAILED'}
+ if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($script:main.H,[ref]$ownerRect)){throw 'OUTSIDE_CLICK_OWNER_RECT_FAILED'}
+ $vx=[ShotKitToolbarVisual.Native]::GetSystemMetrics(76);$vy=[ShotKitToolbarVisual.Native]::GetSystemMetrics(77)
+ $vr=$vx+[ShotKitToolbarVisual.Native]::GetSystemMetrics(78);$vb=$vy+[ShotKitToolbarVisual.Native]::GetSystemMetrics(79)
+ $cx=[int](($ownerRect.Left+$ownerRect.Right)/2);$cy=[int](($ownerRect.Top+$ownerRect.Bottom)/2)
+ $candidates=@(
+  [pscustomobject]@{X=$ownerRect.Left-8;Y=$cy},[pscustomobject]@{X=$ownerRect.Right+8;Y=$cy},
+  [pscustomobject]@{X=$cx;Y=$ownerRect.Top-8},[pscustomobject]@{X=$cx;Y=$ownerRect.Bottom+8},
+  [pscustomobject]@{X=$vx+8;Y=$vy+8},[pscustomobject]@{X=$vr-8;Y=$vy+8},
+  [pscustomobject]@{X=$vx+8;Y=$vb-8},[pscustomobject]@{X=$vr-8;Y=$vb-8}
+ )
+ $point=$candidates|Where-Object{
+  $_.X -ge $vx -and $_.X -lt $vr -and $_.Y -ge $vy -and $_.Y -lt $vb -and
+  -not($_.X -ge $ownerRect.Left -and $_.X -lt $ownerRect.Right -and $_.Y -ge $ownerRect.Top -and $_.Y -lt $ownerRect.Bottom) -and
+  -not($_.X -ge $pr.Left -and $_.X -lt $pr.Right -and $_.Y -ge $pr.Top -and $_.Y -lt $pr.Bottom)
+ }|Select-Object -First 1
+ if(-not $point){throw "OUTSIDE_CLICK_NO_SAFE_POINT: popup=($($pr.Left),$($pr.Top),$($pr.Right),$($pr.Bottom)); owner=($($ownerRect.Left),$($ownerRect.Top),$($ownerRect.Right),$($ownerRect.Bottom)); virtual=($vx,$vy,$vr,$vb)"}
+ if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($point.X,$point.Y)){throw 'OUTSIDE_CLICK_CURSOR_FAILED'}
+ $actual=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);if(-not [ShotKitToolbarVisual.Native]::GetCursorPos([ref]$actual) -or $actual.X -ne $point.X -or $actual.Y -ne $point.Y){throw 'OUTSIDE_CLICK_CURSOR_MISMATCH'}
+ [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
+ [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
+ $script:lastMenuInteraction="outside-click=($($point.X),$($point.Y)); popup=($($pr.Left),$($pr.Top),$($pr.Right),$($pr.Bottom)); owner=($($ownerRect.Left),$($ownerRect.Top),$($ownerRect.Right),$($ownerRect.Bottom))"
+}
 function Assert-ToolbarRow($Toolbar,$Buttons) {
  $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);[void][ShotKitToolbarVisual.Native]::GetWindowRect($Toolbar.H,[ref]$r)
  $rects=@(foreach($button in $Buttons){$b=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($button.H,[ref]$b)){throw 'RESPONSIVE_BUTTON_RECT_FAILED'};[pscustomobject]@{Id=$button.Id;R=$b}})|Sort-Object{$_.R.Left}
@@ -293,7 +322,55 @@ try {
  $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
- if($ResponsiveOnly) {
+ if($PopupOnly) {
+  # Exercise the two editor-popup paths from actual toolbar mouse input.
+  $frameButton=$buttons|Where-Object{$_.Id -eq 0x5123}|Select-Object -First 1
+  $widthButton=$buttons|Where-Object{$_.Id -eq 0x5121}|Select-Object -First 1
+  if(-not $frameButton -or -not $widthButton){throw 'POPUP_BUTTONS_MISSING: frame or line-width toolbar button not found.'}
+  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
+  Click-ToolbarButton $frameButton
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_FIRST_OPEN_FAILED'
+  $entries=@(Read-ToolbarPopup)
+  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3' -or (@($entries|ForEach-Object{$_.Text}) -join '|') -ne 'Rahmen hinzufügen|Schlagschatten hinzufügen|Rahmen und Schlagschatten hinzufügen'){throw "POPUP_FRAME_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
+  Click-OutsideToolbarPopup
+  Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_OUTSIDE_DISMISS_FAILED'
+
+  Click-ToolbarButton $frameButton
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_REOPEN_FAILED'
+  Click-ToolbarMenuItem 1
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_SELECTION_DID_NOT_OPEN_WIDTH_MENU'
+  $entries=@(Read-ToolbarPopup)
+  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4,5,6' -or (@($entries|ForEach-Object{$_.Text}) -join ',') -ne '4,8,12,16,24,32'){throw "POPUP_FRAME_WIDTH_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
+  Click-OutsideToolbarPopup
+  Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_WIDTH_OUTSIDE_DISMISS_FAILED'
+
+  # Reopen, select the frame action, then select a width. Reaching the native
+  # color dialog proves both TrackPopupMenu return values reached their callers.
+  Click-ToolbarButton $frameButton
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_SECOND_REOPEN_FAILED'
+  Click-ToolbarMenuItem 1
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_SELECTION_DID_NOT_OPEN_WIDTH_MENU'
+  Click-ToolbarMenuItem 2
+  Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}).Count -gt 0 } 'POPUP_NUMBER_SELECTION_DID_NOT_OPEN_COLOR_DIALOG'
+  $colorDialog=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}|Select-Object -First 1
+  if([ShotKitToolbarVisual.Native]::Owner($colorDialog.H) -ne [uint32]$p.Id){throw 'POPUP_FRAME_COLOR_DIALOG_WRONG_OWNER'}
+  $cancel=[ShotKitToolbarVisual.Native]::Buttons($colorDialog.H)|Where-Object{$_.Text -in @('Cancel','Abbrechen')}|Select-Object -First 1
+  if(-not $cancel){throw "POPUP_FRAME_COLOR_CANCEL_MISSING: buttons=$(([ShotKitToolbarVisual.Native]::Buttons($colorDialog.H)|ForEach-Object{$_.Text}) -join ', ')"}
+  [void][ShotKitToolbarVisual.Native]::SendMessageW($cancel.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+  Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.H -eq $colorDialog.H}).Count -eq 0 } 'POPUP_FRAME_COLOR_DIALOG_CANCEL_FAILED'
+
+  Click-ToolbarButton $widthButton
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_NUMBER_MENU_FIRST_OPEN_FAILED'
+  $entries=@(Read-ToolbarPopup)
+  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4,5,6,7,8' -or (@($entries|ForEach-Object{$_.Text}) -join ',') -ne '1,2,3,4,6,8,12,16'){throw "POPUP_NUMBER_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
+  Click-OutsideToolbarPopup
+  Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_NUMBER_OUTSIDE_DISMISS_FAILED'
+  Click-ToolbarButton $widthButton
+  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_NUMBER_MENU_REOPEN_FAILED'
+  Click-ToolbarMenuItem 2
+  Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_NUMBER_SELECTION_MENU_STILL_OPEN'
+  $pass='PASS: editor frame and number popups opened, dismissed by outside mouse click, reopened and selected through native menu input; selected frame action and width reached the owned color dialog.'
+ } elseif($ResponsiveOnly) {
   $allOriginalIds=@($buttons|Where-Object{$_.Id -notin @(0x5131,0x5132)}|ForEach-Object{$_.Id})
   # Repeat shrink/grow to catch stale hidden controls and one-way stage state.
   foreach($logicalWidth in @(900,800,700,500,430)) {
