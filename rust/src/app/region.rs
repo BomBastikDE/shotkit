@@ -189,8 +189,10 @@ pub(super) unsafe fn repeat_last_region(h: H) {
 
 // SAFETY CONTRACT:
 // Voraussetzung: h lebt während der modalen Auswahl und des Starts des Workers.
-// Warum erfüllt bzw. offen: BusyGuard serialisiert die Aufnahme; die übrigen Reentranzpfade müssen noch geprüft werden.
-// Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow und overlay::select können reentrieren; Einstellungen sind geklont, BusyGuard hält keinen State-Borrow.
+// Warum erfüllt: window::proc hält für beide Aufrufer (Hotkey und Tray) einen
+// ModalGuard; dessen Close-Gate schützt h auch während synchroner Sends.
+// Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow, SendMessageTimeoutW
+// und overlay::select können reentrieren; kein State-Borrow bleibt dabei aktiv.
 pub(super) unsafe fn start_scroll(h: H) {
     if SCROLL_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -290,8 +292,7 @@ pub(super) unsafe fn start_scroll(h: H) {
         );
         return;
     }
-    SetForegroundWindow(root);
-    if GetForegroundWindow() != root {
+    if !activate_scroll_target(root) {
         if was_visible {
             ShowWindow(h, 5);
         }
@@ -368,3 +369,47 @@ pub(super) unsafe fn start_scroll(h: H) {
         scroll_completion::finish_scroll(ticket);
     }
 }
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem UI-Thread, ohne gehaltene Zustands-Borrows oder
+// Locks. root ist ein fremdes HWND und wird nie als Rust-Zeiger dereferenziert.
+// Warum erfüllt: start_scroll hält nur lokale Werte; sein eigener Owner bleibt
+// durch den ModalGuard des Nachrichtenhandlers am Leben. Fehlgeschlagener Send
+// oder Thread-/PID-Wechsel des fremden HWND brechen ab; Wiederverwendung im
+// selben Thread ist dadurch nicht ausgeschlossen. Vor Eingaben prüft zusätzlich
+// WindowsScrollIo das exakte Vordergrundfenster.
+// Nachrichten: SetForegroundWindow und SendMessageTimeoutW können synchron
+// Nachrichten verarbeiten.
+unsafe fn activate_scroll_target(root: H) -> bool {
+    let mut process = 0;
+    let thread = GetWindowThreadProcessId(root, &mut process);
+    if thread == 0 {
+        return false;
+    }
+    SetForegroundWindow(root);
+    // Cross-thread activation is asynchronous. Let the target process its
+    // activation notification before checking it; never start scrolling merely
+    // because SetForegroundWindow accepted the request. A hung target remains
+    // bounded and no input queues are attached.
+    let mut result = 0;
+    if SendMessageTimeoutW(
+        root,
+        0, // WM_NULL: wait for the activation notification, without input.
+        0,
+        0,
+        0x0002, // SMTO_ABORTIFHUNG
+        2_000,
+        &mut result,
+    ) == 0
+    {
+        return false;
+    }
+    let mut current_process = 0;
+    GetWindowThreadProcessId(root, &mut current_process) == thread
+        && current_process == process
+        && GetForegroundWindow() == root
+}
+
+#[cfg(test)]
+#[path = "region_tests.rs"]
+mod tests;

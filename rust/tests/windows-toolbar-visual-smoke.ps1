@@ -19,7 +19,7 @@ namespace ShotKitToolbarVisual {
  public struct Rect { public int Left,Top,Right,Bottom; }
  public struct Point { public int X,Y; }
  public sealed class Win { public IntPtr H; public string ClassName,Title; public bool Visible; }
- public sealed class MenuItem { public int Id; public string Text; public IntPtr Submenu; }
+ public sealed class MenuItem { public int Id,Position; public string Text; public IntPtr Submenu; }
  public sealed class Button { public IntPtr H; public int Id; public string Text; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyId { public uint Size; public IntPtr Hwnd; public uint Id; public Guid Guid; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct NotifyData {
@@ -55,8 +55,11 @@ namespace ShotKitToolbarVisual {
   [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
   [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu,int position);
   [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr menu,int position);
+  [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr owner,IntPtr menu,uint position,out Rect rect);
+  [DllImport("user32.dll")] public static extern int MenuItemFromPoint(IntPtr owner,IntPtr menu,Point point);
+  [DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr menu,uint position,uint flags);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu,uint position,StringBuilder text,int count,uint flags);
-  public static MenuItem[] MenuItems(IntPtr menu){var a=new List<MenuItem>();for(int n=0;n<GetMenuItemCount(menu);n++){var text=new StringBuilder(512);GetMenuStringW(menu,(uint)n,text,text.Capacity,0x400);a.Add(new MenuItem{Id=unchecked((int)GetMenuItemID(menu,n)),Text=text.ToString(),Submenu=GetSubMenu(menu,n)});}return a.ToArray();}
+  public static MenuItem[] MenuItems(IntPtr menu){var a=new List<MenuItem>();for(int n=0;n<GetMenuItemCount(menu);n++){var text=new StringBuilder(512);GetMenuStringW(menu,(uint)n,text,text.Capacity,0x400);a.Add(new MenuItem{Id=unchecked((int)GetMenuItemID(menu,n)),Position=n,Text=text.ToString(),Submenu=GetSubMenu(menu,n)});}return a.ToArray();}
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
@@ -109,11 +112,12 @@ catch { throw "UI_AUTOMATION_UNAVAILABLE: cannot read the visible native tooltip
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Toolbar-Visual-'+[guid]::NewGuid().ToString('N'))
 $app=Join-Path $root 'appdata';$local=Join-Path $root 'localappdata';$fixture=Join-Path $root 'fixture.png'
 $oldA=$env:APPDATA;$oldL=$env:LOCALAPPDATA;$p=$null;$ticks=0;$mouse=$false;$controlDown=$false;$stopped=$true;$failure=$null;$cleanup=@()
+$lastMenuInteraction='none'
 function Owned-Windows { if($null -eq $script:p -or $script:p.HasExited){return @()} @([ShotKitToolbarVisual.Native]::Windows($script:p.Id)) }
 function Wait-ToolbarCondition([scriptblock]$Condition,[string]$Failure) {
  $deadline=[DateTime]::UtcNow.AddSeconds(5)
  do { if(& $Condition){return}; if($script:p.HasExited){throw 'PROCESS_EXITED_DURING_RESPONSIVE_TEST'}; Start-Sleep -Milliseconds 50 } while([DateTime]::UtcNow -lt $deadline)
- throw $Failure
+ throw "$Failure; $(Get-ToolbarInteractionDiagnostic)"
 }
 function Press-ToolbarKey([byte]$Key) {
  [ShotKitToolbarVisual.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
@@ -129,12 +133,63 @@ function Click-ToolbarButton($Button) {
  [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
  [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
 }
-function Read-ToolbarPopup {
+function Get-ToolbarPopup {
  $popup=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32768'}|Select-Object -First 1
  if(-not $popup){return $null}
  $menu=[ShotKitToolbarVisual.Native]::SendMessageW($popup.H,0x01e1,[IntPtr]::Zero,[IntPtr]::Zero)
  if($menu -eq [IntPtr]::Zero){throw 'RESPONSIVE_NATIVE_MENU_HANDLE_MISSING'}
- return @([ShotKitToolbarVisual.Native]::MenuItems($menu))
+ return [pscustomobject]@{H=$popup.H;Menu=$menu;Entries=@([ShotKitToolbarVisual.Native]::MenuItems($menu))}
+}
+function Read-ToolbarPopup {
+ $popup=Get-ToolbarPopup
+ if($null -ne $popup){return $popup.Entries}
+}
+function Get-ToolbarInteractionDiagnostic {
+ try {
+  $windows=@(Owned-Windows|Where-Object{$_.Visible}|ForEach-Object{
+   $detail="HWND=$($_.H) class=$($_.ClassName) title='$($_.Title)'"
+   if($_.ClassName -eq '#32768'){
+    $menu=[ShotKitToolbarVisual.Native]::SendMessageW($_.H,0x01e1,[IntPtr]::Zero,[IntPtr]::Zero)
+    $entries=@([ShotKitToolbarVisual.Native]::MenuItems($menu)|ForEach-Object{
+     "pos=$($_.Position) id=$($_.Id) text='$($_.Text)' submenu=$($_.Submenu) state=$([ShotKitToolbarVisual.Native]::GetMenuState($menu,[uint32]$_.Position,0x400))"
+    }) -join ' | '
+    $detail+=" HMENU=$menu items=[$entries]"
+   }
+   $detail
+  }) -join '; '
+  return "foreground=$([ShotKitToolbarVisual.Native]::GetForegroundWindow()); lastMenuInteraction=[$script:lastMenuInteraction]; windows=[$windows]"
+ } catch { return "INTERACTION_DIAGNOSTIC_FAILED: $($_.Exception.Message)" }
+}
+function Click-ToolbarMenuItem([int]$CommandId) {
+ try {
+  $popup=Get-ToolbarPopup
+  if($null -eq $popup){throw 'MENU_NOT_VISIBLE'}
+  $menuMatches=@($popup.Entries|Where-Object{$_.Id -eq $CommandId})
+  if($menuMatches.Count -ne 1 -or $menuMatches[0].Submenu -ne [IntPtr]::Zero){throw 'MENU_COMMAND_NOT_UNIQUE_LEAF'}
+  $item=$menuMatches[0]
+  $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
+  if(-not [ShotKitToolbarVisual.Native]::GetMenuItemRect([IntPtr]::Zero,$popup.Menu,[uint32]$item.Position,[ref]$r) -or $r.Right -le $r.Left -or $r.Bottom -le $r.Top){throw 'MENU_COMMAND_RECT_INVALID'}
+  $point=[Activator]::CreateInstance([ShotKitToolbarVisual.Point])
+  $point.X=[int][Math]::Floor(($r.Left+$r.Right)/2);$point.Y=[int][Math]::Floor(($r.Top+$r.Bottom)/2)
+  $menuDescription=@($popup.Entries|ForEach-Object{"$($_.Position):$($_.Id):$($_.Text)"}) -join ' | '
+  $script:lastMenuInteraction="owner=$($script:main.H) popup=$($popup.H) HMENU=$($popup.Menu) id=$CommandId position=$($item.Position) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom) point=$($point.X),$($point.Y) items=[$menuDescription]"
+  if([ShotKitToolbarVisual.Native]::MenuItemFromPoint([IntPtr]::Zero,$popup.Menu,$point) -ne $item.Position){throw 'MENU_COMMAND_RECT_ID_MISMATCH'}
+  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($point.X,$point.Y)){throw 'MENU_CURSOR_FAILED'}
+  # Wait for real mouse hover, then prove both the native hit and highlighted ID
+  # before clicking. No command message bypasses TrackPopupMenu's dispatch.
+  Wait-ToolbarCondition {
+   $actual=[Activator]::CreateInstance([ShotKitToolbarVisual.Point])
+   if(-not [ShotKitToolbarVisual.Native]::GetCursorPos([ref]$actual)){return $false}
+   $state=[ShotKitToolbarVisual.Native]::GetMenuState($popup.Menu,[uint32]$item.Position,0x400)
+   return [ShotKitToolbarVisual.Native]::WindowFromPoint($actual) -eq $popup.H -and
+    [ShotKitToolbarVisual.Native]::MenuItemFromPoint([IntPtr]::Zero,$popup.Menu,$actual) -eq $item.Position -and
+    $state -ne [uint32]::MaxValue -and ($state -band 0x03) -eq 0 -and ($state -band 0x80) -ne 0
+  } "MENU_COMMAND_NOT_HOVERED: id=$CommandId position=$($item.Position) HMENU=$($popup.Menu)"
+  $current=Get-ToolbarPopup
+  if($null -eq $current -or $current.H -ne $popup.H -or $current.Menu -ne $popup.Menu -or $current.Entries[$item.Position].Id -ne $CommandId){throw 'MENU_CHANGED_BEFORE_CLICK'}
+  [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouse=$true
+  [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
+ } catch { throw "MENU_CLICK_FAILED: command=$CommandId; $($_.Exception.Message); $(Get-ToolbarInteractionDiagnostic)" }
 }
 function Assert-ToolbarRow($Toolbar,$Buttons) {
  $r=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);[void][ShotKitToolbarVisual.Native]::GetWindowRect($Toolbar.H,[ref]$r)
@@ -166,12 +221,7 @@ function Invoke-ToolbarViewMenu([int]$CommandId) {
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($script:main.H)
  Click-ToolbarButton $view
  Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'ZOOM_VIEW_MENU_NOT_VISIBLE'
- $entries=@(Read-ToolbarPopup);$index=-1
- for($i=0;$i -lt $entries.Count;$i++){if($entries[$i].Id -eq $CommandId){$index=$i;break}}
- if($index -lt 0){throw "ZOOM_VIEW_COMMAND_MISSING: $CommandId"}
- Press-ToolbarKey 0x24
- for($i=0;$i -lt $index;$i++){Press-ToolbarKey 0x28}
- Press-ToolbarKey 0x0d
+ Click-ToolbarMenuItem $CommandId
  Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'ZOOM_VIEW_MENU_DID_NOT_CLOSE'
 }
 function Get-ExpectedFixtureView([double]$Factor) {
@@ -269,12 +319,8 @@ try {
    $reachable=@($narrowButtons|ForEach-Object{$_.Id})+@($entries|ForEach-Object{$_.Id})
    foreach($id in $allOriginalIds){if($id -notin $reachable){throw "RESPONSIVE_ACTION_UNREACHABLE: $id at $logicalWidth"}}
    if($logicalWidth -eq 430) {
-    # Crop is hidden here. Activate its actual menu item using real keyboard input.
-    $index=-1;for($i=0;$i -lt $entries.Count;$i++){if($entries[$i].Id -eq 0x510b){$index=$i;break}}
-    if($index -lt 0){throw 'RESPONSIVE_CROP_NOT_IN_OVERFLOW'}
-    Press-ToolbarKey 0x24
-    for($i=0;$i -lt $index;$i++){Press-ToolbarKey 0x28}
-    Press-ToolbarKey 0x0d
+    # Crop is hidden here. Click the real native item verified by HMENU and ID.
+    Click-ToolbarMenuItem 0x510b
     Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.H -eq $main.H -and $_.Title -like '*Werkzeug Crop*'}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_CROP_DID_NOT_EXECUTE'
    } else { Press-ToolbarKey 0x1b }
    Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_OVERFLOW_MENU_STILL_OPEN'
@@ -285,7 +331,7 @@ try {
    $fileEntries=@(Read-ToolbarPopup)
    if((@($fileEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5110,0x5140,0x5141,0x5142,0x5143) -join ',')){throw 'RESPONSIVE_FILE_ACTIONS_INCOMPLETE'}
    if($logicalWidth -eq 430) {
-    Press-ToolbarKey 0x24;Press-ToolbarKey 0x28;Press-ToolbarKey 0x28;Press-ToolbarKey 0x0d
+    Click-ToolbarMenuItem 0x5141
     Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}).Count -eq 1 } 'RESPONSIVE_FILE_OPEN_DID_NOT_EXECUTE'
     $dialog=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}|Select-Object -First 1
     $cancel=[ShotKitToolbarVisual.Native]::Buttons($dialog.H)|Where-Object{$_.Id -eq 2}|Select-Object -First 1
