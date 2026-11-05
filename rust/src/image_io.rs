@@ -1,5 +1,5 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
-use crate::stitch::Image;
+use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
 use image::{
     codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits,
     RgbImage, RgbaImage,
@@ -19,6 +19,8 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
     reader.limits(limits.clone());
     let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    validate_import_dimensions(width, height)?;
     // Mirror ImageReader::decode's allocation reservation before decoding.
     limits
         .reserve(decoder.total_bytes())
@@ -34,6 +36,27 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         px.swap(0, 2);
     }
     Image::new(w as usize, h as usize, pixels).map_err(str::to_owned)
+}
+
+fn validate_import_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("Die Bildabmessungen sind ungültig.".into());
+    }
+    if u64::from(width) > MAX_EDITABLE_IMAGE_DIMENSION as u64
+        || u64::from(height) > MAX_EDITABLE_IMAGE_DIMENSION as u64
+    {
+        return Err(format!(
+            "Das Bild ist zu groß: maximal {MAX_EDITABLE_IMAGE_DIMENSION} Pixel je Seite."
+        ));
+    }
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("Die Bildgröße läuft über.")?;
+    if bytes > MAX_IMAGE_BYTES {
+        return Err("Das dekodierte Bild überschreitet 512 MiB.".into());
+    }
+    Ok(())
 }
 
 pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
@@ -244,6 +267,35 @@ mod tests {
     #[test]
     fn invalid_data_is_rejected() {
         assert!(decode(b"not an image").is_err());
+    }
+
+    #[test]
+    fn import_dimension_boundaries_match_document_rendering() {
+        for (width, height) in [(30_000, 1), (1, 30_000)] {
+            let source = Image::new(width, height, vec![42; width * height * 4]).unwrap();
+            let bytes = encode(&source, ImageFormat::Png).unwrap();
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(decoded, source);
+            assert_eq!(
+                crate::alpha_document::render_document(&decoded, &[]).unwrap(),
+                source
+            );
+        }
+        for (width, height) in [(30_001, 1), (1, 30_001)] {
+            let source = Image::new(width, height, vec![42; width * height * 4]).unwrap();
+            let bytes = encode(&source, ImageFormat::Png).unwrap();
+            assert!(decode(&bytes).unwrap_err().contains("30000 Pixel"));
+        }
+    }
+
+    #[test]
+    fn import_checks_bgra_size_before_decoding() {
+        assert!(validate_import_dimensions(16_384, 8_192).is_ok());
+        assert!(validate_import_dimensions(16_385, 8_192)
+            .unwrap_err()
+            .contains("512 MiB"));
+        assert!(validate_import_dimensions(0, 1).is_err());
+        assert!(validate_import_dimensions(u32::MAX, u32::MAX).is_err());
     }
     #[test]
     fn reject_unsupported_extension() {

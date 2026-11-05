@@ -65,6 +65,7 @@ $cases = @(
     @{ Name = 'Interactive Windows original image save protection smoke test'; Script = 'windows-save-original-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows saved-state undo and redo close smoke test'; Script = 'windows-save-undo-redo-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows image formats smoke test'; Script = 'windows-formats-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows rejected oversized image import preservation smoke test'; Script = 'windows-large-image-import-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test with fixed header and footer'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-FixedHeaderFooter'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows multi-editor lifecycle smoke test'; Script = 'windows-multi-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false }

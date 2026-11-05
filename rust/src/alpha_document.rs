@@ -11,11 +11,10 @@ use crate::{
     alpha_render,
     pixelate::{pixelate_region, PixelateRect},
     shapes::{Shape, ShapeKind},
-    stitch::Image,
+    stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
-const MAX_DIMENSION: usize = 30_000;
 #[cfg(all(test, windows))]
 const PIXELATE_BLOCK_SIZE: usize = 12;
 
@@ -178,8 +177,8 @@ fn validate_image(image: &Image) -> Result<(), String> {
         .ok_or_else(|| "Bildgröße läuft über.".to_owned())?;
     if image.width == 0
         || image.height == 0
-        || image.width > MAX_DIMENSION
-        || image.height > MAX_DIMENSION
+        || image.width > MAX_EDITABLE_IMAGE_DIMENSION
+        || image.height > MAX_EDITABLE_IMAGE_DIMENSION
         || bytes != image.pixels.len()
         || bytes > MAX_IMAGE_BYTES
     {

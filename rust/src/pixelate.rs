@@ -4,10 +4,9 @@
 //! copy with the requested region replaced by block averages, ready to replace
 //! the source image in a document.
 
-use crate::stitch::Image;
+use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
-const MAX_DIMENSION: usize = 30_000;
 const MAX_BLOCK_SIZE: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,8 +110,8 @@ fn validate_image(image: &Image) -> Result<(), PixelateError> {
         .ok_or(PixelateError::InvalidImage)?;
     if image.width == 0
         || image.height == 0
-        || image.width > MAX_DIMENSION
-        || image.height > MAX_DIMENSION
+        || image.width > MAX_EDITABLE_IMAGE_DIMENSION
+        || image.height > MAX_EDITABLE_IMAGE_DIMENSION
         || bytes != image.pixels.len()
         || bytes > MAX_IMAGE_BYTES
     {

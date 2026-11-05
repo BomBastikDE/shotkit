@@ -3,6 +3,9 @@
 const MAX_LENGTH: usize = 30_000;
 const MAX_BYTES: usize = 512 * 1024 * 1024;
 
+/// Dimension supported by the document renderer and its editing operations.
+pub const MAX_EDITABLE_IMAGE_DIMENSION: usize = 30_000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     pub width: usize,
