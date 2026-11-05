@@ -27,6 +27,11 @@ pub trait ScrollIo {
     fn cancelled(&mut self) -> bool;
     fn mouse_moved(&mut self) -> bool;
     fn progress(&mut self, length: usize);
+    /// Called only after the final matching attempt fails. Images are in
+    /// matcher orientation; the adapter may persist them without affecting capture.
+    fn diagnostics(&mut self, _before: &Image, _after: &Image, _details: &str) -> Option<String> {
+        None
+    }
 }
 fn oriented(image: Image, direction: Direction) -> Image {
     match direction {
@@ -113,6 +118,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
     let (mut notches, mut expected, mut still) = (1i32, h / 3, 0usize);
     let (mut known, mut last_top, mut last_bottom, mut fallbacks) = (0f32, 0usize, 0usize, 0usize);
     let mut consecutive_fallbacks = 0usize;
+    let mut restored_image: Option<Image> = None;
     let initial_stop = interrupted(io);
     let mut reason = initial_error
         .clone()
@@ -195,7 +201,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                     reason = "Scrollposition ließ sich nicht sicher wiederherstellen.".into();
                     break;
                 }
-                drop(reverted);
+                restored_image = Some(reverted);
                 prev = frame;
                 continue;
             }
@@ -244,6 +250,14 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
             }
             let Some(m) = m else {
                 reason="Bildinhalt ließ sich nicht eindeutig zuordnen – Aufnahme bis hierhin übernommen.".into();
+                let details = format!("Richtung: {direction:?}\nErwartete Verschiebung: {expected} px\nScrollrasten: {notches}\nGemessene Pixel pro Raste: {known}\nLetzte feste Ränder: oben {last_top} px, unten {last_bottom} px\nAufeinanderfolgende Ersatzabgleiche: {consecutive_fallbacks}\nAbgleich: kein eindeutiges Ergebnis nach erneutem Versuch\nBilder: Matcher-Ausrichtung (bei horizontaler Aufnahme um 90 Grad gedreht)\n");
+                if let Some(path) = io.diagnostics(
+                    restored_image.as_ref().unwrap_or_else(|| stitch.frame()),
+                    &cur,
+                    &details,
+                ) {
+                    reason.push_str(&format!("\nDiagnose gespeichert: {path}"));
+                }
                 break;
             };
             if m.dy == 0 {
@@ -270,6 +284,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 reason = format!("{e} – Aufnahme bis hierhin übernommen.");
                 break;
             }
+            restored_image = None;
             prev = analyzed;
             let movable = h.saturating_sub(m.top + m.bottom);
             notches = ((movable as f32 * 0.4 / ppn.max(1.0)) as i32).clamp(1, 15);

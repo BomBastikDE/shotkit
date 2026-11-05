@@ -71,6 +71,7 @@ extern "system" {
 
 #[link(name = "gdi32")]
 extern "system" {
+    fn GetDeviceCaps(dc: H, index: i32) -> i32;
     fn CreateCompatibleDC(dc: H) -> H;
     fn CreateCompatibleBitmap(dc: H, width: i32, height: i32) -> H;
     fn SelectObject(dc: H, object: H) -> H;
@@ -148,6 +149,7 @@ pub struct WindowsScrollIo {
     scroll_cursor: Point,
     cursor_moved: bool,
     escape_seen: bool,
+    diagnostic_folder: Option<std::path::PathBuf>,
 }
 
 impl WindowsScrollIo {
@@ -187,7 +189,12 @@ impl WindowsScrollIo {
             scroll_cursor,
             cursor_moved: false,
             escape_seen: false,
+            diagnostic_folder: None,
         })
+    }
+
+    pub fn set_diagnostic_folder(&mut self, folder: Option<std::path::PathBuf>) {
+        self.diagnostic_folder = folder;
     }
 
     fn current_cursor(&mut self) -> Option<Point> {
@@ -203,6 +210,26 @@ impl WindowsScrollIo {
 }
 
 impl ScrollIo for WindowsScrollIo {
+    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
+        let folder = self.diagnostic_folder.as_ref()?;
+        let (x, y, width, height) = self.rect;
+        let dc = ScreenDc(unsafe { GetDC(null_mut()) });
+        let dpi = if dc.0.is_null() {
+            0
+        } else {
+            unsafe { GetDeviceCaps(dc.0, 88) }
+        };
+        let dpi = if dpi > 0 {
+            dpi.to_string()
+        } else {
+            "nicht verfügbar".into()
+        };
+        let info = format!("Bereich (Bildschirmkoordinaten): x={x}, y={y}, Breite={width}, Höhe={height}\nBildschirm-DPI X: {dpi}\n{details}");
+        shotkit::scroll_diagnostics::save(folder, before, after, &info)
+            .ok()
+            .map(|p| p.display().to_string())
+    }
+
     fn capture(&mut self) -> Result<Image, String> {
         let (x, y, width, height) = self.rect;
         let screen = ScreenDc(unsafe { GetDC(null_mut()) });

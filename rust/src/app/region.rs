@@ -342,6 +342,7 @@ pub(super) unsafe fn start_scroll(h: H) {
         );
         return;
     }
+    let diagnostic_folder = active_settings().save_folder;
     let coordinator = PRIMARY as usize;
     let target_window = root as usize;
     busy.0 = false;
@@ -351,6 +352,7 @@ pub(super) unsafe fn start_scroll(h: H) {
             let result = (|| -> Result<Outcome, String> {
                 let mut io =
                     scroll_windows::WindowsScrollIo::new(x, y, width, height, target_window)?;
+                io.set_diagnostic_folder(diagnostic_folder);
                 std::thread::sleep(std::time::Duration::from_millis(350));
                 scroll_capture::run(&mut io, direction)
             })();

@@ -20,6 +20,8 @@ struct FakeScrollIo {
     fail_capture_at: Option<usize>,
     scroll_calls: usize,
     progress: Vec<usize>,
+    diagnostics: Vec<(Image, Image, String)>,
+    diagnostic_success: bool,
 }
 
 impl FakeScrollIo {
@@ -42,6 +44,8 @@ impl FakeScrollIo {
             fail_capture_at: None,
             scroll_calls: 0,
             progress: Vec::new(),
+            diagnostics: Vec::new(),
+            diagnostic_success: false,
         }
     }
     fn horizontal(height: usize, width: usize, page_len: usize) -> Self {
@@ -63,6 +67,8 @@ impl FakeScrollIo {
             fail_capture_at: None,
             scroll_calls: 0,
             progress: Vec::new(),
+            diagnostics: Vec::new(),
+            diagnostic_success: false,
         }
     }
     fn vertical_with_sticky_bands(
@@ -112,6 +118,11 @@ impl FakeScrollIo {
 }
 
 impl ScrollIo for FakeScrollIo {
+    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
+        self.diagnostics
+            .push((before.clone(), after.clone(), details.to_owned()));
+        self.diagnostic_success.then(|| "diagnose".to_owned())
+    }
     fn capture(&mut self) -> Result<Image, String> {
         self.capture_calls += 1;
         if self.fail_capture_at == Some(self.capture_calls) {
@@ -372,6 +383,7 @@ fn animated_page_end_bounds_fallbacks_and_keeps_the_pixel_exact_prefix() {
     io.animate_at_end = true;
     let out = run(&mut io, Direction::Down).unwrap();
 
+    assert!(io.diagnostics.is_empty());
     assert_eq!(
         out.fallback_count, 2,
         "only two consecutive guesses are allowed"
@@ -448,4 +460,30 @@ fn leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order() {
         out.reason
     );
     assert!(io.scroll_calls >= 3);
+}
+
+#[test]
+fn final_unmatched_first_step_saves_matching_frames_and_keeps_partial_image() {
+    let mut io = FakeScrollIo::vertical(220, 270);
+    io.animate_at_end = true;
+    io.diagnostic_success = true;
+    let initial = io.capture_page_vertical(220);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(io.diagnostics.len(), 1);
+    assert_eq!(io.diagnostics[0].0.pixels, initial);
+    assert_ne!(io.diagnostics[0].1.pixels, initial);
+    assert!(io.diagnostics[0].2.contains("Richtung: Down"));
+    assert_eq!(out.image.pixels, initial);
+    assert!(out.reason.contains("Diagnose gespeichert: diagnose"));
+}
+
+#[test]
+fn diagnostic_write_failure_keeps_partial_image_without_claiming_a_path() {
+    let mut io = FakeScrollIo::vertical(220, 270);
+    io.animate_at_end = true;
+    let initial = io.capture_page_vertical(220);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(io.diagnostics.len(), 1);
+    assert_eq!(out.image.pixels, initial);
+    assert!(!out.reason.contains("Diagnose gespeichert"));
 }
