@@ -5,7 +5,18 @@ use super::*;
 // Warum erfüllt bzw. offen: run registriert Hotkeys nach erfolgreicher Fensteranlage.
 // Nachrichten: Fehlerdialoge verarbeiten Nachrichten.
 pub(super) unsafe fn register(h: H) {
-    if RegisterHotKey(h, 1, 0x4000, 0x78) == 0 {
+    use shotkit::hotkey_action::{registration_for_id, MOD_NOREPEAT};
+    let registration = |id| registration_for_id(id).expect("registered hotkey descriptor");
+    let register = |registration: shotkit::hotkey_action::Registration| unsafe {
+        RegisterHotKey(
+            h,
+            registration.id,
+            registration.modifiers | MOD_NOREPEAT,
+            registration.virtual_key,
+        ) != 0
+    };
+
+    if !register(registration(1)) {
         MessageBoxW(
             h,
             wide("F9 ist belegt. Bereichsaufnahme über Einzelklick auf das Tray-Symbol.").as_ptr(),
@@ -13,7 +24,7 @@ pub(super) unsafe fn register(h: H) {
             0x30,
         );
     }
-    if RegisterHotKey(h, 2, 0x4000, 0x79) == 0 {
+    if !register(registration(2)) {
         MessageBoxW(
             h,
             wide("F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.")
@@ -22,7 +33,7 @@ pub(super) unsafe fn register(h: H) {
             0x30,
         );
     }
-    if RegisterHotKey(h, 3, 0x4000, 0x7a) == 0 {
+    if !register(registration(3)) {
         MessageBoxW(
             h,
             wide("F11 ist belegt; Bereichsaufnahme ist derzeit nicht verfügbar.").as_ptr(),
@@ -30,23 +41,16 @@ pub(super) unsafe fn register(h: H) {
             0x30,
         );
     }
-    let print_ok = RegisterHotKey(h, 4, 0x4000, 0x2c) != 0;
-    let alt_ok = RegisterHotKey(h, 5, 0x4000 | 0x0002 | 0x0004, 0x31) != 0;
+    let print_ok = register(registration(4));
+    let alt_ok = register(registration(5));
     if !print_ok && !alt_ok {
         MessageBoxW(h,wide("Druck und Strg+Umschalt+1 sind belegt. Für Bereichsaufnahmen F11 oder das Tray-Menü verwenden.").as_ptr(),wide("Tastenkürzel" ).as_ptr(),0x30);
     }
     let mut unavailable = Vec::new();
-    for (id, mods, key, label) in [
-        (6, 2, 0x2c, "Strg+Druck"),
-        (7, 6, 0x2c, "Strg+Umschalt+Druck"),
-        (8, 4, 0x2c, "Umschalt+Druck"),
-        (9, 3, 0x2c, "Strg+Alt+Druck"),
-        (10, 6, 0x32, "Strg+Umschalt+2"),
-        (11, 6, 0x33, "Strg+Umschalt+3"),
-        (12, 6, 0x34, "Strg+Umschalt+4"),
-    ] {
-        if RegisterHotKey(h, id, mods | 0x4000, key) == 0 {
-            unavailable.push(label);
+    for id in 6..=12 {
+        let descriptor = registration(id);
+        if !register(descriptor) {
+            unavailable.push(descriptor.label);
         }
     }
     if !unavailable.is_empty() {
