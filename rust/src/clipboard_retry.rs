@@ -94,15 +94,100 @@ mod windows_contention {
     extern "system" {
         fn OpenClipboard(owner: *mut c_void) -> i32;
         fn CloseClipboard() -> i32;
+        fn GetOpenClipboardWindow() -> *mut c_void;
+        fn GetWindowThreadProcessId(window: *mut c_void, process: *mut u32) -> u32;
+        fn CreateWindowExW(
+            ex_style: u32,
+            class: *const u16,
+            name: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            parent: *mut c_void,
+            menu: *mut c_void,
+            instance: *mut c_void,
+            parameter: *mut c_void,
+        ) -> *mut c_void;
+        fn DestroyWindow(window: *mut c_void) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+    }
+
+    struct TestWindow(*mut c_void);
+
+    impl TestWindow {
+        fn new() -> Self {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+            assert!(
+                !instance.is_null(),
+                "could not identify test executable module"
+            );
+            // A predefined system class needs no registration. HWND_MESSAGE
+            // creates an invisible window owned by this process/test thread.
+            let window = Self(unsafe {
+                CreateWindowExW(
+                    0,
+                    class.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    -3isize as *mut c_void,
+                    std::ptr::null_mut(),
+                    instance,
+                    std::ptr::null_mut(),
+                )
+            });
+            assert_window_process(window.0, std::process::id());
+            window
+        }
+    }
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // Runs on the creating thread, after its clipboard guard.
+                unsafe { DestroyWindow(self.0) };
+            }
+        }
+    }
+
+    fn assert_window_process(window: *mut c_void, expected_process: u32) {
+        assert!(!window.is_null(), "expected a real clipboard opener window");
+        let mut process = 0;
+        assert_ne!(
+            unsafe { GetWindowThreadProcessId(window, &mut process) },
+            0,
+            "could not identify clipboard opener"
+        );
+        assert_eq!(process, expected_process, "wrong clipboard opener process");
+    }
+
+    fn assert_open_window(window: *mut c_void, expected_process: u32) {
+        assert_eq!(
+            unsafe { GetOpenClipboardWindow() },
+            window,
+            "wrong window has the clipboard open"
+        );
+        assert_window_process(window, expected_process);
     }
 
     // Open and close on the same test thread, without reading or writing data.
     struct ClipboardLock(bool);
 
     impl ClipboardLock {
-        fn try_open() -> Option<Self> {
-            // A null owner is valid when the clipboard is not being emptied.
-            (unsafe { OpenClipboard(std::ptr::null_mut()) } != 0).then(|| Self(true))
+        fn try_open(window: &TestWindow) -> Option<Self> {
+            // Distinct real HWNDs exercise exclusion between different windows;
+            // NULL in both processes does not provide distinct opener identity.
+            (unsafe { OpenClipboard(window.0) } != 0).then(|| Self(true))
         }
 
         fn close(&mut self) -> bool {
@@ -119,9 +204,15 @@ mod windows_contention {
         }
     }
 
+    #[derive(Debug, PartialEq)]
+    enum ChildMessage {
+        Locked(usize),
+        Closed,
+    }
+
     struct LockChild {
         child: Child,
-        messages: Receiver<&'static str>,
+        messages: Receiver<ChildMessage>,
         reader: Option<JoinHandle<()>>,
     }
 
@@ -150,10 +241,15 @@ mod windows_contention {
                 // count as acknowledgements; harness progress is ignored.
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
-                    let message = match line.as_str() {
-                        LOCKED => LOCKED,
-                        CLOSED => CLOSED,
-                        _ => continue,
+                    let message = if line == CLOSED {
+                        ChildMessage::Closed
+                    } else if let Some(window) = line.strip_prefix(&format!("{LOCKED}:")) {
+                        let Ok(window) = window.parse::<usize>() else {
+                            break;
+                        };
+                        ChildMessage::Locked(window)
+                    } else {
+                        continue;
                     };
                     if sender.send(message).is_err() {
                         break;
@@ -163,13 +259,17 @@ mod windows_contention {
             holder
         }
 
-        fn expect_message(&self, expected: &str) {
-            assert_eq!(
-                self.messages
-                    .recv_timeout(TIMEOUT)
-                    .expect("child handshake"),
-                expected
-            );
+        fn next_message(&self) -> ChildMessage {
+            self.messages
+                .recv_timeout(TIMEOUT)
+                .expect("child handshake")
+        }
+
+        fn expect_locked(&self) -> *mut c_void {
+            match self.next_message() {
+                ChildMessage::Locked(window) => window as *mut c_void,
+                message => panic!("expected child lock acknowledgement, got {message:?}"),
+            }
         }
 
         fn release(&mut self) {
@@ -180,7 +280,7 @@ mod windows_contention {
                 .write_all(b"R")
                 .expect("request clipboard release");
             // The child sends this only after CloseClipboard succeeds.
-            self.expect_message(CLOSED);
+            assert_eq!(self.next_message(), ChildMessage::Closed);
         }
 
         fn expect_success(&mut self) {
@@ -233,15 +333,17 @@ mod windows_contention {
                 .map(|()| command[0]);
             let _ = sender.send(result);
         });
+        let window = TestWindow::new();
         let deadline = Instant::now() + TIMEOUT;
         let mut clipboard = loop {
-            if let Some(clipboard) = ClipboardLock::try_open() {
+            if let Some(clipboard) = ClipboardLock::try_open(&window) {
                 break clipboard;
             }
             assert!(Instant::now() < deadline, "could not acquire clipboard");
             thread::sleep(Duration::from_millis(10));
         };
-        signal(LOCKED);
+        assert_open_window(window.0, std::process::id());
+        signal(&format!("{LOCKED}:{}", window.0 as usize));
         assert_eq!(
             release
                 .recv_timeout(TIMEOUT)
@@ -249,23 +351,34 @@ mod windows_contention {
                 .expect("read release command"),
             b'R'
         );
+        assert_open_window(window.0, std::process::id());
         assert!(clipboard.close(), "child CloseClipboard failed");
+        assert_ne!(unsafe { GetOpenClipboardWindow() }, window.0);
         signal(CLOSED);
     }
 
     #[test]
     fn real_clipboard_contention_retries_after_child_releases() {
+        let window = TestWindow::new();
         let mut holder = LockChild::spawn();
-        holder.expect_message(LOCKED);
+        let child_window = holder.expect_locked();
+        let child_process = holder.child.id();
+        assert_ne!(child_process, std::process::id());
+        assert_open_window(child_window, child_process);
+        assert_ne!(child_window, window.0);
         let mut attempts = 0;
         let mut clipboard = None;
         assert!(open_with_retry(|| {
             attempts += 1;
-            clipboard = ClipboardLock::try_open();
+            if attempts == 1 {
+                assert_open_window(child_window, child_process);
+            }
+            clipboard = ClipboardLock::try_open(&window);
             if attempts == 1 {
                 // This is a real OpenClipboard failure while a different
                 // process holds the lock, not a fabricated closure result.
                 assert!(clipboard.is_none(), "clipboard holder did not exclude us");
+                assert_open_window(child_window, child_process);
                 holder.release();
                 false
             } else {
@@ -273,6 +386,7 @@ mod windows_contention {
             }
         }));
         assert!(attempts >= 2, "the real open operation was not retried");
+        assert_open_window(window.0, std::process::id());
         assert!(
             clipboard
                 .as_mut()
@@ -280,6 +394,7 @@ mod windows_contention {
                 .close(),
             "parent CloseClipboard failed"
         );
+        assert_ne!(unsafe { GetOpenClipboardWindow() }, window.0);
         holder.expect_success();
     }
 }
