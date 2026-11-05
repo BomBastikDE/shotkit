@@ -44,10 +44,11 @@ fn short_thick_arrow_has_no_shaft_sticking_out_before_its_head() {
 
 #[test]
 fn highlight_layer_preserves_transparency_and_marker_opacity() {
-    let shape = Shape::new(ShapeKind::Highlight {
+    let mut shape = Shape::new(ShapeKind::Highlight {
         start: Point::new(2.0, 2.0),
         end: Point::new(8.0, 8.0),
     });
+    shape.style.color = crate::shapes::Color::RED;
     let image = render_shape(12, 12, &shape).expect("GDI+ highlight render");
     let pixel = |x: usize, y: usize| {
         let i = (y * image.width + x) * 4;
