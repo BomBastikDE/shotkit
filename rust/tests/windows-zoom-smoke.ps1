@@ -67,7 +67,8 @@ namespace ShotKitZoomSmoke {
 '@
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Zoom-Smoke-'+[Guid]::NewGuid().ToString('N'))
 $appData=Join-Path $root 'appdata';$localAppData=Join-Path $root 'localappdata';$fixture=Join-Path $root 'zoom-fixture.png'
-$oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA;$proc=$null;$failure=$null;$mouseDown=$false
+$diagnosticLog=Join-Path $root 'wheel-diagnostics.log'
+$oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA;$oldDiagnostic=$env:SHOTKIT_UIA_DIAGNOSTICS_PATH;$proc=$null;$failure=$null;$mouseDown=$false
 function Owned-Windows {if(!$proc -or $proc.HasExited){return @()};@([ShotKitZoomSmoke.N]::Windows($proc.Id))}
 function Wait-For([scriptblock]$Probe,[string]$What,[int]$Seconds=$ActionTimeoutSeconds){$end=[DateTime]::UtcNow.AddSeconds($Seconds);while([DateTime]::UtcNow -lt $end){if($proc -and $proc.HasExited){throw "PROCESS_EXITED waiting for $What (code $($proc.ExitCode))."};$v=&$Probe;if($null -ne $v -and $v){return $v};Start-Sleep -Milliseconds 100};throw "TIMEOUT waiting for $What."}
 function Focus-Editor($H){if([ShotKitZoomSmoke.N]::Owner($H) -ne $proc.Id){throw 'EDITOR_OWNER_MISMATCH'};[void][ShotKitZoomSmoke.N]::SetForegroundWindow($H);[void](Wait-For {[ShotKitZoomSmoke.N]::GetForegroundWindow() -eq $H} 'exact editor foreground' 5)}
@@ -84,7 +85,8 @@ try {
  if([ShotKitZoomSmoke.N]::InputDesktop() -ne 'Default'){throw "NO_INTERACTIVE_INPUT_DESKTOP: $([ShotKitZoomSmoke.N]::InputDesktop())"}
  New-Item -ItemType Directory -Path $appData,$localAppData -Force|Out-Null;New-Fixture
  $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
- $proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixture) -WorkingDirectory $root -PassThru
+ $env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$diagnosticLog
+ try {$proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixture) -WorkingDirectory $root -PassThru} finally {$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnostic}
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'owned editor window' $StartupTimeoutSeconds
  if([ShotKitZoomSmoke.N]::Owner($main.H) -ne $proc.Id){throw 'EDITOR_OWNER_MISMATCH'}
  $notice=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice' 12
@@ -115,7 +117,8 @@ try {
  if($proc -and -not $proc.HasExited){try{foreach($w in [ShotKitZoomSmoke.N]::Windows($proc.Id)){[void][ShotKitZoomSmoke.N]::PostMessageW($w.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)};if(-not $proc.WaitForExit(5000)){$proc.Kill();[void]$proc.WaitForExit(5000)}}catch{if($null -eq $failure){$failure=$_}}}
  if($proc -and -not $proc.HasExited -and $null -eq $failure){$failure='OWNED_PROCESS_CLEANUP_FAILED'}
  $mayRemoveRoot=($null -eq $proc -or $proc.HasExited)
- if($proc){$proc.Dispose()};$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData
+ if($proc){$proc.Dispose()};$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnostic
+ if($null -ne $failure -and (Test-Path -LiteralPath $diagnosticLog -PathType Leaf)){try{Write-Output 'WHEEL_DIAGNOSTICS (last 60 lines):';Get-Content -LiteralPath $diagnosticLog -Tail 60 | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] pan_before=\(-?\d+, -?\d+\) zoom_before=[0-9.eE+-]+ pan_after=\(-?\d+, -?\d+\) zoom_after=[0-9.eE+-]+$'} | ForEach-Object {Write-Output $_}}catch{Write-Output 'WHEEL_DIAGNOSTICS_UNAVAILABLE'}}
  if($mayRemoveRoot -and (Test-Path -LiteralPath $root)){Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
 }
 if($null -ne $failure){throw $failure}

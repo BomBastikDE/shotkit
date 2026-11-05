@@ -92,6 +92,13 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
         0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
             let action = view::wheel_action(w);
+            let diagnostic = std::env::var_os("SHOTKIT_UIA_DIAGNOSTICS_PATH").is_some();
+            let before = if diagnostic {
+                let state = window_state(h);
+                Some((state.pan_x, state.pan_y, state.zoom))
+            } else {
+                None
+            };
             if action == view::WheelAction::Zoom {
                 window_state(h).zoom = view::zoom_after_wheel(window_state(h).zoom, delta);
             } else {
@@ -114,6 +121,21 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
                 );
                 state.pan_x = pan.0;
                 state.pan_y = pan.1;
+            }
+            if let Some((pan_x, pan_y, zoom)) = before {
+                let (after_x, after_y, after_zoom) = {
+                    let state = window_state(h);
+                    (state.pan_x, state.pan_y, state.zoom)
+                };
+                let mode = match action {
+                    view::WheelAction::Zoom => 0,
+                    view::WheelAction::PanHorizontal => 1,
+                    view::WheelAction::PanVertical => 2,
+                };
+                crate::uia_picker::log_diagnostic(&format!(
+                    "wheel hwnd={} flags={} delta={} mode={} pan_before=({}, {}) zoom_before={} pan_after=({}, {}) zoom_after={}",
+                    h as usize, w & 0xffff, delta, mode, pan_x, pan_y, zoom, after_x, after_y, after_zoom
+                ));
             }
             InvalidateRect(h, std::ptr::null(), 1);
             0
