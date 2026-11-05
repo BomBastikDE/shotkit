@@ -162,7 +162,7 @@ pub(super) const ACTIONS: [Action; 29] = [
     },
     Action {
         id: ID_FRAME,
-        label: "Rahmen / Schatten…",
+        label: "Rahmen / Schatten / Leinwand…",
         icon: Icon::Frame,
         tool: false,
     },

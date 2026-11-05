@@ -8,8 +8,8 @@
 
 use crate::{
     image_edit::{self, CropRect, FrameOptions, ImageEditError},
-    shapes::{Point, Shape},
-    stitch::Image,
+    shapes::{Color, Point, Shape},
+    stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -27,11 +27,20 @@ pub enum DocumentError {
     TransactionAlreadyOpen,
     NoTransaction,
     InvalidShapeIndex,
+    AllocationFailed,
 }
 impl From<ImageEditError> for DocumentError {
     fn from(value: ImageEditError) -> Self {
         Self::Image(value)
     }
+}
+
+/// Alignment of the existing image within a resized canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanvasAlignment {
+    Start,
+    Center,
+    End,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -276,6 +285,52 @@ impl Document {
         self.install(next)
     }
 
+    /// Resize the canvas without resampling. Pixels outside a smaller canvas
+    /// are clipped; shapes remain editable and are shifted by the same origin.
+    /// Center alignment assigns an odd extra pixel to the end side.
+    pub fn resize_canvas(
+        &mut self,
+        width: usize,
+        height: usize,
+        horizontal: CanvasAlignment,
+        vertical: CanvasAlignment,
+        fill: Color,
+    ) -> Result<(), DocumentError> {
+        let bytes = checked_edit_size(width, height)?;
+        let source = &self.current.image;
+        if source.width == width && source.height == height {
+            return Ok(());
+        }
+        let (source_x, dest_x, copy_width) = canvas_axis(source.width, width, horizontal);
+        let (source_y, dest_y, copy_height) = canvas_axis(source.height, height, vertical);
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(bytes)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        let bgra = [fill.b, fill.g, fill.r, fill.a];
+        for _ in 0..bytes / 4 {
+            pixels.extend_from_slice(&bgra);
+        }
+        for y in 0..copy_height {
+            let src = ((source_y + y) * source.width + source_x) * 4;
+            let dst = ((dest_y + y) * width + dest_x) * 4;
+            let count = copy_width * 4;
+            pixels[dst..dst + count].copy_from_slice(&source.pixels[src..src + count]);
+        }
+        let mut next = self.current.clone();
+        next.image = Arc::new(Image {
+            width,
+            height,
+            pixels,
+        });
+        let dx = dest_x as f32 - source_x as f32;
+        let dy = dest_y as f32 - source_y as f32;
+        for shape in &mut next.shapes {
+            shape.offset(dx, dy);
+        }
+        self.install(next)
+    }
+
     pub fn undo(&mut self) -> bool {
         if self.staged_before.is_some() {
             return false;
@@ -401,6 +456,42 @@ fn shapes_allocation_bytes(shapes: &Vec<Shape>) -> usize {
             sum.saturating_add(dynamic)
         },
     )
+}
+
+fn checked_edit_size(width: usize, height: usize) -> Result<usize, DocumentError> {
+    if width == 0
+        || height == 0
+        || width > MAX_EDITABLE_IMAGE_DIMENSION
+        || height > MAX_EDITABLE_IMAGE_DIMENSION
+    {
+        return Err(DocumentError::InvalidImage);
+    }
+    let bytes = width
+        .checked_mul(height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(DocumentError::InvalidImage)?;
+    if bytes > 512 * 1024 * 1024 {
+        return Err(DocumentError::InvalidImage);
+    }
+    Ok(bytes)
+}
+
+fn canvas_axis(
+    source: usize,
+    destination: usize,
+    alignment: CanvasAlignment,
+) -> (usize, usize, usize) {
+    let difference = source.abs_diff(destination);
+    let offset = match alignment {
+        CanvasAlignment::Start => 0,
+        CanvasAlignment::Center => difference / 2,
+        CanvasAlignment::End => difference,
+    };
+    if source > destination {
+        (offset, 0, destination)
+    } else {
+        (0, offset, source)
+    }
 }
 
 fn validate_image(image: &Image) -> Result<(), DocumentError> {

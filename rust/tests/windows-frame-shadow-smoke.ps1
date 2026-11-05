@@ -127,7 +127,7 @@ try{
  Click-EditorButton 0x5124 'Rot'
  # TrackPopupMenu runs a modal loop on the UI thread; queue BM_CLICK so this
  # test thread can observe/select the resulting native popup.
- Click-EditorButtonAsync 0x5123 'Rahmen / Schatten…'
+ Click-EditorButtonAsync 0x5123 'Rahmen / Schatten / Leinwand…'
  $frameMenu=Popup 'frame/shadow action menu';Menu-Item $frameMenu 3 'Rahmen und Schlagschatten hinzufügen' 'combined frame and shadow action'
  $widthMenu=Popup 'frame width menu';Menu-Item $widthMenu 2 '8' '8-pixel frame width'
  $color=Wait-For {Owned-Dialogs|Select-Object -First 1} 'owned color dialog' 10

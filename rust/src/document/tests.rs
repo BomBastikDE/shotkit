@@ -345,3 +345,84 @@ fn failed_transaction_commit_keeps_state_open_until_abort() {
     assert_eq!(d.image().pixels, image().pixels);
     assert!(!d.can_undo());
 }
+
+#[test]
+fn canvas_expansion_preserves_bgra_and_moves_shapes_with_undo_redo() {
+    let mut d = Document::new(image()).unwrap();
+    d.add_shape(shape()).unwrap();
+    let old_image = d.image().clone();
+    let old_shapes = d.shapes().to_vec();
+    d.resize_canvas(
+        6,
+        4,
+        CanvasAlignment::Center,
+        CanvasAlignment::End,
+        Color::rgba(10, 20, 30, 40),
+    )
+    .unwrap();
+    assert_eq!(&d.image().pixels[..4], &[30, 20, 10, 40]);
+    let offset = (2 * 6 + 1) * 4;
+    assert_eq!(
+        &d.image().pixels[offset..offset + 12],
+        &old_image.pixels[..12]
+    );
+    assert_eq!(d.shapes()[0].bounds().x, old_shapes[0].bounds().x + 1.0);
+    assert_eq!(d.shapes()[0].bounds().y, old_shapes[0].bounds().y + 2.0);
+    let expanded = d.image().clone();
+    assert!(d.undo());
+    assert_eq!(d.image(), &old_image);
+    assert_eq!(d.shapes(), old_shapes);
+    assert!(d.redo());
+    assert_eq!(d.image(), &expanded);
+}
+
+#[test]
+fn canvas_shrink_clips_pixels_but_keeps_editable_shapes() {
+    let mut d = Document::new(image()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.resize_canvas(
+        2,
+        1,
+        CanvasAlignment::End,
+        CanvasAlignment::End,
+        Color::rgba(0, 0, 0, 0),
+    )
+    .unwrap();
+    assert_eq!(d.image().pixels, image().pixels[16..24]);
+    assert_eq!(d.shapes()[0].bounds().x, 1.0);
+    assert_eq!(d.shapes()[0].bounds().y, 2.0);
+    assert!(d.undo());
+    assert_eq!(d.image(), &image());
+}
+
+#[test]
+fn canvas_limits_and_history_failure_are_atomic() {
+    let mut d = Document::new(image()).unwrap();
+    for (w, h) in [(0, 1), (30_001, 1), (30_000, 30_000), (usize::MAX, 2)] {
+        assert_eq!(
+            d.resize_canvas(
+                w,
+                h,
+                CanvasAlignment::Start,
+                CanvasAlignment::Start,
+                Color::RED
+            ),
+            Err(DocumentError::InvalidImage)
+        );
+        assert_eq!(d.image(), &image());
+        assert!(!d.can_undo());
+    }
+    d.set_history_budget(0);
+    assert_eq!(
+        d.resize_canvas(
+            4,
+            4,
+            CanvasAlignment::Start,
+            CanvasAlignment::Start,
+            Color::RED
+        ),
+        Err(DocumentError::HistoryBudgetExceeded)
+    );
+    assert_eq!(d.image(), &image());
+    assert!(!d.can_undo());
+}

@@ -121,6 +121,7 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
         (1, "Rahmen hinzufügen"),
         (2, "Schlagschatten hinzufügen"),
         (3, "Rahmen und Schlagschatten hinzufügen"),
+        (4, "Leinwandgröße ändern…"),
     ] {
         AppendMenuW(menu, 0, id, wide(label).as_ptr());
     }
@@ -132,7 +133,7 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
     SetForegroundWindow(h);
     let selected = TrackPopupMenu(menu, 0x0100 | 0x0002, p.x, p.y, 0, h, std::ptr::null());
     DestroyMenu(menu);
-    (1..=3).contains(&selected).then_some(selected)
+    (1..=4).contains(&selected).then_some(selected)
 }
 
 // SAFETY CONTRACT:
@@ -347,7 +348,11 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                         0x30,
                     );
                 } else if let Some(action) = choose_frame_action(h) {
-                    apply_frame(h, action);
+                    if action == 4 {
+                        canvas::resize(h);
+                    } else {
+                        apply_frame(h, action);
+                    }
                 }
             }
             toolbar::ID_CAPTURE => capture_region(h),

@@ -76,6 +76,7 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 - Eine standardmäßig aktive Einstellung fordert Windows auf, kopierte Bilder vom Zwischenablageverlauf und der Cloud-Synchronisierung auszunehmen. Sie bietet keine Garantie; bereits vorhandene Einträge bleiben erhalten.
 - Das neue Werkzeug „Schwärzen“ ist über `S` erreichbar. Es schwärzt den gerenderten Export, während Originalbild und editierbarer Editorzustand erhalten bleiben. Verpixeln ist weiterhin keine sichere Schwärzung.
 - Das Werkzeug „Weichzeichnen“ (`W`) ergänzt Verpixeln; seine Stärke folgt der Linienbreite. Beide Filter sind keine sichere Schwärzung und beachten deckende Schwärzungen beim Rendern ([#30](https://github.com/BomBastikDE/shotkit/issues/30)).
+- Die Leinwand kann mit Ausrichtung und transparenter oder einfarbiger Füllung vergrößert und verkleinert werden; die Änderung unterstützt Undo/Redo ([#32](https://github.com/BomBastikDE/shotkit/issues/32)). Die separate Bildskalierung ist noch offen.
 
 - Eine waagerechte oder senkrechte Ziehbewegung ohne Fläche lässt die Bereichsauswahl offen; danach wird der Vorschlag am Endpunkt neu ermittelt ([#27](https://github.com/BomBastikDE/shotkit/issues/27), [#43](https://github.com/BomBastikDE/shotkit/issues/43)).
 - Die Auswahllupe zeigt den vergrößerten Bildinhalt wieder statt einer weißen Fläche ([#41](https://github.com/BomBastikDE/shotkit/issues/41)).
