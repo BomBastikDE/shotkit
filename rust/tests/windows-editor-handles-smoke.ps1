@@ -292,6 +292,12 @@ try {
     $notice=Wait-For { Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1 } 10 'ShotKit startup notice'
     $ok=[ShotKitHandlesSmoke.Native]::Buttons($notice.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq 'OK' } | Select-Object -First 1
     if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING: expected owned OK button.'}
+    # BM_CLICK can fail when the dialog is inactive. The editor was just
+    # foregrounded above, so activate the notice and verify it before clicking.
+    [void](Wait-For {
+        [void][ShotKitHandlesSmoke.Native]::SetForegroundWindow($notice.Handle)
+        [ShotKitHandlesSmoke.Native]::GetForegroundWindow() -eq $notice.Handle
+    } 5 'startup notice foreground')
     [ShotKitHandlesSmoke.Native]::Click($ok.Handle)
     # HWND values can be reused after a dialog is destroyed. Check for the
     # owned notice itself, including hidden windows, rather than its old HWND.
