@@ -31,6 +31,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 namespace ShotKitHoverSmoke {
+    public struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
     public sealed class WindowInfo {
         public IntPtr Handle;
         public string ClassName;
@@ -54,6 +55,10 @@ namespace ShotKitHoverSmoke {
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll")]
         private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll", SetLastError=true)]
+        private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(IntPtr hwnd, uint attribute, out NativeRect rect, uint size);
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll", SetLastError=true)]
@@ -110,6 +115,12 @@ namespace ShotKitHoverSmoke {
             return all.ToString();
         }
         public static IntPtr RootWindow(IntPtr hwnd) { return GetAncestor(hwnd, 2); }
+        public static string WindowRect(IntPtr hwnd) {
+            NativeRect rect;
+            if (DwmGetWindowAttribute(hwnd, 9, out rect, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(NativeRect))) != 0 &&
+                !GetWindowRect(hwnd, out rect)) throw new System.ComponentModel.Win32Exception();
+            return String.Format("{0},{1},{2},{3}", rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
         public static uint OwnerProcessId(IntPtr hwnd) {
             uint processId;
             GetWindowThreadProcessId(hwnd, out processId);
@@ -480,9 +491,94 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     finally { $bitmap.Dispose() }
 
     Assert-NoUnexpectedDialog $shotKit
-    $passMessage = "PASS: F11 hover-click selected synthetic control HWND $($geometry[4]) at $targetWidth`x$targetHeight and captured its four deterministic color quadrants."
+
+    # Start a fresh overlay after closing the first editor. With Ctrl held,
+    # selection must use the root form bounds while retaining the child pixels.
+    if (-not [ShotKitHoverSmoke.Native]::PostMessageW($editor.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw 'Could not close the first capture editor before the Ctrl scenario.'
+    }
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'the first editor to close' -OwnedProcess $shotKit -Condition {
+        -not (Get-ProcessWindows $shotKit | Where-Object { $_.Handle -eq $editor.Handle -and $_.Visible })
+    })
+    Remove-Item -LiteralPath $png.FullName -Force -ErrorAction Stop
+
+    $rootGeometryText = [ShotKitHoverSmoke.Native]::WindowRect($surfaceRoot)
+    $rootGeometry = $rootGeometryText.Split(',') | ForEach-Object { [int]$_ }
+    if ($rootGeometry.Count -ne 4 -or $rootGeometry[2] -le $rootGeometry[0] -or $rootGeometry[3] -le $rootGeometry[1]) {
+        throw "Synthetic root reported invalid geometry: '$rootGeometryText'."
+    }
+    $rootLeft = $rootGeometry[0]
+    $rootTop = $rootGeometry[1]
+    $rootWidth = $rootGeometry[2] - $rootLeft
+    $rootHeight = $rootGeometry[3] - $rootTop
+    if ($rootLeft -gt $targetX -or $rootTop -gt $targetY -or
+        $rootLeft + $rootWidth -lt $targetX + $targetWidth -or
+        $rootTop + $rootHeight -lt $targetY + $targetHeight) {
+        throw "Root rectangle $rootGeometryText does not contain the measured child ($targetX,$targetY ${targetWidth}x${targetHeight})."
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($surfaceRoot)) {
+        throw 'Could not reactivate the synthetic surface for the Ctrl scenario.'
+    }
+    [ShotKitHoverSmoke.Native]::keybd_event(0x7A, 0, 0, [UIntPtr]::Zero)
+    [ShotKitHoverSmoke.Native]::keybd_event(0x7A, 0, 0x0002, [UIntPtr]::Zero)
+    $ctrlOverlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the second F11 selection overlay' -OwnedProcess $shotKit -Condition {
+        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetForegroundWindow($ctrlOverlay.Handle)) {
+        throw 'Could not activate the second selection overlay.'
+    }
+    if (-not [ShotKitHoverSmoke.Native]::SetCursorPos($pointX, $pointY)) {
+        throw 'Could not move the pointer over the synthetic child for the Ctrl scenario.'
+    }
+    try {
+        [ShotKitHoverSmoke.Native]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 1500
+        [ShotKitHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 180
+        [ShotKitHoverSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    finally {
+        [ShotKitHoverSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
+    }
+
+    $ctrlPng = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'the PNG of the Ctrl-selected root window' -OwnedProcess $shotKit -Condition {
+        Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
+    }
+    $ctrlEditor = Wait-ForCondition -TimeoutSeconds 15 -Description 'the visible editor after the Ctrl capture' -OwnedProcess $shotKit -Condition {
+        Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*speichern*' } | Select-Object -First 1
+    }
+    $rootBitmap = [Drawing.Bitmap]::new($ctrlPng.FullName)
+    try {
+        if ($rootBitmap.Width -ne $rootWidth -or $rootBitmap.Height -ne $rootHeight) {
+            throw "Ctrl selection produced $($rootBitmap.Width)x$($rootBitmap.Height), expected root window $rootWidth`x$rootHeight (screen rect $rootGeometryText)."
+        }
+        $rootSamples = @(
+            @{ X = [int]($targetWidth * 0.25); Y = [int]($targetHeight * 0.25); R = 220; G = 35; B = 45; Name = 'top-left red' },
+            @{ X = [int]($targetWidth * 0.75); Y = [int]($targetHeight * 0.25); R = 30; G = 190; B = 65; Name = 'top-right green' },
+            @{ X = [int]($targetWidth * 0.25); Y = [int]($targetHeight * 0.75); R = 35; G = 70; B = 220; Name = 'bottom-left blue' },
+            @{ X = [int]($targetWidth * 0.75); Y = [int]($targetHeight * 0.75); R = 235; G = 205; B = 35; Name = 'bottom-right yellow' }
+        )
+        foreach ($sample in $rootSamples) {
+            $sampleX = $targetX - $rootLeft + $sample.X
+            $sampleY = $targetY - $rootTop + $sample.Y
+            if ($sampleX -lt 0 -or $sampleX -ge $rootBitmap.Width -or $sampleY -lt 0 -or $sampleY -ge $rootBitmap.Height) {
+                throw "Mapped child pixel '$($sample.Name)' at ($sampleX,$sampleY) lies outside captured root dimensions $($rootBitmap.Width)x$($rootBitmap.Height)."
+            }
+            $actual = $rootBitmap.GetPixel($sampleX, $sampleY)
+            if ([Math]::Abs($actual.R - $sample.R) -gt 3 -or
+                [Math]::Abs($actual.G - $sample.G) -gt 3 -or
+                [Math]::Abs($actual.B - $sample.B) -gt 3) {
+                throw "Ctrl root pixel '$($sample.Name)' at ($sampleX,$sampleY) was RGB=$($actual.R),$($actual.G),$($actual.B), expected $($sample.R),$($sample.G),$($sample.B)."
+            }
+        }
+    }
+    finally { $rootBitmap.Dispose() }
+
+    Assert-NoUnexpectedDialog $shotKit
+    $passMessage = "PASS: F11 selected synthetic child HWND $($geometry[4]) at $targetWidth`x$targetHeight without Ctrl, then Ctrl selected root HWND $surfaceRoot at $rootWidth`x$rootHeight; both captures contained the deterministic child pixels."
 }
 finally {
+    [ShotKitHoverSmoke.Native]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
     foreach ($owned in @($shotKit, $surface)) {
         if ($null -ne $owned) {
             try {
