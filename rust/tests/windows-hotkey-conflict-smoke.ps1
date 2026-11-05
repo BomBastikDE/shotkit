@@ -105,7 +105,7 @@ param([Parameter(Mandatory=$true)][string]$Ready,[Parameter(Mandatory=$true)][st
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @"
+Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
