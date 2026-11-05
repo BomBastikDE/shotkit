@@ -120,8 +120,9 @@ fn activation_barrier_processes_the_target_queue_and_requires_exact_foreground()
             root
         })
     };
-    assert!(
+    assert_eq!(
         accepted,
+        Ok(()),
         "a processed barrier and exact foreground must succeed"
     );
     assert_eq!(observations, 1);
@@ -134,8 +135,9 @@ fn activation_barrier_processes_the_target_queue_and_requires_exact_foreground()
             null_mut()
         })
     };
-    assert!(
-        !rejected,
+    assert_eq!(
+        rejected,
+        Err(ScrollTargetActivationError::NotForeground),
         "a processed barrier must still reject another foreground"
     );
     assert_eq!(observations, 2);
@@ -156,13 +158,23 @@ fn activation_barrier_observes_the_native_foreground_without_assuming_desktop_po
     };
     // Check the exact native observation used by production, not a later
     // desktop-wide snapshot that could change after this function returns.
-    assert_eq!(accepted, observed.expect("foreground was queried") == root);
+    assert_eq!(
+        accepted,
+        if observed.expect("foreground was queried") == root {
+            Ok(())
+        } else {
+            Err(ScrollTargetActivationError::NotForeground)
+        }
+    );
 }
 
 #[test]
 fn activation_barrier_rejects_an_unresponsive_target_without_waiting_for_its_release() {
     let target = Target::new(true);
-    assert!(!unsafe { activate_scroll_target(target.handle as H) });
+    assert_eq!(
+        unsafe { activate_scroll_target(target.handle as H) },
+        Err(ScrollTargetActivationError::Unresponsive)
+    );
     // Returning before Drop releases the target proves the send is bounded;
     // the responsive-target test proves the barrier is actually sent.
     assert_eq!(target.messages.load(Ordering::SeqCst), 0);
@@ -173,5 +185,35 @@ fn activation_barrier_rejects_a_destroyed_target() {
     let target = Target::new(false);
     let handle = target.handle;
     drop(target);
-    assert!(!unsafe { activate_scroll_target(handle as H) });
+    assert_eq!(
+        unsafe { activate_scroll_target(handle as H) },
+        Err(ScrollTargetActivationError::Unavailable)
+    );
+}
+
+#[test]
+fn activation_barrier_rejects_a_target_whose_identity_changed() {
+    assert_eq!(
+        verify_scroll_target_identity(7, 11, 7, 12),
+        Err(ScrollTargetActivationError::Changed)
+    );
+    assert_eq!(
+        verify_scroll_target_identity(7, 11, 8, 11),
+        Err(ScrollTargetActivationError::Changed)
+    );
+}
+
+#[test]
+fn activation_errors_have_user_facing_messages_without_window_identifiers() {
+    for error in [
+        ScrollTargetActivationError::Unavailable,
+        ScrollTargetActivationError::Unresponsive,
+        ScrollTargetActivationError::Changed,
+        ScrollTargetActivationError::NotForeground,
+    ] {
+        let message = error.message();
+        assert!(!message.is_empty());
+        assert!(!message.contains("HWND"));
+        assert!(!message.contains("PID"));
+    }
 }

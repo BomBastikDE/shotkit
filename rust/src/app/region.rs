@@ -292,13 +292,13 @@ pub(super) unsafe fn start_scroll(h: H) {
         );
         return;
     }
-    if !activate_scroll_target(root) {
+    if let Err(error) = activate_scroll_target(root) {
         if was_visible {
             ShowWindow(h, 5);
         }
         MessageBoxW(
             h,
-            wide("Zielfenster konnte nicht aktiviert werden. Bitte erneut versuchen.").as_ptr(),
+            wide(error.message()).as_ptr(),
             wide("Scroll-Aufnahme").as_ptr(),
             0x30,
         );
@@ -370,6 +370,44 @@ pub(super) unsafe fn start_scroll(h: H) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollTargetActivationError {
+    Unavailable,
+    Unresponsive,
+    Changed,
+    NotForeground,
+}
+
+impl ScrollTargetActivationError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => {
+                "Das ausgewählte Fenster ist nicht mehr verfügbar. Bitte erneut auswählen."
+            }
+            Self::Unresponsive => {
+                "Windows konnte die Rückmeldung des ausgewählten Fensters nicht bestätigen. Bitte erneut versuchen."
+            }
+            Self::Changed => "Das ausgewählte Fenster hat sich geändert. Bitte erneut auswählen.",
+            Self::NotForeground => {
+                "Windows hat das ausgewählte Fenster nicht in den Vordergrund gebracht. Bitte erneut versuchen."
+            }
+        }
+    }
+}
+
+fn verify_scroll_target_identity(
+    expected_thread: u32,
+    expected_process: u32,
+    current_thread: u32,
+    current_process: u32,
+) -> Result<(), ScrollTargetActivationError> {
+    if current_thread != expected_thread || current_process != expected_process {
+        Err(ScrollTargetActivationError::Changed)
+    } else {
+        Ok(())
+    }
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: Aufruf auf dem UI-Thread, ohne gehaltene Zustands-Borrows oder
 // Locks. root ist ein fremdes HWND und wird nie als Rust-Zeiger dereferenziert.
@@ -380,18 +418,21 @@ pub(super) unsafe fn start_scroll(h: H) {
 // WindowsScrollIo das exakte Vordergrundfenster.
 // Nachrichten: SetForegroundWindow und SendMessageTimeoutW können synchron
 // Nachrichten verarbeiten.
-unsafe fn activate_scroll_target(root: H) -> bool {
+unsafe fn activate_scroll_target(root: H) -> Result<(), ScrollTargetActivationError> {
     activate_scroll_target_with_foreground(root, || GetForegroundWindow())
 }
 
 // Same contract as activate_scroll_target. The reader runs only after the real
 // message barrier and identity checks; tests can supply an observed HWND without
 // depending on desktop-wide foreground policy or changing another window's focus.
-unsafe fn activate_scroll_target_with_foreground(root: H, foreground: impl FnOnce() -> H) -> bool {
+unsafe fn activate_scroll_target_with_foreground(
+    root: H,
+    foreground: impl FnOnce() -> H,
+) -> Result<(), ScrollTargetActivationError> {
     let mut process = 0;
     let thread = GetWindowThreadProcessId(root, &mut process);
     if thread == 0 {
-        return false;
+        return Err(ScrollTargetActivationError::Unavailable);
     }
     SetForegroundWindow(root);
     // Cross-thread activation is asynchronous. Let the target process its
@@ -409,12 +450,15 @@ unsafe fn activate_scroll_target_with_foreground(root: H, foreground: impl FnOnc
         &mut result,
     ) == 0
     {
-        return false;
+        return Err(ScrollTargetActivationError::Unresponsive);
     }
     let mut current_process = 0;
-    GetWindowThreadProcessId(root, &mut current_process) == thread
-        && current_process == process
-        && foreground() == root
+    let current_thread = GetWindowThreadProcessId(root, &mut current_process);
+    verify_scroll_target_identity(thread, process, current_thread, current_process)?;
+    if foreground() != root {
+        return Err(ScrollTargetActivationError::NotForeground);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
