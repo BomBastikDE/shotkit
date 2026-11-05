@@ -52,7 +52,7 @@ namespace ShotKitClipboardSmoke {
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
-    [DllImport("user32.dll")] public static extern uint RegisterClipboardFormatW(string name);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)] public static extern uint RegisterClipboardFormatW(string name);
     [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr owner);
     [DllImport("user32.dll")] public static extern bool CloseClipboard();
     [DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint format);
@@ -69,9 +69,10 @@ namespace ShotKitClipboardSmoke {
       try {
         foreach (string name in new string[] { "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard" }) {
           uint format = RegisterClipboardFormatW(name);
+          if (format == 0) throw new Exception("Cannot register privacy marker format: " + name);
           IntPtr memory = GetClipboardData(format);
           if (!expected) { if (memory != IntPtr.Zero) throw new Exception("Unexpected privacy marker: " + name); continue; }
-          if (format == 0 || memory == IntPtr.Zero || GlobalSize(memory).ToUInt64() < 4) throw new Exception("Missing DWORD privacy marker: " + name);
+          if (memory == IntPtr.Zero || GlobalSize(memory).ToUInt64() < 4) throw new Exception("Missing DWORD privacy marker: " + name);
           IntPtr value = GlobalLock(memory);
           if (value == IntPtr.Zero) throw new Exception("Cannot lock privacy marker: " + name);
           try { if (Marshal.ReadInt32(value) != 0) throw new Exception("Privacy marker is not zero: " + name); }
