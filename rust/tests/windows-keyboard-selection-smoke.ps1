@@ -275,6 +275,35 @@ namespace ShotKitKeyboardSurface {
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $plainOverlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the overlay for the ordinary mouse-drag regression case' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($plainOverlay.Handle)
+    # Empty horizontal and vertical drags must release capture but retain this
+    # exact overlay for another attempt. Test both directions, and Shift as
+    # well: a zero-area drag must never become a keyboard-editable selection.
+    $beforeEmptyDrags=@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count
+    $beforeEmptyEditors=@(Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible}).Count
+    foreach($emptyDrag in @(
+        @{X=280; Y=60; Shift=$false; Name='horizontal'},
+        @{X=80; Y=210; Shift=$false; Name='vertical'},
+        @{X=30; Y=60; Shift=$true; Name='reverse horizontal with Shift'},
+        @{X=80; Y=30; Shift=$true; Name='reverse vertical with Shift'}
+    )) {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+80),($geometry[1]+60)); Start-Sleep -Milliseconds 100
+        [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+        try {
+            [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+$emptyDrag.X),($geometry[1]+$emptyDrag.Y)); Start-Sleep -Milliseconds 150
+            if($emptyDrag.Shift){Send-Key 0x10 $true; $shiftDown=$true}
+        }
+        finally {
+            [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+            if($shiftDown){Send-Key 0x10 $false; $shiftDown=$false}
+        }
+        Start-Sleep -Milliseconds 400
+        $retainedOverlay=Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1
+        if($null -eq $retainedOverlay -or $retainedOverlay.Handle -ne $plainOverlay.Handle){throw "Empty $($emptyDrag.Name) drag did not retain the original selection overlay."}
+        if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne $beforeEmptyDrags){throw "Empty $($emptyDrag.Name) drag unexpectedly produced a capture."}
+        if(@(Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible}).Count -ne $beforeEmptyEditors){throw "Empty $($emptyDrag.Name) drag unexpectedly opened an editor."}
+    }
+    # Complete a real rectangle in the same overlay after the empty attempts;
+    # the existing dimension and source-pixel assertions below prove recovery.
     [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+80),($geometry[1]+60)); Start-Sleep -Milliseconds 100
     [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
     [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+280),($geometry[1]+210)); Start-Sleep -Milliseconds 150
@@ -338,7 +367,7 @@ namespace ShotKitKeyboardSurface {
         }
     }
     finally {$clickBitmap.Dispose()}
-    Write-Output "PASS: Capture loss, Escape, and right-click cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
+    Write-Output "PASS: Capture loss, Escape, and right-click cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Empty horizontal/vertical drags (both directions, including Shift) retained the same overlay without output; the subsequent plain drag captured 200x150 with verified pixels on '$inputDesktop'."
 }
 finally {
     if($shiftDown){Send-Key 0x10 $false}

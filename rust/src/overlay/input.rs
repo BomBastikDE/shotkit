@@ -4,6 +4,30 @@ const WM_CANCELMODE: u32 = 0x001f;
 const WM_CAPTURECHANGED: u32 = 0x0215;
 const WM_RBUTTONDOWN: u32 = 0x0204;
 
+#[derive(Debug, PartialEq)]
+enum PointerGesture {
+    Click,
+    EmptyDrag,
+    Drag((i32, i32, i32, i32)),
+}
+
+fn pointer_gesture(start: Point, current: Point) -> PointerGesture {
+    let dx = (i64::from(start.x) - i64::from(current.x)).abs();
+    let dy = (i64::from(start.y) - i64::from(current.y)).abs();
+    if dx <= i64::from(CLICK_SLOP) && dy <= i64::from(CLICK_SLOP) {
+        PointerGesture::Click
+    } else if dx == 0 || dy == 0 {
+        PointerGesture::EmptyDrag
+    } else {
+        PointerGesture::Drag((
+            start.x.min(current.x),
+            start.y.min(current.y),
+            start.x.max(current.x),
+            start.y.max(current.y),
+        ))
+    }
+}
+
 /// End an active pointer gesture before any API that can synchronously send
 /// WM_CAPTURECHANGED. Returns whether there was a gesture to cancel.
 fn end_drag_for_capture_loss(state: &mut State) -> bool {
@@ -125,29 +149,31 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
         }
         WM_LBUTTONUP if (*state).down => {
             let point = cursor_screen(l, (*state).origin);
-            let (result, click_pending, click_cancelled, root_hwnd, edit_manual_drag) = {
+            let (result, click_pending, click_cancelled, root_hwnd, edit_manual_drag, retry_drag) = {
                 let s = &mut *state;
                 s.current = point;
-                let dx = (i64::from(s.start.x) - i64::from(s.current.x)).abs();
-                let dy = (i64::from(s.start.y) - i64::from(s.current.y)).abs();
-                let click = dx <= i64::from(CLICK_SLOP) && dy <= i64::from(CLICK_SLOP);
+                let gesture = pointer_gesture(s.start, s.current);
+                let click = gesture == PointerGesture::Click;
+                let retry_drag = gesture == PointerGesture::EmptyDrag;
                 let root_hwnd = s
                     .candidates
                     .iter()
                     .find(|c| c.is_top_level)
                     .map(|c| c.hwnd)
                     .unwrap_or(0);
-                let result = if click {
-                    s.press_rect
-                } else {
-                    Some((
-                        s.start.x.min(s.current.x),
-                        s.start.y.min(s.current.y),
-                        s.start.x.max(s.current.x),
-                        s.start.y.max(s.current.y),
-                    ))
+                let result = match gesture {
+                    PointerGesture::Click => s.press_rect,
+                    PointerGesture::EmptyDrag => None,
+                    PointerGesture::Drag(rect) => Some(rect),
                 };
                 s.down = false;
+                if retry_drag {
+                    // Discard this empty gesture, leaving the overlay ready
+                    // for another drag. Clear `down` before ReleaseCapture
+                    // so its reentrant WM_CAPTURECHANGED cannot cancel it.
+                    s.press_rect = None;
+                    s.pending_click = None;
+                }
                 // Holding Shift while releasing a real drag freezes that
                 // manually drawn area for pixel correction. Without Shift,
                 // drags and hover clicks still finish immediately as before.
@@ -170,7 +196,14 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
                         root_hwnd,
                     });
                 }
-                (result, pending, cancelled, root_hwnd, edit_manual_drag)
+                (
+                    result,
+                    pending,
+                    cancelled,
+                    root_hwnd,
+                    edit_manual_drag,
+                    retry_drag,
+                )
             };
             ReleaseCapture();
             move_magnifier(state);
@@ -178,7 +211,7 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
                 "selection mouse_up point=({}, {}) click_pending={} cancelled={} result={:?}",
                 point.x, point.y, click_pending, click_cancelled, result
             ));
-            if !click_pending && !edit_manual_drag {
+            if !click_pending && !edit_manual_drag && !retry_drag {
                 let final_result = if click_cancelled { None } else { result }
                     .and_then(|r| intersection(r, desktop_rect(&*state)));
                 let target = mark_finished(state, final_result);
@@ -187,7 +220,7 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
                     DestroyWindow(target);
                 }
             }
-            if edit_manual_drag {
+            if edit_manual_drag || retry_drag {
                 InvalidateRect(hwnd, null(), 0);
             }
             let _ = root_hwnd;
@@ -200,6 +233,55 @@ pub(super) unsafe fn handle_mouse(hwnd: H, msg: u32, _w: W, l: L) -> Option<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_dimensional_drags_are_empty_in_either_direction() {
+        let start = Point { x: 100, y: 100 };
+        for current in [
+            Point { x: 200, y: 100 },
+            Point { x: 0, y: 100 },
+            Point { x: 100, y: 200 },
+            Point { x: 100, y: 0 },
+        ] {
+            assert_eq!(pointer_gesture(start, current), PointerGesture::EmptyDrag);
+        }
+    }
+
+    #[test]
+    fn clicks_keep_the_existing_slop_including_zero_dimensions() {
+        let start = Point { x: 100, y: 100 };
+        for dx in -CLICK_SLOP..=CLICK_SLOP {
+            for dy in -CLICK_SLOP..=CLICK_SLOP {
+                assert_eq!(
+                    pointer_gesture(
+                        start,
+                        Point {
+                            x: 100 + dx,
+                            y: 100 + dy
+                        }
+                    ),
+                    PointerGesture::Click
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_rectangles_keep_normalized_bounds_including_thin_drags() {
+        let start = Point { x: 100, y: 100 };
+        for (current, rect) in [
+            (Point { x: 200, y: 150 }, (100, 100, 200, 150)),
+            (Point { x: 0, y: 50 }, (0, 50, 100, 100)),
+            (Point { x: 101, y: 200 }, (100, 100, 101, 200)),
+            (Point { x: 200, y: 101 }, (100, 100, 200, 101)),
+        ] {
+            assert_eq!(pointer_gesture(start, current), PointerGesture::Drag(rect));
+        }
+        assert_eq!(
+            pointer_gesture(Point { x: i32::MIN, y: 0 }, Point { x: i32::MAX, y: 1 }),
+            PointerGesture::Drag((i32::MIN, 0, i32::MAX, 1))
+        );
+    }
 
     #[test]
     fn capture_loss_ends_drag_and_discards_incomplete_click_state() {
