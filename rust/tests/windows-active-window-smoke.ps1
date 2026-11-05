@@ -59,6 +59,8 @@ namespace ShotKitActiveWindowSmoke {
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
+        [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
         [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -305,9 +307,9 @@ finally { $surface.Dispose() }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -AllowedDialogTitles @('*Prototyp*') -Condition {
         Get-OwnDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    if (-not [ShotKitActiveWindowSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the known startup dialog with its default OK command.'
-    }
+    $welcomeOk = [ShotKitActiveWindowSmoke.Native]::GetDlgItem($welcome.Handle, 1)
+    if ($welcomeOk -eq [IntPtr]::Zero) { throw 'Known startup dialog has no OK button.' }
+    [void][ShotKitActiveWindowSmoke.Native]::SendMessageW($welcomeOk, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     $null = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
         -not (Get-OwnDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
     }
