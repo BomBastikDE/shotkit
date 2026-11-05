@@ -197,7 +197,7 @@ try {
 
     $main = Wait-For -Seconds $TimeoutSeconds -Description 'owned editor window' -Probe {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
-            Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Visible } | Select-Object -First 1
+            Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible } | Select-Object -First 1
     }
     $welcome = Wait-For -Seconds $TimeoutSeconds -Description 'owned startup notice' -Probe {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
@@ -208,7 +208,7 @@ try {
     }
     $main = Wait-For -Seconds 10 -Description 'loaded editor window' -Probe {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
-            Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' -and $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1
+            Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1
     }
 
     # Ensure no folder window appeared concurrently before issuing the UI action.
