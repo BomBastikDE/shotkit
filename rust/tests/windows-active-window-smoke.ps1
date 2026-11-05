@@ -307,8 +307,10 @@ finally { $surface.Dispose() }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -AllowedDialogTitles @('*Prototyp*') -Condition {
         Get-OwnDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    $welcomeOk = [ShotKitActiveWindowSmoke.Native]::GetDlgItem($welcome.Handle, 1)
-    if ($welcomeOk -eq [IntPtr]::Zero) { throw 'Known startup dialog has no OK button.' }
+    $welcomeOk = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog OK button' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
+        $button = [ShotKitActiveWindowSmoke.Native]::GetDlgItem($welcome.Handle, 1)
+        if ($button -ne [IntPtr]::Zero) { $button }
+    }
     [void][ShotKitActiveWindowSmoke.Native]::SendMessageW($welcomeOk, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     $null = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
         -not (Get-OwnDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
