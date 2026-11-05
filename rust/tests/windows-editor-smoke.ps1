@@ -563,6 +563,46 @@ try {
         return $true
     })
 
+    # Select yellow explicitly so this case isolates marker rendering and compositing.
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Marker (M)') -Description 'text marker tool')
+    [void](Wait-ForValue -Seconds 5 -Description 'text marker tool activation' -Probe {
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Highlight*' } | Select-Object -First 1
+    })
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Gelb') -Description 'yellow marker color')
+    Invoke-CanvasDrag 120 80 155 115 $false
+    Save-FromToolbar $main.Handle
+    $highlighted = Wait-ForImageState -Path $inputPath -Description 'saved translucent yellow marker and preserved pixels' -Predicate {
+        param($image)
+        if ($image.Width -ne 160 -or $image.Height -ne 120) { return $false }
+        $onTransparent = $image.Pixels[90 * 160 + 130]
+        $onOpaqueGreen = $image.Pixels[104 * 160 + 146]
+        $outside = $image.Pixels[60 * 160 + 100]
+        if ([Math]::Abs([int]$onTransparent.R - 255) -gt 3 -or
+            [Math]::Abs([int]$onTransparent.G - 214) -gt 3 -or
+            [Math]::Abs([int]$onTransparent.B) -gt 3 -or
+            [Math]::Abs([int]$onTransparent.A - 105) -gt 3) {
+            throw "Transparent marker pixel was RGBA=$($onTransparent.R),$($onTransparent.G),$($onTransparent.B),$($onTransparent.A); expected about 255,214,0,105."
+        }
+        if ([Math]::Abs([int]$onOpaqueGreen.R - 111) -gt 3 -or
+            [Math]::Abs([int]$onOpaqueGreen.G - 206) -gt 3 -or
+            [Math]::Abs([int]$onOpaqueGreen.B - 35) -gt 3 -or
+            $onOpaqueGreen.A -ne 255) {
+            throw "Marker over opaque green was RGBA=$($onOpaqueGreen.R),$($onOpaqueGreen.G),$($onOpaqueGreen.B),$($onOpaqueGreen.A); expected about 111,206,35,255."
+        }
+        $baseOutside = $expectedBase.Pixels[60 * 160 + 100]
+        if ($outside.R -ne $baseOutside.R -or $outside.G -ne $baseOutside.G -or
+            $outside.B -ne $baseOutside.B -or $outside.A -ne $baseOutside.A) {
+            throw "Pixel outside marker changed from RGBA=$($baseOutside.R),$($baseOutside.G),$($baseOutside.B),$($baseOutside.A) to RGBA=$($outside.R),$($outside.G),$($outside.B),$($outside.A)."
+        }
+        return $image
+    }
+
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zurück') -Description 'undo text marker')
+    Save-FromToolbar $main.Handle
+    [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring the original image after text marker' -Predicate {
+        param($image) Test-OriginalImage $image
+    })
+
     # Shift + rectangle must produce equal side lengths in the saved image.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rechteck (R)') -Description 'Shift rectangle tool')
     Invoke-CanvasDrag 30 20 70 40 $true

@@ -64,6 +64,19 @@ impl Color {
         b: 0,
         a: 255,
     };
+    /// Default editor palette red, matching the reference UI's first swatch.
+    pub const PALETTE_RED: Self = Self {
+        r: 230,
+        g: 40,
+        b: 40,
+        a: 255,
+    };
+    pub const MARKER_YELLOW: Self = Self {
+        r: 255,
+        g: 214,
+        b: 0,
+        a: 255,
+    };
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
@@ -98,7 +111,7 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            color: Color::RED,
+            color: Color::PALETTE_RED,
             width: 4.0,
             font_size: 28.0,
         }

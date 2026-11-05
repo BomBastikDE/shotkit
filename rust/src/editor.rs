@@ -151,9 +151,21 @@ impl EditorController {
     pub fn tool(&self) -> Tool {
         self.tool
     }
-    pub fn set_tool(&mut self, tool: Tool) {
+    /// Select a tool. Switching to the marker selects the reference yellow
+    /// while the default palette red is active, and recolors a selected shape
+    /// as one undoable document edit. Returns whether the document changed.
+    pub fn set_tool(&mut self, tool: Tool) -> bool {
         self.cancel_drag();
         self.tool = tool;
+        if tool != Tool::Highlight || self.current_style.color != Color::PALETTE_RED {
+            return false;
+        }
+        self.current_style.color = Color::MARKER_YELLOW;
+        let Some(mut replacement) = self.selection().map(|shape| shape.style.clone()) else {
+            return false;
+        };
+        replacement.color = Color::MARKER_YELLOW;
+        self.set_selected_style(replacement)
     }
     pub fn set_hit_tolerance(&mut self, tolerance: f32) {
         if tolerance.is_finite() && tolerance >= 0.0 {

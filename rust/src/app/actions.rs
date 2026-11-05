@@ -251,6 +251,33 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
     }
 }
 
+/// Apply a tool selection consistently for toolbar clicks and keyboard
+/// shortcuts, including marker color, dirty state, and toolbar readback.
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Aufrufer bearbeiten ein eigenes Fenster; vollständige Handlelebensdauer bleibt Aufruferpflicht.
+// Nachrichten: SetWindowTextW und InvalidateRect können Fensterzustand aktualisieren.
+pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
+    cancel_gesture(h);
+    let old_color = editor(h).current_style().color;
+    if editor(h).set_tool(tool) {
+        window_state(h).dirty = true;
+    }
+    let color = editor(h).current_style().color;
+    if color != old_color {
+        toolbar::set_color(h, color.r, color.g, color.b);
+    }
+    toolbar::set_active(h, toolbar_id_for_tool(tool));
+    SetWindowTextW(
+        h,
+        wide(&format!(
+            "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+        ))
+        .as_ptr(),
+    );
+    InvalidateRect(h, std::ptr::null(), 0);
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h und der Editor erfüllen den Zustandsvertrag für delegierte Aktionen.
 // Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
@@ -282,16 +309,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         _ => None,
     };
     if let Some(tool) = tool {
-        cancel_gesture(h);
-        editor(h).set_tool(tool);
-        toolbar::set_active(h, toolbar_id_for_tool(tool));
-        SetWindowTextW(
-            h,
-            wide(&format!(
-                "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-            ))
-            .as_ptr(),
-        );
+        activate_tool(h, tool);
     } else {
         match id {
             toolbar::ID_SWATCH_RED

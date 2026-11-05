@@ -228,17 +228,7 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 _ => None,
             };
             if let Some(tool) = tool {
-                cancel_gesture(h);
-                editor(h).set_tool(tool);
-                toolbar::set_active(h, toolbar_id_for_tool(tool));
-                SetWindowTextW(
-                    h,
-                    wide(&format!(
-                        "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-                    ))
-                    .as_ptr(),
-                );
-                InvalidateRect(h, std::ptr::null(), 0);
+                activate_tool(h, tool);
             }
             0
         }

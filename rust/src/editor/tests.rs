@@ -90,6 +90,64 @@ fn editor() -> EditorController {
     EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap()).unwrap()
 }
 
+fn add_rect_and_select(e: &mut EditorController) {
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(10.0, 10.0));
+    e.mouse_up(p(50.0, 50.0));
+    e.set_tool(Tool::Select);
+    // Select the left edge away from the corner handles. A center click misses
+    // a rectangle because hit testing targets its outline.
+    e.mouse_down(p(12.0, 30.0));
+    e.mouse_up(p(12.0, 30.0));
+    assert!(e.selection().is_some());
+}
+
+#[test]
+fn marker_tool_switches_default_red_to_yellow_and_recolors_selection_undoably() {
+    let mut e = editor();
+    add_rect_and_select(&mut e);
+    let old_style = e.selection().unwrap().style.clone();
+    assert_eq!(old_style.color, Color::rgba(230, 40, 40, 255));
+
+    assert!(e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert_eq!(e.selection().unwrap().style.color, Color::MARKER_YELLOW);
+
+    // One Undo restores the selected object; the next history item is still
+    // the original rectangle creation, so it removes that object.
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0].style, old_style);
+    assert!(e.undo());
+    assert!(e.shapes().is_empty());
+    assert!(!e.undo());
+}
+
+#[test]
+fn marker_tool_without_selection_changes_only_the_active_drawing_color() {
+    let mut e = editor();
+    assert!(!e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert!(e.shapes().is_empty());
+    assert!(!e.undo());
+
+    e.mouse_down(p(5.0, 5.0));
+    e.mouse_up(p(15.0, 15.0));
+    assert_eq!(e.shapes()[0].style.color, Color::MARKER_YELLOW);
+}
+
+#[test]
+fn marker_tool_preserves_custom_color_and_selected_shape_style() {
+    let mut e = editor();
+    let blue = Color::rgba(0, 120, 215, 255);
+    e.set_current_color(blue);
+    add_rect_and_select(&mut e);
+    let old_style = e.selection().unwrap().style.clone();
+
+    assert!(!e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, blue);
+    assert_eq!(e.selection().unwrap().style, old_style);
+}
+
 fn test_rect(x: f32, y: f32) -> Shape {
     Shape::new(ShapeKind::Rectangle {
         start: p(x, y),
