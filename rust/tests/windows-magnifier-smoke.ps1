@@ -131,8 +131,8 @@ function Close-StartupDialog($Dialog) {
     if ($Dialog.ProcessId -ne $shotKit.Id -or $Dialog.ClassName -ne '#32770' -or $Dialog.Title -notlike '*Prototyp*') {
         throw "REFUSING_DIALOG_CLOSE: not the owned ShotKit startup notice (pid=$($Dialog.ProcessId), title='$($Dialog.Title)')."
     }
-    if (-not [ShotKitMagnifierSmoke.Native]::PostMessageW($Dialog.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)) {
-        throw 'Could not close the owned ShotKit startup notice using its default OK action.'
+    if (-not [ShotKitMagnifierSmoke.Native]::PostMessageW($Dialog.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
+        throw 'Could not close the owned ShotKit startup notice with WM_CLOSE.'
     }
     [void](Wait-Until { -not [ShotKitMagnifierSmoke.Native]::IsWindow($Dialog.Handle) } 'ShotKit startup notice to close')
 }
