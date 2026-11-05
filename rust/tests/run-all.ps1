@@ -44,6 +44,7 @@ $cases = @(
     @{ Name = 'Interactive Windows last-region clipboard repeat smoke test'; Script = 'windows-last-region-clipboard-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows scroll capture smoke test'; Script = 'windows-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows scroll cancellation smoke test'; Script = 'windows-scroll-abort-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows scroll mouse cancellation smoke test'; Script = 'windows-scroll-abort-smoke.ps1'; Extra = @('-MouseAbort'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows horizontal scroll smoke test'; Script = 'windows-horizontal-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows single-instance smoke test'; Script = 'windows-instance-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hover suggestion smoke test'; Script = 'windows-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
