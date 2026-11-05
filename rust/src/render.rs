@@ -1,5 +1,8 @@
 //! Native GDI renderer for annotation shapes.
 //!
+//! This is a legacy renderer retained for its Windows tests. The editor's
+//! preview and exported documents use `alpha_document` and `alpha_render`.
+//!
 //! Coordinates are image-space pixels. Call [`draw_shape`] with a destination
 //! device context whose origin is the image origin. The caller retains ownership
 //! of both HDCs. GDI objects created here are selected out and deleted on every
