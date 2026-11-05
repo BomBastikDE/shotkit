@@ -51,6 +51,7 @@ namespace ShotKitActiveWindowSmoke {
         [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
         [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern int GetClassNameW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll", SetLastError=true)] private static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
@@ -59,7 +60,6 @@ namespace ShotKitActiveWindowSmoke {
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
-        [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
         [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
         [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
@@ -87,6 +87,31 @@ namespace ShotKitActiveWindowSmoke {
                 string text = Text(child); if (!String.IsNullOrWhiteSpace(text)) all.Append(" ").Append(text); return true;
             };
             EnumChildWindows(hwnd, callback, IntPtr.Zero); GC.KeepAlive(callback); return all.ToString();
+        }
+        public static IntPtr FindUniqueVisibleOkButton(IntPtr dialog, out string details) {
+            List<IntPtr> matches = new List<IntPtr>();
+            List<string> children = new List<string>();
+            EnumChildProc callback = delegate(IntPtr child, IntPtr ignored) {
+                if (!IsWindowVisible(child)) return true;
+                string className = Class(child);
+                string title = Text(child);
+                int id = GetDlgCtrlID(child);
+                bool rootMatches = GetAncestor(child, 2) == dialog;
+                children.Add(String.Format("HWND=0x{0:X} Class='{1}' ID={2} Text='{3}' RootMatchesDialog={4}", child.ToInt64(), className, id, title, rootMatches));
+                if (rootMatches && String.Equals(className, "Button", StringComparison.OrdinalIgnoreCase) &&
+                    String.Equals(title.Trim(), "OK", StringComparison.OrdinalIgnoreCase)) {
+                    matches.Add(child);
+                }
+                return true;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            details = children.Count == 0 ? "no visible child windows" : String.Join("; ", children.ToArray());
+            if (matches.Count != 1) {
+                details = String.Format("{0}; unique visible OK-button matches={1}", details, matches.Count);
+                return IntPtr.Zero;
+            }
+            return matches[0];
         }
         public static WindowInfo[] WindowsForProcess(int processId) {
             List<WindowInfo> windows = new List<WindowInfo>();
@@ -307,11 +332,22 @@ finally { $surface.Dispose() }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -AllowedDialogTitles @('*Prototyp*') -Condition {
         Get-OwnDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
-    $welcomeOk = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog OK button' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-        $button = [ShotKitActiveWindowSmoke.Native]::GetDlgItem($welcome.Handle, 1)
-        if ($button -ne [IntPtr]::Zero) { $button }
+    $okButton = [IntPtr]::Zero
+    $buttonDetails = ''
+    $buttonDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $buttonDeadline -and -not $shotKit.HasExited) {
+        $details = ''
+        $candidate = [ShotKitActiveWindowSmoke.Native]::FindUniqueVisibleOkButton($welcome.Handle, [ref]$details)
+        $buttonDetails = $details
+        if ($candidate -ne [IntPtr]::Zero) { $okButton = $candidate; break }
+        Start-Sleep -Milliseconds 100
     }
-    [void][ShotKitActiveWindowSmoke.Native]::SendMessageW($welcomeOk, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($okButton -eq [IntPtr]::Zero) {
+        $dialogText = [ShotKitActiveWindowSmoke.Native]::WindowText($welcome.Handle)
+        $exitDetail = if ($shotKit.HasExited) { " process exited with code $($shotKit.ExitCode)." } else { '' }
+        throw "Timed out waiting for a unique visible OK button (dialog HWND=$($welcome.Handle)). Title='$($welcome.Title)'; text='$dialogText'; children='$buttonDetails'$exitDetail"
+    }
+    [void][ShotKitActiveWindowSmoke.Native]::SendMessageW($okButton, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     $null = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
         -not (Get-OwnDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
     }
