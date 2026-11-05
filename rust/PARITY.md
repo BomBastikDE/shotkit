@@ -56,7 +56,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Werkzeugleiste: feste Aktionen und Überlauf bei schmalem Fenster | bewusst anders | C#: `src/EditorForm.cs::ApplyResponsive` und `ApplyStage`; Rust: `toolbar_layout.rs`, `windows-toolbar-visual-smoke.ps1 -ResponsiveOnly`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41945268715) | Stufenweises Überlaufmenü und feste Aktionen sind bei mehreren Fensterbreiten geprüft; einzelne echte Menüaktionen und Zoom-Ausgabe ebenfalls. Anders als C# bleibt auf ausdrücklichen Wunsch auch Speichern in jeder Stufe sichtbar. |
 | Strg+N: neue Aufnahme aus dem Editor | fertig | `windows-toolbar-visual-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41516470659) | Der Test löst Strg+N aus, prüft das eigene Auswahl-Overlay und bricht es anschließend ab. |
 | Zuschneiden | fertig | `document.rs::shared_history_orders_shape_and_image_changes`; `windows-editor-smoke.ps1`; Alpha-8-Lauf | Erfolgreicher Crop und Werkzeugwechsel unter Windows geprüft. |
-| Rahmen / Schlagschatten mit transparentem PNG | implementiert, nicht belegt | `document.rs::frame_keeps_transparent_source_pixel_and_offsets_shapes` | Bildlogik geprüft; Windows-Ausgabe für beide Effekte fehlt. |
+| Rahmen / Schlagschatten mit transparentem PNG | fertig | `document.rs::frame_keeps_transparent_source_pixel_and_offsets_shapes`; `windows-frame-shadow-smoke.ps1`; [Windows-/Linux-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41969737989) | Die kombinierte Aktion mit 8-Pixel-Rahmen prüft gespeicherte PNG-Maße, Farbe, Quell-RGBA, Schatten und vollständiges Undo; andere Größen und Einzelaktionen sind damit nicht vollständig abgedeckt. |
 | Rückgängig / Wiederholen | fertig | `editor.rs::creates_with_preview_then_commits_once_and_undo_redoes`; `windows-editor-smoke.ps1`; Alpha-9-Lauf | Modell und konkrete Editorabläufe geprüft; kein pauschaler Nachweis jeder Aktion. |
 | Zoom und Schwenken | implementiert, nicht belegt | `view.rs`-Unit-Tests | Direkter Windows-Test für alle Referenzkürzel und Radgesten fehlt. |
 | Mehrere Bilder / ungesicherte Änderungen | implementiert, nicht belegt | `windows-multi-editor-smoke.ps1` | Mehrfenster-Lebenszyklus geprüft; alle Speicher-/Abbruchdialogzweige sind nicht nachgewiesen. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 27 fertig, 16 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 28 fertig, 15 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
