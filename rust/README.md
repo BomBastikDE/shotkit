@@ -4,7 +4,9 @@ Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Re
 
 ## Umstieg von C#
 
-Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README auf main](https://github.com/BomBastikDE/shotkit/blob/main/README.md#bisherige-c-version-120).
+Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
+
+Die Rust-EXE läuft ohne Installer und kann in einem selbst gewählten Ordner liegen. Zum Entfernen zuerst einen gegebenenfalls aktivierten Rust-Autostart im Tray-Menü ausschalten und ShotKit über das Tray-Menü beenden; danach kann die EXE gelöscht werden. Die separaten Rust-Einstellungen liegen unter `%APPDATA%\ShotKitRust\settings.json` (falls `APPDATA` fehlt, unter `%LOCALAPPDATA%\ShotKitRust\settings.json`). Sie können für eine spätere Nutzung erhalten oder bei Bedarf separat entfernt werden. Bereits gespeicherte Bilder liegen im jeweils gewählten Speicherordner und werden dadurch nicht entfernt.
 
 ## Bisherige Funktionen
 
