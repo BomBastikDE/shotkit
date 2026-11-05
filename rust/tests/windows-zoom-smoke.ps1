@@ -120,7 +120,9 @@ try {
  for($i=0;$i -lt 3;$i++){Focus-Editor $main.H;$zoomMarker=Get-LimeMarker $main.H;Assert-OwnedInputTarget $main.H $zoomMarker.X $zoomMarker.Y;[ShotKitZoomSmoke.N]::CtrlKey(0xBB);Start-Sleep -Milliseconds 150}
  Start-Sleep -Milliseconds 350;$panStart=Get-LimeMarker $main.H
  $vMoved=Send-PanWheel $main.H -120 $false;$vReturned=Send-PanWheel $main.H 120 $false;Assert-PanPair 'vertical wheel down/up' $panStart $vMoved $vReturned 'Y'
- $hStart=Get-LimeMarker $main.H;$hMoved=Send-PanWheel $main.H -120 $true;$hReturned=Send-PanWheel $main.H 120 $true;Assert-PanPair 'Shift+wheel down/up' $hStart $hMoved $hReturned 'X'
+ # Repeat real Shift+wheel pairs: issue #42 was intermittent, so validate every
+ # down/up cycle independently from on-screen marker screenshots and handler diagnostics.
+ for($i=1;$i -le 5;$i++){$hStart=Get-LimeMarker $main.H;$hMoved=Send-PanWheel $main.H -120 $true;$hReturned=Send-PanWheel $main.H 120 $true;Assert-PanPair ("Shift+wheel down/up pair $i/5") $hStart $hMoved $hReturned 'X'}
  $msgStart=Get-LimeMarker $main.H;$msgMoved=Send-ShiftWheelMessage $main.H -120;$msgReturned=Send-ShiftWheelMessage $main.H 120;Assert-PanPair 'WM_MOUSEWHEEL MK_SHIFT down/up (no Shift key)' $msgStart $msgMoved $msgReturned 'X'
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0x30);Start-Sleep -Milliseconds 350;$zoomBase=Get-VisibleBounds $main.H
  $s=Measure-After 'Ctrl+Plus (OEM plus)' { [ShotKitZoomSmoke.N]::CtrlKey(0xBB) } $zoomBase $main.H
