@@ -45,6 +45,7 @@ namespace ShotKitOutputMatrixSmoke {
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
         [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result);
         public static bool UiResponsive(IntPtr hwnd) { UIntPtr result; return SendMessageTimeoutW(hwnd, 0, IntPtr.Zero, IntPtr.Zero, 2, 5000, out result)!=IntPtr.Zero; }
@@ -111,14 +112,26 @@ namespace ShotKitOutputMatrixSmoke {
             if(sub==IntPtr.Zero) throw new InvalidOperationException("No settings submenu.");
             MoveToItem(popup,m,pos,expectedPid); return sub;
         }
-        public static void ClickSetting(IntPtr popup, IntPtr expectedMenu, uint id, string label, bool checkedBefore, int expectedPid) {
+        public static string ClickSetting(IntPtr popup, IntPtr expectedMenu, uint id, string label, bool checkedBefore, int expectedPid) {
             IntPtr m=PopupMenu(popup); if(m!=expectedMenu) throw new InvalidOperationException("Wrong submenu.");
             int pos=FindItem(m,label,id); uint state=GetMenuState(m,id,0);
             if(state==0xffffffff || ((state & 8)!=0)!=checkedBefore)
                 throw new InvalidOperationException("Unexpected checked state for "+label+": "+state);
             MoveToItem(popup,m,pos,expectedPid);
+            Rect r; Point cursor;
+            bool hasRect=GetMenuItemRect(IntPtr.Zero,m,(uint)pos,out r), hasCursor=GetCursorPos(out cursor);
+            string diagnostic=String.Format("id={0} position={1} state={2} popup={3} rectAvailable={4} rect=({5},{6},{7},{8}) cursorAvailable={9} cursor=({10},{11}) windowAtCursor={12} foreground={13}",
+                id,pos,state,popup,hasRect,r.Left,r.Top,r.Right,r.Bottom,hasCursor,cursor.X,cursor.Y,
+                hasCursor?WindowFromPoint(cursor):IntPtr.Zero,GetForegroundWindow());
             try { mouse_event(2,0,0,0,UIntPtr.Zero); }
             finally { mouse_event(4,0,0,0,UIntPtr.Zero); }
+            return diagnostic;
+        }
+        public static string MenuAfterClick(IntPtr root, IntPtr child) {
+            Point cursor; bool hasCursor=GetCursorPos(out cursor);
+            return String.Format("rootExists={0} rootVisible={1} childExists={2} childVisible={3} cursorAvailable={4} cursor=({5},{6}) windowAtCursor={7} foreground={8}",
+                IsWindow(root),IsWindowVisible(root),IsWindow(child),IsWindowVisible(child),hasCursor,cursor.X,cursor.Y,
+                hasCursor?WindowFromPoint(cursor):IntPtr.Zero,GetForegroundWindow());
         }
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -174,8 +187,10 @@ function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [u
     $child=Wait-ForCondition -Seconds 10 -Description 'native settings submenu' -OwnedProcess $Process -Condition {
         Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32768' -and $_.Handle -ne $popup.Handle -and [ShotKitOutputMatrixSmoke.Native]::PopupMenu($_.Handle) -eq $submenu} | Select-Object -First 1
     }
-    [ShotKitOutputMatrixSmoke.Native]::ClickSetting($child.Handle,$submenu,$Id,$Label,$Before,$Process.Id)
+    $beforeClick=[ShotKitOutputMatrixSmoke.Native]::ClickSetting($child.Handle,$submenu,$Id,$Label,$Before,$Process.Id)
     [void](Wait-ForCondition -Seconds 10 -Description 'tray menu dismissal' -OwnedProcess $Process -Condition {-not [ShotKitOutputMatrixSmoke.Native]::WindowVisible($popup.Handle)})
+    $afterClick=[ShotKitOutputMatrixSmoke.Native]::MenuAfterClick($popup.Handle,$child.Handle)
+    $script:trayDiagnostic="before click: $beforeClick; after dismissal: $afterClick"
 }
 function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder) {
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
@@ -186,7 +201,7 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
         if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
         Start-Sleep -Milliseconds 100
     } while([DateTime]::UtcNow -lt $deadline)
-    throw "Timed out waiting for expected persisted settings; last value: $raw"
+    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
