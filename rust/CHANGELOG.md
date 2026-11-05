@@ -69,6 +69,10 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 
 Bei Verpixeln beträgt die Mindestblockgröße 12 statt 6 Pixel; ein Regressionstest prüft die niedrigen Linienstärken. Dies verbessert die grobe Darstellung, garantiert aber keine Unkenntlichkeit oder sichere Schwärzung. [Issue #5](https://github.com/BomBastikDE/shotkit/issues/5) bleibt offen.
 
+- Das Verpixeln-Werkzeug weist darauf hin, dass der Effekt keine sichere Schwärzung bietet ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).
+- Der Auswahlrahmen und seine Griffe werden beim Ziehen einer bestehenden Form auch bei aktivem Zeichenwerkzeug angezeigt; der Windows-Test prüft ein Rechteck während des Ziehens ([#23](https://github.com/BomBastikDE/shotkit/issues/23)).
+- Windows-Smoke-Tests prüfen die verzögerte Aufnahme nach 3, 5 und 10 Sekunden, den konfigurierten Speicherordner, eine kombinierte Rahmen-/Schatten-Ausgabe mit Undo sowie die vier Speicherformate PNG, JPEG, BMP und GIF. Der [CI-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41973151902) bestand mit 32 Szenarien; Grenzen der einzelnen Nachweise stehen in [PARITY.md](PARITY.md).
+
 Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereignis nicht übernimmt, meldet ShotKit den Fehler. Die konkrete Ursache einer Ablehnung lässt sich aus dem Rückgabewert nicht sicher bestimmen ([Issue #7](https://github.com/BomBastikDE/shotkit/issues/7)).
 
 - Beim Zuschneiden werden beide gewählten Randpixel berücksichtigt ([#18](https://github.com/BomBastikDE/shotkit/issues/18)).
