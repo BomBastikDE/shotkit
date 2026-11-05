@@ -267,6 +267,7 @@ Write-Output 'FIXTURE_STAGE: compiling surface'
 Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll' -TypeDefinition @"
 using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Windows.Forms;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -274,14 +275,29 @@ namespace ShotKitOutputMatrixSurface {
  public sealed class Surface : Form {
   Bitmap image; string ready;
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+  static void Stage(string name) { Console.WriteLine("FIXTURE_STAGE: " + name); Console.Out.Flush(); }
   public Surface(string path) {
+   Stage("surface constructor entered");
    try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {}
    ready=path; Text="ShotKit Output Matrix Fixture"; StartPosition=FormStartPosition.Manual; Location=new Point(20,20);
    ClientSize=new Size(900,650); FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false; MinimizeBox=false; ShowInTaskbar=false; DoubleBuffered=true; TopMost=true;
-   image=new Bitmap(900,650);
-   for(int y=0;y<650;y++) for(int x=0;x<900;x++) image.SetPixel(x,y,Color.FromArgb((x*29+y*17+(y/19)*53)&255,(x*7+y*31+(y/23)*97)&255,(x*19+y*11+(y/11)*41)&255));
+   Stage("surface properties configured");
+   image=new Bitmap(900,650,PixelFormat.Format32bppArgb);
+   Stage("surface bitmap allocated");
+   BitmapData data=image.LockBits(new Rectangle(0,0,900,650),ImageLockMode.WriteOnly,PixelFormat.Format32bppArgb);
+   try {
+    int[] row=new int[900];
+    for(int y=0;y<650;y++) {
+     for(int x=0;x<900;x++) {
+      int r=(x*29+y*17+(y/19)*53)&255, g=(x*7+y*31+(y/23)*97)&255, b=(x*19+y*11+(y/11)*41)&255;
+      row[x]=unchecked((int)0xff000000)|(r<<16)|(g<<8)|b;
+     }
+     Marshal.Copy(row,0,IntPtr.Add(data.Scan0,y*data.Stride),row.Length);
+    }
+   } finally { image.UnlockBits(data); }
+   Stage("surface bitmap populated");
   }
-  protected override void OnShown(EventArgs e){base.OnShown(e);Point p=PointToScreen(Point.Empty);File.WriteAllText(ready,String.Format("{0},{1},{2},{3}",p.X,p.Y,ClientSize.Width,ClientSize.Height));}
+  protected override void OnShown(EventArgs e){Stage("surface shown");base.OnShown(e);Point p=PointToScreen(Point.Empty);File.WriteAllText(ready,String.Format("{0},{1},{2},{3}",p.X,p.Y,ClientSize.Width,ClientSize.Height));Stage("surface ready file written");}
   protected override void OnPaint(PaintEventArgs e){e.Graphics.DrawImageUnscaled(image,0,0);}
   protected override void Dispose(bool d){if(d&&image!=null)image.Dispose();base.Dispose(d);}
  }
@@ -465,7 +481,7 @@ finally {
                     if($env:GITHUB_ACTIONS -ceq 'true') {
                         Write-Output "FIXTURE_DIAGNOSTIC: $([IO.Path]::GetFileName($log)): $content"
                     } elseif($log -eq $surfaceStdout) {
-                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop')
+                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
                         foreach($line in @($content -split "`r?`n")) { if($line -cin $phases) { Write-Output $line } }
                     } else {
                         Write-Output "FIXTURE_DIAGNOSTIC: stderr nonempty=$(-not [string]::IsNullOrWhiteSpace($content))"
