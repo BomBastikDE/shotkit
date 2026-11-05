@@ -21,7 +21,7 @@ pub(super) unsafe fn load_settings(h: H) {
         Err(e) => {
             *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
             SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
-            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert; die vorhandene Datei bleibt unverändert.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
         }
     }
 }

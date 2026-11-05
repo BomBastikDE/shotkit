@@ -166,6 +166,24 @@ pub fn load(path: impl AsRef<Path>) -> Result<Settings, SettingsError> {
         path: path.to_owned(),
         source,
     })?;
+    // Inspect the version before interpreting version-specific fields. A newer
+    // file can legitimately contain fields or enum values this build does not
+    // understand; reject it as a future version without changing the file.
+    #[derive(Deserialize)]
+    struct VersionHeader {
+        version: u32,
+    }
+    let header: VersionHeader =
+        serde_json::from_slice(&bytes).map_err(|source| SettingsError::Json {
+            path: path.to_owned(),
+            source,
+        })?;
+    if header.version != CURRENT_VERSION {
+        return Err(SettingsError::UnsupportedVersion {
+            found: header.version,
+            supported: CURRENT_VERSION,
+        });
+    }
     let settings: Settings =
         serde_json::from_slice(&bytes).map_err(|source| SettingsError::Json {
             path: path.to_owned(),
@@ -410,6 +428,37 @@ mod tests {
             })
         ));
         assert_eq!(fs::read(marker).unwrap(), b"existing data");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn future_version_with_unknown_fields_and_values_is_not_modified() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let original =
+            br#"{"version":2,"scroll_direction":"diagonal","future_option":{"enabled":true}}"#;
+        fs::write(&path, original).unwrap();
+
+        assert!(matches!(
+            load_or_default(&path),
+            Err(SettingsError::UnsupportedVersion { found: 2, .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_current_version_field_is_rejected_without_modification() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let original = br#"{"version":1,"unknown_option":true}"#;
+        fs::write(&path, original).unwrap();
+
+        assert!(matches!(
+            load_or_default(&path),
+            Err(SettingsError::Json { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_dir_all(dir).unwrap();
     }
 
