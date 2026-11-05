@@ -368,6 +368,15 @@ finally { $surface.Dispose() }
     Assert-NoUnexpectedDialog $shotKit
     $passMessage = "PASS: Shift+PrintScreen captured foreground HWND $($root.ToInt64()) at ${frameWidth}x${frameHeight}; DWM frame and four deterministic pixels matched."
 }
+catch {
+    foreach ($log in @($helperStdout, $helperStderr)) {
+        if (Test-Path -LiteralPath $log -PathType Leaf) {
+            $contents = Get-Content -LiteralPath $log -Raw
+            if ($contents) { Write-Host ("Helper log {0}:`n{1}" -f (Split-Path -Leaf $log), $contents) }
+        }
+    }
+    throw
+}
 finally {
     foreach ($owned in @($shotKit, $surface)) {
         if ($null -ne $owned) {

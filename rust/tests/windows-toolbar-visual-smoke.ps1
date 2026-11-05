@@ -141,11 +141,15 @@ function Click-ToolbarButton($Button) {
  [ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouse=$false
 }
 function Get-ToolbarPopup {
- $popup=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32768'}|Select-Object -First 1
- if(-not $popup){return $null}
- $menu=[ShotKitToolbarVisual.Native]::SendMessageW($popup.H,0x01e1,[IntPtr]::Zero,[IntPtr]::Zero)
- if($menu -eq [IntPtr]::Zero){throw 'RESPONSIVE_NATIVE_MENU_HANDLE_MISSING'}
- return [pscustomobject]@{H=$popup.H;Menu=$menu;Entries=@([ShotKitToolbarVisual.Native]::MenuItems($menu))}
+ $deadline=[DateTime]::UtcNow.AddMilliseconds(500)
+ do {
+  $popup=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32768'}|Select-Object -First 1
+  if(-not $popup){return $null}
+  $menu=[ShotKitToolbarVisual.Native]::SendMessageW($popup.H,0x01e1,[IntPtr]::Zero,[IntPtr]::Zero)
+  if($menu -ne [IntPtr]::Zero){return [pscustomobject]@{H=$popup.H;Menu=$menu;Entries=@([ShotKitToolbarVisual.Native]::MenuItems($menu))}}
+  Start-Sleep -Milliseconds 20
+ } while([DateTime]::UtcNow -lt $deadline)
+ throw "RESPONSIVE_NATIVE_MENU_HANDLE_MISSING: popup=$($popup.H), no menu handle after 500 ms; $(Get-ToolbarInteractionDiagnostic)"
 }
 function Read-ToolbarPopup {
  $popup=Get-ToolbarPopup
