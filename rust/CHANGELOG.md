@@ -97,3 +97,4 @@ Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereign
 - Der Browser-Smoke-Test begrenzt den Start seines UI-Automation-Prüfprozesses und die anschließende UIA-Prüfung getrennt, damit ein langsamer Prozessstart nicht das UIA-Zeitbudget aufbraucht ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
 - Die Editorleiste bleibt bei schmalem Fenster einzeilig; Aufnahme, Kopieren, Speichern und Datei bleiben rechts sichtbar, weitere Aktionen wandern stufenweise in ein Menü. `Strg+0` und `Strg+9` entsprechen nun den Beschreibungen Originalgröße und Einpassen.
 - Vor einer Scroll-Aufnahme wird die asynchrone Aktivierung des Ziel-Fensters begrenzt synchronisiert; Eingaben bleiben ohne bestätigten Vordergrund gesperrt.
+- Ein Windows-Test prüft die Wiederholung beim Öffnen der Zwischenablage mit einer echten, von einem zweiten Prozess gehaltenen Sperre ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
