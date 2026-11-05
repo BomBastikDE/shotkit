@@ -82,7 +82,7 @@ pub(super) const ACTIONS: [Action; 27] = [
     },
     Action {
         id: ID_BLUR,
-        label: "Verpixeln (B)",
+        label: "Verpixeln (B) – keine sichere Schwärzung",
         icon: Icon::Pixelate,
         tool: true,
     },

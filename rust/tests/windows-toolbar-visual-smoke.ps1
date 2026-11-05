@@ -334,7 +334,7 @@ try {
  if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
  Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 26 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
- $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B)','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
+ $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Nummer (N)','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
  if($PopupOnly) {
