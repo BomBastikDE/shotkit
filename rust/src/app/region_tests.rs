@@ -45,8 +45,9 @@ impl Target {
             wc.instance = instance;
             wc.class = class.as_ptr();
             assert_ne!(RegisterClassW(&wc), 0);
-            // A message-only window processes real cross-thread messages but
-            // cannot become foreground, even on a non-interactive CI desktop.
+            // A message-only window processes real cross-thread messages
+            // without displaying UI. Explicit activation may still make it the
+            // foreground HWND; tests must observe or inject that query.
             let h = CreateWindowExW(
                 0,
                 class.as_ptr(),
@@ -110,8 +111,52 @@ impl Drop for Target {
 #[test]
 fn activation_barrier_processes_the_target_queue_and_requires_exact_foreground() {
     let target = Target::new(false);
-    assert!(!unsafe { activate_scroll_target(target.handle as H) });
-    assert!(target.messages.load(Ordering::SeqCst) > 0);
+    let root = target.handle as H;
+    let mut observations = 0;
+    let accepted = unsafe {
+        activate_scroll_target_with_foreground(root, || {
+            observations += 1;
+            assert!(target.messages.load(Ordering::SeqCst) > 0);
+            root
+        })
+    };
+    assert!(
+        accepted,
+        "a processed barrier and exact foreground must succeed"
+    );
+    assert_eq!(observations, 1);
+
+    target.messages.store(0, Ordering::SeqCst);
+    let rejected = unsafe {
+        activate_scroll_target_with_foreground(root, || {
+            observations += 1;
+            assert!(target.messages.load(Ordering::SeqCst) > 0);
+            null_mut()
+        })
+    };
+    assert!(
+        !rejected,
+        "a processed barrier must still reject another foreground"
+    );
+    assert_eq!(observations, 2);
+}
+
+#[test]
+fn activation_barrier_observes_the_native_foreground_without_assuming_desktop_policy() {
+    let target = Target::new(false);
+    let root = target.handle as H;
+    let mut observed = None;
+    let accepted = unsafe {
+        activate_scroll_target_with_foreground(root, || {
+            assert!(target.messages.load(Ordering::SeqCst) > 0);
+            let actual = GetForegroundWindow();
+            observed = Some(actual);
+            actual
+        })
+    };
+    // Check the exact native observation used by production, not a later
+    // desktop-wide snapshot that could change after this function returns.
+    assert_eq!(accepted, observed.expect("foreground was queried") == root);
 }
 
 #[test]

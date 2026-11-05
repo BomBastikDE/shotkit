@@ -381,6 +381,13 @@ pub(super) unsafe fn start_scroll(h: H) {
 // Nachrichten: SetForegroundWindow und SendMessageTimeoutW können synchron
 // Nachrichten verarbeiten.
 unsafe fn activate_scroll_target(root: H) -> bool {
+    activate_scroll_target_with_foreground(root, || GetForegroundWindow())
+}
+
+// Same contract as activate_scroll_target. The reader runs only after the real
+// message barrier and identity checks; tests can supply an observed HWND without
+// depending on desktop-wide foreground policy or changing another window's focus.
+unsafe fn activate_scroll_target_with_foreground(root: H, foreground: impl FnOnce() -> H) -> bool {
     let mut process = 0;
     let thread = GetWindowThreadProcessId(root, &mut process);
     if thread == 0 {
@@ -407,7 +414,7 @@ unsafe fn activate_scroll_target(root: H) -> bool {
     let mut current_process = 0;
     GetWindowThreadProcessId(root, &mut current_process) == thread
         && current_process == process
-        && GetForegroundWindow() == root
+        && foreground() == root
 }
 
 #[cfg(test)]
