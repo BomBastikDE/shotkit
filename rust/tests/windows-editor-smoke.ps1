@@ -602,6 +602,7 @@ try {
     [void](Wait-ForImageState -Path $inputPath -Description 'undo restoring the original image after text marker' -Predicate {
         param($image) Test-OriginalImage $image
     })
+    [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rot') -Description 'restore red for subsequent drawing checks')
 
     # Shift + rectangle must produce equal side lengths in the saved image.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rechteck (R)') -Description 'Shift rectangle tool')
