@@ -184,6 +184,14 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
         SRCCOPY,
     );
 
+    // Rectangle draws both outline and selected brush. Keep the snapshot
+    // visible inside the marker and frame by selecting the stock hollow brush.
+    let hollow_brush = GetStockObject(5); // NULL_BRUSH
+    let old_brush = if hollow_brush.is_null() {
+        null_mut()
+    } else {
+        SelectObject(dc, hollow_brush)
+    };
     let white_pen = CreatePen(PS_SOLID, 1, 0x00ff_ffff);
     let old_pen = if white_pen.is_null() {
         null_mut()
@@ -223,6 +231,9 @@ pub(super) unsafe fn draw_magnifier(dc: H, state: &State) {
     }
     if !white_pen.is_null() {
         DeleteObject(white_pen);
+    }
+    if !old_brush.is_null() && old_brush as isize != -1 {
+        SelectObject(dc, old_brush);
     }
 
     let pixel = GetPixel(state.source_dc, local_cursor.x, local_cursor.y);
