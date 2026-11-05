@@ -94,3 +94,4 @@ Für Scroll-Aufnahmen wird `SendInput` verwendet; wenn Windows ein Scroll-Ereign
 - Sehr kurze, dicke Pfeile werden ohne über die Spitze hinausragenden Schaft gerendert; die Form reicht bis zum gesetzten Startpunkt ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
 - Ein Rechtsklick bricht die laufende Bereichsauswahl wie in ShotKit C# v1.2.0 ohne Aufnahme ab.
 - Ein zusätzlicher Windows-Smoke-Test prüft die Übernahme eines unveränderten Browservorschlags mit `Enter`.
+- Der Browser-Smoke-Test begrenzt den Start seines UI-Automation-Prüfprozesses und die anschließende UIA-Prüfung getrennt, damit ein langsamer Prozessstart nicht das UIA-Zeitbudget aufbraucht ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).

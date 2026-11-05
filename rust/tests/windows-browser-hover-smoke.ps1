@@ -205,6 +205,7 @@ $localAppData = Join-Path $testRoot 'localappdata'
 $saveFolder = Join-Path $testRoot 'captures'
 $htmlFile = Join-Path $testRoot 'surface.html'
 $uiaProbeFile = Join-Path $testRoot 'uia-probe.ps1'
+$uiaProbeReady = Join-Path $testRoot 'uia-ready.txt'
 $uiaProbeResult = Join-Path $testRoot 'uia-result.json'
 $uiaProbeStdout = Join-Path $testRoot 'uia-probe.stdout.log'
 $uiaProbeStderr = Join-Path $testRoot 'uia-probe.stderr.log'
@@ -529,9 +530,15 @@ try {
         [System.Windows.Automation.AutomationElement]::NameProperty,
         'ShotKit UIA hover target'
     )
+    # Publish readiness atomically so cold PowerShell/assembly startup does not
+    # consume the separate UIA operation budget enforced by the parent.
+    $readyAt = [DateTime]::UtcNow
+    [IO.File]::WriteAllText(($args[2] + '.tmp'), $readyAt.ToString('o'), [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move(($args[2] + '.tmp'), $args[2])
+    [Console]::Error.WriteLine("UIA phase: ready at $($readyAt.ToString('o'))")
     # The renderer and UIA provider can become available after the top-level
-    # HWND. Retry only
-    # this transient absence; the parent process enforces the hard 15s limit.
+    # HWND. Retry only this transient absence; the parent enforces a hard 15s
+    # UIA limit from readiness, including property reads and result publication.
     $deadline = [DateTime]::UtcNow.AddSeconds(12)
     $target = $null
     do {
@@ -566,7 +573,10 @@ try {
         Height = $bounds.Height
         IsOffscreen = $current.IsOffscreen
     } | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText($args[1], $result, [Text.UTF8Encoding]::new($false))
+    # Publish only a closed, complete JSON file. Its last-write timestamp is
+    # the completion time used by the parent even if its next poll is delayed.
+    [IO.File]::WriteAllText(($args[1] + '.tmp'), $result, [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move(($args[1] + '.tmp'), $args[1])
 }
 catch {
     [Console]::Error.WriteLine($_.Exception.ToString())
@@ -615,21 +625,53 @@ catch {
     }
 
     $targetName = 'ShotKit UIA hover target'
-    $probeArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" "{1}" "{2}"' -f `
-        $uiaProbeFile, $browserWindow.Handle.ToInt64(), $uiaProbeResult
+    $probeArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" "{1}" "{2}" "{3}"' -f `
+        $uiaProbeFile, $browserWindow.Handle.ToInt64(), $uiaProbeResult, $uiaProbeReady
+    $probeStartupDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $uiaProbe = Start-Process -FilePath $windowsPowerShell -ArgumentList $probeArgs -WorkingDirectory $testRoot `
         -WindowStyle Hidden -RedirectStandardOutput $uiaProbeStdout -RedirectStandardError $uiaProbeStderr -PassThru
-    $probeDeadline = [DateTime]::UtcNow.AddSeconds(15)
-    while (-not (Test-Path -LiteralPath $uiaProbeResult)) {
+    $probeDeadline = $null
+    while ($true) {
+        # Check every deadline before accepting an available result, including
+        # when the child has already exited between polls.
+        $probeCompleted = Test-Path -LiteralPath $uiaProbeResult
+        if ($null -eq $probeDeadline -and (Test-Path -LiteralPath $uiaProbeReady)) {
+            $readyAt = [DateTime]::Parse(
+                [IO.File]::ReadAllText($uiaProbeReady),
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            )
+            $probeDeadline = $readyAt.AddSeconds(15)
+        }
+        if ($probeCompleted -and $null -eq $probeDeadline) {
+            throw 'UIA_PRECHECK_FAILED: the probe published a result without a readiness marker.'
+        }
+        $phaseTime = if ($probeCompleted) {
+            [IO.File]::GetLastWriteTimeUtc($uiaProbeResult)
+        } else { [DateTime]::UtcNow }
+        $startupTimedOut = ($null -eq $probeDeadline -and $phaseTime -ge $probeStartupDeadline) -or
+            ($null -ne $probeDeadline -and $readyAt -gt $probeStartupDeadline)
+        $uiaTimedOut = $null -ne $probeDeadline -and $phaseTime -ge $probeDeadline
+        if ($startupTimedOut -or $uiaTimedOut) {
+            # Reobserve publication that raced this poll before rejecting it;
+            # the next iteration validates its recorded completion time.
+            if (-not $probeCompleted -and (Test-Path -LiteralPath $uiaProbeResult)) { continue }
+            if ($null -eq $probeDeadline -and (Test-Path -LiteralPath $uiaProbeReady)) { continue }
+            try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
+            $probeTrace = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { 'No probe diagnostics available.' }
+            if ($startupTimedOut) {
+                throw "UIA_PROBE_STARTUP_TIMEOUT: $Browser probe did not finish PowerShell/assembly initialization within 15 seconds. Probe trace: $probeTrace"
+            }
+            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds after probe readiness. Probe trace: $probeTrace"
+        }
+        if ($probeCompleted) { break }
         if ($uiaProbe.HasExited) {
+            # The result may have been published after this iteration's first
+            # observation but before process exit. Recheck it with its deadline.
+            if (Test-Path -LiteralPath $uiaProbeResult) { continue }
             $probeError = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { '' }
             if ([string]::IsNullOrWhiteSpace($probeError)) { $probeError = 'No UIA result was written.' }
             throw "UIA_PRECHECK_FAILED: $probeError"
-        }
-        if ([DateTime]::UtcNow -ge $probeDeadline) {
-            try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
-            $probeTrace = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { 'No probe diagnostics available.' }
-            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds. Probe trace: $probeTrace"
         }
         Start-Sleep -Milliseconds 100
     }
