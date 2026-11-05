@@ -14,6 +14,86 @@ pub fn smooth_preview(image: (i32, i32), displayed: (i32, i32)) -> bool {
         && displayed.1 > 0
         && (displayed.0 < image.0 || displayed.1 < image.1)
 }
+/// Toolbar menus and their keyboard equivalents share these view operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomAction {
+    In,
+    Out,
+    Original,
+    Fit,
+}
+
+/// Map the reference Ctrl+0/Ctrl+9 keys, including their numpad variants.
+pub fn zoom_reset_key(key: usize) -> Option<ZoomAction> {
+    match key {
+        0x30 | 0x60 => Some(ZoomAction::Original),
+        0x39 | 0x69 => Some(ZoomAction::Fit),
+        _ => None,
+    }
+}
+
+// Original size can lie outside the normal relative zoom range. Allow steps
+// back toward that range without jumping; do not step further out of it.
+fn zoom_step(current: f64, factor: f64) -> f64 {
+    if !current.is_finite() || current <= 0.0 {
+        return 1.0;
+    }
+    (current * factor).clamp(0.05_f64.min(current), 64.0_f64.max(current))
+}
+
+/// Match the C# editor's Ctrl+wheel zoom step and existing Rust zoom limits.
+pub fn zoom_after_wheel(current: f64, delta: i32) -> f64 {
+    if delta == 0 {
+        return current;
+    }
+    zoom_step(current, if delta > 0 { 1.25 } else { 0.8 })
+}
+
+/// The stored zoom is relative to fit-to-window, so original size uses the
+/// reciprocal of the unrounded fit factor. Computing it from rounded preview
+/// dimensions would introduce pixel errors for odd-sized source images.
+pub fn zoom_for_action(
+    action: ZoomAction,
+    image: (u32, u32),
+    viewport: (i32, i32, i32, i32),
+    current: f64,
+) -> f64 {
+    let next = match action {
+        ZoomAction::In => return zoom_step(current, 1.25),
+        ZoomAction::Out => return zoom_step(current, 0.8),
+        ZoomAction::Fit => 1.0,
+        ZoomAction::Original => {
+            let fit = (f64::from(viewport.2.max(1)) / f64::from(image.0.max(1)))
+                .min(f64::from(viewport.3.max(1)) / f64::from(image.1.max(1)));
+            1.0 / fit
+        }
+    };
+    if next.is_finite() && next > 0.0 {
+        next
+    } else {
+        1.0
+    }
+}
+
+/// Decode the modifier state carried with a Windows mouse-wheel message.
+/// Control takes precedence over Shift, as in the editor's input handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelAction {
+    Zoom,
+    PanHorizontal,
+    PanVertical,
+}
+
+pub fn wheel_action(message_keys: usize) -> WheelAction {
+    if message_keys & 0x0008 != 0 {
+        WheelAction::Zoom
+    } else if message_keys & 0x0004 != 0 {
+        WheelAction::PanHorizontal
+    } else {
+        WheelAction::PanVertical
+    }
+}
+
 /// `zoom` multiplies fit-to-window; `pan` is the scroll offset in screen pixels.
 pub fn layout(
     image: (u32, u32),
@@ -27,8 +107,8 @@ pub fn layout(
     let iw = image.0.max(1) as f64;
     let ih = image.1.max(1) as f64;
     let fit = (vw as f64 / iw).min(vh as f64 / ih);
-    let factor = if zoom.is_finite() {
-        zoom.clamp(0.05, 64.0)
+    let factor = if zoom.is_finite() && zoom > 0.0 {
+        zoom
     } else {
         1.0
     };
@@ -45,19 +125,50 @@ pub fn layout(
         -pan.1.clamp(0, h - vh)
     };
     View {
-        x: x + px,
-        y: y + py,
+        x: x.saturating_add(px),
+        y: y.saturating_add(py),
         width: w,
         height: h,
+    }
+}
+
+/// Apply a wheel delta to one pan axis without storing offsets beyond the
+/// image's visible travel. `delta` follows WM_MOUSEWHEEL's signed convention.
+pub fn pan_after_wheel(
+    image: (u32, u32),
+    viewport: (i32, i32, i32, i32),
+    zoom: f64,
+    pan: (i32, i32),
+    delta: i32,
+    horizontal: bool,
+) -> (i32, i32) {
+    let view = layout(image, viewport, zoom, (0, 0));
+    let max_pan = if horizontal {
+        (view.width - viewport.2.max(1)).max(0)
+    } else {
+        (view.height - viewport.3.max(1)).max(0)
+    };
+    if horizontal {
+        (
+            (pan.0.clamp(0, max_pan).saturating_sub(delta)).clamp(0, max_pan),
+            pan.1,
+        )
+    } else {
+        (
+            pan.0,
+            (pan.1.clamp(0, max_pan).saturating_sub(delta)).clamp(0, max_pan),
+        )
     }
 }
 pub fn to_image(view: View, image: (u32, u32), point: (i32, i32)) -> (i32, i32) {
     let w = image.0.max(1).min(i32::MAX as u32) as i32;
     let h = image.1.max(1).min(i32::MAX as u32) as i32;
-    let x =
-        ((point.0 - view.x) as i64 * w as i64 / view.width.max(1) as i64).clamp(0, (w - 1) as i64);
-    let y =
-        ((point.1 - view.y) as i64 * h as i64 / view.height.max(1) as i64).clamp(0, (h - 1) as i64);
+    let x = ((i64::from(point.0) - i64::from(view.x)) * i64::from(w)
+        / i64::from(view.width.max(1)))
+    .clamp(0, (w - 1) as i64);
+    let y = ((i64::from(point.1) - i64::from(view.y)) * i64::from(h)
+        / i64::from(view.height.max(1)))
+    .clamp(0, (h - 1) as i64);
     (x as i32, y as i32)
 }
 /// The screen-space union of old and new shape footprints, clipped to the image.
@@ -155,6 +266,93 @@ pub fn dirty_shape_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_and_fit_are_distinct_for_small_large_and_odd_sized_images() {
+        for (image, viewport) in [
+            ((320, 240), (0, 44, 1280, 960)),
+            ((4000, 2000), (0, 44, 800, 600)),
+            ((4037, 1234), (0, 44, 517, 401)),
+            ((1234, 4037), (0, 44, 517, 401)),
+        ] {
+            let original = zoom_for_action(ZoomAction::Original, image, viewport, 2.0);
+            let rendered = layout(image, viewport, original, (0, 0));
+            assert_eq!((rendered.width as u32, rendered.height as u32), image);
+            let fit = zoom_for_action(ZoomAction::Fit, image, viewport, original);
+            assert_eq!(fit, 1.0);
+            let rendered = layout(image, viewport, fit, (0, 0));
+            assert!(rendered.width <= viewport.2 && rendered.height <= viewport.3);
+            assert!(rendered.width == viewport.2 || rendered.height == viewport.3);
+        }
+    }
+    #[test]
+    fn original_escapes_relative_limits_and_steps_return_without_jumps() {
+        for (image, viewport) in [
+            ((1, 1), (0, 44, 1000, 800)),
+            ((30000, 1), (0, 44, 200, 200)),
+            ((1, 30000), (0, 44, 200, 200)),
+            ((29999, 101), (0, 44, 1, 1)),
+        ] {
+            let original = zoom_for_action(ZoomAction::Original, image, viewport, 1.0);
+            let rendered = layout(image, viewport, original, (0, 0));
+            assert_eq!((rendered.width as u32, rendered.height as u32), image);
+            let (toward, away, factor) = if original < 0.05 {
+                (ZoomAction::In, ZoomAction::Out, 1.25)
+            } else {
+                (ZoomAction::Out, ZoomAction::In, 0.8)
+            };
+            assert_eq!(
+                zoom_for_action(toward, image, viewport, original),
+                original * factor
+            );
+            assert_eq!(zoom_for_action(away, image, viewport, original), original);
+            assert_eq!(
+                zoom_after_wheel(original, if factor > 1.0 { 120 } else { -120 }),
+                original * factor
+            );
+        }
+    }
+
+    #[test]
+    fn view_actions_preserve_step_sizes_and_existing_zoom_limits() {
+        let image = (4000, 2000);
+        let viewport = (0, 44, 800, 600);
+        let zoom = zoom_for_action(ZoomAction::In, image, viewport, 2.0);
+        assert_eq!(zoom, 2.5);
+        assert_eq!(zoom_for_action(ZoomAction::Out, image, viewport, zoom), 2.0);
+        assert_eq!(zoom_for_action(ZoomAction::In, image, viewport, 64.0), 64.0);
+        assert_eq!(
+            zoom_for_action(ZoomAction::Out, image, viewport, 0.05),
+            0.05
+        );
+        assert!(zoom_for_action(ZoomAction::Original, (0, 0), (0, 0, 0, 0), 1.0).is_finite());
+    }
+
+    #[test]
+    fn reference_zoom_keys_and_wheel_steps_include_numpad_and_limits() {
+        assert_eq!(zoom_reset_key(0x30), Some(ZoomAction::Original));
+        assert_eq!(zoom_reset_key(0x60), Some(ZoomAction::Original));
+        assert_eq!(zoom_reset_key(0x39), Some(ZoomAction::Fit));
+        assert_eq!(zoom_reset_key(0x69), Some(ZoomAction::Fit));
+        assert_eq!(zoom_reset_key(0x61), None);
+        assert_eq!(zoom_after_wheel(2.0, 120), 2.5);
+        assert_eq!(zoom_after_wheel(2.5, -120), 2.0);
+        assert_eq!(zoom_after_wheel(2.5, 0), 2.5);
+        assert_eq!(zoom_after_wheel(64.0, 120), 64.0);
+        assert_eq!(zoom_after_wheel(0.05, -120), 0.05);
+    }
+
+    #[test]
+    fn wheel_message_modifiers_select_zoom_or_pan() {
+        assert_eq!(wheel_action(0), WheelAction::PanVertical);
+        assert_eq!(wheel_action(0x0004), WheelAction::PanHorizontal);
+        assert_eq!(wheel_action(0x0008), WheelAction::Zoom);
+        assert_eq!(wheel_action(0x000c), WheelAction::Zoom);
+        assert_eq!(
+            wheel_action((120usize << 16) | 0x0004),
+            WheelAction::PanHorizontal
+        );
+    }
+
     #[test]
     fn dirty_region_covers_old_and_new_shapes_and_clips_to_image_view() {
         use crate::shapes::{Point, Shape, ShapeKind};
@@ -363,6 +561,22 @@ mod tests {
         );
     }
     #[test]
+    fn coordinates_do_not_overflow_at_integer_extremes() {
+        let v = layout((1, 1), (i32::MAX, i32::MAX, 100, 100), 0.05, (0, 0));
+        assert_eq!((v.x, v.y), (i32::MAX, i32::MAX));
+        let v = View {
+            x: i32::MIN,
+            y: i32::MIN,
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            to_image(v, (i32::MAX as u32, i32::MAX as u32), (i32::MAX, i32::MAX)),
+            (i32::MAX - 1, i32::MAX - 1)
+        );
+    }
+
+    #[test]
     fn zoom_pan_and_hit_test() {
         let v = layout((1000, 2000), (0, 0, 500, 500), 2.0, (0, 250));
         assert_eq!(
@@ -390,5 +604,33 @@ mod tests {
         );
         let v = layout((100, 100), (0, 0, 100, 100), 2.0, (999, 999));
         assert_eq!((v.x, v.y), (-100, -100));
+    }
+
+    #[test]
+    fn wheel_pan_stops_at_edges_and_reverses_without_dead_travel() {
+        let image = (1000, 500);
+        let viewport = (0, 0, 400, 300);
+        // At 1.5x fit the image is 600x300, so horizontal travel is
+        // exactly 200 px and vertical travel is zero.
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (0, 0), 120, true),
+            (0, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (0, 0), -120, true),
+            (120, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (190, 0), -120, true),
+            (200, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (200, 0), 120, true),
+            (80, 0)
+        );
+        assert_eq!(
+            pan_after_wheel(image, viewport, 1.5, (40, 99), 120, false),
+            (40, 0)
+        );
     }
 }

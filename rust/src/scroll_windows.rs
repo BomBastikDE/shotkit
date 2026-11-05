@@ -20,6 +20,24 @@ struct Point {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct MouseInput {
+    dx: i32,
+    dy: i32,
+    mouse_data: u32,
+    flags: u32,
+    time: u32,
+    extra_info: usize,
+}
+
+// MOUSEINPUT is the largest member of the Win32 INPUT union.
+#[repr(C)]
+struct Input {
+    kind: u32,
+    mouse: MouseInput,
+}
+
+#[repr(C)]
 struct BitmapInfoHeader {
     size: u32,
     width: i32,
@@ -48,11 +66,12 @@ extern "system" {
     fn GetForegroundWindow() -> H;
     fn SetCursorPos(x: i32, y: i32) -> i32;
     fn GetAsyncKeyState(key: i32) -> i16;
-    fn mouse_event(flags: u32, dx: u32, dy: u32, data: u32, extra: usize);
+    fn SendInput(count: u32, inputs: *const Input, size: i32) -> u32;
 }
 
 #[link(name = "gdi32")]
 extern "system" {
+    fn GetDeviceCaps(dc: H, index: i32) -> i32;
     fn CreateCompatibleDC(dc: H) -> H;
     fn CreateCompatibleBitmap(dc: H, width: i32, height: i32) -> H;
     fn SelectObject(dc: H, object: H) -> H;
@@ -130,6 +149,7 @@ pub struct WindowsScrollIo {
     scroll_cursor: Point,
     cursor_moved: bool,
     escape_seen: bool,
+    diagnostic_folder: Option<std::path::PathBuf>,
 }
 
 impl WindowsScrollIo {
@@ -169,7 +189,12 @@ impl WindowsScrollIo {
             scroll_cursor,
             cursor_moved: false,
             escape_seen: false,
+            diagnostic_folder: None,
         })
+    }
+
+    pub fn set_diagnostic_folder(&mut self, folder: Option<std::path::PathBuf>) {
+        self.diagnostic_folder = folder;
     }
 
     fn current_cursor(&mut self) -> Option<Point> {
@@ -185,6 +210,26 @@ impl WindowsScrollIo {
 }
 
 impl ScrollIo for WindowsScrollIo {
+    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
+        let folder = self.diagnostic_folder.as_ref()?;
+        let (x, y, width, height) = self.rect;
+        let dc = ScreenDc(unsafe { GetDC(null_mut()) });
+        let dpi = if dc.0.is_null() {
+            0
+        } else {
+            unsafe { GetDeviceCaps(dc.0, 88) }
+        };
+        let dpi = if dpi > 0 {
+            dpi.to_string()
+        } else {
+            "nicht verfügbar".into()
+        };
+        let info = format!("Bereich (Bildschirmkoordinaten): x={x}, y={y}, Breite={width}, Höhe={height}\nBildschirm-DPI X: {dpi}\n{details}");
+        shotkit::scroll_diagnostics::save(folder, before, after, &info)
+            .ok()
+            .map(|p| p.display().to_string())
+    }
+
     fn capture(&mut self) -> Result<Image, String> {
         let (x, y, width, height) = self.rect;
         let screen = ScreenDc(unsafe { GetDC(null_mut()) });
@@ -288,17 +333,11 @@ impl ScrollIo for WindowsScrollIo {
         if unsafe { SetCursorPos(self.scroll_cursor.x, self.scroll_cursor.y) } == 0 {
             return Err("Mauszeiger konnte nicht im Aufnahmebereich positioniert werden.".into());
         }
-        let (flag, sign) = match direction {
-            Direction::Down => (MOUSEEVENTF_WHEEL, -1i64),
-            Direction::Right => (MOUSEEVENTF_HWHEEL, 1i64),
-            Direction::Left => (MOUSEEVENTF_HWHEEL, -1i64),
-        };
-        let delta = i64::from(notches).saturating_mul(120).saturating_mul(sign);
-        // mouse_event consumes the wheel delta as a signed LONG in the low word.
-        unsafe {
-            mouse_event(flag, 0, 0, delta as i32 as u32, 0);
-        }
-        Ok(())
+        let input = wheel_input(direction, notches);
+        // SAFETY: input has Win32 INPUT layout and lives until SendInput returns.
+        // SendInput may deliver messages; no reference to global state is held here.
+        let inserted = unsafe { SendInput(1, &input, size_of::<Input>() as i32) };
+        check_input_result(inserted)
     }
 
     fn wait_ms(&mut self, millis: u64) {
@@ -328,10 +367,73 @@ impl ScrollIo for WindowsScrollIo {
     fn progress(&mut self, _length: usize) {}
 }
 
+fn wheel_input(direction: Direction, notches: i32) -> Input {
+    let (flags, sign) = match direction {
+        Direction::Down => (MOUSEEVENTF_WHEEL, -1i64),
+        Direction::Right => (MOUSEEVENTF_HWHEEL, 1i64),
+        Direction::Left => (MOUSEEVENTF_HWHEEL, -1i64),
+    };
+    let delta = i64::from(notches).saturating_mul(120).saturating_mul(sign);
+    Input {
+        kind: 0, // INPUT_MOUSE
+        mouse: MouseInput {
+            dx: 0,
+            dy: 0,
+            mouse_data: delta as i32 as u32,
+            flags,
+            time: 0,
+            extra_info: 0,
+        },
+    }
+}
+
+fn check_input_result(inserted: u32) -> Result<(), String> {
+    if inserted == 1 {
+        Ok(())
+    } else {
+        Err("Scroll-Eingabe konnte nicht an Windows übergeben werden.".into())
+    }
+}
+
 impl Drop for WindowsScrollIo {
     fn drop(&mut self) {
         unsafe {
             SetCursorPos(self.original_cursor.x, self.original_cursor.y);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_input_has_expected_direction_and_reports_rejection() {
+        for (direction, flags, delta) in [
+            (Direction::Down, MOUSEEVENTF_WHEEL, -240i32),
+            (Direction::Right, MOUSEEVENTF_HWHEEL, 240),
+            (Direction::Left, MOUSEEVENTF_HWHEEL, -240),
+        ] {
+            let input = wheel_input(direction, 2);
+            assert_eq!(input.kind, 0);
+            assert_eq!(input.mouse.flags, flags);
+            assert_eq!(input.mouse.mouse_data as i32, delta);
+        }
+        assert!(check_input_result(1).is_ok());
+        assert!(check_input_result(0).is_err());
+    }
+
+    #[test]
+    fn input_layout_matches_win32_abi() {
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(size_of::<MouseInput>(), 32);
+            assert_eq!(size_of::<Input>(), 40);
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            assert_eq!(size_of::<MouseInput>(), 24);
+            assert_eq!(size_of::<Input>(), 28);
         }
     }
 }

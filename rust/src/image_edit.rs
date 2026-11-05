@@ -19,6 +19,35 @@ pub struct CropRect {
     pub height: usize,
 }
 
+/// Build a crop rectangle from two inclusive image-pixel endpoints.
+///
+/// Endpoints are normalized for either drag direction and clipped to the
+/// image. The returned rectangle uses the exclusive width/height convention
+/// expected by [`crop`].
+pub fn crop_rect_from_points(
+    a: (i32, i32),
+    b: (i32, i32),
+    image_size: (u32, u32),
+) -> Option<CropRect> {
+    if image_size.0 == 0 || image_size.1 == 0 {
+        return None;
+    }
+    let max_x = i64::from(image_size.0) - 1;
+    let max_y = i64::from(image_size.1) - 1;
+    let ax = i64::from(a.0).clamp(0, max_x);
+    let ay = i64::from(a.1).clamp(0, max_y);
+    let bx = i64::from(b.0).clamp(0, max_x);
+    let by = i64::from(b.1).clamp(0, max_y);
+    let left = ax.min(bx);
+    let top = ay.min(by);
+    Some(CropRect {
+        x: left as usize,
+        y: top as usize,
+        width: (ax.max(bx) - left + 1) as usize,
+        height: (ay.max(by) - top + 1) as usize,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowOptions {
     /// Offset of the shadow from the framed image, in pixels.
@@ -274,6 +303,55 @@ mod tests {
             result.pixels,
             vec![4, 5, 6, 17, 7, 8, 9, 255, 13, 14, 15, 128, 16, 17, 18, 255]
         );
+    }
+
+    #[test]
+    fn crop_rect_from_points_includes_both_image_edges_and_is_direction_independent() {
+        let expected = CropRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 80,
+        };
+        assert_eq!(
+            crop_rect_from_points((0, 0), (99, 79), (100, 80)),
+            Some(expected)
+        );
+        assert_eq!(
+            crop_rect_from_points((99, 79), (0, 0), (100, 80)),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn crop_from_full_image_endpoints_preserves_last_row_and_column() {
+        let pixels: Vec<u8> = (0..24).collect();
+        let image = Image::new(3, 2, pixels).unwrap();
+        let rect = crop_rect_from_points((0, 0), (2, 1), (3, 2)).unwrap();
+        assert_eq!(crop(&image, rect).unwrap(), image);
+    }
+
+    #[test]
+    fn crop_rect_from_points_normalizes_and_clips_each_endpoint() {
+        assert_eq!(
+            crop_rect_from_points((4, 3), (2, 1), (6, 5)),
+            Some(CropRect {
+                x: 2,
+                y: 1,
+                width: 3,
+                height: 3,
+            })
+        );
+        assert_eq!(
+            crop_rect_from_points((-10, -4), (9, 8), (5, 4)),
+            Some(CropRect {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 4,
+            })
+        );
+        assert_eq!(crop_rect_from_points((0, 0), (1, 1), (0, 4)), None);
     }
 
     #[test]

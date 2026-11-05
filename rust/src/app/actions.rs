@@ -184,7 +184,6 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
             return Err(format!("{error:?}"));
         }
         install_bitmap(h, bitmap, &output);
-        window_state(h).dirty = true;
         window_state(h).zoom = 1.0;
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
@@ -230,9 +229,7 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
         }
         _ => return,
     }
-    if editor(h).set_selected_style(replacement) {
-        window_state(h).dirty = true;
-    }
+    editor(h).set_selected_style(replacement);
 }
 
 pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
@@ -251,11 +248,47 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
     }
 }
 
+/// Apply a tool selection consistently for toolbar clicks and keyboard
+/// shortcuts, including marker color, dirty state, and toolbar readback.
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Aufrufer bearbeiten ein eigenes Fenster; vollständige Handlelebensdauer bleibt Aufruferpflicht.
+// Nachrichten: SetWindowTextW und InvalidateRect können Fensterzustand aktualisieren.
+pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
+    cancel_gesture(h);
+    let old_color = editor(h).current_style().color;
+    editor(h).set_tool(tool);
+    let color = editor(h).current_style().color;
+    if color != old_color {
+        toolbar::set_color(h, color.r, color.g, color.b);
+    }
+    toolbar::set_active(h, toolbar_id_for_tool(tool));
+    SetWindowTextW(
+        h,
+        wide(&format!(
+            "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+        ))
+        .as_ptr(),
+    );
+    InvalidateRect(h, std::ptr::null(), 0);
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h und der Editor erfüllen den Zustandsvertrag für delegierte Aktionen.
 // Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
 // Nachrichten: Fenster-, Dialog- und Aufnahmeaktionen können Nachrichten auslösen.
 pub(super) unsafe fn toolbar_action(h: H, id: usize) {
+    // Native popup loops run inside the parent's existing ModalGuard. Return
+    // only validated ordinary commands and reuse their exact editor workflows.
+    let id = if matches!(id, toolbar::ID_MORE | toolbar::ID_FILE | toolbar::ID_VIEW) {
+        let Some(selected) = toolbar::popup(h, id) else {
+            SetFocus(h);
+            return;
+        };
+        selected
+    } else {
+        id
+    };
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
         toolbar::ID_ARROW => Some(Tool::Arrow),
@@ -271,16 +304,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         _ => None,
     };
     if let Some(tool) = tool {
-        cancel_gesture(h);
-        editor(h).set_tool(tool);
-        toolbar::set_active(h, toolbar_id_for_tool(tool));
-        SetWindowTextW(
-            h,
-            wide(&format!(
-                "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-            ))
-            .as_ptr(),
-        );
+        activate_tool(h, tool);
     } else {
         match id {
             toolbar::ID_SWATCH_RED
@@ -301,9 +325,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                 editor(h).set_current_color(color);
                 toolbar::set_color(h, r, g, b);
                 replacement.color = color;
-                if editor(h).set_selected_style(replacement) {
-                    window_state(h).dirty = true;
-                }
+                editor(h).set_selected_style(replacement);
             }
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {
@@ -322,6 +344,16 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             toolbar::ID_SAVE => {
                 save(h, false);
             }
+            toolbar::ID_SAVE_AS => {
+                save(h, true);
+            }
+            toolbar::ID_OPEN => open_image(h),
+            toolbar::ID_PASTE => paste_image(h),
+            toolbar::ID_FOLDER => open_storage_folder(h),
+            toolbar::ID_ZOOM_IN => apply_zoom(h, view::ZoomAction::In),
+            toolbar::ID_ZOOM_OUT => apply_zoom(h, view::ZoomAction::Out),
+            toolbar::ID_ZOOM_ORIGINAL => apply_zoom(h, view::ZoomAction::Original),
+            toolbar::ID_ZOOM_FIT => apply_zoom(h, view::ZoomAction::Fit),
             toolbar::ID_COPY => copy_current(h),
             toolbar::ID_UNDO => history(h, false),
             toolbar::ID_REDO => history(h, true),
@@ -331,4 +363,30 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     report_editor_error(h);
     SetFocus(h);
     InvalidateRect(h, std::ptr::null(), 0);
+}
+
+// SAFETY CONTRACT: h is a live editor on the UI thread. State values are copied
+// before GetClientRect; no WindowState reference spans a native call.
+unsafe fn apply_zoom(h: H, action: view::ZoomAction) {
+    let image = (window_state(h).width as u32, window_state(h).height as u32);
+    let current = window_state(h).zoom;
+    let top = toolbar_height(h);
+    let mut client: Rect = zeroed();
+    GetClientRect(h, &mut client);
+    let zoom = view::zoom_for_action(
+        action,
+        image,
+        (0, top, client.right, client.bottom - top),
+        current,
+    );
+    {
+        let state = window_state(h);
+        state.zoom = zoom;
+        if matches!(action, view::ZoomAction::Original | view::ZoomAction::Fit) {
+            state.pan_x = 0;
+            state.pan_y = 0;
+        }
+    }
+    // A smaller image exposes background outside the new image rectangle.
+    InvalidateRect(h, std::ptr::null(), 1);
 }

@@ -2,11 +2,53 @@ use super::*;
 use crate::shapes::{Point, ShapeKind};
 
 #[test]
+fn short_thick_arrow_has_no_shaft_sticking_out_before_its_head() {
+    let mut shape = Shape::new(ShapeKind::Arrow {
+        start: Point::new(10.0, 16.0),
+        end: Point::new(16.0, 16.0),
+    });
+    shape.style.width = 12.0;
+    let image = render_shape(32, 32, &shape).expect("GDI+ arrow render");
+    let pixel = |x: usize, y: usize| {
+        let i = (y * image.width + x) * 4;
+        [
+            image.pixels[i],
+            image.pixels[i + 1],
+            image.pixels[i + 2],
+            image.pixels[i + 3],
+        ]
+    };
+    assert!(pixel(10, 16)[3] > 0, "head reaches the arrow start");
+    assert_eq!(
+        pixel(8, 16)[3],
+        0,
+        "no shaft protrudes beyond the arrow start"
+    );
+    assert_eq!(
+        pixel(15, 12)[3],
+        0,
+        "the thick shaft does not protrude beside the narrow tip"
+    );
+    assert!(
+        pixel(15, 16)[3] > 0,
+        "pixels next to the arrow tip are rendered"
+    );
+
+    let zero = Shape::new(ShapeKind::Arrow {
+        start: Point::new(10.0, 16.0),
+        end: Point::new(10.0, 16.0),
+    });
+    let blank = render_shape(32, 32, &zero).expect("zero arrow render");
+    assert!(blank.pixels.chunks_exact(4).all(|p| p[3] == 0));
+}
+
+#[test]
 fn highlight_layer_preserves_transparency_and_marker_opacity() {
-    let shape = Shape::new(ShapeKind::Highlight {
+    let mut shape = Shape::new(ShapeKind::Highlight {
         start: Point::new(2.0, 2.0),
         end: Point::new(8.0, 8.0),
     });
+    shape.style.color = crate::shapes::Color::RED;
     let image = render_shape(12, 12, &shape).expect("GDI+ highlight render");
     let pixel = |x: usize, y: usize| {
         let i = (y * image.width + x) * 4;

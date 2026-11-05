@@ -88,6 +88,9 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
     }
     SetForegroundWindow(h);
     let choice = TrackPopupMenu(menu, 0x0100 | 0x0002, pos.x, pos.y, 0, h, std::ptr::null());
+    // Windows requires a posted no-op after a notification-icon menu so the
+    // next invocation is not dismissed immediately.
+    let _ = PostMessageW(h, 0, 0, 0); // WM_NULL
     DestroyMenu(menu);
     match choice {
         1 => capture(h),

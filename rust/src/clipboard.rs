@@ -224,7 +224,7 @@ impl ClipboardGuard {
     // Warum erfüllt bzw. offen: Der Rückgabewert von OpenClipboard wird geprüft.
     // Nachrichten: Kein expliziter Nachrichtenversand; allgemeine Reentranzfreiheit ist nicht belegt.
     unsafe fn open(owner: H) -> Result<Self, String> {
-        if OpenClipboard(owner) == 0 {
+        if !shotkit::clipboard_retry::open_with_retry(|| OpenClipboard(owner) != 0) {
             Err("OpenClipboard failed".into())
         } else {
             Ok(Self(true))

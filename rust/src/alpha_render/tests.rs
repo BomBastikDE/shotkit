@@ -2,6 +2,25 @@ use super::*;
 use crate::shapes::{Point, ShapeKind};
 
 #[test]
+fn arrow_geometry_stops_before_head_and_rejects_short_or_non_finite_arrows() {
+    let long = arrow_geometry(Point::new(4.0, 8.0), Point::new(104.0, 8.0), 4.0)
+        .expect("finite long arrow");
+    let shaft_end = long.shaft_end.expect("shaft fits inside the arrowhead");
+    assert!(shaft_end.x < long.tip.x);
+    assert!(shaft_end.x > 104.0 - 16.0);
+    assert_eq!(long.tip, PointF { x: 104.0, y: 8.0 });
+
+    let short_thick = arrow_geometry(Point::new(4.0, 8.0), Point::new(10.0, 8.0), 12.0)
+        .expect("finite short arrow keeps its head");
+    assert!(short_thick.shaft_end.is_none());
+    assert_eq!((short_thick.left.x + short_thick.right.x) * 0.5, 4.0);
+    assert!((short_thick.left.y - short_thick.right.y).abs() >= 12.0);
+    assert!(arrow_geometry(Point::new(4.0, 8.0), Point::new(4.5, 8.0), 4.0).is_none());
+    assert!(arrow_geometry(Point::new(4.0, 8.0), Point::new(4.0, 8.0), 4.0).is_none());
+    assert!(arrow_geometry(Point::new(f32::NAN, 8.0), Point::new(10.0, 8.0), 4.0).is_none());
+}
+
+#[test]
 fn blur_is_explicitly_left_to_source_aware_renderer() {
     let shape = Shape::new(ShapeKind::Blur {
         start: Point::new(1.0, 1.0),

@@ -38,6 +38,7 @@ impl From<ImageEditError> for DocumentError {
 struct State {
     image: Arc<Image>,
     shapes: Vec<Shape>,
+    revision: Arc<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +47,7 @@ pub struct Document {
     undo: VecDeque<State>,
     redo: Vec<State>,
     staged_before: Option<State>,
+    saved_revision: Option<Arc<()>>,
     history_budget: usize,
 }
 
@@ -79,10 +81,12 @@ impl Document {
             current: State {
                 image: Arc::new(image),
                 shapes: Vec::new(),
+                revision: Arc::new(()),
             },
             undo: VecDeque::new(),
             redo: Vec::new(),
             staged_before: None,
+            saved_revision: None,
             history_budget: history_budget_bytes,
         })
     }
@@ -101,6 +105,23 @@ impl Document {
     }
     pub fn shapes(&self) -> &[Shape] {
         &self.current.shapes
+    }
+    /// Record a successfully saved or opened committed document state.
+    pub fn mark_saved(&mut self) -> bool {
+        if self.staged_before.is_some() {
+            return false;
+        }
+        self.saved_revision = Some(Arc::clone(&self.current.revision));
+        true
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.saved_revision.as_ref().is_none_or(|saved| {
+            !Arc::ptr_eq(saved, &self.current.revision)
+                || self
+                    .staged_before
+                    .as_ref()
+                    .is_some_and(|before| !states_equal(before, &self.current))
+        })
     }
     pub fn can_undo(&self) -> bool {
         self.staged_before.is_none() && !self.undo.is_empty()
@@ -130,6 +151,7 @@ impl Document {
                 };
                 total
                     .saturating_add(size_of::<State>())
+                    .saturating_add(revision_allocation_bytes())
                     .saturating_add(image_bytes)
                     .saturating_add(shapes_allocation_bytes(&state.shapes))
             })
@@ -162,6 +184,7 @@ impl Document {
             return Ok(false);
         }
         self.record_snapshot(before.clone())?;
+        self.current.revision = Arc::new(());
         self.staged_before = None;
         Ok(true)
     }
@@ -278,12 +301,13 @@ impl Document {
         true
     }
 
-    fn install(&mut self, next: State) -> Result<(), DocumentError> {
+    fn install(&mut self, mut next: State) -> Result<(), DocumentError> {
         if states_equal(&next, &self.current) {
             return Ok(());
         }
         if self.staged_before.is_none() {
             self.record_snapshot(self.current.clone())?;
+            next.revision = Arc::new(());
         }
         self.current = next;
         Ok(())
@@ -328,6 +352,7 @@ impl Document {
             0
         };
         size_of::<State>()
+            .saturating_add(revision_allocation_bytes())
             .saturating_add(shapes_allocation_bytes(&snapshot.shapes))
             .saturating_add(image_bytes)
             .saturating_add(container_bytes(4, size_of::<State>()))
@@ -335,6 +360,10 @@ impl Document {
 }
 
 const ALLOCATION_OVERHEAD: usize = 4 * size_of::<usize>();
+
+fn revision_allocation_bytes() -> usize {
+    2 * size_of::<usize>() + ALLOCATION_OVERHEAD
+}
 
 fn container_bytes(capacity: usize, element_size: usize) -> usize {
     if capacity == 0 {

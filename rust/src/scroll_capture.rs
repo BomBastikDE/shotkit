@@ -3,6 +3,8 @@
 use crate::scroll_match::{find_offset, Frame, MatchResult};
 use crate::stitch::{Image, Stitcher};
 
+const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Down,
@@ -25,6 +27,11 @@ pub trait ScrollIo {
     fn cancelled(&mut self) -> bool;
     fn mouse_moved(&mut self) -> bool;
     fn progress(&mut self, length: usize);
+    /// Called only after the final matching attempt fails. Images are in
+    /// matcher orientation; the adapter may persist them without affecting capture.
+    fn diagnostics(&mut self, _before: &Image, _after: &Image, _details: &str) -> Option<String> {
+        None
+    }
 }
 fn oriented(image: Image, direction: Direction) -> Image {
     match direction {
@@ -110,6 +117,8 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
     let mut stitch = Stitcher::new(first).map_err(str::to_owned)?;
     let (mut notches, mut expected, mut still) = (1i32, h / 3, 0usize);
     let (mut known, mut last_top, mut last_bottom, mut fallbacks) = (0f32, 0usize, 0usize, 0usize);
+    let mut consecutive_fallbacks = 0usize;
+    let mut restored_image: Option<Image> = None;
     let initial_stop = interrupted(io);
     let mut reason = initial_error
         .clone()
@@ -192,7 +201,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                     reason = "Scrollposition ließ sich nicht sicher wiederherstellen.".into();
                     break;
                 }
-                drop(reverted);
+                restored_image = Some(reverted);
                 prev = frame;
                 continue;
             }
@@ -220,16 +229,35 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 }
                 m = matched(&prev, &analyzed, expected);
             }
-            if m.is_none() && known > 0.0 {
+            let used_fallback = m.is_none() && known > 0.0;
+            if used_fallback && consecutive_fallbacks >= MAX_CONSECUTIVE_FALLBACKS {
+                reason = format!(
+                    "{} aufeinanderfolgende Bildabgleiche fehlgeschlagen – Teilaufnahme bis hierhin übernommen.",
+                    consecutive_fallbacks + 1
+                );
+                break;
+            }
+            if used_fallback {
                 m = Some(MatchResult {
                     dy: (known * notches as f32).round() as usize,
                     top: last_top,
                     bottom: last_bottom,
                 });
                 fallbacks += 1;
+                consecutive_fallbacks += 1;
+            } else if m.is_some() {
+                consecutive_fallbacks = 0;
             }
             let Some(m) = m else {
                 reason="Bildinhalt ließ sich nicht eindeutig zuordnen – Aufnahme bis hierhin übernommen.".into();
+                let details = format!("Richtung: {direction:?}\nErwartete Verschiebung: {expected} px\nScrollrasten: {notches}\nGemessene Pixel pro Raste: {known}\nLetzte feste Ränder: oben {last_top} px, unten {last_bottom} px\nAufeinanderfolgende Ersatzabgleiche: {consecutive_fallbacks}\nAbgleich: kein eindeutiges Ergebnis nach erneutem Versuch\nBilder: Matcher-Ausrichtung (bei horizontaler Aufnahme um 90 Grad gedreht)\n");
+                if let Some(path) = io.diagnostics(
+                    restored_image.as_ref().unwrap_or_else(|| stitch.frame()),
+                    &cur,
+                    &details,
+                ) {
+                    reason.push_str(&format!("\nDiagnose gespeichert: {path}"));
+                }
                 break;
             };
             if m.dy == 0 {
@@ -256,6 +284,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 reason = format!("{e} – Aufnahme bis hierhin übernommen.");
                 break;
             }
+            restored_image = None;
             prev = analyzed;
             let movable = h.saturating_sub(m.top + m.bottom);
             notches = ((movable as f32 * 0.4 / ppn.max(1.0)) as i32).clamp(1, 15);
@@ -265,7 +294,7 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
     }
     if fallbacks > 0 {
         reason.push_str(&format!(
-            "\n{fallbacks}× wurde die gemessene Scrollweite verwendet – Übergänge prüfen."
+            "\n{fallbacks}× wurde die gemessene Scrollweite verwendet – Übergänge im Teilbild prüfen."
         ));
     }
     let combined = stitch.finish().map_err(str::to_owned)?;

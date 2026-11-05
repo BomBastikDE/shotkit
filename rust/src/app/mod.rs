@@ -1,6 +1,7 @@
 mod mouse_history;
 mod preview_scaling;
 mod region;
+mod scroll_completion;
 mod window_commands;
 mod window_mouse;
 use region::*;
@@ -40,15 +41,16 @@ use shotkit::{
     capture_output::{Advance, CaptureAction, CaptureOutputState},
     delayed_capture::{BeginError, DelayedCaptureState, Ticket as CaptureTicket},
     editor::EditorController,
-    image_edit::{CropRect, FrameOptions, ShadowOptions},
+    image_edit::{FrameOptions, ShadowOptions},
     image_io, output_windows,
     scroll_capture::{self, Direction, Outcome, ScrollIo},
+    scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
     stitch::Image,
     view,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 type H = *mut c_void;
@@ -208,6 +210,13 @@ extern "system" {
     fn SetProcessDpiAwarenessContext(context: H) -> i32;
     fn WindowFromPoint(p: Point) -> H;
     fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
+    fn SetTimer(
+        h: H,
+        id: usize,
+        milliseconds: u32,
+        callback: Option<unsafe extern "system" fn(H, u32, usize, u32)>,
+    ) -> usize;
+    fn KillTimer(h: H, id: usize) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
     fn SendMessageTimeoutW(
         h: H,
@@ -302,12 +311,14 @@ fn delayed_capture_pending() -> bool {
         .is_pending()
 }
 static SCROLL_BUSY: AtomicBool = AtomicBool::new(false);
-static SCROLL_RESULT: Mutex<Option<Result<Outcome, String>>> = Mutex::new(None);
+static SCROLL_COMPLETION: Mutex<ScrollCompletion<Result<Outcome, String>>> =
+    Mutex::new(ScrollCompletion::new());
+const SCROLL_POLL_TIMER: usize = 0x5343_524c;
+static NEXT_WINDOW_GENERATION: AtomicUsize = AtomicUsize::new(1);
 static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
 static LAST_REGION: Mutex<Option<last_region::Rect>> = Mutex::new(None);
-static RESTORE_EDITOR: AtomicBool = AtomicBool::new(false);
 struct BusyGuard(bool);
 impl Drop for BusyGuard {
     fn drop(&mut self) {
@@ -319,12 +330,13 @@ impl Drop for BusyGuard {
 // UI-thread-only state. Each editor HWND owns a separate allocation in
 // GWLP_USERDATA; no active-window swapping is used, including during modal loops.
 struct WindowState {
+    generation: usize,
     toolbar: Option<Rc<toolbar::Toolbar>>,
     editor: Option<EditorController>,
     preview_cache: Rc<RefCell<Option<shotkit::alpha_document::PreviewCache>>>,
     bitmap: H,
     current_path: Option<PathBuf>,
-    dirty: bool,
+    protected_original: bool,
     zoom: f64,
     pan_x: i32,
     pan_y: i32,
@@ -339,12 +351,18 @@ struct WindowState {
 impl WindowState {
     fn new() -> Self {
         Self {
+            // Exhaustion disables asynchronous work for new windows, never reuses an identity.
+            generation: NEXT_WINDOW_GENERATION
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_add(1)
+                })
+                .unwrap_or(0),
             toolbar: None,
             editor: None,
             preview_cache: Rc::new(RefCell::new(None)),
             bitmap: null_mut(),
             current_path: None,
-            dirty: false,
+            protected_original: false,
             zoom: 1.0,
             pan_x: 0,
             pan_y: 0,
@@ -440,7 +458,15 @@ unsafe fn refresh_title(h: H) {
         .unwrap_or_default();
     let title = format!(
         "{}{} – ShotKit Rust{} · Strg+S speichern",
-        if state.dirty { "* " } else { "" },
+        if state
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.document().is_dirty())
+        {
+            "* "
+        } else {
+            ""
+        },
         name,
         tool
     );

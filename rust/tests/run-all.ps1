@@ -18,6 +18,7 @@ if (-not $isCi -and -not $AllowLocalInteractive) {
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw 'ShotKit EXE not found.' }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 $ScreenshotPath = [IO.Path]::GetFullPath($ScreenshotPath)
+$PreviewScreenshotPath = Join-Path (Split-Path -Parent $ScreenshotPath) ('shotkit-held-preview-' + [Guid]::NewGuid().ToString('N') + '.png')
 # A running instance could receive input or single-instance messages intended
 # for the test. Refuse the run rather than interact with an existing process.
 $processNames = @([IO.Path]::GetFileNameWithoutExtension($ExePath), 'ShotKit', 'shotkit-rust-prototype') | Select-Object -Unique
@@ -29,25 +30,45 @@ foreach ($name in $processNames) {
 $pwsh = (Get-Process -Id $PID).Path
 $cases = @(
     @{ Name = 'Interactive Windows About dialog smoke test'; Script = 'windows-about-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows delayed capture smoke test'; Script = 'windows-delayed-capture-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows storage folder open smoke test'; Script = 'windows-storage-folder-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows toolbar and icon visual smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath); TimeoutSeconds = 300; Toolbar = $true },
+    @{ Name = 'Required interactive Windows responsive toolbar smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath, '-ResponsiveOnly'); TimeoutSeconds = 180; Toolbar = $false },
+    @{ Name = 'Required interactive Windows editor popup smoke test'; Script = 'windows-toolbar-visual-smoke.ps1'; Extra = @('-ScreenshotPath', $ScreenshotPath, '-PopupOnly'); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Windows step number visibility smoke test'; Script = 'windows-step-visibility-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows clipboard alpha round-trip smoke test'; Script = 'windows-clipboard-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows capture smoke test'; Script = 'windows-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows capture output settings matrix smoke test'; Script = 'windows-output-matrix-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows capture output recovery smoke test'; Script = 'windows-output-failure-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows magnifier smoke test'; Script = 'windows-magnifier-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows active-window capture parity smoke test'; Script = 'windows-active-window-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows hotkey conflict smoke test'; Script = 'windows-hotkey-conflict-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows F10 hotkey conflict smoke test'; Script = 'windows-f10-conflict-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows zoom input smoke test'; Script = 'windows-zoom-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows Ctrl+0 exact 10x10 image-pixel smoke test'; Script = 'windows-zoom-10x10-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Windows keyboard selection smoke test'; Script = 'windows-keyboard-selection-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows last-region repeat smoke test'; Script = 'windows-last-region-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows last-region clipboard repeat smoke test'; Script = 'windows-last-region-clipboard-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows scroll capture smoke test'; Script = 'windows-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows scroll diagnostics smoke test'; Script = 'windows-scroll-diagnostics-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows scroll cancellation smoke test'; Script = 'windows-scroll-abort-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows scroll mouse cancellation smoke test'; Script = 'windows-scroll-abort-smoke.ps1'; Extra = @('-MouseAbort'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows horizontal scroll smoke test'; Script = 'windows-horizontal-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows single-instance smoke test'; Script = 'windows-instance-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hover suggestion smoke test'; Script = 'windows-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser hover smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Chrome browser hover smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @('-Browser', 'Chrome'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser hover keyboard adjustment smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @('-KeyboardAdjustment'); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Edge browser unchanged hover Enter acceptance smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @('-EnterAccept'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor Shift constraints and pixel smoke test'; Script = 'windows-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor pixelation and undo smoke test'; Script = 'windows-editor-pixelate-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
-    @{ Name = 'Interactive Windows editor selected-handle parity smoke test'; Script = 'windows-editor-handles-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows frame and shadow smoke test'; Script = 'windows-frame-shadow-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows editor selected-handle parity smoke test'; Script = 'windows-editor-handles-smoke.ps1'; Extra = @('-PreviewScreenshotPath', $PreviewScreenshotPath); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows editor text edit smoke test'; Script = 'windows-editor-text-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows original image save protection smoke test'; Script = 'windows-save-original-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows saved-state undo and redo close smoke test'; Script = 'windows-save-undo-redo-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
+    @{ Name = 'Interactive Windows image formats smoke test'; Script = 'windows-formats-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows rejected oversized image import preservation smoke test'; Script = 'windows-large-image-import-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test with fixed header and footer'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-FixedHeaderFooter'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows multi-editor lifecycle smoke test'; Script = 'windows-multi-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false }

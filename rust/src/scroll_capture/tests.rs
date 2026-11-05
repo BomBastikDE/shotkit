@@ -10,6 +10,7 @@ struct FakeScrollIo {
     sticky_footer: usize,
     offset: usize,
     horizontal: bool,
+    animate_at_end: bool,
     cancel: bool,
     mouse_move: bool,
     cancel_on_wait: Option<usize>,
@@ -19,6 +20,8 @@ struct FakeScrollIo {
     fail_capture_at: Option<usize>,
     scroll_calls: usize,
     progress: Vec<usize>,
+    diagnostics: Vec<(Image, Image, String)>,
+    diagnostic_success: bool,
 }
 
 impl FakeScrollIo {
@@ -31,6 +34,7 @@ impl FakeScrollIo {
             sticky_footer: 0,
             offset: 0,
             horizontal: false,
+            animate_at_end: false,
             cancel: false,
             mouse_move: false,
             cancel_on_wait: None,
@@ -40,6 +44,8 @@ impl FakeScrollIo {
             fail_capture_at: None,
             scroll_calls: 0,
             progress: Vec::new(),
+            diagnostics: Vec::new(),
+            diagnostic_success: false,
         }
     }
     fn horizontal(height: usize, width: usize, page_len: usize) -> Self {
@@ -51,6 +57,7 @@ impl FakeScrollIo {
             sticky_footer: 0,
             offset: 0,
             horizontal: true,
+            animate_at_end: false,
             cancel: false,
             mouse_move: false,
             cancel_on_wait: None,
@@ -60,6 +67,8 @@ impl FakeScrollIo {
             fail_capture_at: None,
             scroll_calls: 0,
             progress: Vec::new(),
+            diagnostics: Vec::new(),
+            diagnostic_success: false,
         }
     }
     fn vertical_with_sticky_bands(
@@ -109,6 +118,11 @@ impl FakeScrollIo {
 }
 
 impl ScrollIo for FakeScrollIo {
+    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
+        self.diagnostics
+            .push((before.clone(), after.clone(), details.to_owned()));
+        self.diagnostic_success.then(|| "diagnose".to_owned())
+    }
     fn capture(&mut self) -> Result<Image, String> {
         self.capture_calls += 1;
         if self.fail_capture_at == Some(self.capture_calls) {
@@ -122,7 +136,7 @@ impl ScrollIo for FakeScrollIo {
                 } else {
                     (y + self.offset, x)
                 };
-                let v = if !self.horizontal && y < self.sticky_header {
+                let mut v = if !self.horizontal && y < self.sticky_header {
                     // A stationary, textured site header, visible in every frame.
                     Self::pixel(100_000 + y, x)
                 } else if !self.horizontal && y >= self.height - self.sticky_footer {
@@ -134,6 +148,27 @@ impl ScrollIo for FakeScrollIo {
                 } else {
                     Self::pixel(position, cross)
                 };
+                let viewport = if self.horizontal {
+                    self.width
+                } else {
+                    self.height
+                };
+                let max_offset = self.page_len.saturating_sub(
+                    viewport.saturating_sub(self.sticky_header + self.sticky_footer),
+                );
+                if self.animate_at_end && self.offset == max_offset {
+                    // A full-width animated region replaces the whole viewport;
+                    // independent per-pixel noise prevents accidental overlap matches.
+                    let mut noise = (self.capture_calls as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        ^ (y as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9)
+                        ^ (x as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+                    noise ^= noise >> 30;
+                    noise = noise.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    noise ^= noise >> 27;
+                    noise = noise.wrapping_mul(0x94d0_49bb_1331_11eb);
+                    noise ^= noise >> 31;
+                    v = noise as u8;
+                }
                 pixels.extend_from_slice(&[v, v, v, 255]);
             }
         }
@@ -340,6 +375,57 @@ fn static_page_is_detected_as_end_after_two_attempts() {
 }
 
 #[test]
+fn animated_page_end_bounds_fallbacks_and_keeps_the_pixel_exact_prefix() {
+    const VIEW_H: usize = 220;
+    const COMMITTED_PREFIX: usize = 485;
+
+    let mut io = FakeScrollIo::vertical(VIEW_H, 610);
+    io.animate_at_end = true;
+    let out = run(&mut io, Direction::Down).unwrap();
+
+    assert!(io.diagnostics.is_empty());
+    assert_eq!(
+        out.fallback_count, 2,
+        "only two consecutive guesses are allowed"
+    );
+    assert_eq!(io.scroll_calls, 10, "stop on the third unmatched end frame");
+    assert!(
+        out.reason.contains("Teilaufnahme bis hierhin übernommen"),
+        "{}",
+        out.reason
+    );
+    assert!(
+        out.reason
+            .contains("2× wurde die gemessene Scrollweite verwendet"),
+        "{}",
+        out.reason
+    );
+    assert!(
+        out.reason.contains("Übergänge im Teilbild prüfen"),
+        "{}",
+        out.reason
+    );
+
+    // Seven confirmed movements have reached this viewport, but Stitcher has
+    // only committed rows 0..485 before its current viewport tail. Fallback
+    // frames may replace that tail and may contain gaps or duplicates; only
+    // the committed prefix is guaranteed to remain pixel exact.
+    let row_bytes = io.width * 4;
+    let expected_prefix = io.capture_page_vertical(COMMITTED_PREFIX);
+    assert!(out.image.height >= COMMITTED_PREFIX);
+    let mismatch = out.image.pixels[..COMMITTED_PREFIX * row_bytes]
+        .iter()
+        .zip(&expected_prefix)
+        .position(|(actual, expected)| actual != expected);
+    assert!(
+        mismatch.is_none(),
+        "the reliably matched prefix must remain pixel exact; first mismatch row={:?}, progress={:?}",
+        mismatch.map(|i| i / row_bytes),
+        io.progress
+    );
+}
+
+#[test]
 fn rightward_capture_rotates_back_to_output_orientation() {
     let mut io = FakeScrollIo::horizontal(220, 260, 610);
     let out = run(&mut io, Direction::Right).unwrap();
@@ -374,4 +460,30 @@ fn leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order() {
         out.reason
     );
     assert!(io.scroll_calls >= 3);
+}
+
+#[test]
+fn final_unmatched_first_step_saves_matching_frames_and_keeps_partial_image() {
+    let mut io = FakeScrollIo::vertical(220, 270);
+    io.animate_at_end = true;
+    io.diagnostic_success = true;
+    let initial = io.capture_page_vertical(220);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(io.diagnostics.len(), 1);
+    assert_eq!(io.diagnostics[0].0.pixels, initial);
+    assert_ne!(io.diagnostics[0].1.pixels, initial);
+    assert!(io.diagnostics[0].2.contains("Richtung: Down"));
+    assert_eq!(out.image.pixels, initial);
+    assert!(out.reason.contains("Diagnose gespeichert: diagnose"));
+}
+
+#[test]
+fn diagnostic_write_failure_keeps_partial_image_without_claiming_a_path() {
+    let mut io = FakeScrollIo::vertical(220, 270);
+    io.animate_at_end = true;
+    let initial = io.capture_page_vertical(220);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(io.diagnostics.len(), 1);
+    assert_eq!(out.image.pixels, initial);
+    assert!(!out.reason.contains("Diagnose gespeichert"));
 }

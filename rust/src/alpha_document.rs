@@ -11,11 +11,10 @@ use crate::{
     alpha_render,
     pixelate::{pixelate_region, PixelateRect},
     shapes::{Shape, ShapeKind},
-    stitch::Image,
+    stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
-const MAX_DIMENSION: usize = 30_000;
 #[cfg(all(test, windows))]
 const PIXELATE_BLOCK_SIZE: usize = 12;
 
@@ -94,7 +93,7 @@ fn render_document_over(
                 if !shape.style.width.is_finite() || shape.style.width <= 0.0 {
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
-                let block_size = ((shape.style.width * 3.0) as usize).clamp(6, 4096);
+                let block_size = ((shape.style.width * 3.0) as usize).clamp(12, 4096);
                 let pixelated = pixelate_region(source, region, block_size)
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
                 copy_region(&pixelated, &mut output_pixels, region)?;
@@ -178,8 +177,8 @@ fn validate_image(image: &Image) -> Result<(), String> {
         .ok_or_else(|| "Bildgröße läuft über.".to_owned())?;
     if image.width == 0
         || image.height == 0
-        || image.width > MAX_DIMENSION
-        || image.height > MAX_DIMENSION
+        || image.width > MAX_EDITABLE_IMAGE_DIMENSION
+        || image.height > MAX_EDITABLE_IMAGE_DIMENSION
         || bytes != image.pixels.len()
         || bytes > MAX_IMAGE_BYTES
     {
@@ -387,6 +386,33 @@ mod tests {
                 actual == expected,
                 "bounded freehand changed rendered pixels"
             );
+        }
+    }
+
+    #[test]
+    fn pixelation_uses_at_least_twelve_pixel_blocks() {
+        use crate::shapes::Point;
+        let mut pixels = Vec::new();
+        for y in 0..24 {
+            for x in 0..24 {
+                pixels.extend_from_slice(&[(x * 9) as u8, (y * 9) as u8, 0, 255]);
+            }
+        }
+        let original = Image::new(24, 24, pixels).unwrap();
+        let region = PixelateRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 24,
+        };
+        let expected = pixelate_region(&original, region, 12).unwrap();
+        for width in [1.0, 2.0, 3.0, 4.0] {
+            let mut blur = Shape::new(ShapeKind::Blur {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(24.0, 24.0),
+            });
+            blur.style.width = width;
+            assert_eq!(render_document(&original, &[blur]).unwrap(), expected);
         }
     }
 

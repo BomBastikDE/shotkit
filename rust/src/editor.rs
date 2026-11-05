@@ -30,6 +30,34 @@ fn valid_style(style: &Style) -> bool {
         && (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&style.font_size)
 }
 
+/// Build the exact shape list used for a temporary drag preview and return
+/// the first shape index that cannot be reused from the cached prefix.
+/// Existing-shape drags replace in place; create drags append after the
+/// document, even if the editor still has a previous selection.
+pub fn compose_preview_shapes(
+    document_shapes: &[Shape],
+    preview: Option<(Option<usize>, Shape)>,
+) -> Result<(Vec<Shape>, usize), &'static str> {
+    let Some((target_index, draft)) = preview else {
+        return Ok((document_shapes.to_vec(), document_shapes.len()));
+    };
+
+    let mut shapes =
+        Vec::with_capacity(document_shapes.len() + usize::from(target_index.is_none()));
+    let stable_count = match target_index {
+        Some(index) if index < document_shapes.len() => index,
+        Some(_) => return Err("Vorschau-Ziel liegt außerhalb der Dokumentformen."),
+        None => document_shapes.len(),
+    };
+    shapes.extend(document_shapes.iter().cloned());
+    if let Some(index) = target_index {
+        shapes[index] = draft;
+    } else {
+        shapes.push(draft);
+    }
+    Ok((shapes, stable_count))
+}
+
 #[derive(Clone, Debug)]
 enum Drag {
     Create {
@@ -123,9 +151,21 @@ impl EditorController {
     pub fn tool(&self) -> Tool {
         self.tool
     }
-    pub fn set_tool(&mut self, tool: Tool) {
+    /// Select a tool. Switching to the marker selects the reference yellow
+    /// while the default palette red is active, and recolors a selected shape
+    /// as one undoable document edit. Returns whether the document changed.
+    pub fn set_tool(&mut self, tool: Tool) -> bool {
         self.cancel_drag();
         self.tool = tool;
+        if tool != Tool::Highlight || self.current_style.color != Color::PALETTE_RED {
+            return false;
+        }
+        self.current_style.color = Color::MARKER_YELLOW;
+        let Some(mut replacement) = self.selection().map(|shape| shape.style.clone()) else {
+            return false;
+        };
+        replacement.color = Color::MARKER_YELLOW;
+        self.set_selected_style(replacement)
     }
     pub fn set_hit_tolerance(&mut self, tolerance: f32) {
         if tolerance.is_finite() && tolerance >= 0.0 {
@@ -353,6 +393,15 @@ impl EditorController {
                 result.set_handle(*handle, self.last_position()?);
                 Some(result)
             }
+        }
+    }
+
+    /// Document shape replaced by the current preview, if the drag moves or
+    /// resizes an existing shape. Create previews have no target index.
+    pub fn preview_index(&self) -> Option<usize> {
+        match self.drag.as_ref()? {
+            Drag::Move { index, .. } | Drag::Handle { index, .. } => Some(*index),
+            Drag::Create { .. } => None,
         }
     }
 
