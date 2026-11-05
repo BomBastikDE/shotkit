@@ -8,7 +8,7 @@ C# / WinForms / .NET 8, eine einzige EXE, keine Installation nötig.
 
 ## Rust-Version testen und später umsteigen
 
-ShotKit wird zusätzlich in Rust entwickelt. Die **C#-Version v1.2.0 bleibt die stabile Hauptversion**; die Rust-Version ist eine Alpha und ihre Funktionsgleichheit ist noch nicht vollständig belegt. Entwicklungsstand, Tests und bekannte Grenzen stehen in der [Rust-Anleitung](rust/README.md), die einzelnen Funktionen in der [Paritätstabelle](rust/PARITY.md).
+ShotKit wird zusätzlich in Rust entwickelt. Die **C#-Version v1.2.0 bleibt die stabile Hauptversion**; die Rust-Version ist eine Vorabversion und ihre Funktionsgleichheit ist noch nicht vollständig belegt. Die erste Beta wird auf `rust/development` vorbereitet und ist noch nicht veröffentlicht. Entwicklungsstand, Tests und bekannte Grenzen stehen in der [Rust-Anleitung](rust/README.md), die einzelnen Funktionen in der [Paritätstabelle](rust/PARITY.md).
 
 Zum Testen ein Rust-Alpha-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden, EXE und SHA256-Prüfsumme prüfen und die EXE starten. Die unsignierte EXE kann eine SmartScreen-Warnung auslösen; nach eigener Prüfung stehen dort „Weitere Informationen“ und „Trotzdem ausführen“ zur Verfügung. Die Prüfsumme lässt sich in PowerShell mit `Get-FileHash .\shotkit-*.exe -Algorithm SHA256` berechnen und mit der zugehörigen `.sha256`-Datei vergleichen. Vor dem Start eine laufende C#-Instanz beenden, damit sich globale Tastenkürzel nicht gegenseitig belegen. Eine ältere Rust-Version vor dem Testen einer neuen Alpha ebenfalls über das Tray-Menü vollständig beenden; sonst aktiviert der neue Start die bereits laufende Version.
 

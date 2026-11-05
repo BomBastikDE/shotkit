@@ -1,6 +1,6 @@
-# ShotKit Rust – Alpha-Testversion
+# ShotKit Rust – Vorabversion
 
-Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Die letzte als stabil freigegebene Version ist bis zur ersten Rust-Beta das C#-ShotKit 1.2.0 (Branch `csharp/1.x`).
+Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Das C#-ShotKit 1.2.0 bleibt die stabile Hauptversion (Branch `csharp/1.x`). Die erste Rust-Beta wird auf `rust/development` vorbereitet und ist noch nicht veröffentlicht.
 
 ## Umstieg von C#
 
