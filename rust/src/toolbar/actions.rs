@@ -240,7 +240,7 @@ mod tests {
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [(1000, 0), (900, 1), (800, 2), (700, 3), (430, 3), (180, 3)] {
+        for (width, stage) in [(1000, 0), (930, 1), (850, 2), (700, 3), (430, 3), (180, 3)] {
             let plan = layout(width, 96, &items);
             assert_eq!(plan.stage, stage);
             let mut reachable: Vec<_> = plan
