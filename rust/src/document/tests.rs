@@ -22,6 +22,58 @@ fn shape() -> Shape {
 }
 
 #[test]
+fn saved_revision_tracks_undo_redo_and_new_capture() {
+    let mut d = Document::new(image()).unwrap();
+    assert!(d.is_dirty()); // An unsaved capture stays dirty even at its initial state.
+    d.add_shape(shape()).unwrap();
+    assert!(d.undo());
+    assert!(d.is_dirty());
+    d.mark_saved();
+    assert!(!d.is_dirty());
+    assert!(d.redo());
+    assert!(d.is_dirty());
+    d.mark_saved();
+    assert!(!d.is_dirty());
+    assert!(d.undo());
+    assert!(d.is_dirty());
+    assert!(d.redo());
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn branching_after_undo_never_reuses_saved_revision() {
+    let mut d = Document::new(image()).unwrap();
+    d.mark_saved();
+    d.add_shape(shape()).unwrap();
+    d.mark_saved();
+    assert!(d.undo());
+    d.add_shape(shape()).unwrap(); // Same content and depth, but a new history branch.
+    assert!(d.is_dirty());
+    assert!(!d.redo());
+}
+
+#[test]
+fn transactions_and_failed_edits_preserve_saved_revision() {
+    let mut d = Document::new(image()).unwrap();
+    d.mark_saved();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.is_dirty());
+    assert!(!d.mark_saved());
+    d.abort_edit().unwrap();
+    assert!(!d.is_dirty());
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.commit_edit().unwrap());
+    assert!(d.is_dirty());
+    assert!(d.undo());
+    assert!(!d.is_dirty());
+    d.set_history_budget(0);
+    assert!(d.add_shape(shape()).is_err());
+    assert!(!d.is_dirty());
+}
+
+#[test]
 fn peek_image_follows_undo_and_redo_order() {
     let mut d = Document::new(image()).unwrap();
     assert!(d.undo_image_arc().is_none());

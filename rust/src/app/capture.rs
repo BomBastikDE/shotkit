@@ -19,8 +19,8 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
                     Ok(window) => {
                         opened = true;
                         if let Some(path) = saved.take() {
+                            editor(window).document_mut().mark_saved();
                             window_state(window).current_path = Some(path);
-                            window_state(window).dirty = false;
                             refresh_title(window);
                         }
                         if was_visible {

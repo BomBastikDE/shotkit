@@ -184,7 +184,6 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
             return Err(format!("{error:?}"));
         }
         install_bitmap(h, bitmap, &output);
-        window_state(h).dirty = true;
         window_state(h).zoom = 1.0;
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
@@ -230,9 +229,7 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
         }
         _ => return,
     }
-    if editor(h).set_selected_style(replacement) {
-        window_state(h).dirty = true;
-    }
+    editor(h).set_selected_style(replacement);
 }
 
 pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
@@ -260,9 +257,7 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
 pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
     cancel_gesture(h);
     let old_color = editor(h).current_style().color;
-    if editor(h).set_tool(tool) {
-        window_state(h).dirty = true;
-    }
+    editor(h).set_tool(tool);
     let color = editor(h).current_style().color;
     if color != old_color {
         toolbar::set_color(h, color.r, color.g, color.b);
@@ -330,9 +325,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                 editor(h).set_current_color(color);
                 toolbar::set_color(h, r, g, b);
                 replacement.color = color;
-                if editor(h).set_selected_style(replacement) {
-                    window_state(h).dirty = true;
-                }
+                editor(h).set_selected_style(replacement);
             }
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {

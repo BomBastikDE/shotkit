@@ -337,7 +337,6 @@ struct WindowState {
     bitmap: H,
     current_path: Option<PathBuf>,
     protected_original: bool,
-    dirty: bool,
     zoom: f64,
     pan_x: i32,
     pan_y: i32,
@@ -364,7 +363,6 @@ impl WindowState {
             bitmap: null_mut(),
             current_path: None,
             protected_original: false,
-            dirty: false,
             zoom: 1.0,
             pan_x: 0,
             pan_y: 0,
@@ -460,7 +458,15 @@ unsafe fn refresh_title(h: H) {
         .unwrap_or_default();
     let title = format!(
         "{}{} – ShotKit Rust{} · Strg+S speichern",
-        if state.dirty { "* " } else { "" },
+        if state
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.document().is_dirty())
+        {
+            "* "
+        } else {
+            ""
+        },
         name,
         tool
     );

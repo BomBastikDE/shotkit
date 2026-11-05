@@ -196,7 +196,6 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
         }
         0x0100 if w == 0x2e || w == 0x08 => {
             if editor(h).delete_selected() {
-                window_state(h).dirty = true;
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -234,7 +233,6 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 _ => (0.0, step),
             };
             if editor(h).nudge_selected(dx, dy) {
-                window_state(h).dirty = true;
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);

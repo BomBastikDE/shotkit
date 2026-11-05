@@ -193,9 +193,9 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     })();
     match result {
         Ok(()) => {
+            editor(h).document_mut().mark_saved();
             window_state(h).current_path = Some(path);
             window_state(h).protected_original = false;
-            window_state(h).dirty = false;
             refresh_title(h);
             true
         }
@@ -374,7 +374,7 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
 pub(super) unsafe fn confirm_replace(h: H) -> bool {
     let _modal = ModalGuard::new(h);
     cancel_gesture(h);
-    if !window_state(h).dirty || window_state(h).bitmap.is_null() {
+    if window_state(h).bitmap.is_null() || !editor(h).document().is_dirty() {
         return true;
     }
     match MessageBoxW(
@@ -446,9 +446,9 @@ pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> 
     match result {
         Ok((image, protected_original)) => match display_image(h, image) {
             Ok(window) => {
+                editor(window).document_mut().mark_saved();
                 window_state(window).current_path = Some(path);
                 window_state(window).protected_original = protected_original;
-                window_state(window).dirty = false;
                 refresh_title(window);
                 Ok(())
             }
@@ -562,7 +562,6 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
     window_state(h).editor = Some(state);
     window_state(h).current_path = None;
     window_state(h).protected_original = false;
-    window_state(h).dirty = true;
     window_state(h).zoom = 1.0;
     window_state(h).pan_x = 0;
     window_state(h).pan_y = 0;
@@ -610,7 +609,6 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
             return Err(format!("{e:?}"));
         }
         install_bitmap(h, bitmap, &output);
-        window_state(h).dirty = true;
         window_state(h).zoom = 1.0;
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
@@ -670,7 +668,6 @@ pub(super) unsafe fn history(h: H, redo: bool) {
         if let Some(bitmap) = replacement {
             install_bitmap(h, bitmap, &next);
         }
-        window_state(h).dirty = true;
         InvalidateRect(h, std::ptr::null(), 1);
     } else if let Some(bitmap) = replacement {
         DeleteObject(bitmap);

@@ -75,9 +75,7 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                     editor(h).mouse_down(image_point);
                     editor(h).mouse_up(image_point);
                     if let Some(changed) = text_dialog::prompt(h, &existing) {
-                        if editor(h).set_text_at(index, changed) {
-                            window_state(h).dirty = true;
-                        }
+                        editor(h).set_text_at(index, changed);
                     }
                     report_editor_error(h);
                     invalidate_image_view(h);
@@ -103,9 +101,6 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                                 "text-edit index={index} changed={edited} shapes={}",
                                 editor(h).shapes().len(),
                             ));
-                            if edited {
-                                window_state(h).dirty = true;
-                            }
                         }
                     } else if let Some(text) = text_dialog::prompt(h, "") {
                         if !text.trim().is_empty() {
@@ -114,9 +109,6 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                                 "text-place image=({x},{y}) placed={placed} shapes={}",
                                 editor(h).shapes().len(),
                             ));
-                            if placed {
-                                window_state(h).dirty = true;
-                            }
                         }
                     }
                     report_editor_error(h);
@@ -194,12 +186,8 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 InvalidateRect(h, &rect, 1);
                 return Some(0);
             }
-            let before = editor(h).shapes().to_vec();
             editor(h)
                 .mouse_up_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
-            if before != editor(h).shapes() {
-                window_state(h).dirty = true;
-            }
             window_state(h).drawing = false;
             ReleaseCapture();
             report_editor_error(h);
