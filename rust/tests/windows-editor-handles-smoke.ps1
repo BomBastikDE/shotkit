@@ -155,6 +155,34 @@ function Capture-HeldHandlePreview {
         $newBottom=&$countRed $newBottomLeft ($newBottomY-$tolY) $newBottomRight ($newBottomY+$tolY)
         if($newRight -lt 5 -or $newBottom -lt 5){throw "LIVE_PREVIEW_NEW_EDGES_MISSING: red pixels right=$newRight bottom=$newBottom; screenshot=$script:previewCapturePath"}
         if($oldRight -gt 0 -or $oldBottom -gt 0){throw "LIVE_PREVIEW_OLD_EDGES_REMAIN: red pixels old-right=$oldRight old-bottom=$oldBottom; screenshot=$script:previewCapturePath"}
+        # The selection frame uses RGB (0,120,215), three image pixels
+        # outside the shape bounds. Verify its new and old exclusive edges
+        # in the same held-drag capture, away from handles and the pointer.
+        $countBlue={ param($x0,$y0,$x1,$y1)
+            $count=0
+            for($yy=[Math]::Max(0,$y0);$yy -le [Math]::Min($bitmap.Height-1,$y1);$yy++){
+                for($xx=[Math]::Max(0,$x0);$xx -le [Math]::Min($bitmap.Width-1,$x1);$xx++){
+                    $pixel=$bitmap.GetPixel($xx,$yy)
+                    if($pixel.R -lt 40 -and $pixel.G -gt 90 -and $pixel.G -lt 150 -and $pixel.B -gt 180){$count++}
+                }
+            }
+            return $count
+        }
+        $oldFrameRight=Map-Point 73 160 0 $shownW; $oldFrameBottom=Map-Point 63 120 0 $shownH
+        $newFrameRight=Map-Point 123 160 0 $shownW; $newFrameBottom=Map-Point 98 120 0 $shownH
+        $oldFrameRightCount=&$countBlue ($oldFrameRight-$tolX) $oldRightTop ($oldFrameRight+$tolX) $oldRightBottom
+        $oldFrameBottomCount=&$countBlue $oldBottomLeft ($oldFrameBottom-$tolY) $oldBottomRight ($oldFrameBottom+$tolY)
+        $newFrameRightCount=&$countBlue ($newFrameRight-$tolX) $newRightTop ($newFrameRight+$tolX) $newRightBottom
+        $newFrameBottomCount=&$countBlue $newBottomLeft ($newFrameBottom-$tolY) $newBottomRight ($newFrameBottom+$tolY)
+        if($newFrameRightCount -lt 5 -or $newFrameBottomCount -lt 5){throw "LIVE_PREVIEW_NEW_SELECTION_FRAME_MISSING: blue pixels right=$newFrameRightCount bottom=$newFrameBottomCount; screenshot=$script:previewCapturePath"}
+        if($oldFrameRightCount -gt 0 -or $oldFrameBottomCount -gt 0){throw "LIVE_PREVIEW_OLD_SELECTION_FRAME_REMAINS: blue pixels old-right=$oldFrameRightCount old-bottom=$oldFrameBottomCount; screenshot=$script:previewCapturePath"}
+        $handleY=Map-Point 29 120 0 $shownH
+        $newHandleLeft=Map-Point 117 160 0 $shownW; $newHandleRight=Map-Point 122 160 0 $shownW
+        $oldHandleLeft=Map-Point 67 160 0 $shownW; $oldHandleRight=Map-Point 72 160 0 $shownW
+        $newHandleCount=&$countBlue $newHandleLeft ($handleY-$tolY) $newHandleRight ($handleY+$tolY)
+        $oldHandleCount=&$countBlue $oldHandleLeft ($handleY-$tolY) $oldHandleRight ($handleY+$tolY)
+        if($newHandleCount -lt 2 -or $oldHandleCount -gt 0){throw "LIVE_PREVIEW_SELECTION_HANDLE_WRONG: blue pixels new=$newHandleCount old=$oldHandleCount; screenshot=$script:previewCapturePath"}
+        Write-Host "PASS: selection frame followed the held resize (blue edge pixels new-right=$newFrameRightCount new-bottom=$newFrameBottomCount; old-right=$oldFrameRightCount old-bottom=$oldFrameBottomCount)."
         Write-Host "PASS: held-drag screen preview replaced old lower-right edges with the new bounds (red edge pixels new-right=$newRight new-bottom=$newBottom; old-right=$oldRight old-bottom=$oldBottom)."
     }
     finally { $bitmap.Dispose() }
