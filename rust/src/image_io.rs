@@ -5,11 +5,32 @@ use image::{
     RgbImage, RgbaImage,
 };
 use std::{
-    io::{BufReader, Cursor},
+    io::{BufReader, Cursor, Read},
     path::Path,
 };
 
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Enforce the limit on bytes actually read, even if the file changes after opening.
+pub fn read_image_file(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_IMAGE_BYTES {
+        return Err("Die Bilddatei ist zu groß.".into());
+    }
+    read_bounded(file, MAX_IMAGE_BYTES)
+}
+
+fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("Die Bilddatei ist zu groß.".into());
+    }
+    Ok(bytes)
+}
 
 pub fn decode(data: &[u8]) -> Result<Image, String> {
     let mut reader = ImageReader::new(BufReader::new(Cursor::new(data)))
@@ -119,6 +140,11 @@ pub fn format_from_path(path: &Path) -> Result<ImageFormat, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_read_checks_actual_bytes_not_metadata() {
+        assert_eq!(super::read_bounded(&b"1234"[..], 4).unwrap(), b"1234");
+        assert!(super::read_bounded(&b"12345"[..], 4).is_err());
+    }
     use super::*;
     fn sample() -> Image {
         Image::new(

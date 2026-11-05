@@ -379,6 +379,33 @@ impl WindowState {
 static mut PRIMARY: H = null_mut();
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
 static QUITTING: AtomicBool = AtomicBool::new(false);
+// Set only after every document has been approved and its window closed.
+static FINISH_QUIT_READY: AtomicBool = AtomicBool::new(false);
+
+fn take_quit_completion(ready: &AtomicBool, modal_depth: usize) -> bool {
+    modal_depth == 0 && ready.swap(false, Ordering::SeqCst)
+}
+
+#[cfg(test)]
+mod quit_completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_requires_approval_and_is_consumed_once() {
+        let ready = AtomicBool::new(false);
+        assert!(!take_quit_completion(&ready, 0));
+        ready.store(true, Ordering::SeqCst);
+        assert!(take_quit_completion(&ready, 0));
+        assert!(!take_quit_completion(&ready, 0));
+    }
+
+    #[test]
+    fn modal_handler_defers_without_consuming_completion() {
+        let ready = AtomicBool::new(true);
+        assert!(!take_quit_completion(&ready, 1));
+        assert!(take_quit_completion(&ready, 0));
+    }
+}
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster mit initialisiertem Zustand;
 // Zugriff nur auf dem UI-Thread, ohne überlappenden Borrow oder Reentranz.
@@ -424,6 +451,16 @@ impl Drop for ModalGuard {
     fn drop(&mut self) {
         unsafe {
             window_state(self.0).modal_depth -= 1;
+            // A nested message loop may have consumed the posted wakeup while
+            // this guard was active. Queue another after the outermost guard.
+            if self.0 == PRIMARY
+                && window_state(self.0).modal_depth == 0
+                && FINISH_QUIT_READY.load(Ordering::SeqCst)
+                && PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0) == 0
+            {
+                FINISH_QUIT_READY.store(false, Ordering::SeqCst);
+                QUITTING.store(false, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -531,9 +568,16 @@ unsafe fn quit_application(h: H) {
         && windows.iter().all(|w| confirm_replace(*w));
     if approved {
         for window in windows {
-            DestroyWindow(window);
+            if DestroyWindow(window) == 0 {
+                QUITTING.store(false, Ordering::SeqCst);
+                return;
+            }
         }
-        PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0);
+        FINISH_QUIT_READY.store(true, Ordering::SeqCst);
+        if PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0) == 0 {
+            FINISH_QUIT_READY.store(false, Ordering::SeqCst);
+            QUITTING.store(false, Ordering::SeqCst);
+        }
     } else {
         QUITTING.store(false, Ordering::SeqCst);
     }

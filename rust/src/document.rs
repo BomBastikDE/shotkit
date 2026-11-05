@@ -183,9 +183,10 @@ impl Document {
             self.staged_before = None;
             return Ok(false);
         }
-        self.record_snapshot(before.clone())?;
+        self.record_snapshot(before.clone(), Arc::clone(&self.current.image))?;
         self.current.revision = Arc::new(());
         self.staged_before = None;
+        self.trim_history();
         Ok(true)
     }
 
@@ -306,21 +307,27 @@ impl Document {
             return Ok(());
         }
         if self.staged_before.is_none() {
-            self.record_snapshot(self.current.clone())?;
+            self.record_snapshot(self.current.clone(), Arc::clone(&next.image))?;
             next.revision = Arc::new(());
         }
         self.current = next;
+        if self.staged_before.is_none() {
+            self.trim_history();
+        }
         Ok(())
     }
 
-    fn record_snapshot(&mut self, snapshot: State) -> Result<(), DocumentError> {
-        if self.snapshot_bytes_after_redo_clear(&snapshot) > self.history_budget {
+    fn record_snapshot(
+        &mut self,
+        snapshot: State,
+        next_image: Arc<Image>,
+    ) -> Result<(), DocumentError> {
+        if self.snapshot_bytes_after_redo_clear(&snapshot, &next_image) > self.history_budget {
             return Err(DocumentError::HistoryBudgetExceeded);
         }
         self.redo.clear();
         self.redo.shrink_to_fit();
         self.undo.push_back(snapshot);
-        self.trim_history();
         Ok(())
     }
 
@@ -340,13 +347,10 @@ impl Document {
         self.redo.shrink_to_fit();
     }
 
-    fn snapshot_bytes_after_redo_clear(&self, snapshot: &State) -> usize {
-        let mut seen = HashSet::new();
-        seen.insert(Arc::as_ptr(&self.current.image) as usize);
-        for state in &self.undo {
-            seen.insert(Arc::as_ptr(&state.image) as usize);
-        }
-        let image_bytes = if seen.insert(Arc::as_ptr(&snapshot.image) as usize) {
+    fn snapshot_bytes_after_redo_clear(&self, snapshot: &State, next_image: &Arc<Image>) -> usize {
+        // Older snapshots may all need eviction, so only sharing with the
+        // resulting current image can reduce this snapshot's minimum cost.
+        let image_bytes = if !Arc::ptr_eq(next_image, &snapshot.image) {
             image_allocation_bytes(&snapshot.image)
         } else {
             0

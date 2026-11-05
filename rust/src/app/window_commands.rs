@@ -13,7 +13,9 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
     }
     Some(match m {
         WM_FINISH_QUIT if h == PRIMARY => {
-            DestroyWindow(h);
+            if take_quit_completion(&FINISH_QUIT_READY, window_state(h).modal_depth) {
+                DestroyWindow(h);
+            }
             0
         }
         WM_COPYDATA => handle_instance_file(h, l),

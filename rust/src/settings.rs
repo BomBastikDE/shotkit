@@ -35,11 +35,20 @@ pub enum ScrollDirection {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub version: u32,
+    #[serde(default)]
     pub save_folder: Option<PathBuf>,
+    #[serde(default = "default_open_editor")]
     pub open_editor: bool,
+    #[serde(default)]
     pub copy_to_clipboard: bool,
+    #[serde(default)]
     pub auto_save: bool,
+    #[serde(default)]
     pub scroll_direction: ScrollDirection,
+}
+
+fn default_open_editor() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -315,6 +324,36 @@ mod tests {
         assert!(!settings.copy_to_clipboard);
         assert!(!settings.auto_save);
         assert_eq!(settings.scroll_direction, ScrollDirection::Down);
+    }
+
+    #[test]
+    fn missing_settings_fields_use_defaults_for_older_files() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"version":1,"open_editor":false,"copy_to_clipboard":true}"#,
+        )
+        .unwrap();
+
+        let settings = load(&path).unwrap();
+        assert_eq!(settings.version, CURRENT_VERSION);
+        assert!(!settings.open_editor);
+        assert!(settings.copy_to_clipboard);
+        assert_eq!(settings.save_folder, None);
+        assert!(!settings.auto_save);
+        assert_eq!(settings.scroll_direction, ScrollDirection::Down);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_version_remains_required() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"open_editor":true}"#).unwrap();
+
+        assert!(matches!(load(&path), Err(SettingsError::Json { .. })));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

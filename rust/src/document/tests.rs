@@ -197,6 +197,66 @@ fn large_current_image_is_not_charged_again_for_shape_history() {
 }
 
 #[test]
+fn crop_rejects_snapshot_that_exceeds_budget_and_preserves_redo() {
+    let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
+    let mut d = Document::with_history_budget(large.clone(), 4096).unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.undo());
+    assert!(d.can_redo());
+    assert_eq!(
+        d.crop(CropRect {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64
+        }),
+        Err(DocumentError::HistoryBudgetExceeded)
+    );
+    assert_eq!(d.image(), &large);
+    assert!(d.can_redo());
+    assert!(d.history_bytes() <= d.history_budget());
+    assert!(d.redo());
+}
+
+#[test]
+fn image_change_trims_history_using_new_current_image() {
+    let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
+    let mut d = Document::with_history_budget(large, 70_000).unwrap();
+    for _ in 0..20 {
+        d.add_shape(shape()).unwrap();
+    }
+    d.crop(CropRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    })
+    .unwrap();
+    assert!(d.history_bytes() <= d.history_budget());
+    assert!(d.can_undo());
+    assert!(d.undo());
+    assert_eq!(d.image().width, 128);
+}
+
+#[test]
+fn transaction_image_change_rejects_unaffordable_snapshot() {
+    let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
+    let mut d = Document::with_history_budget(large.clone(), 512).unwrap();
+    d.begin_edit().unwrap();
+    d.crop(CropRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    })
+    .unwrap();
+    assert_eq!(d.commit_edit(), Err(DocumentError::HistoryBudgetExceeded));
+    d.abort_edit().unwrap();
+    assert_eq!(d.image(), &large);
+    assert!(d.history_bytes() <= d.history_budget());
+}
+
+#[test]
 fn undo_evicts_redo_state_that_cannot_fit_budget() {
     let mut d = Document::with_history_budget(image(), 1024).unwrap();
     d.replace_image(Image::new(16, 16, vec![9; 16 * 16 * 4]).unwrap())

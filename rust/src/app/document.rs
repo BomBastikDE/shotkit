@@ -435,11 +435,7 @@ pub(super) unsafe fn open_image(h: H) {
 // Nachrichten: Fensteranlage und SetWindowTextW können reentrieren; Bild und Pfad sind besitzend, State-Zuweisungen enden vor der Titelaktualisierung.
 pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
     let result = (|| -> Result<(Image, bool), String> {
-        let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-        if metadata.len() > 512 * 1024 * 1024 {
-            return Err("Die Bilddatei ist zu groß.".into());
-        }
-        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let bytes = image_io::read_image_file(&path)?;
         let protected_original = opened_original_requires_save_as(&path, &bytes);
         Ok((image_io::decode(&bytes)?, protected_original))
     })();

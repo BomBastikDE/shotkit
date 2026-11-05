@@ -5,8 +5,8 @@
 //! [`Frame::analyze`] builds an exact per-row hash and a coarse horizontal
 //! luminance profile. [`find_offset`] returns the downward displacement of
 //! content between equal-sized frames, plus stationary top/bottom margins.
-//! `None` means no unambiguous evidence; `Some(dy=0)` means no active columns
-//! were found (the C# caller treats this as a stationary/end condition).
+//! `None` means no unambiguous evidence; `Some(dy=0)` indicates a stationary
+//! match (the caller treats this as a stationary/end condition).
 //!
 //! Limitations inherited from the source algorithm: grayscale bins can confuse
 //! repeated patterns, matching expects equal frame dimensions, and very flat
@@ -144,7 +144,10 @@ pub fn find_offset(a: &Frame, b: &Frame, expected: usize) -> Option<MatchResult>
         })
         .collect();
     if active.len() < 4 {
-        return Some(MatchResult {
+        // Too few active bins cannot establish an offset. Coarse luminance can
+        // also hide real pixel changes, so only exact analyzed rows establish
+        // stillness in this case.
+        return a.same(b).then_some(MatchResult {
             dy: 0,
             top: 0,
             bottom: 0,
@@ -307,6 +310,46 @@ mod tests {
         let a = Frame::analyze(120, 160, &image(160, 0)).unwrap();
         let b = Frame::analyze(120, 160, &image(160, 5)).unwrap();
         assert_eq!(find_offset(&a, &b, 5).unwrap().dy, 5);
+    }
+    #[test]
+    fn narrow_moving_content_is_not_reported_as_stationary() {
+        const WIDTH: usize = 120;
+        const HEIGHT: usize = 300;
+        fn narrow_frame(shift: usize) -> Frame {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                // A deterministic irregular black/white pattern shifted by 30 px.
+                let row = y + shift;
+                let value = if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                    0
+                } else {
+                    255
+                };
+                for x in 48..60 {
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+            }
+            Frame::analyze(WIDTH, HEIGHT, &pixels).unwrap()
+        }
+        let a = narrow_frame(0);
+        let b = narrow_frame(30);
+        let c = narrow_frame(60);
+        assert!(!a.same(&b));
+        assert_eq!(find_offset(&a, &b, 30), None);
+        assert_eq!(find_offset(&b, &c, 30), None);
+        assert_eq!(find_offset(&a, &a, 30).unwrap().dy, 0);
+    }
+    #[test]
+    fn pixel_changes_hidden_by_luminance_bins_are_not_stationary() {
+        let a = vec![255; 120 * 40 * 4];
+        let mut b = a.clone();
+        // Alpha participates in exact row hashes, but not the luminance bins.
+        b[(20 * 120 + 50) * 4 + 3] = 254;
+        let a = Frame::analyze(120, 40, &a).unwrap();
+        let b = Frame::analyze(120, 40, &b).unwrap();
+        assert_eq!(a.signature, b.signature);
+        assert_eq!(find_offset(&a, &b, 1), None);
     }
     #[test]
     fn majority_of_scroll_bands_wins_over_one_conflicting_band() {
