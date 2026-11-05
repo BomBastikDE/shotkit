@@ -25,7 +25,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Lupe mit Koordinaten und Farbwert | implementiert, nicht belegt | Direkter Windows-Test für dargestellte Werte fehlt | Implementierung vorhanden; Anzeige und Werte sind noch nicht direkt belegt. |
 | Overlay: Pfeiltasten bewegen Mauszeiger um 1 / mit Umschalt um 10 Pixel | fehlt | `windows-keyboard-selection-smoke.ps1` testet stattdessen Rust-Bereichskorrektur | Andere Bedienung ist vorhanden; Referenz-Mauszeigerbewegung ist nicht nachgewiesen. |
 | Overlay: Enter übernimmt Ziel; Esc / Rechtsklick bricht ab | fertig | `windows-keyboard-selection-smoke.ps1`; `windows-browser-hover-smoke.ps1 -EnterAccept`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41937859662) | Enter für einen unveränderten Vorschlag ist auf einer lokalen Edge-Testseite geprüft; Esc und Rechtsklick sind im Auswahl-Smoke-Test geprüft. |
-| Verzögerte Aufnahme 3/5/10 Sekunden | implementiert, nicht belegt | `delayed_capture.rs`-Unit-Tests; direkter Windows-Test aller drei Verzögerungen fehlt | Timerlogik getestet; Tray-Ablauf aller Zeitwerte offen. |
+| Verzögerte Aufnahme 3/5/10 Sekunden | fertig | `delayed_capture.rs`-Unit-Tests; `windows-delayed-capture-smoke.ps1`; [Windows-/Linux-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41967087462) | Alle drei Tray-Aktionen öffneten das eigene Auswahlfenster nach gemessener Verzögerung; Escape brach es jeweils ab. Eine gespeicherte Aufnahme wird hierbei nicht geprüft. |
 
 ## Scrollaufnahme
 
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 26 fertig, 17 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 27 fertig, 16 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
