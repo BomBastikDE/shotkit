@@ -67,6 +67,11 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 
 ## Nach Alpha 20 – in Entwicklung
 
+- Die Auswahllupe zeigt den vergrößerten Bildinhalt wieder statt einer weißen Fläche ([#41](https://github.com/BomBastikDE/shotkit/issues/41)).
+- Textdialog und Infofenster passen Maße und Schrift bei Windows-DPI-Wechseln an; simulierte Wechsel sind getestet, reale gemischte DPI bleiben ein Praxistest ([#27](https://github.com/BomBastikDE/shotkit/issues/27)).
+- Mausrad und Modifikatortasten werden aus derselben Windows-Ereignisnachricht ausgewertet; der sporadische Schwenkfehler bleibt zur Beobachtung offen ([#42](https://github.com/BomBastikDE/shotkit/issues/42)).
+- Strg+Mausrad verwendet die Zoomschrittweite der C#-Referenz; Strg+0 und Strg+9 funktionieren auch mit dem Ziffernblock.
+
 Bei Verpixeln beträgt die Mindestblockgröße 12 statt 6 Pixel; ein Regressionstest prüft die niedrigen Linienstärken. Dies verbessert die grobe Darstellung, garantiert aber keine Unkenntlichkeit oder sichere Schwärzung. [Issue #5](https://github.com/BomBastikDE/shotkit/issues/5) bleibt offen.
 
 - Das Verpixeln-Werkzeug weist darauf hin, dass der Effekt keine sichere Schwärzung bietet ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).
