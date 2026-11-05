@@ -46,7 +46,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 |---|---|---|---|
 | Auswahl, Pfeil, Linie, Rechteck, Ellipse, Freihand | fertig | `editor.rs::creates_with_preview_then_commits_once_and_undo_redoes`; `windows-editor-smoke.ps1`; [Alpha-7-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41466383115) | Exemplarische Objekte und Windows-Zeichengesten; weitere Kombinationen prüfen. |
 | Text anlegen und vorhandenen Text bearbeiten | fertig | `editor.rs::text_edit_is_undoable_and_no_change_adds_no_history`; `windows-editor-text-smoke.ps1`; Alpha-9-Lauf | Testet Anlegen, Öffnen, Ändern und Rückgängig. |
-| Textmarker | implementiert, nicht belegt | `alpha_render.rs::windows_pixel_tests::highlight_layer_preserves_transparency_and_marker_opacity` | Render-Unit-Test vorhanden; interaktiver Windows-Ausgabetest für das Werkzeug fehlt. |
+| Textmarker | fertig | `alpha_render.rs::windows_pixel_tests::highlight_layer_preserves_transparency_and_marker_opacity`; `windows-editor-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41959291267) | Interaktive Markierung und PNG-Pixel auf transparentem und grünem Hintergrund sowie Undo geprüft; Gelb wird im Windows-Test ausdrücklich gewählt. |
 | Verpixeln | fertig | `windows-editor-pixelate-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41478213036) | Testet gespeicherte Pixel innerhalb/außerhalb und Undo/Redo. Kein Nachweis, dass Verpixelung sensible Inhalte sicher unkenntlich macht. |
 | Fortlaufende Schritt-Nummern | fertig | `editor.rs::text_and_step_are_creatable`; `windows-step-visibility-smoke.ps1`; [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41515669398) | Der Nummerntest bestand für 1–12 auf hellem und dunklem Grund, PNG, Clipboard sowie Undo/Redo. Der Gesamtlauf war wegen des Toolbar-Tests rot; die Owner-Bestätigung steht aus. |
 | Objekte wählen, verschieben, an Griffen ändern und löschen | fertig | `editor.rs::moves_as_one_step_and_delete_undo_redo`, `resizes_a_selected_handle_as_one_step`; `windows-editor-handles-smoke.ps1`; [Alpha-8-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41467952056) | Direkter Griff-Test für Rechteck; nicht jede Form einzeln auf Windows durchgetestet. |
@@ -85,7 +85,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 
 OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
-**Bestand:** 23 fertig, 20 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
+**Bestand:** 24 fertig, 19 implementiert, nicht belegt, 2 fehlt, 2 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
 ## Offene Owner-Meldung
 
