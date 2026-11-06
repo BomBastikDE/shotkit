@@ -1,6 +1,20 @@
 //! Renderer-independent annotation geometry and edit history.
 //! Coordinates are image-space pixels; rendering remains the caller's responsibility.
 
+mod geometry;
+#[cfg(windows)]
+pub(crate) use geometry::arrow_dot_radius;
+pub(crate) use geometry::rectangle_has_zero_axis;
+#[cfg(any(windows, test))]
+pub(crate) use geometry::rounded_rectangle_points;
+pub(crate) use geometry::styled_arrow_bounds;
+#[cfg(any(windows, test))]
+pub(crate) use geometry::styled_arrow_head;
+use geometry::{
+    distance_segment, distance_to_ellipse, rounded_rectangle_distance, rounded_rectangle_radius,
+    styled_arrow_hit_test,
+};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
     pub x: f32,
@@ -183,11 +197,60 @@ impl StampKind {
     }
 }
 
+/// Optional interior paint for rectangles and ellipses. Other tools ignore it.
+/// The scale multiplies the annotation color's alpha; the outline is unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FillMode {
+    #[default]
+    None,
+    Solid,
+    Translucent,
+}
+impl FillMode {
+    pub const fn alpha_scale(self) -> Option<u8> {
+        match self {
+            Self::None => None,
+            Self::Solid => Some(255),
+            Self::Translucent => Some(128),
+        }
+    }
+}
+
+/// Pattern used for line, arrow, box and freehand strokes. Gaps remain selectable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArrowEnds {
+    #[default]
+    Single,
+    Double,
+    /// A filled round endpoint replaces the arrowhead.
+    Dot,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RectangleCorners {
+    #[default]
+    Square,
+    /// 12 image pixels, limited to half the shortest side.
+    Rounded,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
     pub color: Color,
     pub width: f32,
     pub font_size: f32,
+    pub fill: FillMode,
+    pub line_style: LineStyle,
+    pub arrow_ends: ArrowEnds,
+    pub rectangle_corners: RectangleCorners,
 }
 impl Default for Style {
     fn default() -> Self {
@@ -195,6 +258,10 @@ impl Default for Style {
             color: Color::PALETTE_RED,
             width: 4.0,
             font_size: 28.0,
+            fill: FillMode::None,
+            line_style: LineStyle::Solid,
+            arrow_ends: ArrowEnds::Single,
+            rectangle_corners: RectangleCorners::Square,
         }
     }
 }
@@ -266,6 +333,20 @@ impl Shape {
     }
     pub fn bounds(&self) -> Rect {
         match &self.kind {
+            ShapeKind::Arrow { start, end } if self.style.arrow_ends != ArrowEnds::Single => {
+                styled_arrow_bounds(*start, *end, &self.style).unwrap_or_default()
+            }
+            ShapeKind::Rectangle { start, end }
+                if self.style.rectangle_corners == RectangleCorners::Rounded
+                    && !rectangle_has_zero_axis(*start, *end) =>
+            {
+                let bounds = Rect::from_points(*start, *end);
+                if rounded_rectangle_radius(bounds).is_some() {
+                    bounds
+                } else {
+                    Rect::default()
+                }
+            }
             ShapeKind::Line { start, end }
             | ShapeKind::Arrow { start, end }
             | ShapeKind::Rectangle { start, end }
@@ -440,6 +521,9 @@ impl Shape {
                         tolerance / size,
                     )
             }
+            ShapeKind::Arrow { start, end } if self.style.arrow_ends != ArrowEnds::Single => {
+                styled_arrow_hit_test(*start, *end, &self.style, p, tolerance)
+            }
             ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
                 distance_segment(p, *start, *end) <= tolerance + self.style.width / 2.0
             }
@@ -455,7 +539,32 @@ impl Shape {
                     r.width / 2.0,
                     r.height / 2.0,
                 );
-                d.is_finite() && pad.is_finite() && pad >= 0.0 && d <= pad
+                let inside = r.width > 0.0
+                    && r.height > 0.0
+                    && (((p.x as f64 - r.x as f64) / r.width as f64 - 0.5) * 2.0)
+                        .hypot(((p.y as f64 - r.y as f64) / r.height as f64 - 0.5) * 2.0)
+                        <= 1.0;
+                d.is_finite()
+                    && pad.is_finite()
+                    && pad >= 0.0
+                    && (d <= pad
+                        || (self.style.fill != FillMode::None && self.style.color.a > 0 && inside))
+            }
+            ShapeKind::Rectangle { start, end }
+                if self.style.rectangle_corners == RectangleCorners::Rounded
+                    && !rectangle_has_zero_axis(*start, *end) =>
+            {
+                let pad = tolerance + self.style.width / 2.0;
+                let Some(distance) = rounded_rectangle_distance(p, Rect::from_points(*start, *end))
+                else {
+                    return false;
+                };
+                pad.is_finite()
+                    && pad >= 0.0
+                    && (distance.abs() <= pad as f64
+                        || (self.style.fill != FillMode::None
+                            && self.style.color.a > 0
+                            && distance <= 0.0))
             }
             ShapeKind::Rectangle { .. } => {
                 let r = self.bounds();
@@ -468,99 +577,15 @@ impl Shape {
                     height: (r.height - 2.0 * pad).max(0.0),
                 };
                 outer.contains(p)
-                    && (!inner.contains(p) || inner.width == 0.0 || inner.height == 0.0)
+                    && ((self.style.fill != FillMode::None && self.style.color.a > 0)
+                        || !inner.contains(p)
+                        || inner.width == 0.0
+                        || inner.height == 0.0)
             }
             _ => self.bounds().inflated(tolerance).contains(p),
         }
     }
 }
-fn distance_segment(p: Point, a: Point, b: Point) -> f32 {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let len = dx * dx + dy * dy;
-    if len < 0.0001 {
-        return ((p.x - a.x).powi(2) + (p.y - a.y).powi(2)).sqrt();
-    }
-    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len).clamp(0.0, 1.0);
-    ((p.x - a.x - t * dx).powi(2) + (p.y - a.y - t * dy).powi(2)).sqrt()
-}
-
-/// Approximate minimum Euclidean distance to an ellipse contour. Sampling locates
-/// the best basin; golden-section refinement gives subpixel precision without
-/// unstable divisions for points at the center or close to an axis.
-fn distance_to_ellipse(p: Point, center: Point, rx: f32, ry: f32) -> f32 {
-    if !p.x.is_finite()
-        || !p.y.is_finite()
-        || !center.x.is_finite()
-        || !center.y.is_finite()
-        || !rx.is_finite()
-        || !ry.is_finite()
-    {
-        return f32::NAN;
-    }
-    let (rx, ry) = (rx.abs(), ry.abs());
-    if rx == 0.0 && ry == 0.0 {
-        return distance_segment(p, center, center);
-    }
-    if rx == 0.0 {
-        return distance_segment(
-            p,
-            Point::new(center.x, center.y - ry),
-            Point::new(center.x, center.y + ry),
-        );
-    }
-    if ry == 0.0 {
-        return distance_segment(
-            p,
-            Point::new(center.x - rx, center.y),
-            Point::new(center.x + rx, center.y),
-        );
-    }
-    let (px, py) = ((p.x - center.x).abs(), (p.y - center.y).abs());
-    let eval = |t: f32| {
-        let dx = rx * t.cos() - px;
-        let dy = ry * t.sin() - py;
-        dx * dx + dy * dy
-    };
-    const N: usize = 64;
-    let step = std::f32::consts::TAU / N as f32;
-    let mut best = 0usize;
-    let mut best_d = f32::INFINITY;
-    for i in 0..N {
-        let d = eval(i as f32 * step);
-        if d < best_d {
-            best = i;
-            best_d = d
-        }
-    }
-    let (mut lo, mut hi) = if best == 0 {
-        (-step, step)
-    } else {
-        (best as f32 * step - step, best as f32 * step + step)
-    };
-    let phi = (5.0_f32.sqrt() - 1.0) / 2.0;
-    let mut c = hi - phi * (hi - lo);
-    let mut d = lo + phi * (hi - lo);
-    let mut fc = eval(c);
-    let mut fd = eval(d);
-    for _ in 0..32 {
-        if fc <= fd {
-            hi = d;
-            d = c;
-            fd = fc;
-            c = hi - phi * (hi - lo);
-            fc = eval(c)
-        } else {
-            lo = c;
-            c = d;
-            fc = fd;
-            d = lo + phi * (hi - lo);
-            fd = eval(d)
-        }
-    }
-    eval((lo + hi) / 2.0).max(0.0).sqrt()
-}
-
 /// Shape list with snapshot undo/redo. Each successful mutation records one undo point.
 #[derive(Clone, Debug, Default)]
 pub struct ShapeDocument {
@@ -621,145 +646,4 @@ impl ShapeDocument {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn stamp_hit_test_tracks_ink_and_offsets_and_preserves_aspect_ratio() {
-        let mut shape = Shape::new(ShapeKind::Stamp {
-            center: Point::new(100.0, 100.0),
-            kind: StampKind::Check,
-        });
-        shape.style.font_size = 100.0;
-        assert!(shape.hit_test(Point::new(90.0, 126.0), 0.0));
-        assert!(!shape.hit_test(Point::new(55.0, 55.0), 0.0));
-        assert!(!shape.hit_test(Point::new(f32::NAN, 100.0), 0.0));
-        shape.offset(20.0, -10.0);
-        assert!(shape.hit_test(Point::new(110.0, 116.0), 0.0));
-        assert!(shape.set_handle(2, Point::new(200.0, 100.0)));
-        assert_eq!(shape.bounds().width, 160.0);
-        assert_eq!(shape.bounds().width, shape.bounds().height);
-        assert_eq!(shape.bounds().x + shape.bounds().width / 2.0, 120.0);
-        assert!(!shape.set_handle(4, Point::new(0.0, 0.0)));
-    }
-
-    #[test]
-    fn text_hitbox_covers_rendered_label_approximately() {
-        let mut shape = Shape::new(ShapeKind::Text {
-            location: Point::new(0.0, 0.0),
-            text: "Testtext".into(),
-        });
-        shape.style.font_size = 28.0;
-        assert!(shape.hit_test(Point::new(60.0, 12.0), 0.0));
-        assert!(!shape.hit_test(Point::new(400.0, 12.0), 0.0));
-    }
-    #[test]
-    fn history_has_a_finite_limit() {
-        let mut doc = ShapeDocument::default();
-        for i in 0..110 {
-            doc.push(Shape::new(ShapeKind::Step {
-                center: Point::new(i as f32, 0.0),
-                number: i,
-            }));
-        }
-        let mut n = 0;
-        while doc.undo() {
-            n += 1;
-        }
-        assert_eq!(n, 100);
-        assert_eq!(doc.shapes().len(), 10);
-    }
-    #[test]
-    fn normalizes_and_resizes_box() {
-        let mut s = Shape::new(ShapeKind::Rectangle {
-            start: Point::new(8.0, 7.0),
-            end: Point::new(2.0, 1.0),
-        });
-        assert_eq!(
-            s.bounds(),
-            Rect {
-                x: 2.0,
-                y: 1.0,
-                width: 6.0,
-                height: 6.0
-            }
-        );
-        assert!(s.set_handle(0, Point::new(10.0, 11.0)));
-        assert_eq!(
-            s.bounds(),
-            Rect {
-                x: 8.0,
-                y: 7.0,
-                width: 2.0,
-                height: 4.0
-            }
-        );
-    }
-    #[test]
-    fn offsets_freehand_and_tests_segment() {
-        let mut s = Shape::new(ShapeKind::Freehand {
-            points: vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
-        });
-        assert!(s.hit_test(Point::new(5.0, 1.0), 1.0));
-        s.offset(2.0, 3.0);
-        assert_eq!(
-            s.bounds(),
-            Rect {
-                x: 2.0,
-                y: 3.0,
-                width: 10.0,
-                height: 0.0
-            }
-        );
-    }
-    #[test]
-    fn undo_redo_restores_shape_edits() {
-        let mut d = ShapeDocument::default();
-        d.push(Shape::new(ShapeKind::Step {
-            center: Point::new(1.0, 2.0),
-            number: 1,
-        }));
-        d.edit(0, |s| s.offset(4.0, 0.0));
-        assert!((d.shapes()[0].bounds().x + 13.8).abs() < 0.0001);
-        assert!(d.undo());
-        assert!((d.shapes()[0].bounds().x + 17.8).abs() < 0.0001);
-        assert!(d.redo());
-        assert!((d.shapes()[0].bounds().x + 13.8).abs() < 0.0001);
-    }
-    #[test]
-    fn empty_freehand_bounds_are_safe() {
-        let s = Shape::new(ShapeKind::Freehand { points: vec![] });
-        assert!(s.is_empty());
-        assert_eq!(s.bounds(), Rect::default());
-    }
-    #[test]
-    fn oval_hit_test_uses_pixel_distance_to_contour() {
-        let s = Shape::new(ShapeKind::Ellipse {
-            start: Point::new(-100.0, -10.0),
-            end: Point::new(100.0, 10.0),
-        });
-        assert!(s.hit_test(Point::new(99.0, 0.0), 0.0));
-        assert!(!s.hit_test(Point::new(0.0, 0.0), 0.0));
-    }
-    #[test]
-    fn degenerate_ellipse_is_a_segment_or_point() {
-        let s = Shape::new(ShapeKind::Ellipse {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(0.0, 20.0),
-        });
-        assert!(s.hit_test(Point::new(1.0, 10.0), 0.0));
-        assert!(!s.hit_test(Point::new(5.0, 10.0), 0.0));
-    }
-    #[test]
-    fn rectangle_contains_excludes_right_and_bottom_edges() {
-        let r = Rect {
-            x: 1.0,
-            y: 2.0,
-            width: 3.0,
-            height: 4.0,
-        };
-        assert!(r.contains(Point::new(1.0, 2.0)));
-        assert!(r.contains(Point::new(3.999, 5.999)));
-        assert!(!r.contains(Point::new(4.0, 3.0)));
-        assert!(!r.contains(Point::new(2.0, 6.0)));
-    }
-}
+mod tests;

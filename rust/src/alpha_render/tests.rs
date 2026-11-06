@@ -152,3 +152,20 @@ fn original_stamps_render_straight_alpha_clipped_antialiased_and_scaled() {
         }
     }
 }
+
+#[test]
+fn styled_arrow_head_matches_existing_single_arrow_geometry() {
+    for (start, end, width) in [
+        (Point::new(4.0, 8.0), Point::new(104.0, 8.0), 4.0),
+        (Point::new(4.0, 8.0), Point::new(10.0, 8.0), 12.0),
+        (Point::new(80.0, 90.0), Point::new(11.0, 7.0), 8.0),
+    ] {
+        let legacy = arrow_geometry(start, end, width).unwrap();
+        let styled = crate::shapes::styled_arrow_head(start, end, width).unwrap();
+        let point = |p: Point| PointF { x: p.x, y: p.y };
+        assert_eq!(legacy.tip, point(styled.tip));
+        assert_eq!(legacy.left, point(styled.left));
+        assert_eq!(legacy.right, point(styled.right));
+        assert_eq!(legacy.shaft_end, styled.shaft_end.map(point));
+    }
+}

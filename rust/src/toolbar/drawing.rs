@@ -370,6 +370,13 @@ pub(super) unsafe fn draw_icon(
         Icon::SwatchBlack => draw_swatch(hdc, bounds, 0x00000000),
         Icon::SwatchYellow => draw_swatch(hdc, bounds, 0x0000D6FF), // RGB 255, 214, 0
         Icon::SwatchBlue => draw_swatch(hdc, bounds, 0x00D77800),   // RGB 0, 120, 215
+        Icon::FormStyle => {
+            Rectangle(hdc, ox + 3, oy + 3, ox + 15, oy + 15);
+            icon_line(hdc, ox + 5, oy + 12, ox + 12, oy + 5);
+            icon_line(hdc, ox + 8, oy + 13, ox + 13, oy + 8);
+            icon_line(hdc, ox + 15, oy + 16, ox + 17, oy + 18);
+            icon_line(hdc, ox + 17, oy + 18, ox + 19, oy + 16);
+        }
         Icon::LineWidth => {
             icon_line(hdc, ox + 3, oy + 5, ox + 17, oy + 5);
             icon_line(hdc, ox + 3, oy + 10, ox + 17, oy + 10);

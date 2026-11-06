@@ -11,7 +11,7 @@ use actions::*;
 mod creation;
 pub use creation::create;
 mod menus;
-pub use menus::{popup, stamp_kind_for_command};
+pub use menus::{form_style_applies, popup, stamp_kind_for_command, style_target};
 mod drawing;
 use drawing::*;
 
@@ -73,6 +73,18 @@ pub const ID_SWATCH_RED: usize = 0x5124;
 pub const ID_SWATCH_BLACK: usize = 0x5125;
 pub const ID_SWATCH_YELLOW: usize = 0x5126;
 pub const ID_SWATCH_BLUE: usize = 0x5127;
+pub const ID_FORM_STYLE: usize = 0x5128;
+pub const ID_FILL_NONE: usize = 0x5170;
+pub const ID_FILL_SOLID: usize = 0x5171;
+pub const ID_FILL_TRANSLUCENT: usize = 0x5172;
+pub const ID_LINE_SOLID: usize = 0x5173;
+pub const ID_LINE_DASHED: usize = 0x5174;
+pub const ID_LINE_DOTTED: usize = 0x5175;
+pub const ID_CORNERS_SQUARE: usize = 0x5176;
+pub const ID_CORNERS_ROUNDED: usize = 0x5177;
+pub const ID_ARROW_SINGLE: usize = 0x5178;
+pub const ID_ARROW_DOUBLE: usize = 0x5179;
+pub const ID_ARROW_DOT: usize = 0x517A;
 
 const CLASS_NAME: &str = "ShotKitRustEditorToolbar";
 const WM_NCCREATE: u32 = 0x0081;

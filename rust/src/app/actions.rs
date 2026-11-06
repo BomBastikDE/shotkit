@@ -283,6 +283,25 @@ pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
     InvalidateRect(h, std::ptr::null(), 0);
 }
 
+fn apply_form_style(style: &mut shotkit::shapes::Style, id: usize) -> bool {
+    use shotkit::shapes::{ArrowEnds, FillMode, LineStyle, RectangleCorners};
+    match id {
+        toolbar::ID_FILL_NONE => style.fill = FillMode::None,
+        toolbar::ID_FILL_SOLID => style.fill = FillMode::Solid,
+        toolbar::ID_FILL_TRANSLUCENT => style.fill = FillMode::Translucent,
+        toolbar::ID_LINE_SOLID => style.line_style = LineStyle::Solid,
+        toolbar::ID_LINE_DASHED => style.line_style = LineStyle::Dashed,
+        toolbar::ID_LINE_DOTTED => style.line_style = LineStyle::Dotted,
+        toolbar::ID_CORNERS_SQUARE => style.rectangle_corners = RectangleCorners::Square,
+        toolbar::ID_CORNERS_ROUNDED => style.rectangle_corners = RectangleCorners::Rounded,
+        toolbar::ID_ARROW_SINGLE => style.arrow_ends = ArrowEnds::Single,
+        toolbar::ID_ARROW_DOUBLE => style.arrow_ends = ArrowEnds::Double,
+        toolbar::ID_ARROW_DOT => style.arrow_ends = ArrowEnds::Dot,
+        _ => return false,
+    }
+    true
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h und der Editor erfüllen den Zustandsvertrag für delegierte Aktionen.
 // Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
@@ -292,10 +311,19 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     // only validated ordinary commands and reuse their exact editor workflows.
     let id = if matches!(
         id,
-        toolbar::ID_MORE | toolbar::ID_FILE | toolbar::ID_VIEW | toolbar::ID_STAMP
+        toolbar::ID_MORE
+            | toolbar::ID_FILE
+            | toolbar::ID_VIEW
+            | toolbar::ID_STAMP
+            | toolbar::ID_FORM_STYLE
     ) {
         let stamp_kind = editor(h).stamp_kind();
-        let Some(selected) = toolbar::popup(h, id, stamp_kind) else {
+        let style = editor(h)
+            .selection()
+            .map(|shape| shape.style.clone())
+            .unwrap_or_else(|| editor(h).current_style().clone());
+        let target = toolbar::style_target(editor(h).selection().map(|shape| &shape.kind));
+        let Some(selected) = toolbar::popup(h, id, stamp_kind, &style, target) else {
             SetFocus(h);
             return;
         };
@@ -303,6 +331,25 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     } else {
         id
     };
+    if (toolbar::ID_FILL_NONE..=toolbar::ID_ARROW_DOT).contains(&id) {
+        let mut current = editor(h).current_style().clone();
+        if !apply_form_style(&mut current, id) {
+            return;
+        }
+        let selected = editor(h).selection().and_then(|shape| {
+            toolbar::form_style_applies(id, toolbar::style_target(Some(&shape.kind)))
+                .then(|| shape.style.clone())
+        });
+        editor(h).set_current_style(current);
+        if let Some(mut selected) = selected {
+            apply_form_style(&mut selected, id);
+            editor(h).set_selected_style(selected);
+        }
+        report_editor_error(h);
+        SetFocus(h);
+        InvalidateRect(h, std::ptr::null(), 0);
+        return;
+    }
     let stamp_kind = toolbar::stamp_kind_for_command(id);
     if let Some(kind) = stamp_kind {
         editor(h).set_stamp_kind(kind);

@@ -30,6 +30,7 @@ pub(super) enum Icon {
     SwatchBlue,
     LineWidth,
     FontSize,
+    FormStyle,
     Frame,
     Capture,
     Copy,
@@ -40,7 +41,7 @@ pub(super) enum Icon {
     File,
     View,
 }
-pub(super) const ACTIONS: [Action; 30] = [
+pub(super) const ACTIONS: [Action; 31] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -156,6 +157,12 @@ pub(super) const ACTIONS: [Action; 30] = [
         tool: false,
     },
     Action {
+        id: ID_FORM_STYLE,
+        label: "Formstil…",
+        icon: Icon::FormStyle,
+        tool: false,
+    },
+    Action {
         id: ID_LINE_WIDTH,
         label: "Linienbreite…",
         icon: Icon::LineWidth,
@@ -233,7 +240,9 @@ pub(super) fn layout_items() -> Vec<shotkit::toolbar_layout::Item> {
             id: a.id,
             group: match a.id {
                 ID_FRAME | ID_VIEW => Group::View,
-                ID_LINE_WIDTH | ID_FONT_SIZE | ID_UNDO | ID_REDO => Group::SizeHistory,
+                ID_FORM_STYLE | ID_LINE_WIDTH | ID_FONT_SIZE | ID_UNDO | ID_REDO => {
+                    Group::SizeHistory
+                }
                 ID_SWATCH_RED | ID_SWATCH_BLACK | ID_SWATCH_YELLOW | ID_SWATCH_BLUE => {
                     Group::Palette
                 }
@@ -254,11 +263,11 @@ mod tests {
     fn stamp_toolbar_preserves_client_width_boundary_and_dpi_geometry() {
         use shotkit::toolbar_layout::{layout, scale};
         let items = layout_items();
-        assert_eq!(items.len(), 29);
+        assert_eq!(items.len(), 30);
         for dpi in [96, 120, 144, 192] {
             let full_width = 2 * scale(4, dpi)
-                + items.len() as i32 * (scale(32, dpi) + scale(2, dpi))
-                - scale(2, dpi);
+                + items.len() as i32 * (scale(32, dpi) + scale(1, dpi))
+                - scale(1, dpi);
             let full = layout(full_width, dpi, &items);
             assert_eq!(full.stage, 0);
             assert!(full.more.is_none() && full.overflow.is_empty());

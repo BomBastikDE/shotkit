@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Das Menü „Formstil…“ ergänzt Füllung, gestrichelte und gepunktete Linien, gerundete Rechtecke sowie doppelte Pfeilspitzen oder einen Punkt am Pfeilende ([#31](https://github.com/BomBastikDE/shotkit/issues/31)).
+
 - Beim Öffnen über eine zweite Instanz erhalten erkannte Netzlaufwerke mit Laufwerksbuchstaben eine Warnung vor möglicher Netzwerk-Authentifizierung; unbestimmbare Laufwerke erhalten einen Unsicherheitshinweis ([#55](https://github.com/BomBastikDE/shotkit/issues/55)). Die Laufwerksprüfung erkennt nicht jede Verzeichnisverknüpfung auf ein Netzwerkziel.
 
 ## Beta 1 – Stand vor Veröffentlichung

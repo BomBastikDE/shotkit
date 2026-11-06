@@ -333,7 +333,7 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- # Stage 0 uses compact spacing for 29 buttons: 2*4 + 29*(32+2) - 2 = 992 logical
+ # Stage 0 uses compact spacing for 30 buttons: 2*4 + 30*(32+1) - 1 = 997 logical
  # client pixels. Include measured nonclient borders, and keep the complete
  # window on the primary display so every GetPixel sample is screen-backed.
  $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
@@ -341,15 +341,15 @@ try {
  if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$outer) -or -not [ShotKitToolbarVisual.Native]::GetClientRect($main.H,[ref]$initialClient)){throw 'RESPONSIVE_INITIAL_GEOMETRY_FAILED'}
  # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
  $margin=[int][Math]::Floor((4*$dpi+48)/96)
- $size=[int][Math]::Floor((32*$dpi+48)/96);$gap=[int][Math]::Floor((2*$dpi+48)/96)
- $wide=2*$margin+29*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
+ $size=[int][Math]::Floor((32*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
+ $wide=2*$margin+30*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
  $tall=[int][Math]::Round(600*$dpi/96)
  $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
  if($wide -gt $screenWidth -or $tall -gt $screenHeight){throw "RESPONSIVE_DISPLAY_TOO_SMALL: required outer=${wide}x${tall}; primary display=${screenWidth}x${screenHeight}; dpi=$dpi"}
  if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
- Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 29 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
+ Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 30 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
- $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Weichzeichnen (W) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stempel auswählen…','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Linienbreite…','Schriftgröße…','Rahmen / Schatten / Leinwand…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
+ $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Weichzeichnen (W) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stempel auswählen…','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Formstil…','Linienbreite…','Schriftgröße…','Rahmen / Schatten / Leinwand…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
  if($PopupOnly) {
@@ -463,7 +463,7 @@ try {
    } else { Press-ToolbarKey 0x1b }
    Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_STILL_OPEN'
    if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_RESTORE_RESIZE_FAILED'}
-   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 29 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
+   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 30 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
    $restored=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
    foreach($label in $expected){if(-not($restored|Where-Object{$_.Text -ceq $label})){throw "RESPONSIVE_RESTORED_LABEL_MISSING: $label"}}
    if((Assert-ToolbarRow $toolbar $restored) -ne $wideHeight){throw 'RESPONSIVE_RESTORED_HEIGHT_CHANGED'}
@@ -595,7 +595,7 @@ try {
   }
   if($edgePixels -eq 0){throw 'SMOOTH_ICON_EDGES_MISSING: no intermediate grayscale pixels in inactive line icon.'}
  } finally { $verify.Dispose() }
- $pass="PASS: owned 29-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
+ $pass="PASS: owned 30-button native toolbar; exact tool, color, and capture tooltips; color chooser and swatch; mouse/keyboard tool selection; toolbar/shortcut capture; window and tray icons verified. Screenshot: $ScreenshotPath"
  }
 } catch {$failure=$_} finally {
  if($mouse){try{[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{$cleanup+=$_.Exception.Message}}

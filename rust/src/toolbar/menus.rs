@@ -1,7 +1,9 @@
 //! Menus return ordinary editor command IDs; they never retain a WindowState
 //! borrow or a global mutex while Win32 runs a nested popup message loop.
 use super::*;
-use shotkit::shapes::StampKind;
+use shotkit::shapes::{
+    ArrowEnds, FillMode, LineStyle, RectangleCorners, ShapeKind, StampKind, Style,
+};
 
 static OVERFLOW: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
 #[link(name = "user32")]
@@ -53,6 +55,82 @@ const STAMPS: &[(usize, &str, StampKind)] = &[
     (ID_STAMP_CURSOR, "Mauszeiger", StampKind::Cursor),
 ];
 
+const FORM_STYLES: &[(usize, &str)] = &[
+    (ID_FILL_NONE, "Füllung: Keine"),
+    (ID_FILL_SOLID, "Füllung: Deckend"),
+    (ID_FILL_TRANSLUCENT, "Füllung: Halbtransparent"),
+    (ID_LINE_SOLID, "Linie: Durchgezogen"),
+    (ID_LINE_DASHED, "Linie: Gestrichelt"),
+    (ID_LINE_DOTTED, "Linie: Gepunktet"),
+    (ID_CORNERS_SQUARE, "Rechteck-Ecken: Eckig"),
+    (ID_CORNERS_ROUNDED, "Rechteck-Ecken: Abgerundet"),
+    (ID_ARROW_SINGLE, "Pfeilenden: Einfach"),
+    (ID_ARROW_DOUBLE, "Pfeilenden: Doppelt"),
+    (ID_ARROW_DOT, "Pfeilenden: Punkt"),
+];
+
+#[derive(Clone, Copy)]
+pub enum StyleTarget {
+    Any,
+    Rectangle,
+    Ellipse,
+    Arrow,
+    Line,
+    Freehand,
+    Other,
+}
+
+pub fn style_target(kind: Option<&ShapeKind>) -> StyleTarget {
+    match kind {
+        None => StyleTarget::Any,
+        Some(ShapeKind::Rectangle { .. }) => StyleTarget::Rectangle,
+        Some(ShapeKind::Ellipse { .. }) => StyleTarget::Ellipse,
+        Some(ShapeKind::Arrow { .. }) => StyleTarget::Arrow,
+        Some(ShapeKind::Line { .. }) => StyleTarget::Line,
+        Some(ShapeKind::Freehand { .. }) => StyleTarget::Freehand,
+        Some(_) => StyleTarget::Other,
+    }
+}
+
+pub fn form_style_applies(id: usize, target: StyleTarget) -> bool {
+    if matches!(target, StyleTarget::Any) {
+        return FORM_STYLES.iter().any(|entry| entry.0 == id);
+    }
+    match id {
+        ID_FILL_NONE..=ID_FILL_TRANSLUCENT => {
+            matches!(target, StyleTarget::Rectangle | StyleTarget::Ellipse)
+        }
+        ID_LINE_SOLID..=ID_LINE_DOTTED => matches!(
+            target,
+            StyleTarget::Rectangle
+                | StyleTarget::Ellipse
+                | StyleTarget::Arrow
+                | StyleTarget::Line
+                | StyleTarget::Freehand
+        ),
+        ID_CORNERS_SQUARE..=ID_CORNERS_ROUNDED => matches!(target, StyleTarget::Rectangle),
+        ID_ARROW_SINGLE..=ID_ARROW_DOT => matches!(target, StyleTarget::Arrow),
+        _ => false,
+    }
+}
+
+fn form_style_checked(id: usize, style: &Style) -> bool {
+    match id {
+        ID_FILL_NONE => style.fill == FillMode::None,
+        ID_FILL_SOLID => style.fill == FillMode::Solid,
+        ID_FILL_TRANSLUCENT => style.fill == FillMode::Translucent,
+        ID_LINE_SOLID => style.line_style == LineStyle::Solid,
+        ID_LINE_DASHED => style.line_style == LineStyle::Dashed,
+        ID_LINE_DOTTED => style.line_style == LineStyle::Dotted,
+        ID_CORNERS_SQUARE => style.rectangle_corners == RectangleCorners::Square,
+        ID_CORNERS_ROUNDED => style.rectangle_corners == RectangleCorners::Rounded,
+        ID_ARROW_SINGLE => style.arrow_ends == ArrowEnds::Single,
+        ID_ARROW_DOUBLE => style.arrow_ends == ArrowEnds::Double,
+        ID_ARROW_DOT => style.arrow_ends == ArrowEnds::Dot,
+        _ => false,
+    }
+}
+
 pub fn stamp_kind_for_command(id: usize) -> Option<StampKind> {
     STAMPS
         .iter()
@@ -64,7 +142,13 @@ pub fn stamp_kind_for_command(id: usize) -> Option<StampKind> {
 /// alive while TrackPopupMenu reenters. All lookup results are copied first.
 // SAFETY CONTRACT: parent belongs to the UI thread and is kept alive by caller;
 // HWNDs are checked before use; no global lock spans a native call or menu loop.
-pub unsafe fn popup(parent: Hwnd, id: usize, stamp_kind: StampKind) -> Option<usize> {
+pub unsafe fn popup(
+    parent: Hwnd,
+    id: usize,
+    stamp_kind: StampKind,
+    style: &Style,
+    target: StyleTarget,
+) -> Option<usize> {
     let toolbar = ACTIVE_TOOLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -81,6 +165,7 @@ pub unsafe fn popup(parent: Hwnd, id: usize, stamp_kind: StampKind) -> Option<us
         ID_FILE => FILE.to_vec(),
         ID_VIEW => VIEW.to_vec(),
         ID_STAMP => STAMPS.iter().map(|entry| (entry.0, entry.1)).collect(),
+        ID_FORM_STYLE => FORM_STYLES.to_vec(),
         ID_MORE => {
             let ids = OVERFLOW
                 .get_or_init(|| Mutex::new(HashMap::new()))
@@ -101,22 +186,29 @@ pub unsafe fn popup(parent: Hwnd, id: usize, stamp_kind: StampKind) -> Option<us
     let mut allowed = Vec::new();
     for (entry_id, label) in entries {
         // Both grouped menus keep the same contents in every responsive stage.
-        let appended = if matches!(entry_id, ID_VIEW | ID_STAMP) {
+        let appended = if matches!(entry_id, ID_VIEW | ID_STAMP | ID_FORM_STYLE) {
             let submenu = CreatePopupMenu();
             if submenu.is_null() {
                 false
             } else {
                 let children: Vec<_> = if entry_id == ID_STAMP {
                     STAMPS.iter().map(|entry| (entry.0, entry.1)).collect()
+                } else if entry_id == ID_FORM_STYLE {
+                    FORM_STYLES.to_vec()
                 } else {
                     VIEW.to_vec()
                 };
                 let built = children.iter().all(|&(id, label)| {
-                    let flags = if stamp_kind_for_command(id) == Some(stamp_kind) {
+                    let mut flags = if stamp_kind_for_command(id) == Some(stamp_kind)
+                        || form_style_checked(id, style)
+                    {
                         0x0008 // MF_CHECKED
                     } else {
                         0
                     };
+                    if entry_id == ID_FORM_STYLE && !form_style_applies(id, target) {
+                        flags |= 0x0001;
+                    } // MF_GRAYED
                     AppendMenuW(submenu, flags, id, wide(label).as_ptr()) != 0
                 });
                 if built && AppendMenuW(menu, 0x0010, submenu as usize, wide(label).as_ptr()) != 0 {
@@ -129,11 +221,16 @@ pub unsafe fn popup(parent: Hwnd, id: usize, stamp_kind: StampKind) -> Option<us
             }
         } else {
             allowed.push(entry_id);
-            let flags = if stamp_kind_for_command(entry_id) == Some(stamp_kind) {
+            let mut flags = if stamp_kind_for_command(entry_id) == Some(stamp_kind)
+                || form_style_checked(entry_id, style)
+            {
                 0x0008 // MF_CHECKED
             } else {
                 0
             };
+            if id == ID_FORM_STYLE && !form_style_applies(entry_id, target) {
+                flags |= 0x0001;
+            } // MF_GRAYED
             AppendMenuW(menu, flags, entry_id, wide(label).as_ptr()) != 0
         };
         if !appended {
@@ -157,6 +254,30 @@ pub unsafe fn popup(parent: Hwnd, id: usize, stamp_kind: StampKind) -> Option<us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_style_menu_has_unique_commands_and_one_checked_value_per_group() {
+        let style = Style::default();
+        let mut ids: Vec<_> = FORM_STYLES.iter().map(|entry| entry.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), FORM_STYLES.len());
+        assert_eq!(
+            FORM_STYLES
+                .iter()
+                .filter(|entry| form_style_checked(entry.0, &style))
+                .count(),
+            4
+        );
+        assert!(FORM_STYLES.iter().all(|entry| !entry.1.is_empty()));
+        assert!(form_style_applies(ID_FILL_SOLID, StyleTarget::Rectangle));
+        assert!(!form_style_applies(ID_ARROW_DOT, StyleTarget::Rectangle));
+        assert!(form_style_applies(ID_ARROW_DOT, StyleTarget::Arrow));
+        assert!(!form_style_applies(ID_FILL_SOLID, StyleTarget::Arrow));
+        assert!(FORM_STYLES
+            .iter()
+            .all(|entry| form_style_applies(entry.0, StyleTarget::Any)));
+    }
 
     #[test]
     fn stamp_menu_covers_each_symbol_once_and_rejects_other_commands() {

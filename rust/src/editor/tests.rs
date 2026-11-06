@@ -533,6 +533,10 @@ fn new_shapes_and_placed_text_use_current_style() {
         color: Color::rgba(12, 34, 56, 200),
         width: 7.5,
         font_size: 31.0,
+        fill: crate::shapes::FillMode::Translucent,
+        line_style: crate::shapes::LineStyle::Dashed,
+        arrow_ends: crate::shapes::ArrowEnds::Dot,
+        rectangle_corners: crate::shapes::RectangleCorners::Rounded,
     };
     assert!(e.set_current_style(style.clone()));
 
@@ -555,6 +559,10 @@ fn selected_style_change_is_undoable_and_redoable() {
         color: Color::rgba(20, 80, 140, 255),
         width: 9.0,
         font_size: 42.0,
+        fill: crate::shapes::FillMode::Solid,
+        line_style: crate::shapes::LineStyle::Dotted,
+        arrow_ends: crate::shapes::ArrowEnds::Double,
+        rectangle_corners: crate::shapes::RectangleCorners::Rounded,
     };
 
     assert!(e.set_selected_style(replacement.clone()));

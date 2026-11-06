@@ -40,9 +40,16 @@ pub fn layout(width: i32, dpi: u32, items: &[Item]) -> Layout {
     // Preserve full-size controls on a narrow desktop by tightening spacing
     // slightly when that alone keeps every action visible.
     let count = items.len() as i32;
-    let compact_gap = scale(2, dpi).min(gap);
-    if count > 1 && 2 * margin + count * size + (count - 1) * compact_gap <= width {
-        gap = gap.min((width - 2 * margin - count * size) / (count - 1));
+    // The larger toolbar uses a one-pixel compact gap so each responsive
+    // stage can retain full-size controls on a 1024px desktop. Smaller
+    // toolbars keep their previous spacing and stage boundaries.
+    if count >= 30 {
+        gap = gap.min(scale(1, dpi));
+    } else {
+        let compact_gap = scale(2, dpi).min(gap);
+        if count > 1 && 2 * margin + count * size + (count - 1) * compact_gap <= width {
+            gap = gap.min((width - 2 * margin - count * size) / (count - 1));
+        }
     }
     let top = scale(4, dpi);
     let height = scale(36, dpi);
@@ -196,10 +203,10 @@ mod tests {
 
     #[test]
     fn compact_spacing_keeps_full_size_buttons_on_a_1024_pixel_desktop() {
-        let items: Vec<_> = (0..29)
+        let items: Vec<_> = (0..30)
             .map(|id| Item {
                 id,
-                group: if id >= 25 { Group::Fixed } else { Group::Tool },
+                group: if id >= 26 { Group::Fixed } else { Group::Tool },
             })
             .collect();
         let plan = layout(1008, 96, &items);
@@ -211,6 +218,6 @@ mod tests {
         assert!(rects
             .windows(2)
             .all(|pair| pair[0].0 + pair[0].2 < pair[1].0));
-        assert!(!layout(991, 96, &items).overflow.is_empty());
+        assert!(!layout(996, 96, &items).overflow.is_empty());
     }
 }
