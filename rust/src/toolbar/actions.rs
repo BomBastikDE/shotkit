@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(items.len(), 31);
         for dpi in [96, 120, 144, 192] {
             let full_width = 2 * scale(4, dpi)
-                + items.len() as i32 * (scale(32, dpi) + scale(1, dpi))
+                + items.len() as i32 * (scale(31, dpi) + scale(1, dpi))
                 - scale(1, dpi);
             let full = layout(full_width, dpi, &items);
             assert_eq!(full.stage, 0);
@@ -313,15 +313,7 @@ mod tests {
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [
-            (1040, 0),
-            (1000, 1),
-            (990, 2),
-            (930, 2),
-            (700, 3),
-            (430, 3),
-            (180, 3),
-        ] {
+        for (width, stage) in [(1000, 0), (990, 1), (930, 2), (700, 3), (430, 3), (180, 3)] {
             let plan = layout(width, 96, &items);
             assert_eq!(plan.stage, stage);
             let mut reachable: Vec<_> = plan

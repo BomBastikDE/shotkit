@@ -1,13 +1,14 @@
 //! GDI+ measurement and drawing deliberately share font, format and line origins.
 use super::RenderError;
-use crate::shapes::CalloutTextLayout;
+use crate::shapes::{CalloutTextLayout, MAX_CALLOUT_TEXT_BYTES};
 
 #[cfg(windows)]
 const PADDING: f32 = 12.0;
-const MAX_TEXT_BYTES: usize = 64 * 1024;
 
 fn valid_input(text: &str, font_size: f32) -> bool {
-    text.len() <= MAX_TEXT_BYTES && font_size.is_finite() && (1.0..=512.0).contains(&font_size)
+    text.len() <= MAX_CALLOUT_TEXT_BYTES
+        && font_size.is_finite()
+        && (1.0..=512.0).contains(&font_size)
 }
 
 /// Measure once when editing text; retain this layout on the callout for preview,
@@ -243,7 +244,7 @@ mod tests {
             );
         }
         assert_eq!(
-            measure_callout_text(&"x".repeat(MAX_TEXT_BYTES + 1), 24.0),
+            measure_callout_text(&"x".repeat(MAX_CALLOUT_TEXT_BYTES + 1), 24.0),
             Err(RenderError::InvalidDimensions)
         );
     }

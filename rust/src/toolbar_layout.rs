@@ -36,12 +36,14 @@ pub fn layout(width: i32, dpi: u32, items: &[Item]) -> Layout {
     let slots = fixed as i32 + 1;
     let margin = scale(4, dpi).min(width / (slots * 2 + 2));
     let mut gap = scale(3, dpi).min((width - 2 * margin) / (slots * 2));
-    let size = scale(32, dpi).min(((width - 2 * margin - (slots - 1) * gap) / slots).max(1));
+    let button_width = if items.len() >= 31 { 31 } else { 32 };
+    let size =
+        scale(button_width, dpi).min(((width - 2 * margin - (slots - 1) * gap) / slots).max(1));
     // Preserve full-size controls on a narrow desktop by tightening spacing
     // slightly when that alone keeps every action visible.
     let count = items.len() as i32;
-    // The larger toolbar uses a one-pixel compact gap so each responsive
-    // stage can retain full-size controls on a 1024px desktop. Smaller
+    // Large toolbars use a one-pixel gap and, from 31 items, 31px
+    // buttons so all actions still fit on a 1024px desktop. Smaller
     // toolbars keep their previous spacing and stage boundaries.
     if count >= 30 {
         gap = gap.min(scale(1, dpi));

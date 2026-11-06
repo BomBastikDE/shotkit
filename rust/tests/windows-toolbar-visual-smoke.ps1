@@ -333,7 +333,7 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- # Stage 0 uses compact spacing for 31 buttons: 2*4 + 31*(32+1) - 1 = 1030 logical
+ # Stage 0 uses compact spacing for 31 buttons: 2*4 + 31*(31+1) - 1 = 999 logical
  # client pixels. Include measured nonclient borders, and keep the complete
  # window on the primary display so every GetPixel sample is screen-backed.
  $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
@@ -341,7 +341,7 @@ try {
  if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$outer) -or -not [ShotKitToolbarVisual.Native]::GetClientRect($main.H,[ref]$initialClient)){throw 'RESPONSIVE_INITIAL_GEOMETRY_FAILED'}
  # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
  $margin=[int][Math]::Floor((4*$dpi+48)/96)
- $size=[int][Math]::Floor((32*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
+ $size=[int][Math]::Floor((31*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
  $wide=2*$margin+31*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
  $tall=[int][Math]::Round(600*$dpi/96)
  $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
@@ -411,7 +411,7 @@ try {
  } elseif($ResponsiveOnly) {
   $allOriginalIds=@($buttons|Where-Object{$_.Id -notin @(0x5131,0x5132)}|ForEach-Object{$_.Id})
   # Repeat shrink/grow to catch stale hidden controls and one-way stage state.
-  foreach($logicalWidth in @(1040,930,700,500,430)) {
+  foreach($logicalWidth in @(1005,930,700,500,430)) {
    $narrow=[int][Math]::Round($logicalWidth*$dpi/96)
    if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$narrow,$tall,4)){throw 'RESPONSIVE_NARROW_RESIZE_FAILED'}
    Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)|Where-Object{$_.Id -eq 0x5130}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_NOT_VISIBLE'
@@ -419,7 +419,7 @@ try {
    if((Assert-ToolbarRow $toolbar $narrowButtons) -ne $wideHeight){throw 'RESPONSIVE_TOOLBAR_HEIGHT_CHANGED'}
    foreach($id in @(0x5114,0x5111,0x5110,0x5131)){if(-not($narrowButtons|Where-Object{$_.Id -eq $id})){throw "RESPONSIVE_FIXED_ACTION_HIDDEN: $id"}}
    $visibleIds=@($narrowButtons|ForEach-Object{$_.Id})
-   if($logicalWidth -eq 1040 -and (0x5123 -in $visibleIds -or 0x5132 -in $visibleIds -or 0x5121 -notin $visibleIds)){throw 'RESPONSIVE_STAGE1_GROUPS_FAILED'}
+   if($logicalWidth -eq 1005 -and (0x5123 -in $visibleIds -or 0x5132 -in $visibleIds -or 0x5121 -notin $visibleIds)){throw 'RESPONSIVE_STAGE1_GROUPS_FAILED'}
    if($logicalWidth -eq 930 -and (0x5121 -in $visibleIds -or 0x5122 -in $visibleIds -or 0x5112 -in $visibleIds -or 0x5113 -in $visibleIds -or 0x5124 -notin $visibleIds)){throw 'RESPONSIVE_STAGE2_GROUPS_FAILED'}
    if($logicalWidth -eq 700 -and (0x5124 -in $visibleIds -or 0x5125 -in $visibleIds -or 0x5126 -in $visibleIds -or 0x5127 -in $visibleIds)){throw 'RESPONSIVE_STAGE3_GROUPS_FAILED'}
    $more=$narrowButtons|Where-Object{$_.Id -eq 0x5130}|Select-Object -First 1

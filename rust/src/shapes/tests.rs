@@ -694,3 +694,16 @@ fn rounded_rectangle_zero_axis_resize_keeps_bounds_handles_and_hit_target() {
         Point::new(f32::INFINITY, 40.0)
     ));
 }
+
+#[test]
+fn callout_model_enforces_the_renderer_utf8_byte_limit() {
+    let mut data = callout(None);
+    data.text = "a".repeat(MAX_CALLOUT_TEXT_BYTES);
+    assert!(data.validate());
+    data.text.push('a');
+    assert!(!data.validate());
+    data.text = "ä".repeat(MAX_CALLOUT_TEXT_BYTES / 2);
+    assert!(data.validate());
+    data.text.push('ä');
+    assert!(!data.validate());
+}

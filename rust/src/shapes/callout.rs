@@ -2,6 +2,9 @@
 
 use super::{Color, Point, Rect};
 
+/// Maximum UTF-8 size accepted by both the model and Windows renderer.
+pub const MAX_CALLOUT_TEXT_BYTES: usize = 64 * 1024;
+
 /// Platform font measurement supplies these image-space values. Body dimensions
 /// include text padding; widths are per logical line, including empty lines.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +64,8 @@ impl CalloutData {
     }
 
     fn checked_body(&self) -> Option<Rect> {
-        if !self.layout.validate(&self.text)
+        if self.text.len() > MAX_CALLOUT_TEXT_BYTES
+            || !self.layout.validate(&self.text)
             || !finite(self.origin)
             || self.tip.is_some_and(|tip| !finite(tip))
         {

@@ -336,9 +336,9 @@ impl Drop for OwnerGuard {
 // Voraussetzung: hwnd ist ein gültiges Edit-Fenster; der Ausgabepuffer fasst die angefragten UTF-16-Zeichen.
 // Warum erfüllt bzw. offen: Die Größe wird geprüft und der Puffer lokal für die Dauer des Aufrufs gehalten.
 // Nachrichten: GetWindowText kann synchron Kontrollnachrichten auslösen.
-unsafe fn read_text(hwnd: Hwnd) -> Option<String> {
+unsafe fn read_text(hwnd: Hwnd, max_units: Option<usize>) -> Option<String> {
     let length = GetWindowTextLengthW(hwnd);
-    if length < 0 {
+    if length < 0 || max_units.is_some_and(|limit| length as usize > limit) {
         return None;
     }
     let cap = length.checked_add(1)?;
@@ -359,7 +359,14 @@ unsafe fn complete(hwnd: Hwnd, state: *mut DialogState, accepted: bool) {
     // Copy the handle first: read_text sends messages which can reenter this
     // procedure, so no DialogState reference may be alive during that call.
     let edit = (*state).edit;
-    let result = if accepted { read_text(edit) } else { None };
+    let max_units = (*state)
+        .multiline
+        .then_some(shotkit::shapes::MAX_CALLOUT_TEXT_BYTES);
+    let result = if accepted {
+        read_text(edit, max_units)
+    } else {
+        None
+    };
     {
         let state = &mut *state;
         if accepted {
@@ -444,6 +451,11 @@ unsafe extern "system" fn dialog_proc(
                 return -1;
             }
             (*ptr).edit = edit;
+            if (*ptr).multiline {
+                // Bound native user input; UTF-8 byte length is checked by the model.
+                SendMessageW(edit, 0x00c5, shotkit::shapes::MAX_CALLOUT_TEXT_BYTES, 0);
+                // EM_SETLIMITTEXT
+            }
             let ok = wide("OK");
             let cancel = wide("Abbrechen");
             let ok_hwnd = CreateWindowExW(

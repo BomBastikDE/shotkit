@@ -3,7 +3,7 @@
 
 mod callout;
 mod geometry;
-pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout};
+pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout, MAX_CALLOUT_TEXT_BYTES};
 #[cfg(windows)]
 pub(crate) use geometry::arrow_dot_radius;
 pub(crate) use geometry::rectangle_has_zero_axis;

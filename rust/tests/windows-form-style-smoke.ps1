@@ -150,7 +150,7 @@ function Hover-MenuItem([IntPtr]$Menu,[int]$Position) {
         [ShotKitFormStyleSmoke.Native]::MenuItemFromPoint([IntPtr]::Zero,$Menu,$p) -eq $Position -and $s -ne [uint32]::MaxValue -and ($s -band 0x83) -eq 0x80
     } 5 'enabled highlighted menu item')
 }
-$labels=@('Füllung: Keine','Füllung: Deckend','Füllung: Halbtransparent','Linie: Durchgezogen','Linie: Gestrichelt','Linie: Gepunktet','Rechteck-Ecken: Eckig','Rechteck-Ecken: Abgerundet','Pfeilenden: Einfach','Pfeilenden: Doppelt','Pfeilenden: Punkt')
+$labels=@('Füllung: Keine','Füllung: Deckend','Füllung: Halbtransparent','Linie: Durchgezogen','Linie: Gestrichelt','Linie: Gepunktet','Rechteck-Ecken: Eckig','Rechteck-Ecken: Abgerundet','Pfeilenden: Einfach','Pfeilenden: Doppelt','Pfeilenden: Punkt','Sprechblase: Füllfarbe …','Sprechblase: Textfarbe …','Sprechblase: Spitze ein / aus')
 $script:checked=@(0,3,6,8)
 $script:target='Any'
 function Style-Group([int]$Index) {if($Index -le 2){return 0};if($Index -le 5){return 1};if($Index -le 7){return 2};return 3}
@@ -159,7 +159,8 @@ function Style-Enabled([int]$Index) {
     if($Index -le 2){return $script:target -eq 'Rectangle'}
     if($Index -le 5){return $true}
     if($Index -le 7){return $script:target -eq 'Rectangle'}
-    return $script:target -eq 'Arrow'
+    if($Index -le 10){return $script:target -eq 'Arrow'}
+    return $script:target -eq 'Callout'
 }
 function Open-StyleMenu([switch]$Overflow) {
     if($Overflow){
@@ -182,8 +183,8 @@ function Open-StyleMenu([switch]$Overflow) {
         if($button.Text -cne 'Formstil…'){throw 'FORM_STYLE_BUTTON_LABEL.'}
         $menu=Open-Menu 0x5128
     }
-    if([ShotKitFormStyleSmoke.Native]::GetMenuItemCount($menu) -ne 11){throw 'FORM_STYLE_MENU_COUNT.'}
-    for($i=0;$i -lt 11;$i++){
+    if([ShotKitFormStyleSmoke.Native]::GetMenuItemCount($menu) -ne 14){throw 'FORM_STYLE_MENU_COUNT.'}
+    for($i=0;$i -lt 14;$i++){
         if([ShotKitFormStyleSmoke.Native]::GetMenuItemID($menu,$i) -ne (0x5170+$i) -or [ShotKitFormStyleSmoke.Native]::MenuText($menu,$i) -cne $labels[$i]){throw "FORM_STYLE_MENU_IDENTITY position=$i."}
         $state=[ShotKitFormStyleSmoke.Native]::GetMenuState($menu,$i,0x400)
         if($state -eq [uint32]::MaxValue -or (($state -band 8) -ne 0) -ne ($script:checked -contains $i)){throw "FORM_STYLE_CHECKMARK position=$i state=$state."}
