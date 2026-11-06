@@ -15,6 +15,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(windows)]
+pub mod recovery_windows;
+
 pub const CURRENT_VERSION: u32 = 1;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
