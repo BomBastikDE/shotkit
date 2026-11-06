@@ -31,6 +31,10 @@ namespace ShotKitSettingsRecoveryContract {
         static extern bool SetFilePointerEx(SafeFileHandle handle, long offset, out long position, uint method);
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool ReadFile(SafeFileHandle handle, byte[] bytes, uint size, out uint read, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool WriteFile(SafeFileHandle handle, byte[] bytes, uint size, out uint written, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool FlushFileBuffers(SafeFileHandle handle);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint size, uint flags);
 
@@ -40,6 +44,31 @@ namespace ShotKitSettingsRecoveryContract {
             int error = Marshal.GetLastWin32Error();
             if (h.IsInvalid) { h.Dispose(); throw new Win32Exception(error, "Open protected settings fixture"); }
             return h;
+        }
+        public static SafeFileHandle CreatePreparedTemp(string path, byte[] bytes) {
+            // CREATE_NEW never truncates an existing path. Retain WRITE for the
+            // complete payload and flush, DELETE for handle-based rename, and
+            // READ only for this probe's byte assertions. FILE_SHARE_READ denies
+            // competing writers/deleters while this prepared handle remains held.
+            SafeFileHandle h = CreateFileW(path, Read | Write | Delete, 1, IntPtr.Zero, 1, 0x80, IntPtr.Zero);
+            int error = Marshal.GetLastWin32Error();
+            if (h.IsInvalid) { h.Dispose(); throw new Win32Exception(error, "Create prepared settings temp"); }
+            try {
+                int offset = 0;
+                while (offset < bytes.Length) {
+                    byte[] remaining = new byte[bytes.Length - offset];
+                    Buffer.BlockCopy(bytes, offset, remaining, 0, remaining.Length);
+                    uint written;
+                    if (!WriteFile(h, remaining, (uint)remaining.Length, out written, IntPtr.Zero))
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Write prepared settings temp");
+                    if (written == 0 || written > remaining.Length)
+                        throw new InvalidOperationException("Prepared settings write made no valid progress.");
+                    offset = checked(offset + (int)written);
+                }
+                if (!FlushFileBuffers(h))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Flush prepared settings temp");
+                return h;
+            } catch { h.Dispose(); throw; }
         }
         public static int CompetingOpenError(string path, uint access, uint disposition) {
             using (SafeFileHandle h = CreateFileW(path, access, 7, IntPtr.Zero, disposition, 0x80, IntPtr.Zero)) {
@@ -143,6 +172,7 @@ function Write-ContractDiagnostic($Result, [string] $Stage) {
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('shotkit-settings-contract-' + [Guid]::NewGuid().ToString('N'))
 $held = $null
+$prepared = $null
 $created = $false
 $evidence = [ordered]@{}
 try {
@@ -217,7 +247,88 @@ try {
     Assert-Contract ([IO.File]::ReadAllText($backup, $utf8) -ceq $oldData) 'Closed-handle recovery path has incorrect bytes.'
     Assert-Contract ([IO.File]::ReadAllText($collision, $utf8) -ceq $collisionData) 'Existing recovery did not survive all operations.'
     $evidence.allThreePayloadsPreserved = $true
+
+    # Isolated candidate for a later normal save, separate from the existing
+    # recovery assertions above. Both renames reuse the still-held handles.
+    # This ordered probe does not establish crash durability or arbitrary-race safety.
+    $saveData = '{"fixture":"complete-normal-save","values":[1,2,3]}'
+    $saveBytes = $utf8.GetBytes($saveData)
+    $saveEvidence = [ordered]@{}
+    foreach ($scenario in @('success', 'foreign-create')) {
+        $saveSource = Join-Path $testRoot ("settings.save-$scenario.json")
+        $saveBackup = Join-Path $testRoot ("settings.save-$scenario.recovery.json")
+        $saveTemp = Join-Path $testRoot ("settings.save-$scenario.tmp")
+        [IO.File]::WriteAllText($saveSource, $oldData, $utf8)
+        $held = [ShotKitSettingsRecoveryContract.Native]::OpenProtected($saveSource)
+        $prepared = [ShotKitSettingsRecoveryContract.Native]::CreatePreparedTemp($saveTemp, $saveBytes)
+        Assert-Contract ([ShotKitSettingsRecoveryContract.Native]::ReadHeld($prepared) -ceq $saveData) "$scenario prepared temp does not contain the complete payload."
+        $preparedCreateError = [ShotKitSettingsRecoveryContract.Native]::CompetingOpenError($saveTemp, [ShotKitSettingsRecoveryContract.Native]::Write, 1)
+        $preparedWriteError = [ShotKitSettingsRecoveryContract.Native]::CompetingOpenError($saveTemp, [ShotKitSettingsRecoveryContract.Native]::Write, 3)
+        $preparedDeleteError = [ShotKitSettingsRecoveryContract.Native]::CompetingOpenError($saveTemp, [ShotKitSettingsRecoveryContract.Native]::Delete, 3)
+        Assert-Contract ($preparedCreateError -in @(80, 183)) "$scenario prepared temp must reject CREATE_NEW, got $preparedCreateError."
+        Assert-Contract ($preparedWriteError -eq 32) "$scenario prepared temp must reject competing WRITE access, got $preparedWriteError."
+        Assert-Contract ($preparedDeleteError -eq 32) "$scenario prepared temp must reject competing DELETE access, got $preparedDeleteError."
+
+        $saveBackupResult = [ShotKitSettingsRecoveryContract.Native]::RenameWithoutReplace($held, $saveBackup)
+        if (-not $saveBackupResult.Success) { Write-ContractDiagnostic $saveBackupResult "$scenario save backup" }
+        Assert-Contract ($saveBackupResult.Success -and $saveBackupResult.Error -eq 0) "$scenario could not preserve original through its protected handle: Win32 $($saveBackupResult.Error)."
+        Assert-Contract (-not [IO.File]::Exists($saveSource)) "$scenario save backup retained the original name."
+        Assert-Contract ([IO.File]::Exists($saveBackup)) "$scenario save backup path is missing."
+        Assert-Contract ([ShotKitSettingsRecoveryContract.Native]::ReadHeld($held) -ceq $oldData) "$scenario save backup changed original bytes."
+
+        if ($scenario -eq 'foreign-create') {
+            # Deterministically interleave a foreign CREATE_NEW after backup and
+            # before the prepared-handle rename. Closing it makes the collision
+            # depend on NoReplace, rather than a sharing violation.
+            $foreign = [IO.File]::Open($saveSource, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try {
+                $foreignBytes = $utf8.GetBytes($newData)
+                $foreign.Write($foreignBytes, 0, $foreignBytes.Length)
+                $foreign.Flush($true)
+            } finally { $foreign.Dispose() }
+        }
+
+        $saveResult = [ShotKitSettingsRecoveryContract.Native]::RenameWithoutReplace($prepared, $saveSource)
+        if ($scenario -eq 'success') {
+            if (-not $saveResult.Success) { Write-ContractDiagnostic $saveResult 'prepared save commit' }
+            Assert-Contract ($saveResult.Success -and $saveResult.Error -eq 0) "Prepared save rename failed: Win32 $($saveResult.Error)."
+            Assert-Contract ([IO.File]::Exists($saveSource)) 'Prepared save did not create the original name.'
+            Assert-Contract (-not [IO.File]::Exists($saveTemp)) 'Prepared save retained its temporary name.'
+        } else {
+            if ($saveResult.Success -or $saveResult.Error -notin @(80, 183)) {
+                Write-ContractDiagnostic $saveResult 'prepared save foreign collision'
+            }
+            Assert-Contract (-not $saveResult.Success) 'Prepared save unexpectedly replaced foreign settings.'
+            Assert-Contract ($saveResult.Error -in @(80, 183)) "Prepared save must reject a foreign target with FILE_EXISTS/ALREADY_EXISTS, got $($saveResult.Error)."
+            Assert-Contract ([IO.File]::ReadAllText($saveSource, $utf8) -ceq $newData) 'Prepared save changed foreign settings bytes.'
+            Assert-Contract ([IO.File]::Exists($saveTemp)) 'Rejected prepared save lost its temporary name.'
+        }
+        Assert-Contract ([ShotKitSettingsRecoveryContract.Native]::ReadHeld($prepared) -ceq $saveData) "$scenario save changed the prepared payload."
+        Assert-Contract ([ShotKitSettingsRecoveryContract.Native]::ReadHeld($held) -ceq $oldData) "$scenario save changed the protected original backup."
+        $prepared.Dispose()
+        $prepared = $null
+        $held.Dispose()
+        $held = $null
+        Assert-Contract ([IO.File]::ReadAllText($saveBackup, $utf8) -ceq $oldData) "$scenario closed-handle save backup has incorrect bytes."
+        if ($scenario -eq 'success') {
+            Assert-Contract ([IO.File]::ReadAllText($saveSource, $utf8) -ceq $saveData) 'Committed normal-save bytes are incomplete or incorrect.'
+        } else {
+            Assert-Contract ([IO.File]::ReadAllText($saveTemp, $utf8) -ceq $saveData) 'Rejected normal-save temporary bytes were lost.'
+            Assert-Contract ([IO.File]::ReadAllText($saveSource, $utf8) -ceq $newData) 'Foreign settings did not survive closing the save handles.'
+        }
+        $saveEvidence[$scenario] = [ordered]@{
+            originalBackupPreserved = $true
+            preparedPayloadPreserved = $true
+            renameSuccess = $saveResult.Success
+            renameError = $saveResult.Error
+            createNewCollisionError = $preparedCreateError
+            competingWriterError = $preparedWriteError
+            competingDeleteError = $preparedDeleteError
+        }
+    }
+    $evidence.preparedNormalSave = $saveEvidence
 } finally {
+    if ($null -ne $prepared) { $prepared.Dispose() }
     if ($null -ne $held) { $held.Dispose() }
     if ($created) {
         Assert-Contract (([IO.File]::GetAttributes($testRoot) -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'Refusing cleanup through a reparse-point test root.'
