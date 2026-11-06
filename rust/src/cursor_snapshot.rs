@@ -275,20 +275,31 @@ mod native {
         mask: Handle,
         color: Handle,
     }
-    impl Drop for OwnedBitmaps {
-        fn drop(&mut self) {
+    impl OwnedBitmaps {
+        /// Release both owned bitmaps and report the actual Win32 results.
+        /// Consuming the handles also makes an explicit release safe before Drop.
+        fn release(&mut self) -> bool {
+            let mask = std::mem::replace(&mut self.mask, null_mut());
+            let color = std::mem::replace(&mut self.color, null_mut());
+            let mut released = true;
             // SAFETY CONTRACT: GetIconInfo allocated these bitmaps for this
             // owner. They are never selected into any DC, exposed or retained.
-            // Clean up on every return; guard aliasing even for malformed output.
-            // DeleteObject does not dispatch application messages.
+            // The consumed fields prevent repeat deletion; guard aliasing even
+            // for malformed output. DeleteObject dispatches no app messages.
             unsafe {
-                if !self.mask.is_null() {
-                    DeleteObject(self.mask);
+                if !mask.is_null() {
+                    released &= DeleteObject(mask) != 0;
                 }
-                if !self.color.is_null() && self.color != self.mask {
-                    DeleteObject(self.color);
+                if !color.is_null() && color != mask {
+                    released &= DeleteObject(color) != 0;
                 }
             }
+            released
+        }
+    }
+    impl Drop for OwnedBitmaps {
+        fn drop(&mut self) {
+            self.release();
         }
     }
     struct ScreenDc(Handle);
@@ -599,8 +610,11 @@ mod native {
             // CreateCursor consumes WORD-aligned monochrome rows, unlike the
             // DWORD-aligned DIB rows used by the extraction path.
             let stride = w.div_ceil(16) * 2;
-            let mut and_bits = vec![0; stride * h];
-            let mut xor_bits = vec![0; stride * h];
+            // Keep the FFI planes byte-typed: casting their pointers to c_void
+            // otherwise lets unsuffixed zero/bit operations infer Vec<i32>,
+            // inserting three zero bytes after each packed mask byte.
+            let mut and_bits = vec![0u8; stride * h];
+            let mut xor_bits = vec![0u8; stride * h];
             let mut expected_and = vec![0; w * h];
             let mut expected_xor = vec![0; w * h * 3];
             for y in 0..h {
@@ -701,20 +715,21 @@ mod native {
             // SAFETY CONTRACT: live owned cursor and exclusive initialized
             // repr(C) output; successful bitmap allocations are guarded below.
             assert_ne!(unsafe { GetIconInfo(source.0, &mut info) }, 0);
-            let bitmaps = OwnedBitmaps {
+            let mut bitmaps = OwnedBitmaps {
                 mask: info.mask,
                 color: info.color,
             };
             assert!(!bitmaps.mask.is_null());
             assert!(bitmaps.color.is_null(), "fixture must be monochrome");
             assert!(metadata(bitmaps.mask).is_ok());
-            let released_mask = bitmaps.mask;
+            // Exercise the exact cleanup used by Drop and require the actual
+            // DeleteObject success result. Querying a stale handle afterward
+            // cannot prove release: NULL GetObjectW is only a size query, and
+            // other test threads can allocate GDI handles concurrently.
+            assert!(bitmaps.release(), "DeleteObject failed for owned bitmap");
+            assert!(bitmaps.mask.is_null());
+            assert!(bitmaps.color.is_null());
             drop(bitmaps);
-            // SAFETY CONTRACT: GetObjectW accepts an object handle and reports
-            // invalid/deleted handles as failure; no freed memory is dereferenced
-            // by Rust. NULL output with size=0 only queries required buffer size.
-            // No allocation occurs on this thread between deletion and query.
-            assert_eq!(unsafe { GetObjectW(released_mask, 0, null_mut()) }, 0);
             // Source cursor remains independently live after its bitmap copies
             // were deleted; a second extraction must allocate fresh copies.
             // SAFETY CONTRACT: the source is still a live private HCURSOR;
