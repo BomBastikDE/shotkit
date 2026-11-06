@@ -65,6 +65,12 @@ pub fn render_preview(
     let prefix = shapes
         .get(..stable_count)
         .ok_or("Ungültiger Vorschau-Präfix.")?;
+    // An empty prefix is just the source image. Rendering it into the cache
+    // would retain a redundant full-size pixel buffer and copy it again below.
+    if prefix.is_empty() {
+        *cache = None;
+        return render_document(source, shapes);
+    }
     // Bound retained memory for very large or scroll captures.
     if source.pixels.len() > 128 * 1024 * 1024 {
         *cache = None;
@@ -641,6 +647,52 @@ mod tests {
                 assert_eq!(&result.pixels[i..i + 4], &expected);
             }
         }
+    }
+
+    #[test]
+    fn empty_preview_prefix_matches_document_and_releases_previous_cache() {
+        use crate::shapes::Point;
+        let source = Arc::new(
+            Image::new(
+                32,
+                24,
+                (0..32 * 24)
+                    .flat_map(|i| [i as u8, (i * 3) as u8, 42, [0, 128, 255][i % 3]])
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(2.0, 2.0),
+            end: Point::new(28.0, 20.0),
+        });
+        let mut cache = None;
+        render_preview(&source, std::slice::from_ref(&blur), 1, &mut cache).unwrap();
+        assert!(cache.is_some());
+        assert_eq!(Arc::strong_count(&source), 2);
+
+        // Only the cache retains this old source now. Clearing the cache must
+        // drop its ownership, together with its independently rendered pixels.
+        let previous_source = Arc::downgrade(&source);
+        let replacement = Arc::new((*source).clone());
+        drop(source);
+        assert!(previous_source.upgrade().is_some());
+        for shapes in [vec![blur], vec![]] {
+            assert_eq!(
+                render_preview(&replacement, &shapes, 0, &mut cache).unwrap(),
+                render_document(&replacement, &shapes).unwrap()
+            );
+            assert!(cache.is_none());
+            assert!(previous_source.upgrade().is_none());
+            assert_eq!(Arc::strong_count(&replacement), 1);
+        }
+        assert!(render_preview(&replacement, &[], 1, &mut cache).is_err());
+        let malformed = Arc::new(Image {
+            width: 1,
+            height: 1,
+            pixels: vec![],
+        });
+        assert!(render_preview(&malformed, &[], 0, &mut cache).is_err());
     }
 
     #[test]

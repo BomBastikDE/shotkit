@@ -82,7 +82,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             stable_count,
         )
     };
-    let rendered = if preview {
+    let mut rendered = if preview {
         // Take the cache out before GDI+ rendering: nested window messages may
         // paint again, so no RefCell borrow or window-state reference may span it.
         let shared = Rc::clone(&window_state(h).preview_cache);
@@ -98,12 +98,10 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     // preview against a checkerboard so transparent source pixels and
     // translucent annotations are displayed using the same source-over math
     // as the document renderer. Export continues to use the original alpha.
-    let display_image = if preview {
-        shotkit::alpha_composite::flatten_checkerboard(&rendered)?
-    } else {
-        rendered
-    };
-    let output = create_bitmap(&display_image)?;
+    if preview {
+        shotkit::alpha_composite::flatten_checkerboard_in_place(&mut rendered)?;
+    }
+    let output = create_bitmap(&rendered)?;
     if !preview || (tool != Tool::Crop && tool != Tool::Select && !moving_selection) {
         return Ok(output);
     }
