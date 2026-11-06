@@ -180,6 +180,12 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
 # native menu is built; it never selects or writes the autostart entry.
 function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [uint32] $Id, [string] $Label, [bool] $Before) {
     if ($env:GITHUB_ACTIONS -cne 'true') { throw 'TRAY_SETTINGS_CI_ONLY: refusing to open the menu outside GitHub Actions.' }
+    # Record the terminal save events before this click, so an earlier save
+    # cannot satisfy the wait for this action.
+    $script:traySaveBaseline=0
+    if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
+        $script:traySaveBaseline=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'}).Count
+    }
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($Main,0x8001,[IntPtr]1,[IntPtr]0x0205)) { throw 'Could not post tray callback.' }
     $popup=Wait-ForCondition -Seconds 10 -Description 'native tray menu' -OwnedProcess $Process -Condition {
         Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'} | Select-Object -First 1
@@ -193,10 +199,23 @@ function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [u
     $afterClick=[ShotKitOutputMatrixSmoke.Native]::MenuAfterClick($popup.Handle,$child.Handle)
     $script:trayDiagnostic="before click: $beforeClick; after dismissal: $afterClick"
 }
-function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder) {
+function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder, [bool] $WaitForSave = $false) {
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
+    $saveComplete=($WaitForSave -eq $false)
     do {
         if($shotKit.HasExited){throw 'ShotKit exited while waiting for persisted settings.'}
+        if(-not $saveComplete) {
+            $events=@()
+            if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
+                $events=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'})
+            }
+            if($events.Count -gt $script:traySaveBaseline) {
+                $newEvents=@($events | Select-Object -Skip $script:traySaveBaseline)
+                if(@($newEvents | Where-Object {$_ -match '^settings_save_stage=(failed|blocked)(\s|$)'}).Count -gt 0) { throw 'ShotKit reported a settings save failure after the tray click.' }
+                $saveComplete=@($newEvents | Where-Object {$_ -ceq 'settings_save_stage=success'}).Count -gt 0
+            }
+            if(-not $saveComplete) { Start-Sleep -Milliseconds 100; continue }
+        }
         $raw=Get-Content -LiteralPath $Path -Raw
         $value=$raw | ConvertFrom-Json
         if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
@@ -212,7 +231,7 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
         }) -join '; '
     }
     $visibleOwnDialogs=@(Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'}).Count
-    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic; visibleOwnDialogs=$visibleOwnDialogs"
+    throw "Timed out waiting for expected persisted settings; saveComplete=$saveComplete last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic; visibleOwnDialogs=$visibleOwnDialogs"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
@@ -424,11 +443,11 @@ Write-Stage 'constructing surface and entering message loop'
         $owner=Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1
         if($null -eq $owner){throw 'ShotKit owner window missing.'}
         Set-TrayOutputOption $shotKit $owner.Handle 101 'Nach Aufnahme Editor öffnen' $true
-        Assert-TraySettings $settingsPath $false $true $false $saveFolder
+        Assert-TraySettings $settingsPath $false $true $false $saveFolder $true
         Set-TrayOutputOption $shotKit $owner.Handle 102 'In Zwischenablage kopieren' $true
-        Assert-TraySettings $settingsPath $false $false $false $saveFolder
+        Assert-TraySettings $settingsPath $false $false $false $saveFolder $true
         Set-TrayOutputOption $shotKit $owner.Handle 103 'Automatisch als PNG speichern' $false
-        Assert-TraySettings $settingsPath $false $false $true $saveFolder
+        Assert-TraySettings $settingsPath $false $false $true $saveFolder $true
         $shotKit.Kill()
         if(-not $shotKit.WaitForExit(5000) -or -not $shotKit.HasExited){throw 'ShotKit did not exit before persistence restart.'}
         $shotKit.Dispose(); $shotKit=$null

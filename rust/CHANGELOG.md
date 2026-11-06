@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Der Windows-Ausgabetest wartet nach Änderungen im Tray-Menü auf den Abschluss des jeweiligen Speichervorgangs, bevor er die Einstellungsdatei prüft ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+
 - Ein Windows-Test prüft das Verhalten beim Ersetzen der Einstellungsdatei, während ein Leser auch die Löschfreigabe erteilt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
 
 - Bei horizontalen Scrollaufnahmen bleibt das zuletzt gültige Bild erhalten, wenn eine Drehung nicht reserviert werden kann. Muss die Schlussdrehung nachgeholt werden, wird die Aufnahme ausdrücklich zur Wiederherstellung zurückgehalten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
