@@ -37,6 +37,13 @@ namespace ShotKitCalloutSmoke {
   [DllImport("user32.dll",SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h,uint m,IntPtr w,IntPtr l,uint f,uint ms,out IntPtr r);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
+  [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr owner,IntPtr menu,uint position,out Rect r);
+  [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
+  [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu,int position);
+  [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr menu,uint position,uint flags);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu,uint position,StringBuilder text,int count,uint flags);
+  [DllImport("user32.dll")] public static extern int MenuItemFromPoint(IntPtr owner,IntPtr menu,Point p);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
@@ -54,6 +61,11 @@ namespace ShotKitCalloutSmoke {
   public static string EditText(IntPtr h){long n=SendMessageW(h,0x000E,IntPtr.Zero,IntPtr.Zero).ToInt64();if(n<0||n>100000)throw new Exception("Invalid WM_GETTEXTLENGTH.");var s=new StringBuilder((int)n+1);long copied=SendMessageText(h,0x000D,(IntPtr)s.Capacity,s).ToInt64();if(copied<0||copied>s.Capacity-1)throw new Exception("Invalid WM_GETTEXT result.");return s.ToString(0,(int)copied);}
   public static void SetText(IntPtr h,string text){IntPtr p=Marshal.StringToHGlobalUni(text),r;try{if(SendMessageTimeoutW(h,0x000C,IntPtr.Zero,p,2,3000,out r)==IntPtr.Zero)throw new TimeoutException("WM_SETTEXT failed or timed out.");}finally{Marshal.FreeHGlobal(p);}}
   public static void Click(IntPtr h){IntPtr r;if(SendMessageTimeoutW(h,0x00F5,IntPtr.Zero,IntPtr.Zero,2,3000,out r)==IntPtr.Zero)throw new TimeoutException("BM_CLICK failed or timed out.");}
+  public static IntPtr Menu(IntPtr popup){IntPtr r;return SendMessageTimeoutW(popup,0x01e1,IntPtr.Zero,IntPtr.Zero,2,500,out r)==IntPtr.Zero?IntPtr.Zero:r;}
+  public static int MenuCount(IntPtr m){return GetMenuItemCount(m);}
+  public static uint MenuId(IntPtr m,int p){return GetMenuItemID(m,p);}
+  public static uint MenuState(IntPtr m,uint p){return GetMenuState(m,p,0x400);}
+  public static string MenuText(IntPtr m,uint p){var s=new StringBuilder(512);GetMenuStringW(m,p,s,s.Capacity,0x400);return s.ToString();}
  }
 }
 '@
@@ -115,6 +127,82 @@ function Save-Hash([string]$PreviousHash,[string]$ExpectedHash) {
         }catch{}
     } 15 'expected callout export hash'
 }
+function Wait-Menu([string]$What) {
+    Wait-For {
+        $items=@(Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32768'})
+        if($items.Count -gt 1){throw "NATIVE_MENU_AMBIGUOUS waiting for $What."}
+        if($items.Count -eq 1){$m=[ShotKitCalloutSmoke.N]::Menu($items[0].H);if($m -ne [IntPtr]::Zero){return [pscustomobject]@{Window=$items[0];Handle=$m}}}
+    } 5 $What
+}
+function Select-CalloutMenu([int]$CommandId) {
+    [void][ShotKitCalloutSmoke.N]::SetForegroundWindow($main.H)
+    $button=Child-ById $main.H 0x5128
+    if($button.ClassName -ne 'Button'){throw 'FORM_STYLE_BUTTON_NOT_BUTTON.'}
+    $r=[ShotKitCalloutSmoke.Rect]::new();if(-not [ShotKitCalloutSmoke.N]::GetWindowRect($button.H,[ref]$r)){throw 'FORM_STYLE_BUTTON_RECT_FAILED.'}
+    $x=[int](($r.Left+$r.Right)/2);$y=[int](($r.Top+$r.Bottom)/2)
+    if(-not [ShotKitCalloutSmoke.N]::SetCursorPos($x,$y)){throw 'FORM_STYLE_CURSOR_FAILED.'}
+    [ShotKitCalloutSmoke.N]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[ShotKitCalloutSmoke.N]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+    $popup=Wait-Menu 'native form-style menu'
+    $matches=@(0..([ShotKitCalloutSmoke.N]::MenuCount($popup.Handle)-1)|Where-Object {[ShotKitCalloutSmoke.N]::MenuId($popup.Handle,$_) -eq $CommandId})
+    if($matches.Count -ne 1){throw "FORM_STYLE_MENU_COMMAND_MISSING id=0x$('{0:X}' -f $CommandId)."}
+    $pos=[int]$matches[0];$label=[ShotKitCalloutSmoke.N]::MenuText($popup.Handle,[uint32]$pos)
+    $expected=switch($CommandId){0x517B {'Sprechblase: Füllfarbe …'} 0x517C {'Sprechblase: Textfarbe …'} 0x517D {'Sprechblase: Spitze ein / aus'} default {throw 'INVALID_CALLOUT_STYLE_COMMAND.'}}
+    if($label -cne $expected){throw "FORM_STYLE_MENU_LABEL id=$CommandId actual=<$label>."}
+    $state=[ShotKitCalloutSmoke.N]::MenuState($popup.Handle,[uint32]$pos)
+    if($state -eq [uint32]::MaxValue -or ($state -band 3) -ne 0){throw "FORM_STYLE_MENU_DISABLED id=$CommandId state=$state."}
+    $rect=[ShotKitCalloutSmoke.Rect]::new();if(-not [ShotKitCalloutSmoke.N]::GetMenuItemRect([IntPtr]::Zero,$popup.Handle,[uint32]$pos,[ref]$rect)){throw 'FORM_STYLE_MENU_ITEM_RECT_FAILED.'}
+    $x=[int](($rect.Left+$rect.Right)/2);$y=[int](($rect.Top+$rect.Bottom)/2)
+    if(-not [ShotKitCalloutSmoke.N]::SetCursorPos($x,$y)){throw 'FORM_STYLE_MENU_CURSOR_FAILED.'}
+    $point=[ShotKitCalloutSmoke.Point]::new();$point.X=$x;$point.Y=$y
+    if([ShotKitCalloutSmoke.N]::MenuItemFromPoint([IntPtr]::Zero,$popup.Handle,$point) -ne $pos){throw "FORM_STYLE_MENU_HITTEST_MISMATCH id=$CommandId."}
+    [ShotKitCalloutSmoke.N]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[ShotKitCalloutSmoke.N]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+    if($CommandId -eq 0x517D){[void](Wait-For {-not @(Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32768'}).Count} 5 'callout pointer menu close')}
+}
+function Choose-CalloutColor([int]$CommandId,[int]$Red,[int]$Green,[int]$Blue) {
+    $pre=@(Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+    if($pre.Count){throw "COLOR_PREEXISTING_DIALOG titles=[$(($pre|ForEach-Object {$_.Title}) -join ';')]."}
+    Select-CalloutMenu $CommandId
+    $dialog=Wait-For {
+        $dialogs=@(Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+        if($dialogs.Count -gt 1){throw 'COLOR_DIALOG_AMBIGUOUS.'}
+        if($dialogs.Count -eq 1){
+            $candidate=$dialogs[0];$controls=@([ShotKitCalloutSmoke.N]::Children($candidate.H))
+            $ready=$true
+            foreach($id in @(706,707,708)){$e=@($controls|Where-Object {$_.Visible -and $_.Id -eq $id -and $_.ClassName -eq 'Edit'});if($e.Count -gt 1){throw "COLOR_EDIT_AMBIGUOUS id=$id."};if($e.Count -ne 1){$ready=$false}}
+            if($ready){if([ShotKitCalloutSmoke.N]::Owner($candidate.H) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'};return $candidate}
+        }
+    } 10 'native callout color dialog with RGB edits'
+    foreach($v in @(@{Id=706;Value="$Red"},@{Id=707;Value="$Green"},@{Id=708;Value="$Blue"})){
+        $e=@([ShotKitCalloutSmoke.N]::Children($dialog.H)|Where-Object {$_.Visible -and $_.Id -eq $v.Id -and $_.ClassName -eq 'Edit'})
+        if($e.Count -ne 1 -or [ShotKitCalloutSmoke.N]::Owner($e[0].H) -ne $proc.Id){throw "COLOR_EDIT_IDENTITY id=$($v.Id)."}
+        [ShotKitCalloutSmoke.N]::SetText($e[0].H,$v.Value)
+        if([ShotKitCalloutSmoke.N]::EditText($e[0].H) -cne $v.Value){throw "COLOR_EDIT_READBACK id=$($v.Id)."}
+    }
+    Click-Id $dialog.H 1
+    [void](Wait-For {@([ShotKitCalloutSmoke.N]::Windows($proc.Id)|Where-Object {$_.H -eq $dialog.H -and $_.Visible}).Count -eq 0} 10 'native color dialog close')
+}
+function Read-ExportPixels {
+    $bmp=[Drawing.Bitmap]::new($inputPath)
+    try {
+        if($bmp.Width -ne 320 -or $bmp.Height -ne 240){throw 'CALLOUT_EXPORT_DIMENSIONS.'}
+        $pixels=[byte[]]::new(320*240*4)
+        for($y=0;$y -lt 240;$y++){for($x=0;$x -lt 320;$x++){$c=$bmp.GetPixel($x,$y);$o=($y*320+$x)*4;$pixels[$o]=$c.R;$pixels[$o+1]=$c.G;$pixels[$o+2]=$c.B;$pixels[$o+3]=$c.A}}
+        $sha=[Security.Cryptography.SHA256]::Create();try{$hash=[Convert]::ToBase64String($sha.ComputeHash($pixels))}finally{$sha.Dispose()}
+        return [pscustomobject]@{Pixels=$pixels;Hash=$hash}
+    }finally{$bmp.Dispose()}
+}
+function Save-Pixels([string]$PreviousHash,[string]$ExpectedHash,[string]$What) {
+    Click-Id $main.H 0x5110
+    Wait-For {try{if((Test-Path -LiteralPath $inputPath) -and (Get-Item -LiteralPath $inputPath).Length -gt 50){$v=Read-ExportPixels;if(((!$ExpectedHash) -and $v.Hash -cne $PreviousHash) -or ($ExpectedHash -and $v.Hash -ceq $ExpectedHash)){return $v}}}catch{}} 15 $What
+}
+function Assert-ColorPixels($Image,[int]$Red,[int]$Green,[int]$Blue,[int]$Minimum,[string]$What) {
+    $count=Color-Count $Image $Red $Green $Blue
+    if($count -lt $Minimum){throw "$What pixels missing: exact RGB($Red,$Green,$Blue) count=$count expected>=$Minimum."}
+}
+function Color-Count($Image,[int]$Red,[int]$Green,[int]$Blue) {
+    $count=0;for($o=0;$o -lt $Image.Pixels.Length;$o+=4){if($Image.Pixels[$o] -eq $Red -and $Image.Pixels[$o+1] -eq $Green -and $Image.Pixels[$o+2] -eq $Blue -and $Image.Pixels[$o+3] -gt 0){$count++}}
+    return $count
+}
 
 try {
     New-Item -ItemType Directory -Path $root,$appData,$localAppData -Force|Out-Null
@@ -158,7 +246,48 @@ try {
     Click-Id $main.H 0x5113
     $redoHash=Save-Hash $createdHash $editedHash
     if($redoHash -cne $editedHash){throw 'CALLOUT_REDO_DID_NOT_RESTORE_EDITED_STATE.'}
-    Write-Output 'PASS: Callout toolbar ID 0x510F selected; native multiline text was created and saved; canvas double-click reopened the exact text; edited export changed; Undo restored the created export and Redo restored the edited export.'
+    # Select the callout again before applying its shape-specific style actions.
+    Click-Id $main.H 0x5101
+    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug Select*'}|Select-Object -First 1} 5 'Select tool for callout styles')
+    Canvas-Click 75 65
+    $styleBase=Read-ExportPixels
+
+    Choose-CalloutColor 0x517B 20 140 240
+    $fillState=Save-Pixels $styleBase.Hash $null 'callout fill color export'
+    Assert-ColorPixels $fillState 20 140 240 500 'CALL_OUT_FILL'
+
+    Choose-CalloutColor 0x517C 220 30 40
+    $textState=Save-Pixels $fillState.Hash $null 'callout text color export'
+    Assert-ColorPixels $textState 20 140 240 500 'CALL_OUT_FILL_PRESERVED'
+    # Compare a padded body pixel away from the glyphs and the rounded edge.
+    $sample=(47*320+65)*4
+    if($fillState.Pixels[$sample] -ne 20 -or $fillState.Pixels[$sample+1] -ne 140 -or $fillState.Pixels[$sample+2] -ne 240 -or $fillState.Pixels[$sample+3] -ne 255){throw 'CALLOUT_BODY_SAMPLE_NOT_FILL.'}
+    foreach($channel in 0..3){if($fillState.Pixels[$sample+$channel] -ne $textState.Pixels[$sample+$channel]){throw 'CALLOUT_TEXT_COLOR_CHANGED_BODY_SAMPLE.'}}
+    Assert-ColorPixels $textState 220 30 40 8 'CALL_OUT_TEXT_COLOR'
+
+    Select-CalloutMenu 0x517D
+    $tipOff=Save-Pixels $textState.Hash $null 'callout tip removal export'
+    if($tipOff.Hash -ceq $textState.Hash){throw 'CALLOUT_TIP_REMOVAL_EXPORT_UNCHANGED.'}
+    Select-CalloutMenu 0x517D
+    $tipOn=Save-Pixels $tipOff.Hash $textState.Hash 'callout tip restoration export'
+
+    Click-Id $main.H 0x5112
+    [void](Save-Pixels $tipOn.Hash $tipOff.Hash 'undo restoring callout without tip')
+    Click-Id $main.H 0x5112
+    [void](Save-Pixels $tipOff.Hash $textState.Hash 'undo restoring callout text color')
+    Click-Id $main.H 0x5112
+    [void](Save-Pixels $textState.Hash $fillState.Hash 'undo restoring callout fill color')
+    Click-Id $main.H 0x5112
+    [void](Save-Pixels $fillState.Hash $styleBase.Hash 'undo restoring original callout style')
+    Click-Id $main.H 0x5113
+    [void](Save-Pixels $styleBase.Hash $fillState.Hash 'redo restoring callout fill color')
+    Click-Id $main.H 0x5113
+    [void](Save-Pixels $fillState.Hash $textState.Hash 'redo restoring callout text color')
+    Click-Id $main.H 0x5113
+    [void](Save-Pixels $textState.Hash $tipOff.Hash 'redo restoring callout without tip')
+    Click-Id $main.H 0x5113
+    [void](Save-Pixels $tipOff.Hash $tipOn.Hash 'redo restoring callout tip')
+    Write-Output 'PASS: Callout creation and text history; native menu IDs 0x517B/0x517C changed fill and text independently; 0x517D removed/restored the tip; decoded PNG exports verified all four Undo and Redo states.'
 }
 catch{$failure=$_}
 finally{
