@@ -33,7 +33,7 @@ namespace ShotKitCanvasSmoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
@@ -49,6 +49,10 @@ namespace ShotKitCanvasSmoke {
   public static Win[] Windows(int pid){var a=new List<Win>();EnumProc cb=(h,d)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==(uint)pid)a.Add(new Win{H=h,Pid=(int)p,ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray();}
   public static Btn[] Buttons(IntPtr parent){var a=new List<Btn>();EnumProc cb=(h,d)=>{if(Read(h,true).Equals("Button",StringComparison.OrdinalIgnoreCase))a.Add(new Btn{H=h,Id=GetDlgCtrlID(h),Text=Read(h,false),Visible=IsWindowVisible(h)});return true;};EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray();}
   public static int Owner(IntPtr h){uint p;GetWindowThreadProcessId(h,out p);return (int)p;}
+  public static bool HasExactStaticText(IntPtr parent,string expected) {
+   int matches=0;EnumProc cb=(h,d)=>{if(Read(h,true)=="Static"&&Read(h,false)==expected)matches++;return true;};
+   EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return matches==1;
+  }
   [DllImport("user32.dll",CharSet=CharSet.Unicode,EntryPoint="SendMessageTimeoutW")] static extern IntPtr SendTimeoutText(IntPtr h,uint m,IntPtr w,string l,uint flags,uint timeout,out IntPtr result);
   [DllImport("user32.dll",CharSet=CharSet.Unicode,EntryPoint="SendMessageTimeoutW")] static extern IntPtr ReadTimeoutText(IntPtr h,uint m,IntPtr w,StringBuilder l,uint flags,uint timeout,out IntPtr result);
   [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW")] static extern IntPtr SendTimeout(IntPtr h,uint m,IntPtr w,IntPtr l,uint flags,uint timeout,out IntPtr result);
@@ -181,9 +185,33 @@ function Dialog-Button($Dialog,[int]$Id,[string]$Text) {
  $b=Button $Dialog.H $Id $Text
  if(-not [ShotKitCanvasSmoke.N]::PostMessageW($b.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'DIALOG_BUTTON_POST_FAILED'}
 }
-function Close-Canvas($Dialog,[int]$Id=1,[string]$Text='Übernehmen') {
+function Confirm-RedoDiscard([int]$ExpectedRedo) {
+ $expectedText="Für diese Bearbeitung werden 0 ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+ $dialog=Wait-For {
+  $dialogs=@(Owned-Dialogs)
+  if(-not $dialogs.Count){return $null}
+  if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG'}
+  $candidate=$dialogs[0]
+  if([ShotKitCanvasSmoke.N]::Owner($candidate.H) -ne $process.Id -or [ShotKitCanvasSmoke.N]::GetWindow($candidate.H,4) -ne $main.H -or [ShotKitCanvasSmoke.N]::IsWindowEnabled($main.H)){throw 'REDO_CONFIRMATION_OWNER_OR_MODALITY_MISMATCH'}
+  return $candidate
+ } 'expected owned Redo-discard confirmation' $ActionTimeoutSeconds
+ $yes=Wait-For {
+  if(-not [ShotKitCanvasSmoke.N]::IsWindow($dialog.H)){throw 'REDO_CONFIRMATION_CLOSED_BEFORE_APPROVAL'}
+  if(-not [ShotKitCanvasSmoke.N]::HasExactStaticText($dialog.H,$expectedText)){return $null}
+  $yes=[ShotKitCanvasSmoke.N]::ReadyControl($dialog.H,6,'Button',$process.Id)
+  $no=[ShotKitCanvasSmoke.N]::ReadyControl($dialog.H,7,'Button',$process.Id)
+  if($yes -eq [IntPtr]::Zero -or $no -eq [IntPtr]::Zero){return $null}
+  $buttons=@([ShotKitCanvasSmoke.N]::Buttons($dialog.H)|Where-Object{$_.Visible})
+  if($buttons.Count -ne 2){throw 'REDO_CONFIRMATION_BUTTON_COUNT_MISMATCH'}
+  if([ShotKitCanvasSmoke.N]::IsWindowEnabled($yes)){return $yes}
+ } 'exact Redo-discard counts/text and IDYES/IDNO buttons' $ActionTimeoutSeconds
+ if(-not [ShotKitCanvasSmoke.N]::PostMessageW($yes,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'REDO_CONFIRMATION_YES_FAILED'}
+ [void](Wait-For {-not [ShotKitCanvasSmoke.N]::IsWindow($dialog.H) -and [ShotKitCanvasSmoke.N]::IsWindowEnabled($main.H)} 'Redo-discard confirmation completed' $ActionTimeoutSeconds)
+}
+function Close-Canvas($Dialog,[int]$Id=1,[string]$Text='Übernehmen',[int]$ExpectedRedoDiscard=0) {
  Dialog-Button $Dialog $Id $Text
  [void](Wait-For {if(-not [ShotKitCanvasSmoke.N]::IsWindow($Dialog.H)){return $true}} 'canvas dialog close' $ActionTimeoutSeconds)
+ if($ExpectedRedoDiscard -gt 0){Confirm-RedoDiscard $ExpectedRedoDiscard}
  if(@(Owned-Dialogs).Count){throw 'UNEXPECTED_DIALOG_AFTER_CANVAS_CLOSE'}
 }
 function Assert-Canvas($Image,[int]$FillArgb,[string]$What) {
@@ -255,7 +283,8 @@ try {
 
  $d=Canvas-Dialog
  Set-Canvas $d '18' '14' 1 '#1234AB'
- Close-Canvas $d
+ # This new resize branches after Undo of the transparent expansion.
+ Close-Canvas $d -ExpectedRedoDiscard 1
  Save-Editor
  $fillArgb=[Drawing.Color]::FromArgb(255,18,52,171).ToArgb()
  Assert-Canvas (Wait-Png {param($im)$im.Width -eq 18 -and $im.Height -eq 14} 'opaque expansion') $fillArgb 'opaque expansion'

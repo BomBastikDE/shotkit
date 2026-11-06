@@ -2,7 +2,7 @@
 
 ## In Entwicklung nach Beta 1
 
-- Bei Zuschneiden, Rahmen und Leinwandgröße fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Die Umstellung der übrigen Bearbeitungswerkzeuge ist noch offen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+- Bei Bild- und Objektbearbeitungen fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Eine einzelne Bearbeitung, deren benötigter Verlauf nicht in das Limit passt, wird weiterhin abgelehnt ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
 
 - Beim Speichern werden BMP, JPEG und GIF in eine geschützte temporäre Datei kodiert, ohne die vollständige kodierte Datei zusätzlich im Speicher zu halten. Beim GIF-Abschluss werden auch Schreibfehler am Trailer berücksichtigt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 

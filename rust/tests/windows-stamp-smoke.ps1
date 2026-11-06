@@ -32,6 +32,40 @@ namespace ShotKitStampSmoke {
     public sealed class Button { public IntPtr Handle; public string Text; }
     public sealed class Control { public IntPtr Handle, Parent; public int Id, Pid; public string ClassName, Text; public bool Visible, Enabled; }
     public static class Native {
+
+        // Narrow native identity checks for the expected history-loss message box.
+        [DllImport("user32.dll", EntryPoint="GetWindow")] static extern IntPtr HistoryWindow(IntPtr h, uint command);
+        [DllImport("user32.dll", EntryPoint="IsWindowEnabled")] public static extern bool HistoryEnabled(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="IsWindow")] public static extern bool HistoryExists(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetParent")] static extern IntPtr HistoryParent(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetDlgCtrlID")] static extern int HistoryId(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="PostMessageW")] public static extern bool HistoryPost(IntPtr h, uint m, IntPtr w, IntPtr l);
+        static string HistoryText(IntPtr h, bool cls) {
+            var text=new StringBuilder(1024);
+            if(cls) GetClassNameW(h,text,text.Capacity); else GetWindowTextW(h,text,text.Capacity);
+            return text.ToString();
+        }
+        static bool HistoryPid(IntPtr h, uint expected) { uint pid; GetWindowThreadProcessId(h,out pid); return pid==expected; }
+        public static IntPtr HistoryAnswer(IntPtr dialog, IntPtr editor, uint pid, string expectedText, bool approve) {
+            if(!HistoryExists(dialog) || !HistoryPid(dialog,pid) || !HistoryPid(editor,pid) ||
+                HistoryWindow(dialog,4)!=editor || HistoryEnabled(editor) || !HistoryEnabled(dialog) ||
+                HistoryText(dialog,true)!="#32770" || HistoryText(dialog,false)!="Rückgängig-Verlauf")
+                throw new InvalidOperationException("REDO_CONFIRMATION_OWNER_OR_MODALITY_MISMATCH");
+            int messages=0, buttons=0, yesCount=0, noCount=0; IntPtr yes=IntPtr.Zero, no=IntPtr.Zero;
+            EnumProc scan=(h,p)=>{
+                string cls=HistoryText(h,true);
+                if(cls=="Static" && HistoryText(h,false)==expectedText && HistoryParent(h)==dialog && HistoryPid(h,pid)) messages++;
+                if(cls=="Button" && IsWindowVisible(h)) {
+                    buttons++;
+                    if(HistoryParent(h)!=dialog || !HistoryPid(h,pid) || !HistoryEnabled(h)) return true;
+                    if(HistoryId(h)==6) { yesCount++; yes=h; }
+                    if(HistoryId(h)==7) { noCount++; no=h; }
+                }
+                return true;
+            };
+            EnumChildWindows(dialog,scan,IntPtr.Zero); GC.KeepAlive(scan);
+            return messages==1 && buttons==2 && yesCount==1 && noCount==1 ? (approve ? yes : no) : IntPtr.Zero;
+        }
         private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr data);
@@ -108,6 +142,21 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Stamps-'+[Guid]::NewGuid().
 $appData=Join-Path $root 'appdata';$localAppData=Join-Path $root 'localappdata';$inputPath=Join-Path $root 'stamps.png'
 $oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA
 $proc=$null;$mouseDown=$false;$failure=$null
+function Confirm-RedoDiscard([int]$ExpectedRedo,[switch]$Decline) {
+    $expectedText="Für diese Bearbeitung werden 0 ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+    $dialog=Wait-For {
+        $dialogs=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+        if(-not $dialogs.Count){return $null}
+        if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG'}
+        return $dialogs[0]
+    } 8 'expected owned Redo-discard confirmation'
+    $yes=Wait-For {
+        $button=[ShotKitStampSmoke.Native]::HistoryAnswer($dialog.Handle,$main.Handle,[uint32]$proc.Id,$expectedText,(-not $Decline))
+        if($button -ne [IntPtr]::Zero){return $button}
+    } 8 'exact history-loss text/counts and native IDYES/IDNO'
+    if(-not [ShotKitStampSmoke.Native]::HistoryPost($yes,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'REDO_CONFIRMATION_ANSWER_FAILED'}
+    [void](Wait-For { -not [ShotKitStampSmoke.Native]::HistoryExists($dialog.Handle) -and [ShotKitStampSmoke.Native]::HistoryEnabled($main.Handle) } 8 'history-loss confirmation completed')
+}
 function Get-OwnedWindows {if($null -ne $proc -and -not $proc.HasExited){[ShotKitStampSmoke.Native]::Windows($proc.Id)}}
 function Wait-For([scriptblock]$Probe,[int]$Seconds,[string]$What) {
     $end=[DateTime]::UtcNow.AddSeconds($Seconds)
@@ -265,6 +314,16 @@ try {
     $hashes=@()
     for($i=0;$i -lt 5;$i++){
         Choose-Stamp $i;Click-Image 160 120
+        if($i -eq 1){
+            Confirm-RedoDiscard 1 -Decline
+            [void](Save-Export {param($v)$v.Hash -eq $baseline.Hash} 'rejected new stamp preserves original pixels')
+            Click-Button 0x5113
+            [void](Save-Export {param($v)$v.Hash -eq $hashes[0]} 'rejected new stamp preserves exact previous Redo')
+            Click-Button 0x5112
+            [void](Save-Export {param($v)$v.Hash -eq $baseline.Hash} 'undo preserved previous stamp after rejection')
+            Click-Image 160 120
+        }
+        if($i -gt 0){Confirm-RedoDiscard 1} # each previous symbol ends undone
         $saved=Save-Export {param($v)$v.Hash -ne $baseline.Hash} 'visible stamp export'
         [void](Assert-Symbol $saved $i)
         if($hashes -contains $saved.Hash){throw "STAMP_SYMBOL_NOT_DISTINCT $($labels[$i])."};$hashes+=$saved.Hash
@@ -279,6 +338,7 @@ try {
     Choose-Stamp 1 -Overflow
     [void][ShotKitStampSmoke.Native]::ShowWindow($main.Handle,3);Start-Sleep -Milliseconds 250
     Click-Image 160 120
+    Confirm-RedoDiscard 1 # final loop symbol is undone
     $small=Save-Export {param($v)$v.Hash -ne $baseline.Hash} 'overflow-selected cross export';$smallCount=Assert-Symbol $small 1
     # Mouse-up leaves the stamp selected. Resize its lower-right square handle.
     $p=Image-Point 174 134;Pointer $p.X $p.Y

@@ -11,7 +11,7 @@ mod effects;
 mod history;
 
 use crate::{
-    document::{Document, DocumentError},
+    document::{Document, DocumentError, HistorySnapshotPlan},
     image_edit::{CropRect, FrameOptions},
     shapes::{Color, Point, Shape, ShapeKind, StampKind, Style, Tool},
     stitch::Image,
@@ -97,6 +97,81 @@ pub struct EditorController {
     last_error: Option<DocumentError>,
 }
 
+/// Controller metadata accompanying a document transaction. Image pixels and
+/// history remain owned by Document; preparing an annotation never clones the
+/// controller or its complete undo/redo history.
+#[derive(Clone, Debug, PartialEq)]
+struct AnnotationState {
+    tool: Tool,
+    selected: Option<usize>,
+    hit_tolerance: f32,
+    next_step: i32,
+    stamp_kind: StampKind,
+    spotlight_opacity: f32,
+    magnifier_zoom: f32,
+    magnifier_frame: crate::shapes::MagnifierFrame,
+    current_style: Style,
+    last_error: Option<DocumentError>,
+}
+
+impl AnnotationState {
+    fn capture(editor: &EditorController) -> Self {
+        Self {
+            tool: editor.tool,
+            selected: editor.selected,
+            hit_tolerance: editor.hit_tolerance,
+            next_step: editor.next_step,
+            stamp_kind: editor.stamp_kind,
+            spotlight_opacity: editor.spotlight_opacity,
+            magnifier_zoom: editor.magnifier_zoom,
+            magnifier_frame: editor.magnifier_frame,
+            current_style: editor.current_style.clone(),
+            last_error: editor.last_error.clone(),
+        }
+    }
+
+    fn restore(self, editor: &mut EditorController) {
+        editor.tool = self.tool;
+        editor.selected = self.selected;
+        editor.hit_tolerance = self.hit_tolerance;
+        editor.next_step = self.next_step;
+        editor.stamp_kind = self.stamp_kind;
+        editor.spotlight_opacity = self.spotlight_opacity;
+        editor.magnifier_zoom = self.magnifier_zoom;
+        editor.magnifier_frame = self.magnifier_frame;
+        editor.current_style = self.current_style;
+        editor.last_error = self.last_error;
+        // Pointer capture belongs to the UI and cannot be restored here.
+        editor.drag = None;
+        editor.last_position = None;
+    }
+}
+
+/// A suspended annotation plus its checked history allocation. Dropping this
+/// value rejects the action; the editor already displays its original state.
+#[derive(Debug)]
+#[must_use = "commit the prepared annotation or drop it to reject the action"]
+pub struct PreparedAnnotationEdit {
+    history: HistorySnapshotPlan,
+    before: AnnotationState,
+    after: AnnotationState,
+}
+
+impl PreparedAnnotationEdit {
+    pub fn undo_entries_to_evict(&self) -> usize {
+        self.history.undo_entries_to_evict()
+    }
+    pub fn redo_entries_to_discard(&self) -> usize {
+        self.history.redo_entries_to_discard()
+    }
+    pub fn history_bytes(&self) -> usize {
+        self.history.history_bytes()
+    }
+    pub fn history_budget(&self) -> usize {
+        self.history.history_budget()
+    }
+}
+
 impl Default for EditorController {
     fn default() -> Self {
         // Compatibility for existing UI construction sites. The real image
@@ -150,6 +225,97 @@ impl EditorController {
     pub fn take_error(&mut self) -> Option<DocumentError> {
         self.last_error.take()
     }
+    /// Run an annotation action inside one rollback-safe document transaction.
+    /// A returned plan suspends both the document and controller metadata before
+    /// a UI asks permission to discard history. `None` means the document did
+    /// not change: intended selection/default changes remain, and redo survives.
+    /// The closure may finish an existing pointer gesture; rejection restores
+    /// its pre-gesture selection, but never restores a drag or pointer capture.
+    /// Use annotation methods in the closure, rather than navigating history or
+    /// manually opening/closing the document transaction.
+    pub fn prepare_annotation_edit(
+        &mut self,
+        edit: impl FnOnce(&mut Self),
+    ) -> Result<Option<PreparedAnnotationEdit>, DocumentError> {
+        let mut before = AnnotationState::capture(self);
+        if let Some(drag) = &self.drag {
+            before.selected = match drag {
+                Drag::Create {
+                    selection_before, ..
+                }
+                | Drag::Move {
+                    selection_before, ..
+                }
+                | Drag::Handle {
+                    selection_before, ..
+                } => *selection_before,
+            };
+        }
+        if let Err(error) = self.document.begin_edit() {
+            self.cancel_drag();
+            return Err(error);
+        }
+        // A pre-existing failure belongs to the caller. Only a fresh failure
+        // from this closure aborts the staged action.
+        self.last_error = None;
+        edit(self);
+        self.cancel_drag();
+        if let Some(error) = self.last_error.take() {
+            self.document.abort_edit()?;
+            before.restore(self);
+            return Err(error);
+        }
+        self.last_error = before.last_error.clone();
+        let history = match self.document.plan_commit_edit() {
+            Ok(Some(history)) => history,
+            Ok(None) => {
+                self.document.abort_edit()?;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.document.abort_edit()?;
+                before.restore(self);
+                return Err(error);
+            }
+        };
+        let after = AnnotationState::capture(self);
+        let history = match self.document.suspend_edit_with_plan(history) {
+            Ok(history) => history,
+            Err(error) => {
+                self.document.abort_edit()?;
+                before.restore(self);
+                return Err(error);
+            }
+        };
+        before.clone().restore(self);
+        Ok(Some(PreparedAnnotationEdit {
+            history,
+            before,
+            after,
+        }))
+    }
+
+    /// Consume this exact prepared action. Permission is required for either
+    /// undo eviction or redo discard. Rejection/staleness leaves all current
+    /// state untouched, including changes made while a confirmation was open.
+    pub fn commit_annotation_edit(
+        &mut self,
+        plan: PreparedAnnotationEdit,
+        allow_history_discard: bool,
+    ) -> Result<bool, DocumentError> {
+        if self.drag.is_some()
+            || self.last_position.is_some()
+            || AnnotationState::capture(self) != plan.before
+        {
+            return Err(DocumentError::StaleHistoryPlan);
+        }
+        let changed = self
+            .document
+            .commit_edit_with_plan(plan.history, allow_history_discard)?;
+        plan.after.restore(self);
+        Ok(changed)
+    }
+
     pub fn crop(&mut self, rect: CropRect) -> Result<(), DocumentError> {
         self.cancel_drag();
         self.document.crop(rect)

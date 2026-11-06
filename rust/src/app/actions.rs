@@ -222,22 +222,18 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
     match id {
         toolbar::ID_COLOR => {
             let Some(color) = choose_color(h) else { return };
-            editor(h).set_current_color(color);
-            toolbar::set_color(h, color.r, color.g, color.b);
             replacement.color = color;
         }
         toolbar::ID_LINE_WIDTH => {
             let Some(width) = choose_number(h, &[1, 2, 3, 4, 6, 8, 12, 16]) else {
                 return;
             };
-            editor(h).set_current_width(width);
             replacement.width = width;
         }
         toolbar::ID_FONT_SIZE => {
             let Some(size) = choose_number(h, &[14, 18, 24, 28, 36, 48, 64, 96]) else {
                 return;
             };
-            editor(h).set_current_font_size(size);
             replacement.font_size = size;
         }
         _ => return,
@@ -248,7 +244,7 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
             _ => None,
         })
     });
-    if let Some((index, mut data)) = callout {
+    let callout = if let Some((index, mut data)) = callout {
         if replacement.font_size != data.layout.font_size {
             match shotkit::alpha_render::measure_callout_text(&data.text, replacement.font_size) {
                 Ok(layout) => data.layout = layout,
@@ -266,9 +262,32 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
                 }
             }
         }
-        editor(h).replace_callout_with_style(index, data, replacement);
+        Some((index, data))
     } else {
-        editor(h).set_selected_style(replacement);
+        None
+    };
+    let color = replacement.color;
+    let applied = apply_annotation_edit(h, |state| {
+        match id {
+            toolbar::ID_COLOR => {
+                state.set_current_color(replacement.color);
+            }
+            toolbar::ID_LINE_WIDTH => {
+                state.set_current_width(replacement.width);
+            }
+            toolbar::ID_FONT_SIZE => {
+                state.set_current_font_size(replacement.font_size);
+            }
+            _ => unreachable!(),
+        }
+        if let Some((index, data)) = callout {
+            state.replace_callout_with_style(index, data, replacement);
+        } else {
+            state.set_selected_style(replacement);
+        }
+    });
+    if applied && id == toolbar::ID_COLOR {
+        toolbar::set_color(h, color.r, color.g, color.b);
     }
 }
 
@@ -303,7 +322,11 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
 pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
     cancel_gesture(h);
     let old_color = editor(h).current_style().color;
-    editor(h).set_tool(tool);
+    if !apply_annotation_edit(h, |state| {
+        state.set_tool(tool);
+    }) {
+        return;
+    }
     let color = editor(h).current_style().color;
     if color != old_color {
         toolbar::set_color(h, color.r, color.g, color.b);
@@ -368,39 +391,39 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         id
     };
     if (toolbar::ID_SPOTLIGHT_25..=toolbar::ID_MAGNIFIER_RECT).contains(&id) {
-        match id {
+        apply_annotation_edit(h, |state| match id {
             toolbar::ID_SPOTLIGHT_25 => {
-                editor(h).set_spotlight_opacity(0.25);
+                state.set_spotlight_opacity(0.25);
             }
             toolbar::ID_SPOTLIGHT_50 => {
-                editor(h).set_spotlight_opacity(0.5);
+                state.set_spotlight_opacity(0.5);
             }
             toolbar::ID_SPOTLIGHT_75 => {
-                editor(h).set_spotlight_opacity(0.75);
+                state.set_spotlight_opacity(0.75);
             }
             toolbar::ID_SPOTLIGHT_90 => {
-                editor(h).set_spotlight_opacity(0.9);
+                state.set_spotlight_opacity(0.9);
             }
             toolbar::ID_MAGNIFY_150 => {
-                editor(h).set_magnifier_zoom(1.5);
+                state.set_magnifier_zoom(1.5);
             }
             toolbar::ID_MAGNIFY_200 => {
-                editor(h).set_magnifier_zoom(2.0);
+                state.set_magnifier_zoom(2.0);
             }
             toolbar::ID_MAGNIFY_300 => {
-                editor(h).set_magnifier_zoom(3.0);
+                state.set_magnifier_zoom(3.0);
             }
             toolbar::ID_MAGNIFY_400 => {
-                editor(h).set_magnifier_zoom(4.0);
+                state.set_magnifier_zoom(4.0);
             }
             toolbar::ID_MAGNIFIER_CIRCLE => {
-                editor(h).set_magnifier_frame(shotkit::shapes::MagnifierFrame::Circle);
+                state.set_magnifier_frame(shotkit::shapes::MagnifierFrame::Circle);
             }
             toolbar::ID_MAGNIFIER_RECT => {
-                editor(h).set_magnifier_frame(shotkit::shapes::MagnifierFrame::Rectangle);
+                state.set_magnifier_frame(shotkit::shapes::MagnifierFrame::Rectangle);
             }
             _ => unreachable!(),
-        }
+        });
         report_editor_error(h);
         SetFocus(h);
         InvalidateRect(h, std::ptr::null(), 0);
@@ -440,7 +463,9 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     };
                 }
             }
-            editor(h).replace_callout(index, data);
+            apply_annotation_edit(h, |state| {
+                state.replace_callout(index, data);
+            });
             report_editor_error(h);
             InvalidateRect(h, std::ptr::null(), 0);
         }
@@ -456,11 +481,13 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             toolbar::form_style_applies(id, toolbar::style_target(Some(&shape.kind)))
                 .then(|| shape.style.clone())
         });
-        editor(h).set_current_style(current);
-        if let Some(mut selected) = selected {
-            apply_form_style(&mut selected, id);
-            editor(h).set_selected_style(selected);
-        }
+        apply_annotation_edit(h, |state| {
+            state.set_current_style(current);
+            if let Some(mut selected) = selected {
+                apply_form_style(&mut selected, id);
+                state.set_selected_style(selected);
+            }
+        });
         report_editor_error(h);
         SetFocus(h);
         InvalidateRect(h, std::ptr::null(), 0);
@@ -509,10 +536,13 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     .selection()
                     .map(|shape| shape.style.clone())
                     .unwrap_or_else(|| editor(h).current_style().clone());
-                editor(h).set_current_color(color);
-                toolbar::set_color(h, r, g, b);
                 replacement.color = color;
-                editor(h).set_selected_style(replacement);
+                if apply_annotation_edit(h, |state| {
+                    state.set_current_color(color);
+                    state.set_selected_style(replacement);
+                }) {
+                    toolbar::set_color(h, r, g, b);
+                }
             }
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
             toolbar::ID_FRAME => {

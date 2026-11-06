@@ -31,6 +31,40 @@ namespace ShotKitEffectsSmoke {
     public sealed class Window { public IntPtr Handle; public int Pid; public string ClassName, Title; public bool Visible; }
     public sealed class Control { public IntPtr Handle, Parent; public int Id, Pid; public string ClassName, Text; public bool Visible, Enabled; }
     public static class Native {
+
+        // Narrow native identity checks for the expected history-loss message box.
+        [DllImport("user32.dll", EntryPoint="GetWindow")] static extern IntPtr HistoryWindow(IntPtr h, uint command);
+        [DllImport("user32.dll", EntryPoint="IsWindowEnabled")] public static extern bool HistoryEnabled(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="IsWindow")] public static extern bool HistoryExists(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetParent")] static extern IntPtr HistoryParent(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetDlgCtrlID")] static extern int HistoryId(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="PostMessageW")] public static extern bool HistoryPost(IntPtr h, uint m, IntPtr w, IntPtr l);
+        static string HistoryText(IntPtr h, bool cls) {
+            var text=new StringBuilder(1024);
+            if(cls) GetClassNameW(h,text,text.Capacity); else GetWindowTextW(h,text,text.Capacity);
+            return text.ToString();
+        }
+        static bool HistoryPid(IntPtr h, uint expected) { uint pid; GetWindowThreadProcessId(h,out pid); return pid==expected; }
+        public static IntPtr HistoryYes(IntPtr dialog, IntPtr editor, uint pid, string expectedText) {
+            if(!HistoryExists(dialog) || !HistoryPid(dialog,pid) || !HistoryPid(editor,pid) ||
+                HistoryWindow(dialog,4)!=editor || HistoryEnabled(editor) || !HistoryEnabled(dialog) ||
+                HistoryText(dialog,true)!="#32770" || HistoryText(dialog,false)!="Rückgängig-Verlauf")
+                throw new InvalidOperationException("REDO_CONFIRMATION_OWNER_OR_MODALITY_MISMATCH");
+            int messages=0, buttons=0, yesCount=0, noCount=0; IntPtr yes=IntPtr.Zero;
+            EnumProc scan=(h,p)=>{
+                string cls=HistoryText(h,true);
+                if(cls=="Static" && HistoryText(h,false)==expectedText && HistoryParent(h)==dialog && HistoryPid(h,pid)) messages++;
+                if(cls=="Button" && IsWindowVisible(h)) {
+                    buttons++;
+                    if(HistoryParent(h)!=dialog || !HistoryPid(h,pid) || !HistoryEnabled(h)) return true;
+                    if(HistoryId(h)==6) { yesCount++; yes=h; }
+                    if(HistoryId(h)==7) noCount++;
+                }
+                return true;
+            };
+            EnumChildWindows(dialog,scan,IntPtr.Zero); GC.KeepAlive(scan);
+            return messages==1 && buttons==2 && yesCount==1 && noCount==1 ? yes : IntPtr.Zero;
+        }
         private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr data);
@@ -99,6 +133,21 @@ $appData=Join-Path $root 'appdata';$localAppData=Join-Path $root 'localappdata';
 $oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA
 $proc=$null;$mouseDown=$false;$failure=$null
 function Get-OwnedWindows {if($null -ne $proc -and -not $proc.HasExited){[ShotKitEffectsSmoke.Native]::Windows($proc.Id)}}
+function Confirm-RedoDiscard([int]$ExpectedRedo) {
+    $expectedText="Für diese Bearbeitung werden 0 ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+    $dialog=Wait-For {
+        $dialogs=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
+        if(-not $dialogs.Count){return $null}
+        if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG'}
+        return $dialogs[0]
+    } 8 'expected owned Redo-discard confirmation'
+    $yes=Wait-For {
+        $button=[ShotKitEffectsSmoke.Native]::HistoryYes($dialog.Handle,$main.Handle,[uint32]$proc.Id,$expectedText)
+        if($button -ne [IntPtr]::Zero){return $button}
+    } 8 'exact history-loss text/counts and native IDYES/IDNO'
+    if(-not [ShotKitEffectsSmoke.Native]::HistoryPost($yes,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'REDO_CONFIRMATION_YES_FAILED'}
+    [void](Wait-For { -not [ShotKitEffectsSmoke.Native]::HistoryExists($dialog.Handle) -and [ShotKitEffectsSmoke.Native]::HistoryEnabled($main.Handle) } 8 'history-loss confirmation completed')
+}
 function Get-TimeoutDiagnostics {
     $details=[Collections.Generic.List[string]]::new()
     try {
@@ -348,6 +397,7 @@ try {
     }
 
     Select-Tool 0x5116 'Magnifier';Drag-Image 80 60 240 180
+    Confirm-RedoDiscard 5 # creation plus four Spotlight strength changes are undone
     $created=Save-Export {param($v)$v.Hash -ne $baseline.Hash} 'magnifier creation'
     Assert-History $baseline $created 'magnifier creation'
     Select-Effect 160 120

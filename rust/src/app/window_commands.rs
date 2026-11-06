@@ -197,7 +197,11 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
             0
         }
         0x0100 if w == 0x2e || w == 0x08 => {
-            if editor(h).delete_selected() {
+            if window_state(h).drawing {
+                cancel_gesture(h);
+            }
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.delete_selected()) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -234,7 +238,8 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x27 => (step, 0.0),
                 _ => (0.0, step),
             };
-            if editor(h).nudge_selected(dx, dy) {
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.nudge_selected(dx, dy)) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);

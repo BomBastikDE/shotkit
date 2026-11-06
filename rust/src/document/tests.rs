@@ -739,7 +739,16 @@ fn undo_eviction_requires_explicit_approval_and_consumes_exact_plan() {
         .sum::<usize>()
         + snapshot_storage_bytes(&plan.snapshot)
         + container_bytes(one_more.capacity(), size_of::<State>());
-    assert!(one_more_bytes > d.history_budget());
+    let one_more_inverse = NavigationPlan::reserve(old_count + 1 - evictions, 1).unwrap();
+    let one_more_inverse_bytes = d
+        .undo
+        .iter()
+        .skip(evictions - 1)
+        .map(snapshot_storage_bytes)
+        .sum::<usize>()
+        + snapshot_storage_bytes(&d.current)
+        + one_more_inverse.container_bytes();
+    assert!(one_more_bytes.max(one_more_inverse_bytes) > d.history_budget());
     assert_eq!(plan_observation(&d), before);
     assert_eq!(
         d.commit_edit_with_plan(plan, false),
@@ -759,6 +768,10 @@ fn undo_eviction_requires_explicit_approval_and_consumes_exact_plan() {
     assert_eq!(d.history_bytes(), planned_bytes);
     assert!(planned_bytes <= d.history_budget());
     assert!(d.staged_before.is_none());
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.shapes().len(), 12);
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.shapes().len(), 13);
 }
 
 #[test]
@@ -1042,7 +1055,10 @@ fn prepared_snapshot_accepts_exact_minimum_budget_and_rejects_one_byte_less() {
     let mut d = Document::new(image()).unwrap();
     d.begin_edit().unwrap();
     d.add_shape(shape()).unwrap();
-    let minimum = d.plan_commit_edit().unwrap().unwrap().history_bytes();
+    let committed_bytes = d.plan_commit_edit().unwrap().unwrap().history_bytes();
+    let inverse_containers = NavigationPlan::reserve(0, 1).unwrap();
+    let inverse_bytes = snapshot_storage_bytes(&d.current) + inverse_containers.container_bytes();
+    let minimum = committed_bytes.max(inverse_bytes);
     d.set_history_budget(minimum - 1);
     let before = plan_observation(&d);
     assert!(matches!(
@@ -1052,9 +1068,13 @@ fn prepared_snapshot_accepts_exact_minimum_budget_and_rejects_one_byte_less() {
     assert_eq!(plan_observation(&d), before);
     d.set_history_budget(minimum);
     let plan = d.plan_commit_edit().unwrap().unwrap();
-    assert_eq!(plan.history_bytes(), minimum);
+    assert_eq!(plan.history_bytes(), committed_bytes);
     d.commit_edit_with_plan(plan, false).unwrap();
-    assert_eq!(d.history_bytes(), minimum);
+    assert_eq!(d.history_bytes(), committed_bytes);
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.history_bytes(), inverse_bytes);
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.history_bytes(), committed_bytes);
 }
 
 #[test]
@@ -1113,4 +1133,58 @@ fn suspended_redo_discard_requires_approval_and_preserves_original_on_rejection(
             assert_eq!(d.shapes()[0].bounds().x, 2.0);
         }
     }
+}
+
+#[test]
+fn planning_rejects_image_edit_when_its_inverse_alone_exceeds_budget() {
+    let mut d = Document::with_history_budget(image(), 4096).unwrap();
+    d.mark_saved();
+    d.begin_edit().unwrap();
+    d.replace_image(Image::new(128, 128, vec![9; 128 * 128 * 4]).unwrap())
+        .unwrap();
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit(),
+        Err(DocumentError::HistoryBudgetExceeded)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    d.abort_edit().unwrap();
+    assert_eq!(d.image(), &image());
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn planned_image_edit_preserves_all_approved_steps_through_undo_and_redo() {
+    let mut d = Document::new(image()).unwrap();
+    for _ in 0..12 {
+        d.add_shape(shape()).unwrap();
+    }
+    d.set_history_budget(d.history_bytes());
+    let original = d.image_arc();
+    let original_shapes = d.shapes().to_vec();
+    d.begin_edit().unwrap();
+    d.add_shape(Shape::new(ShapeKind::Text {
+        location: Point::new(0.0, 0.0),
+        text: "extra".to_string(),
+    }))
+    .unwrap();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let retained = d.undo.len() + 1 - plan.undo_entries_to_evict();
+    assert!(plan.undo_entries_to_evict() > 0);
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    d.commit_edit_with_plan(plan, true).unwrap();
+    let new_shapes = d.shapes().to_vec();
+    assert_eq!(d.undo.len(), retained);
+    assert_eq!(d.redo.len(), 0);
+    assert!(d.try_undo().unwrap());
+    assert!(Arc::ptr_eq(&d.image_arc(), &original));
+    assert_eq!(d.shapes(), original_shapes);
+    assert_eq!(d.undo.len(), retained - 1);
+    assert_eq!(d.redo.len(), 1);
+    assert!(d.history_bytes() <= d.history_budget());
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.shapes(), new_shapes);
+    assert_eq!(d.undo.len(), retained);
+    assert_eq!(d.redo.len(), 0);
+    assert!(d.history_bytes() <= d.history_budget());
 }

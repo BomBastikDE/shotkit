@@ -28,6 +28,40 @@ public static class ShotKitMultiSmoke {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+
+        // Narrow native identity checks for the expected history-loss message box.
+        [DllImport("user32.dll", EntryPoint="GetWindow")] static extern IntPtr HistoryWindow(IntPtr h, uint command);
+        [DllImport("user32.dll", EntryPoint="IsWindowEnabled")] public static extern bool HistoryEnabled(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="IsWindow")] public static extern bool HistoryExists(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetParent")] static extern IntPtr HistoryParent(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="GetDlgCtrlID")] static extern int HistoryId(IntPtr h);
+        [DllImport("user32.dll", EntryPoint="PostMessageW")] public static extern bool HistoryPost(IntPtr h, uint m, IntPtr w, IntPtr l);
+        static string HistoryText(IntPtr h, bool cls) {
+            var text=new StringBuilder(1024);
+            if(cls) GetClassNameW(h,text,text.Capacity); else GetWindowTextW(h,text,text.Capacity);
+            return text.ToString();
+        }
+        static bool HistoryPid(IntPtr h, uint expected) { uint pid; GetWindowThreadProcessId(h,out pid); return pid==expected; }
+        public static IntPtr HistoryYes(IntPtr dialog, IntPtr editor, uint pid, string expectedText) {
+            if(!HistoryExists(dialog) || !HistoryPid(dialog,pid) || !HistoryPid(editor,pid) ||
+                HistoryWindow(dialog,4)!=editor || HistoryEnabled(editor) || !HistoryEnabled(dialog) ||
+                HistoryText(dialog,true)!="#32770" || HistoryText(dialog,false)!="Rückgängig-Verlauf")
+                throw new InvalidOperationException("REDO_CONFIRMATION_OWNER_OR_MODALITY_MISMATCH");
+            int messages=0, buttons=0, yesCount=0, noCount=0; IntPtr yes=IntPtr.Zero;
+            EnumProc scan=(h,p)=>{
+                string cls=HistoryText(h,true);
+                if(cls=="Static" && HistoryText(h,false)==expectedText && HistoryParent(h)==dialog && HistoryPid(h,pid)) messages++;
+                if(cls=="Button" && IsWindowVisible(h)) {
+                    buttons++;
+                    if(HistoryParent(h)!=dialog || !HistoryPid(h,pid) || !HistoryEnabled(h)) return true;
+                    if(HistoryId(h)==6) { yesCount++; yes=h; }
+                    if(HistoryId(h)==7) noCount++;
+                }
+                return true;
+            };
+            EnumChildWindows(dialog,scan,IntPtr.Zero); GC.KeepAlive(scan);
+            return messages==1 && buttons==2 && yesCount==1 && noCount==1 ? yes : IntPtr.Zero;
+        }
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out Rect r);
@@ -90,7 +124,22 @@ function Dirty([IntPtr] $Handle) {
     $window = Get-Editor $Handle
     return $null -ne $window -and $window.Title.StartsWith('* ')
 }
-function Draw-Rectangle([IntPtr] $Handle) {
+function Confirm-RedoDiscard([int]$ExpectedRedo,[IntPtr]$Owner) {
+    $expectedText="Für diese Bearbeitung werden 0 ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+    $dialog=Wait-Value {
+        $dialogs=@(Get-Windows | Where-Object {$_.Visible -and $_.Class -eq '#32770'})
+        if(-not $dialogs.Count){return $null}
+        if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG'}
+        return $dialogs[0]
+    } 'expected owned Redo-discard confirmation'
+    $yes=Wait-Value {
+        $button=[ShotKitMultiSmoke]::HistoryYes($dialog.Handle,$Owner,[uint32]$process.Id,$expectedText)
+        if($button -ne [IntPtr]::Zero){return $button}
+    } 'exact history-loss text/counts and native IDYES/IDNO'
+    if(-not [ShotKitMultiSmoke]::HistoryPost($yes,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'REDO_CONFIRMATION_YES_FAILED'}
+    [void](Wait-Value { -not [ShotKitMultiSmoke]::HistoryExists($dialog.Handle) -and [ShotKitMultiSmoke]::HistoryEnabled($Owner) } 'history-loss confirmation completed')
+}
+function Draw-Rectangle([IntPtr] $Handle,[int] $ExpectedRedoDiscard=0) {
     $client = New-Object ShotKitMultiSmoke+Rect
     if (-not [ShotKitMultiSmoke]::GetClientRect($Handle, [ref]$client)) { throw 'GetClientRect failed.' }
     $bar = [ShotKitMultiSmoke]::Children($Handle) | Where-Object { $_.Class -eq 'ShotKitRustEditorToolbar' } | Select-Object -First 1
@@ -104,6 +153,7 @@ function Draw-Rectangle([IntPtr] $Handle) {
     Post $Handle 0x0201 1 (($y -shl 16) -bor ($x - 50))
     Post $Handle 0x0200 1 ((($y + 40) -shl 16) -bor ($x + 50))
     Post $Handle 0x0202 0 ((($y + 40) -shl 16) -bor ($x + 50))
+    if($ExpectedRedoDiscard -gt 0){Confirm-RedoDiscard $ExpectedRedoDiscard $Handle}
     [void](Wait-Value { Dirty $Handle } 'document dirty after rectangle')
 }
 function Pixels([string] $Path) {
@@ -177,7 +227,7 @@ try {
     if ((Pixels $paths[0]) -eq $original -or (Pixels $paths[1]) -ne $original) { throw 'A save exported wrong document.' }
     Post $a.Handle 0x0010
     [void](Wait-Value { (Get-Editors).Count -eq 1 } 'clean A close preserved B')
-    Draw-Rectangle $b.Handle
+    Draw-Rectangle $b.Handle 1 # B has one undone rectangle, even after saving
     Post $b.Handle 0x0010
     Answer 'ShotKit Rust' @('No','Nein')
     [void](Wait-Value { (Get-Editors).Count -eq 0 } 'discard B closed only B')

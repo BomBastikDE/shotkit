@@ -82,7 +82,9 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                     editor(h).mouse_down(image_point);
                     editor(h).mouse_up(image_point);
                     if let Some(changed) = text_dialog::prompt(h, &existing) {
-                        editor(h).set_text_at(index, changed);
+                        apply_annotation_edit(h, |state| {
+                            state.set_text_at(index, changed);
+                        });
                     }
                     report_editor_error(h);
                     invalidate_image_view(h);
@@ -103,7 +105,11 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 if !handle_hit {
                     if let Some((index, existing)) = hit {
                         if let Some(changed) = text_dialog::prompt(h, &existing) {
-                            let edited = editor(h).set_text_at(index, changed);
+                            let mut edited = false;
+                            let applied = apply_annotation_edit(h, |state| {
+                                edited = state.set_text_at(index, changed)
+                            });
+                            edited &= applied;
                             crate::uia_picker::log_diagnostic(&format!(
                                 "text-edit index={index} changed={edited} shapes={}",
                                 editor(h).shapes().len(),
@@ -111,7 +117,11 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                         }
                     } else if let Some(text) = text_dialog::prompt(h, "") {
                         if !text.trim().is_empty() {
-                            let placed = editor(h).place_text(image_point, text);
+                            let mut placed = false;
+                            let applied = apply_annotation_edit(h, |state| {
+                                placed = state.place_text(image_point, text)
+                            });
+                            placed &= applied;
                             crate::uia_picker::log_diagnostic(&format!(
                                 "text-place image=({x},{y}) placed={placed} shapes={}",
                                 editor(h).shapes().len(),
@@ -193,10 +203,12 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 InvalidateRect(h, &rect, 1);
                 return Some(0);
             }
-            editor(h)
-                .mouse_up_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
+            let point = ShapePoint::new(x as f32, y as f32);
+            let shift = GetKeyState(0x10) < 0;
             window_state(h).drawing = false;
+            window_state(h).pen_history = None;
             ReleaseCapture();
+            apply_annotation_edit(h, |state| state.mouse_up_with_shift(point, shift));
             report_editor_error(h);
             invalidate_image_view(h);
             0

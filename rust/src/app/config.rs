@@ -37,6 +37,66 @@ pub(super) unsafe fn confirm_and_commit_staged_edit(
         .map(Some)
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt: Aufrufer sind die bewachten Ereignishandler; der vorbereitete
+// Plan besitzt alle Daten und der Editor-Borrow endet vor dem Dialog.
+// Nachrichten: MessageBoxW kann reentrieren; ModalGuard schützt den Editor,
+// und die Übernahme prüft den zwischenzeitlichen Dokument- und Editorzustand.
+pub(super) unsafe fn apply_annotation_edit(
+    h: H,
+    action: impl FnOnce(&mut EditorController),
+) -> bool {
+    let prepared = match editor(h).prepare_annotation_edit(action) {
+        Ok(value) => value,
+        Err(error) => {
+            MessageBoxW(
+                h,
+                wide(&format!(
+                    "Die Bearbeitung konnte nicht übernommen werden: {error}"
+                ))
+                .as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
+            return false;
+        }
+    };
+    let Some(plan) = prepared else {
+        return true;
+    };
+    let undo = plan.undo_entries_to_evict();
+    let redo = plan.redo_entries_to_discard();
+    if undo > 0 || redo > 0 {
+        let _modal = ModalGuard::new(h);
+        let message = format!("Für diese Bearbeitung werden {undo} ältere Rückgängig-Schritte und {redo} Wiederholen-Schritte entfernt. Möchten Sie fortfahren?");
+        if MessageBoxW(
+            h,
+            wide(&message).as_ptr(),
+            wide("Rückgängig-Verlauf").as_ptr(),
+            0x124,
+        ) != 6
+        {
+            return false;
+        }
+    }
+    match editor(h).commit_annotation_edit(plan, undo > 0 || redo > 0) {
+        Ok(_) => true,
+        Err(error) => {
+            MessageBoxW(
+                h,
+                wide(&format!(
+                    "Die Bearbeitung konnte nicht übernommen werden: {error}"
+                ))
+                .as_ptr(),
+                wide("ShotKit Rust").as_ptr(),
+                0x10,
+            );
+            false
+        }
+    }
+}
+
 pub(super) fn active_settings() -> Settings {
     SETTINGS
         .lock()

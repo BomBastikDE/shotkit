@@ -59,7 +59,9 @@ pub(super) unsafe fn edit_at(h: H, point: ShapePoint, create: bool) -> bool {
     if let Some((index, mut data)) = hit {
         data.text = text;
         data.layout = layout;
-        editor(h).replace_callout(index, data);
+        apply_annotation_edit(h, |state| {
+            state.replace_callout(index, data);
+        });
     } else {
         let tip = Some(ShapePoint::new(
             point.x + 20.0,
@@ -73,7 +75,9 @@ pub(super) unsafe fn edit_at(h: H, point: ShapePoint, create: bool) -> bool {
             tip,
             layout,
         };
-        editor(h).place_callout(data);
+        apply_annotation_edit(h, |state| {
+            state.place_callout(data);
+        });
     }
     report_editor_error(h);
     let (x, y, width, height) = image_view(h);

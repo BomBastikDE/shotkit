@@ -85,6 +85,27 @@ struct NavigationPlan {
     redo: Vec<State>,
 }
 
+impl NavigationPlan {
+    fn reserve(undo_len: usize, redo_len: usize) -> Result<Self, DocumentError> {
+        let mut plan = Self {
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+        };
+        plan.undo
+            .try_reserve_exact(undo_len)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        plan.redo
+            .try_reserve_exact(redo_len)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        Ok(plan)
+    }
+
+    fn container_bytes(&self) -> usize {
+        container_bytes(self.undo.capacity(), size_of::<State>())
+            .saturating_add(container_bytes(self.redo.capacity(), size_of::<State>()))
+    }
+}
+
 /// Prepared transaction commit. Planning never changes the document or grants
 /// permission to discard undo steps. Consume this exact plan to use the
 /// replacement container whose actual capacity was checked against the budget.
@@ -289,9 +310,10 @@ impl Document {
 
     /// Prepare a staged transaction without changing pixels, shapes, dirty
     /// state, either history, or the transaction. Returns `None` for a no-op.
-    /// The newest snapshot must fit by itself; otherwise planning fails without
-    /// clearing redo or evicting anything. Image allocations are deduplicated by
-    /// Arc identity, excluding the resulting current image, just as in
+    /// Both the commit and its immediate undo/redo must fit; otherwise planning
+    /// fails without clearing redo or evicting anything. Image allocations are
+    /// deduplicated by Arc identity, excluding each destination's current image,
+    /// just as in
     /// `history_bytes`. Existing snapshot capacities and the actual cloned
     /// snapshot/replacement-container capacities are charged conservatively.
     ///
@@ -306,38 +328,41 @@ impl Document {
             return Ok(None);
         }
         let snapshot = before.clone();
-        let mut images: HashMap<usize, (usize, usize)> = HashMap::new();
-        images
-            .try_reserve(self.undo.len().saturating_add(1))
-            .map_err(|_| DocumentError::AllocationFailed)?;
-        let current_image = Arc::as_ptr(&self.current.image) as usize;
-        let mut bytes = 0usize;
-        for state in self.undo.iter().chain(std::iter::once(&snapshot)) {
-            bytes = bytes
-                .checked_add(snapshot_storage_bytes(state))
-                .ok_or(DocumentError::HistoryBudgetExceeded)?;
-            let image = Arc::as_ptr(&state.image) as usize;
-            if image != current_image {
-                if let Some(entry) = images.get_mut(&image) {
-                    entry.0 += 1;
-                } else {
-                    let image_bytes = image_allocation_bytes(&state.image);
-                    bytes = bytes
-                        .checked_add(image_bytes)
-                        .ok_or(DocumentError::HistoryBudgetExceeded)?;
-                    images.insert(image, (1, image_bytes));
-                }
-            }
-        }
+        let mut committed = HistoryStorage::new(
+            self.undo.iter().chain(std::iter::once(&snapshot)),
+            &self.current.image,
+        )?;
+        // Undo makes `snapshot` current and stores the actual new state in redo.
+        // Its shape/image capacities can be much larger than the old snapshot.
+        let mut inverse = HistoryStorage::new(
+            self.undo.iter().chain(std::iter::once(&self.current)),
+            &snapshot.image,
+        )?;
         let mut evictions = 0;
         loop {
             let mut undo = VecDeque::new();
             undo.try_reserve_exact(self.undo.len() - evictions + 1)
                 .map_err(|_| DocumentError::AllocationFailed)?;
-            let history_bytes = bytes
+            let history_bytes = committed
+                .bytes
                 .checked_add(container_bytes(undo.capacity(), size_of::<State>()))
                 .ok_or(DocumentError::HistoryBudgetExceeded)?;
-            if history_bytes <= self.history_budget {
+            let retained = self.undo.len() - evictions;
+            // Check actual destination capacities, then release these temporary
+            // containers. They are not retained or silently charged elsewhere.
+            // Navigation still rechecks its own allocations and can safely fail
+            // on later OOM or different allocator capacities without any trim.
+            let inverse_containers = NavigationPlan::reserve(retained, 1)?;
+            let inverse_bytes = inverse
+                .bytes
+                .checked_add(inverse_containers.container_bytes())
+                .ok_or(DocumentError::HistoryBudgetExceeded)?;
+            let replay_containers = NavigationPlan::reserve(retained + 1, 0)?;
+            let replay_bytes = committed
+                .bytes
+                .checked_add(replay_containers.container_bytes())
+                .ok_or(DocumentError::HistoryBudgetExceeded)?;
+            if history_bytes.max(inverse_bytes).max(replay_bytes) <= self.history_budget {
                 return Ok(Some(HistorySnapshotPlan {
                     generation: Arc::clone(&self.history_generation),
                     snapshot,
@@ -352,15 +377,8 @@ impl Document {
             let Some(oldest) = self.undo.get(evictions) else {
                 return Err(DocumentError::HistoryBudgetExceeded);
             };
-            bytes = bytes.saturating_sub(snapshot_storage_bytes(oldest));
-            let image = Arc::as_ptr(&oldest.image) as usize;
-            if image != current_image {
-                let entry = images.get_mut(&image).expect("accounted history image");
-                entry.0 -= 1;
-                if entry.0 == 0 {
-                    bytes = bytes.saturating_sub(entry.1);
-                }
-            }
+            committed.remove(oldest);
+            inverse.remove(oldest);
             evictions += 1;
         }
     }
@@ -694,16 +712,7 @@ impl Document {
         } else {
             self.redo.len() + 1
         };
-        let mut plan = NavigationPlan {
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-        };
-        plan.undo
-            .try_reserve_exact(undo_len)
-            .map_err(|_| DocumentError::AllocationFailed)?;
-        plan.redo
-            .try_reserve_exact(redo_len)
-            .map_err(|_| DocumentError::AllocationFailed)?;
+        let plan = NavigationPlan::reserve(undo_len, redo_len)?;
         let retained_undo = if redo {
             self.undo.len()
         } else {
@@ -769,6 +778,67 @@ fn snapshot_storage_bytes(state: &State) -> usize {
     size_of::<State>()
         .saturating_add(revision_allocation_bytes())
         .saturating_add(shapes_allocation_bytes(&state.shapes))
+}
+
+// Maintain both candidate destination totals in one pass. Removing the oldest
+// state updates sharing counts in constant expected time; planning does not
+// repeatedly rescan all retained states for every possible eviction count.
+struct HistoryStorage {
+    current_image: usize,
+    images: HashMap<usize, (usize, usize)>,
+    bytes: usize,
+}
+
+impl HistoryStorage {
+    fn new<'a>(
+        states: impl Iterator<Item = &'a State>,
+        current_image: &Arc<Image>,
+    ) -> Result<Self, DocumentError> {
+        let mut storage = Self {
+            current_image: Arc::as_ptr(current_image) as usize,
+            images: HashMap::new(),
+            bytes: 0,
+        };
+        storage
+            .images
+            .try_reserve(states.size_hint().1.unwrap_or(states.size_hint().0))
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        for state in states {
+            storage.bytes = storage
+                .bytes
+                .checked_add(snapshot_storage_bytes(state))
+                .ok_or(DocumentError::HistoryBudgetExceeded)?;
+            let image = Arc::as_ptr(&state.image) as usize;
+            if image != storage.current_image {
+                if let Some(entry) = storage.images.get_mut(&image) {
+                    entry.0 += 1;
+                } else {
+                    let image_bytes = image_allocation_bytes(&state.image);
+                    storage.bytes = storage
+                        .bytes
+                        .checked_add(image_bytes)
+                        .ok_or(DocumentError::HistoryBudgetExceeded)?;
+                    storage.images.insert(image, (1, image_bytes));
+                }
+            }
+        }
+        Ok(storage)
+    }
+
+    fn remove(&mut self, state: &State) {
+        self.bytes -= snapshot_storage_bytes(state);
+        let image = Arc::as_ptr(&state.image) as usize;
+        if image != self.current_image {
+            let entry = self
+                .images
+                .get_mut(&image)
+                .expect("accounted history image");
+            entry.0 -= 1;
+            if entry.0 == 0 {
+                self.bytes -= entry.1;
+            }
+        }
+    }
 }
 
 fn revision_allocation_bytes() -> usize {

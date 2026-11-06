@@ -63,7 +63,8 @@ namespace ShotKitEditorSmoke {
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
         [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
-        [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint relation);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll", EntryPoint="GetWindowThreadProcessId")] private static extern uint GetWindowThreadProcessIdNoPid(IntPtr hwnd, IntPtr pid);
         [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr hwnd);
@@ -236,6 +237,37 @@ function Wait-ForValue {
         Start-Sleep -Milliseconds 100
     }
     throw "TIMEOUT: waiting for $Description."
+}
+function Confirm-RedoDiscard {
+    param([int] $ExpectedRedo)
+    $expectedText = "Für diese Bearbeitung werden 0 ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+    $dialog = Wait-ForValue -Seconds $ActionTimeoutSeconds -Description 'expected owned Redo-discard confirmation' -AllowedTitles @('Rückgängig-Verlauf') -Probe {
+        $dialogs = @(Get-OwnedDialogs)
+        if (-not $dialogs.Count) { return $null }
+        if ($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf') { throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG' }
+        $candidate = $dialogs[0]
+        if ([ShotKitEditorSmoke.Native]::OwnerPid($candidate.Handle) -ne [uint32]$process.Id -or
+            [ShotKitEditorSmoke.Native]::GetWindow($candidate.Handle, 4) -ne $main.Handle -or
+            [ShotKitEditorSmoke.Native]::IsWindowEnabled($main.Handle)) { throw 'REDO_CONFIRMATION_OWNER_OR_MODALITY_MISMATCH' }
+        return $candidate
+    }
+    $yes = Wait-ForValue -Seconds $ActionTimeoutSeconds -Description 'exact Redo-discard counts/text and IDYES/IDNO buttons' -AllowedTitles @('Rückgängig-Verlauf') -Probe {
+        if (-not [ShotKitEditorSmoke.Native]::IsLiveWindow($dialog.Handle)) { throw 'REDO_CONFIRMATION_CLOSED_BEFORE_APPROVAL' }
+        $messages = @([ShotKitEditorSmoke.Native]::ChildWindows($dialog.Handle) | Where-Object { $_.ClassName -eq 'Static' -and $_.Title -ceq $expectedText })
+        if ($messages.Count -ne 1) { return $null }
+        $buttons = @([ShotKitEditorSmoke.Native]::VisibleButtons($dialog.Handle))
+        $yesButtons = @($buttons | Where-Object { $_.Id -eq 6 })
+        $noButtons = @($buttons | Where-Object { $_.Id -eq 7 })
+        if ($yesButtons.Count -ne 1 -or $noButtons.Count -ne 1) { return $null }
+        if ($buttons.Count -ne 2 -or [ShotKitEditorSmoke.Native]::OwnerPid($yesButtons[0].Handle) -ne [uint32]$process.Id -or
+            [ShotKitEditorSmoke.Native]::OwnerPid($noButtons[0].Handle) -ne [uint32]$process.Id) { throw 'REDO_CONFIRMATION_BUTTON_IDENTITY_MISMATCH' }
+        return $yesButtons[0]
+    }
+    if (-not [ShotKitEditorSmoke.Native]::PostButtonClick($yes.Handle)) { throw 'REDO_CONFIRMATION_YES_FAILED' }
+    [void](Wait-ForValue -Seconds $ActionTimeoutSeconds -Description 'Redo-discard confirmation completed' -AllowedTitles @('Rückgängig-Verlauf') -Probe {
+        -not [ShotKitEditorSmoke.Native]::IsLiveWindow($dialog.Handle) -and [ShotKitEditorSmoke.Native]::IsWindowEnabled($main.Handle)
+    })
+    Assert-NoUnexpectedDialog
 }
 function Click-VisibleButton {
     param([IntPtr] $Parent, [string[]] $ExpectedTexts, [string] $Description)
@@ -656,6 +688,7 @@ try {
     })
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Gelb') -Description 'yellow marker color')
     Invoke-CanvasDrag 120 80 155 115 $false
+    Confirm-RedoDiscard 1
     Save-FromToolbar $main.Handle
     $highlighted = Wait-ForImageState -Path $inputPath -Description 'saved translucent yellow marker and preserved pixels' -Predicate {
         param($image)
@@ -693,6 +726,7 @@ try {
     # Shift + rectangle must produce equal side lengths in the saved image.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rechteck (R)') -Description 'Shift rectangle tool')
     Invoke-CanvasDrag 30 20 70 40 $true
+    Confirm-RedoDiscard 1
     Save-FromToolbar $main.Handle
     $square = Wait-ForImageState -Path $inputPath -Description 'saved Shift-constrained square' -Predicate {
         param($image)
@@ -759,6 +793,8 @@ try {
     foreach ($toolSpec in @(@{ Label='Linie (L)'; Name='line' }, @{ Label='Pfeil (A)'; Name='arrow' })) {
         [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @($toolSpec.Label) -Description "Shift $($toolSpec.Name) tool")
         Invoke-CanvasDrag 35 35 70 65 $true
+        # Line replaces square + two nudges; arrow replaces the undone line.
+        Confirm-RedoDiscard $(if ($toolSpec.Name -eq 'line') { 3 } else { 1 })
         Save-FromToolbar $main.Handle
         $snapped = Wait-ForImageState -Path $inputPath -Description "saved Shift-snapped $($toolSpec.Name)" -Predicate {
             param($image)
@@ -788,6 +824,7 @@ try {
         Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Crop*' } | Select-Object -First 1
     })
     Invoke-CanvasDrag 30 20 130 100 $false
+    Confirm-RedoDiscard 1
     [void](Wait-ForValue -Seconds 5 -Description 'successful crop switching to Select' -Probe {
         Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Select*' } | Select-Object -First 1
     })
