@@ -118,19 +118,12 @@ fn render_document_over(
         .map_err(|_| "Nicht genug Speicher für das gerenderte Dokument.".to_owned())?;
     output_pixels.extend_from_slice(&initial.pixels);
 
-    // A later blur must not spread redacted source pixels outside the black
-    // rectangle through averaging. Sanitize the sampling source unless every
-    // shape is a redaction: that branch only writes the output at the end and
-    // never samples pixels. Keep the existing path for all mixed contents,
-    // including any future shape kinds.
-    let redactions_only = !shapes.is_empty()
-        && shapes
-            .iter()
-            .all(|shape| matches!(shape.kind, ShapeKind::Redact { .. }));
+    // Filters sampling the original must never reveal redacted pixels outside
+    // the redaction. Source-independent shapes need no second image buffer.
     let sanitized_source = if shapes
         .iter()
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
-        && !redactions_only
+        && shapes.iter().any(|shape| samples_source(&shape.kind))
     {
         let mut pixels = Vec::new();
         pixels.try_reserve_exact(source.pixels.len()).map_err(|_| {
@@ -264,6 +257,28 @@ fn render_document_over(
         .map_err(|error| format!("Gerendertes Bild ist ungültig: {error}"))
 }
 
+// Exhaustive so newly added effects must explicitly choose a safety policy.
+fn samples_source(kind: &ShapeKind) -> bool {
+    match kind {
+        ShapeKind::Blur { .. } | ShapeKind::GaussianBlur { .. } | ShapeKind::Magnifier { .. } => {
+            true
+        }
+        ShapeKind::Line { .. }
+        | ShapeKind::Arrow { .. }
+        | ShapeKind::Rectangle { .. }
+        | ShapeKind::Ellipse { .. }
+        | ShapeKind::Highlight { .. }
+        | ShapeKind::Redact { .. }
+        | ShapeKind::Freehand { .. }
+        | ShapeKind::Text { .. }
+        | ShapeKind::Cursor { .. }
+        | ShapeKind::Spotlight { .. }
+        | ShapeKind::Callout { .. }
+        | ShapeKind::Stamp { .. }
+        | ShapeKind::Step { .. } => false,
+    }
+}
+
 // Redactions are applied last, independent of annotation order. Never composite
 // them: an opaque replacement prevents alpha or antialiasing from exposing data.
 fn apply_redactions(
@@ -347,6 +362,54 @@ mod tests {
     use crate::pixelate::pixelate_region;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn redaction_and_spotlight_do_not_need_a_sampling_copy() {
+        use crate::shapes::{Point, Rect, Spotlight};
+        let source = Image::new(4, 2, [20, 70, 150, 255].repeat(8)).unwrap();
+        let original = source.clone();
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0),
+        });
+        let spotlight = Shape::new(ShapeKind::Spotlight {
+            data: Spotlight::new(
+                Rect {
+                    x: 1.0,
+                    y: 0.0,
+                    width: 2.0,
+                    height: 2.0,
+                },
+                0.5,
+            )
+            .unwrap(),
+        });
+        assert!(!samples_source(&redact.kind));
+        assert!(!samples_source(&spotlight.kind));
+        let mut sanitized = source.clone();
+        apply_redactions(&mut sanitized.pixels, 4, 2, std::slice::from_ref(&redact)).unwrap();
+        for shapes in [
+            vec![redact.clone(), spotlight.clone()],
+            vec![spotlight.clone(), redact.clone()],
+        ] {
+            let mut expected = source.pixels.clone();
+            let ShapeKind::Spotlight { data } = &spotlight.kind else {
+                unreachable!()
+            };
+            effects::spotlight(&mut expected, &sanitized, data).unwrap();
+            apply_redactions(&mut expected, 4, 2, &shapes).unwrap();
+            assert_eq!(render_document(&source, &shapes).unwrap().pixels, expected);
+        }
+        assert_eq!(source, original);
+        assert!(samples_source(&ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0)
+        }));
+        assert!(samples_source(&ShapeKind::GaussianBlur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0)
+        }));
+    }
 
     #[test]
     fn shared_export_reuses_unannotated_image_and_validates_it() {

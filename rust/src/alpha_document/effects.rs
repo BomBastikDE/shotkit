@@ -1,5 +1,5 @@
 //! In-place spotlight and source-sampled image magnifier rendering.
-//! The caller must pass the source after applying all document redactions.
+//! The magnifier must receive the source after applying all document redactions.
 use crate::alpha_composite::source_over;
 use crate::shapes::{Magnifier, MagnifierFrame, Spotlight, Style};
 use crate::stitch::Image;
