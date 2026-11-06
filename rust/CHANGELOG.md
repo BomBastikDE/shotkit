@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Die Anleitung erklärt, dass automatische Datei- und Zwischenablageausgabe vor einer Schwärzung im Editor erfolgen und vorher ausgeschaltet werden müssen, wenn nur die geschwärzte Aufnahme ausgegeben werden soll ([#52](https://github.com/BomBastikDE/shotkit/issues/52)).
+
 - Der Windows-Ausgabetest wartet nach Änderungen im Tray-Menü auf den Abschluss des jeweiligen Speichervorgangs, bevor er die Einstellungsdatei prüft ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
 
 - Ein Windows-Test prüft das Verhalten beim Ersetzen der Einstellungsdatei, während ein Leser auch die Löschfreigabe erteilt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
