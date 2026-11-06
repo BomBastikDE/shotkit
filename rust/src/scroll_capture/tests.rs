@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn settled_capture_returns_newest_sample_when_few_edge_rows_change() {
+    struct Frames(std::collections::VecDeque<Image>);
+    impl ScrollIo for Frames {
+        fn capture(&mut self) -> Result<Image, String> {
+            self.0
+                .pop_front()
+                .ok_or_else(|| "unexpected capture".into())
+        }
+        fn scroll(&mut self, _: Direction, _: i32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+    let first = Image::new(120, 200, [0, 0, 0, 255].repeat(120 * 200)).unwrap();
+    let mut latest = first.clone();
+    for y in 0..20 {
+        latest.pixels[(y * 120 + 119) * 4] = 255;
+    }
+    let mut io = Frames([first, latest.clone()].into());
+    let captured = capture_settled(&mut io, Direction::Down).unwrap();
+    assert_eq!(captured.image, latest);
+    assert!(io.0.is_empty());
+}
+
 /// Virtual scrollable surface. In horizontal mode the screen viewport is
 /// moved across page columns; otherwise it moves across page rows.
 struct FakeScrollIo {

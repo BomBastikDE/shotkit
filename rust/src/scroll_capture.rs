@@ -92,6 +92,10 @@ fn capture_settled(io: &mut impl ScrollIo, direction: Direction) -> Result<Captu
             }
         };
         if frame.settled_with(&next_frame) {
+            // The newest sample can still differ in up to 10% of rows.
+            // Returning the previous sample would silently discard those pixels.
+            image = next;
+            frame = next_frame;
             break;
         }
         image = next;
