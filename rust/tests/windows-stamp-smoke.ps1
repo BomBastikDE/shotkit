@@ -30,7 +30,7 @@ namespace ShotKitStampSmoke {
     public struct Point { public int X, Y; }
     public sealed class Window { public IntPtr Handle; public int Pid; public string ClassName, Title; public bool Visible; }
     public sealed class Button { public IntPtr Handle; public string Text; }
-    public sealed class Control { public IntPtr Handle; public int Id; public string ClassName; public bool Visible; }
+    public sealed class Control { public IntPtr Handle, Parent; public int Id, Pid; public string ClassName, Text; public bool Visible, Enabled; }
     public static class Native {
         private delegate bool EnumProc(IntPtr hwnd, IntPtr data);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr data);
@@ -38,6 +38,8 @@ namespace ShotKitStampSmoke {
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, StringBuilder s, int n);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr hwnd, StringBuilder s, int n);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hwnd);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")] static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
@@ -67,7 +69,7 @@ namespace ShotKitStampSmoke {
             var r=new List<Button>(); EnumProc cb=(h,d)=>{ if(IsWindowVisible(h) && Text(h,true)=="Button") r.Add(new Button{Handle=h,Text=Text(h,false)}); return true;}; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return r.ToArray();
         }
         public static Control[] Controls(IntPtr parent) {
-            var r=new List<Control>(); EnumProc cb=(h,d)=>{ r.Add(new Control{Handle=h,Id=GetDlgCtrlID(h),ClassName=Text(h,true),Visible=IsWindowVisible(h)}); return true; }; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return r.ToArray();
+            var r=new List<Control>(); EnumProc cb=(h,d)=>{ r.Add(new Control{Handle=h,Parent=GetParent(h),Id=GetDlgCtrlID(h),Pid=Owner(h),ClassName=Text(h,true),Text=Text(h,false),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h)}); return true; }; EnumChildWindows(parent,cb,IntPtr.Zero); GC.KeepAlive(cb); return r.ToArray();
         }
         [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint msg,IntPtr w,IntPtr l);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
@@ -240,9 +242,24 @@ try {
     $main=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} $StartupTimeoutSeconds 'editor'
     [void][ShotKitStampSmoke.Native]::ShowWindow($main.Handle,3)
     $notice=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 10 'startup notice'
-    [void][ShotKitStampSmoke.Native]::SetForegroundWindow($notice.Handle)
-    $ok=@([ShotKitStampSmoke.Native]::Controls($notice.Handle)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and $_.Id -eq 1})
-    if($ok.Count -ne 1){throw 'NOTICE_OK_MISSING.'};[ShotKitStampSmoke.Native]::Click($ok[0].Handle)
+    # Another MB_OK dialog exposed its sole OK button as native ID 2 in CI
+    # 42138227971. Verify this dialog explicitly and log its children on failure.
+    # The native child ID can differ from the return value. Poll readiness while
+    # still requiring the exact owned, direct child and a single visible button.
+    try {
+        $ok=Wait-For {
+            $buttons=@([ShotKitStampSmoke.Native]::Controls($notice.Handle)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button'})
+            if($buttons.Count -eq 1 -and $buttons[0].Id -eq 2 -and $buttons[0].Parent -eq $notice.Handle -and $buttons[0].Pid -eq $proc.Id -and ($buttons[0].Text -replace '&','').Trim() -ceq 'OK' -and $buttons[0].Enabled){return $buttons[0]}
+        } 5 'owned startup notice OK button (native ID=2)'
+        [void](Wait-For {
+            [void][ShotKitStampSmoke.Native]::SetForegroundWindow($notice.Handle)
+            [ShotKitStampSmoke.Native]::GetForegroundWindow() -eq $notice.Handle
+        } 5 'startup notice foreground')
+        [ShotKitStampSmoke.Native]::Click($ok.Handle)
+    } catch {
+        $children=([ShotKitStampSmoke.Native]::Controls($notice.Handle)|ForEach-Object {"HWND=$($_.Handle) parent=$($_.Parent) PID=$($_.Pid) ID=$($_.Id) class='$($_.ClassName)' text='$($_.Text)' visible=$($_.Visible) enabled=$($_.Enabled)"}) -join '; '
+        throw "NOTICE_OK_FAILED: $($_.Exception.Message) notice HWND=$($notice.Handle) PID=$($notice.Pid); children=[$children]"
+    }
     [void](Wait-For {-not @(Get-OwnedWindows|Where-Object {$_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}).Count} 5 'notice close')
     [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Strg+S speichern*'}} 10 'loaded editor')
     $hashes=@()

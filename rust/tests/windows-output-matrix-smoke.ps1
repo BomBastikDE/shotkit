@@ -162,6 +162,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Output-Matrix-' + [Guid]::N
 
 $surfaceScript=Join-Path $root 'surface.ps1'; $readyFile=Join-Path $root 'surface-ready.txt'
 $surfaceStdout=Join-Path $root 'surface-stdout.txt'; $surfaceStderr=Join-Path $root 'surface-stderr.txt'
+$compilerTemp=Join-Path $root 'surface-compiler'
 $shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $failure=$null; $mouseDown=$false; $allExited=$true
 
 function Get-OwnWindows([Diagnostics.Process] $p) { [ShotKitOutputMatrixSmoke.Native]::Windows($p.Id) }
@@ -258,9 +259,18 @@ try {
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Add-Type -AssemblyName System.Drawing
     $surfaceSource=@'
-param([string]$ReadyFile)
+param([string]$ReadyFile,[string]$CompilerTemp)
 $ErrorActionPreference='Stop'
-function Write-Stage([string]$Name) { [Console]::Out.WriteLine("FIXTURE_STAGE: $Name"); [Console]::Out.Flush() }
+# Windows PowerShell uses an out-of-process CodeDom compiler for Add-Type.
+# Isolate its temporary files so a startup failure can identify the pending
+# compiler invocation without inspecting unrelated runner temporary files.
+$env:TEMP=$CompilerTemp; $env:TMP=$CompilerTemp
+$startupClock=[Diagnostics.Stopwatch]::StartNew()
+function Write-Stage([string]$Name) {
+    [Console]::Out.WriteLine("FIXTURE_STAGE: $Name")
+    [Console]::Out.WriteLine("FIXTURE_TIMING: elapsedMs={0} stage={1}", $startupClock.ElapsedMilliseconds, $Name)
+    [Console]::Out.Flush()
+}
 Write-Stage 'loading assemblies'
 Write-Stage 'loading System.Windows.Forms'
 Add-Type -AssemblyName System.Windows.Forms
@@ -308,13 +318,15 @@ namespace ShotKitOutputMatrixSurface {
  }
 }
 "@
+Write-Stage 'surface compilation completed'
 Write-Stage 'constructing surface and entering message loop'
 [System.Windows.Forms.Application]::Run([ShotKitOutputMatrixSurface.Surface]::new($ReadyFile))
 '@
     [IO.File]::WriteAllText($surfaceScript,$surfaceSource,[Text.UTF8Encoding]::new($false))
     $powershellExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)){throw 'Windows PowerShell 5.1 is required for the isolated fixture window.'}
-    $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $surfaceScript,$readyFile
+    New-Item -ItemType Directory -Path $compilerTemp -Force | Out-Null
+    $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}" -CompilerTemp "{2}"' -f $surfaceScript,$readyFile,$compilerTemp
     $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
     try {
         $fixtureWindow=Wait-ForCondition -Seconds 20 -Description 'the deterministic fixture surface' -OwnedProcess $surface -Condition {
@@ -334,6 +346,36 @@ Write-Stage 'constructing surface and entering message loop'
             }) -join '; '
             Write-Output "FIXTURE_DIAGNOSTIC: cpuSeconds=$($surface.TotalProcessorTime.TotalSeconds) threads=[$threads]"
         } catch { Write-Output 'FIXTURE_DIAGNOSTIC: process/thread inspection failed.' }
+        # Snapshot before terminating the fixture: CodeDom may be waiting on a
+        # compiler process rather than consuming CPU in the surface constructor.
+        # Do not infer a compiler/Defender deadlock from a waiting parent alone.
+        try {
+            $children=@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $($surface.Id)" -OperationTimeoutSec 3)
+            Write-Output "FIXTURE_DIAGNOSTIC: directChildCount=$($children.Count)"
+            foreach($child in $children) {
+                $detail="pid=$($child.ProcessId) parent=$($child.ParentProcessId) name=$($child.Name) created=$($child.CreationDate)"
+                if($env:GITHUB_ACTIONS -ceq 'true'){$detail+=" commandLine=$($child.CommandLine)"}
+                Write-Output "FIXTURE_COMPILER_PROCESS: $detail"
+                try {
+                    $compiler=Get-Process -Id $child.ProcessId -ErrorAction Stop
+                    $waits=@($compiler.Threads | ForEach-Object {
+                        $wait=if($_.ThreadState -eq [Diagnostics.ThreadState]::Wait){$_.WaitReason}else{'n/a'}
+                        "id=$($_.Id) state=$($_.ThreadState) wait=$wait"
+                    }) -join '; '
+                    Write-Output "FIXTURE_COMPILER_PROCESS: pid=$($child.ProcessId) cpuSeconds=$($compiler.TotalProcessorTime.TotalSeconds) threads=[$waits]"
+                } catch { Write-Output "FIXTURE_COMPILER_PROCESS: pid=$($child.ProcessId) exited or unavailable during snapshot." }
+            }
+        } catch { Write-Output "FIXTURE_DIAGNOSTIC: compiler child snapshot failed ($($_.Exception.GetType().Name))." }
+        try {
+            foreach($artifact in @(Get-ChildItem -LiteralPath $compilerTemp -File | Sort-Object Name | Select-Object -First 20)) {
+                Write-Output "FIXTURE_COMPILER_FILE: name=$($artifact.Name) bytes=$($artifact.Length) modifiedUtc=$($artifact.LastWriteTimeUtc.ToString('o'))"
+                if($env:GITHUB_ACTIONS -ceq 'true' -and $artifact.Extension -in @('.cmdline','.out','.err')) {
+                    $text=[IO.File]::ReadAllText($artifact.FullName)
+                    if($text.Length -gt 8192){$text=$text.Substring(0,8192)+' [truncated]'}
+                    Write-Output "FIXTURE_COMPILER_FILE: $($artifact.Name): $text"
+                }
+            }
+        } catch { Write-Output "FIXTURE_DIAGNOSTIC: compiler temporary-file snapshot failed ($($_.Exception.GetType().Name))." }
         throw $startupFailure
     }
     $ready=Wait-ForCondition -Seconds 10 -Description 'complete fixture client coordinates' -OwnedProcess $surface -Condition {
@@ -494,7 +536,7 @@ finally {
                     if($env:GITHUB_ACTIONS -ceq 'true') {
                         Write-Output "FIXTURE_DIAGNOSTIC: $([IO.Path]::GetFileName($log)): $content"
                     } elseif($log -eq $surfaceStdout) {
-                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: loading System.Windows.Forms','FIXTURE_STAGE: loaded System.Windows.Forms','FIXTURE_STAGE: loading System.Drawing','FIXTURE_STAGE: loaded System.Drawing','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
+                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: loading System.Windows.Forms','FIXTURE_STAGE: loaded System.Windows.Forms','FIXTURE_STAGE: loading System.Drawing','FIXTURE_STAGE: loaded System.Drawing','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: surface compilation completed','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
                         foreach($line in @($content -split "`r?`n")) { if($line -cin $phases) { Write-Output $line } }
                     } else {
                         Write-Output "FIXTURE_DIAGNOSTIC: stderr nonempty=$(-not [string]::IsNullOrWhiteSpace($content))"
