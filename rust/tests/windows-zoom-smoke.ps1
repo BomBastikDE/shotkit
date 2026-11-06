@@ -89,13 +89,52 @@ function Send-ModifiedWheel($H,[int]$X,[int]$Y,[int]$Delta,[byte]$Key,[int]$Flag
   Assert-OwnedInputTarget $H $X $Y
   [ShotKitZoomSmoke.N]::Wheel($X,$Y,$Delta)
   $line=Wait-For { $lines=@(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}});if($lines.Count -gt $before){$lines[$before]} } 'wheel event processed by editor' 5
+  $script:lastPanWheelDiagnostic=$line
   if($line -notmatch '^wheel hwnd=(\d+) flags=(\d+) delta=(-?\d+) mode=([012]) '){throw "WHEEL_DIAGNOSTIC_INVALID: $line"}
-  if([UInt64]$Matches[1] -ne [UInt64]($H.ToInt64()) -or [int]$Matches[3] -ne $Delta -or ([int]$Matches[2] -band $Flag) -eq 0){throw "MODIFIED_WHEEL_DELIVERY_MISMATCH: $line"}
+  $expectedMode=if(($Flag -band 0x0004) -ne 0){1}else{0}
+  if([UInt64]$Matches[1] -ne [UInt64]($H.ToInt64()) -or [int]$Matches[3] -ne $Delta -or ([int]$Matches[2] -band $Flag) -ne $Flag -or [int]$Matches[4] -ne $expectedMode){throw "MODIFIED_WHEEL_DELIVERY_MISMATCH: $line"}
+  return $line
  } finally {[ShotKitZoomSmoke.N]::keybd_event($Key,0,2,[UIntPtr]::Zero)}
 }
-function Send-PanWheel($H,[int]$Delta,[bool]$Shift){Focus-Editor $H;$m=Get-LimeMarker $H;Assert-OwnedInputTarget $H $m.X $m.Y;if($Shift){Send-ModifiedWheel $H $m.X $m.Y $Delta 0x10 0x0004}else{[ShotKitZoomSmoke.N]::Wheel($m.X,$m.Y,$Delta)};Start-Sleep -Milliseconds 300;Get-LimeMarker $H}
-function Send-ShiftWheelMessage($H,[int]$Delta){if([ShotKitZoomSmoke.N]::Owner($H) -ne $proc.Id){throw 'MESSAGE_TARGET_OWNER_MISMATCH'};if(-not[ShotKitZoomSmoke.N]::IsWindow($H)){throw 'MESSAGE_TARGET_NOT_WINDOW'};$m=Get-LimeMarker $H;[ShotKitZoomSmoke.N]::ShiftWheelMessage($H,$m.X,$m.Y,$Delta);Start-Sleep -Milliseconds 300;Get-LimeMarker $H}
+function Get-WheelDiagnosticCount { @(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}}).Count }
+function Wait-WheelDiagnostic([int]$Before,$H,[int]$Delta,[int]$Flag,[int]$Mode){
+ $line=Wait-For { $lines=@(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}});if($lines.Count -gt $Before){$lines[$Before]} } 'wheel event processed by editor' 5
+ $script:lastPanWheelDiagnostic=$line
+ if($line -notmatch '^wheel hwnd=(\d+) flags=(\d+) delta=(-?\d+) mode=([012]) '){throw "WHEEL_DIAGNOSTIC_INVALID: $line"}
+ if([UInt64]$Matches[1] -ne [UInt64]($H.ToInt64()) -or [int]$Matches[3] -ne $Delta -or ([int]$Matches[2] -band $Flag) -ne $Flag -or [int]$Matches[4] -ne $Mode){throw "PAN_WHEEL_DELIVERY_MISMATCH: $line"}
+ return $line
+}
+function Send-PanWheel($H,[int]$Delta,[bool]$Shift,$PairStart,[bool]$ReturnToStart){
+ Focus-Editor $H;$m=Get-LimeMarker $H;Assert-OwnedInputTarget $H $m.X $m.Y;$before=Get-WheelDiagnosticCount;$script:lastPanWheelDiagnostic=$null
+ if($Shift){$line=Send-ModifiedWheel $H $m.X $m.Y $Delta 0x10 0x0004}
+ else {[ShotKitZoomSmoke.N]::Wheel($m.X,$m.Y,$Delta);$line=Wait-WheelDiagnostic $before $H $Delta 0 2}
+ $script:panEvidence.Diagnostics+=@($line)
+ $axis=if($Shift){'X'}else{'Y'};$target=[int]$PairStart.$axis
+ $probe=Wait-For {try{$observed=Get-LimeMarker $H;$script:panEvidence.LastMarker=$observed;if($ReturnToStart){[Math]::Abs([int]$observed.$axis-$target) -le 3}else{[int]$m.$axis-[int]$observed.$axis -ge 3}}catch{$false}} "visible $axis pan marker state after delta $Delta" 3
+ return $script:panEvidence.LastMarker
+}
+function Send-ShiftWheelMessage($H,[int]$Delta,$PairStart,[bool]$ReturnToStart){
+ if([ShotKitZoomSmoke.N]::Owner($H) -ne $proc.Id){throw 'MESSAGE_TARGET_OWNER_MISMATCH'};if(-not[ShotKitZoomSmoke.N]::IsWindow($H)){throw 'MESSAGE_TARGET_NOT_WINDOW'}
+ $m=Get-LimeMarker $H;$before=Get-WheelDiagnosticCount;$script:lastPanWheelDiagnostic=$null;[ShotKitZoomSmoke.N]::ShiftWheelMessage($H,$m.X,$m.Y,$Delta);$line=Wait-WheelDiagnostic $before $H $Delta 0x0004 1;$script:panEvidence.Diagnostics+=@($line)
+ $target=[int]$PairStart.X;$probe=Wait-For {try{$observed=Get-LimeMarker $H;$script:panEvidence.LastMarker=$observed;if($ReturnToStart){[Math]::Abs([int]$observed.X-$target) -le 3}else{[int]$m.X-[int]$observed.X -ge 3}}catch{$false}} "visible X pan marker state after direct message delta $Delta" 3
+ return $script:panEvidence.LastMarker
+}
 function Assert-PanPair([string]$Name,$Start,$Moved,$Returned,[string]$Axis){$primary=if($Axis -eq 'Y'){'Y'}else{'X'};$other=if($Axis -eq 'Y'){'X'}else{'Y'};$step=[int]$Start.$primary-[int]$Moved.$primary;$returnError=[Math]::Abs([int]$Returned.$primary-[int]$Start.$primary);$crossMove=[Math]::Abs([int]$Moved.$other-[int]$Start.$other);$crossReturn=[Math]::Abs([int]$Returned.$other-[int]$Start.$other);if($step -lt 3 -or $returnError -gt 3 -or $crossMove -gt 3 -or $crossReturn -gt 3){throw "$Name visible marker motion failed: start=($($Start.X),$($Start.Y)) moved=($($Moved.X),$($Moved.Y)) returned=($($Returned.X),$($Returned.Y)); expected negative $Axis-only motion on wheel down and return within 3px."};Write-Output ("PASS_ACTION {0}: visible lime marker {1} step {2}px; opposite step returned within {3}px; cross-axis <= {4}px." -f $Name,$Axis,$step,$returnError,[Math]::Max($crossMove,$crossReturn))}
+function Invoke-PanPair([string]$Name,$H,[bool]$Shift,[bool]$DirectMessage,[string]$Axis){
+ $start=Get-LimeMarker $H;$script:panEvidence=[ordered]@{Name=$Name;Start=$start;Moved=$null;Returned=$null;LastMarker=$start;Diagnostics=@()}
+ try {
+  if($DirectMessage){$script:panEvidence.Moved=Send-ShiftWheelMessage $H -120 $start $false;$script:panEvidence.Returned=Send-ShiftWheelMessage $H 120 $start $true}
+  else {$script:panEvidence.Moved=Send-PanWheel $H -120 $Shift $start $false;$script:panEvidence.Returned=Send-PanWheel $H 120 $Shift $start $true}
+  Assert-PanPair $Name $start $script:panEvidence.Moved $script:panEvidence.Returned $Axis
+ } catch {
+  if($script:lastPanWheelDiagnostic -and $script:panEvidence.Diagnostics -notcontains $script:lastPanWheelDiagnostic){$script:panEvidence.Diagnostics+=@($script:lastPanWheelDiagnostic)}
+  Write-Output "PAN_PAIR_FAILURE: $Name"
+  Write-Output ("PAN_PAIR_MARKERS: start=({0},{1}) moved={2} returned={3} last={4}" -f $start.X,$start.Y,$(if($null -ne $script:panEvidence.Moved){"($($script:panEvidence.Moved.X),$($script:panEvidence.Moved.Y))"}else{'unavailable'}),$(if($null -ne $script:panEvidence.Returned){"($($script:panEvidence.Returned.X),$($script:panEvidence.Returned.Y))"}else{'unavailable'}),$(if($null -ne $script:panEvidence.LastMarker){"($($script:panEvidence.LastMarker.X),$($script:panEvidence.LastMarker.Y))"}else{'unavailable'}))
+  Write-Output 'PAN_PAIR_HANDLER_DIAGNOSTICS:'
+  if($script:panEvidence.Diagnostics.Count){$script:panEvidence.Diagnostics|ForEach-Object{Write-Output $_};if($script:panEvidence.Diagnostics.Count -lt 2){Write-Output 'second related handler diagnostic unavailable (event may not have reached handler)'}}else{Write-Output 'both related handler diagnostics unavailable (no wheel event was logged)'}
+  throw
+ }
+}
 function Measure-After([string]$Name,[scriptblock]$Action,$Before,$H){Focus-Editor $H;&$Action;Start-Sleep -Milliseconds 350;[void](Wait-For {try{$m=Get-VisibleBounds $H;($m.Width -ne $Before.Width -or $m.Height -ne $Before.Height)}catch{$false}} "$Name visible image extent change");$after=Get-VisibleBounds $H;if($after.Width -le $Before.Width -or $after.Height -le $Before.Height){throw "$Name did not enlarge visible image bounds: before=$($Before.Width)x$($Before.Height), after=$($after.Width)x$($after.Height)."};Write-Output ("PASS_ACTION {0}: visible magenta bounds {1}x{2} -> {3}x{4}" -f $Name,$Before.Width,$Before.Height,$after.Width,$after.Height);return $after}
 function Assert-Smaller([string]$Name,$Before,$After){if($After.Width -ge $Before.Width -or $After.Height -ge $Before.Height){throw "$Name did not reduce visible image extent: before=$($Before.Width)x$($Before.Height), after=$($After.Width)x$($After.Height)."};Write-Output ("PASS_ACTION {0}: visible magenta bounds {1}x{2} -> {3}x{4}" -f $Name,$Before.Width,$Before.Height,$After.Width,$After.Height)}
 try {
@@ -118,12 +157,12 @@ try {
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlNumpad(0x60);Start-Sleep -Milliseconds 350;$originalPad=Get-VisibleBounds $main.H;Assert-Smaller 'Ctrl+0 (NumPad 0, original size)' $fitAfter $originalPad
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlNumpad(0x69);Start-Sleep -Milliseconds 350;$fitPad=Get-VisibleBounds $main.H;if($fitPad.Width -le $originalPad.Width -or $fitPad.Height -le $originalPad.Height){throw 'Ctrl+9 (NumPad 9) did not enlarge the visible image back to fit.'};Write-Output 'PASS_ACTION Ctrl+9 (NumPad 9): visible image enlarged back to fit.'
  for($i=0;$i -lt 3;$i++){Focus-Editor $main.H;$zoomMarker=Get-LimeMarker $main.H;Assert-OwnedInputTarget $main.H $zoomMarker.X $zoomMarker.Y;[ShotKitZoomSmoke.N]::CtrlKey(0xBB);Start-Sleep -Milliseconds 150}
- Start-Sleep -Milliseconds 350;$panStart=Get-LimeMarker $main.H
- $vMoved=Send-PanWheel $main.H -120 $false;$vReturned=Send-PanWheel $main.H 120 $false;Assert-PanPair 'vertical wheel down/up' $panStart $vMoved $vReturned 'Y'
+ Start-Sleep -Milliseconds 350
+ Invoke-PanPair 'vertical wheel down/up' $main.H $false $false 'Y'
  # Repeat real Shift+wheel pairs: issue #42 was intermittent, so validate every
  # down/up cycle independently from on-screen marker screenshots and handler diagnostics.
- for($i=1;$i -le 5;$i++){$hStart=Get-LimeMarker $main.H;$hMoved=Send-PanWheel $main.H -120 $true;$hReturned=Send-PanWheel $main.H 120 $true;Assert-PanPair ("Shift+wheel down/up pair $i/5") $hStart $hMoved $hReturned 'X'}
- $msgStart=Get-LimeMarker $main.H;$msgMoved=Send-ShiftWheelMessage $main.H -120;$msgReturned=Send-ShiftWheelMessage $main.H 120;Assert-PanPair 'WM_MOUSEWHEEL MK_SHIFT down/up (no Shift key)' $msgStart $msgMoved $msgReturned 'X'
+ for($i=1;$i -le 5;$i++){Invoke-PanPair ("Shift+wheel down/up pair $i/5") $main.H $true $false 'X'}
+ Invoke-PanPair 'WM_MOUSEWHEEL MK_SHIFT down/up (no Shift key)' $main.H $false $true 'X'
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0x30);Start-Sleep -Milliseconds 350;$zoomBase=Get-VisibleBounds $main.H
  $s=Measure-After 'Ctrl+Plus (OEM plus)' { [ShotKitZoomSmoke.N]::CtrlKey(0xBB) } $zoomBase $main.H
  $smaller=Get-VisibleBounds $main.H;Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0xBD);Start-Sleep -Milliseconds 350;$after=Get-VisibleBounds $main.H;Assert-Smaller 'Ctrl+Minus (OEM minus)' $smaller $after
