@@ -190,7 +190,10 @@ function Confirm-RedoDiscard([int]$ExpectedRedo) {
     $dialog=Wait-For {
         $dialogs=@(Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
         if(-not $dialogs.Count){return $null}
-        if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){throw 'UNEXPECTED_REDO_CONFIRMATION_DIALOG'}
+        if($dialogs.Count -ne 1 -or $dialogs[0].Title -cne 'Rückgängig-Verlauf'){
+            $details=($dialogs | ForEach-Object { "HWND=$($_.Handle) PID=$($_.Pid) class='$($_.ClassName)' title='$($_.Title)' visible=$($_.Visible)" }) -join '; '
+            throw "UNEXPECTED_REDO_CONFIRMATION_DIALOG: count=$($dialogs.Count); $details"
+        }
         return $dialogs[0]
     } 8 'expected owned Redo-discard confirmation'
     $yes=Wait-For {
