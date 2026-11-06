@@ -122,21 +122,27 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
     }
     let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
     let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
-    let mut pixels = image.pixels.clone();
-    for px in pixels.as_chunks_mut::<4>().0 {
-        px.swap(0, 2);
-    }
-    let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
     let mut bytes = Cursor::new(Vec::new());
     if format == ImageFormat::Jpeg {
+        let expected = image
+            .width
+            .checked_mul(image.height)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("Ungültige Bildgröße")?;
+        // Match ImageBuffer::from_raw: ignore surplus bytes after the image.
+        let bgra = image.pixels.get(..expected).ok_or("Ungültige Bildgröße")?;
         let output = DynamicImage::ImageRgb8(
-            RgbImage::from_raw(w, h, jpeg_rgb_on_white(rgba.into_raw()))
-                .ok_or("Ungültige Bildgröße")?,
+            RgbImage::from_raw(w, h, jpeg_rgb_on_white(bgra)?).ok_or("Ungültige Bildgröße")?,
         );
         JpegEncoder::new_with_quality(&mut bytes, 92)
             .encode_image(&output)
             .map_err(|e| e.to_string())?;
     } else {
+        let mut pixels = image.pixels.clone();
+        for px in pixels.as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+        let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
         DynamicImage::ImageRgba8(rgba)
             .write_to(&mut bytes, format)
             .map_err(|e| e.to_string())?;
@@ -144,18 +150,21 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
     Ok(bytes.into_inner())
 }
 
-/// Flatten RGBA pixels onto white before JPEG encoding, which cannot store alpha.
+/// Flatten borrowed BGRA pixels directly into RGB on white for JPEG.
+/// This avoids an intermediate full-size RGBA copy of the source image.
 /// Channels are rounded to the nearest integer to match ordinary source-over.
-fn jpeg_rgb_on_white(rgba: Vec<u8>) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
-    for pixel in rgba.as_chunks::<4>().0 {
+fn jpeg_rgb_on_white(bgra: &[u8]) -> Result<Vec<u8>, String> {
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(bgra.len() / 4 * 3)
+        .map_err(|_| "Nicht genügend Speicher zum Kodieren des Bildes.".to_owned())?;
+    for pixel in bgra.as_chunks::<4>().0 {
         let alpha = u16::from(pixel[3]);
-        for channel in &pixel[..3] {
+        for channel in pixel[..3].iter().rev() {
             let value = u16::from(*channel) * alpha + 255 * (255 - alpha);
             rgb.push(((value + 127) / 255) as u8);
         }
     }
-    rgb
+    Ok(rgb)
 }
 
 pub fn format_from_path(path: &Path) -> Result<ImageFormat, String> {
@@ -386,15 +395,142 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_pixels_flatten_transparent_and_semitransparent_rgba_onto_white() {
-        let rgba = vec![
-            12, 34, 56, 0, // Hidden RGB must not leak through a fully transparent pixel.
-            20, 100, 200, 128, 7, 8, 9, 255,
+    fn jpeg_pixels_flatten_transparent_and_semitransparent_bgra_onto_white() {
+        let bgra = [
+            56, 34, 12, 0, // Hidden RGB must not leak through a fully transparent pixel.
+            200, 100, 20, 128, 9, 8, 7, 255,
         ];
         assert_eq!(
-            jpeg_rgb_on_white(rgba),
+            jpeg_rgb_on_white(&bgra).unwrap(),
             vec![255, 255, 255, 137, 177, 227, 7, 8, 9]
         );
+    }
+
+    #[test]
+    fn direct_jpeg_flattening_matches_previous_rgba_formula_exhaustively() {
+        // Cover every channel/alpha pair with distinct B/G/R values to catch
+        // both rounding regressions and a missing BGRA-to-RGB channel swap.
+        let mut bgra = Vec::new();
+        for alpha in 0..=255u8 {
+            for channel in 0..=255u8 {
+                bgra.extend_from_slice(&[channel, channel.wrapping_add(73), 255 - channel, alpha]);
+            }
+        }
+        let original = bgra.clone();
+        let mut rgba = bgra.clone();
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let previous: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| {
+                let alpha = u16::from(pixel[3]);
+                pixel[..3].iter().map(move |channel| {
+                    ((u16::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+                })
+            })
+            .collect();
+        assert_eq!(jpeg_rgb_on_white(&bgra).unwrap(), previous);
+        assert_eq!(bgra, original);
+    }
+
+    #[test]
+    fn jpeg_bytes_match_previous_encoding_and_preserve_input() {
+        let source = Image::new(
+            4,
+            1,
+            vec![
+                12, 34, 56, 0, 20, 100, 200, 128, 7, 8, 9, 255, 211, 53, 97, 1,
+            ],
+        )
+        .unwrap();
+        let original = source.clone();
+        assert_eq!(
+            encode(&source, ImageFormat::Jpeg),
+            previous_jpeg_encode(&source)
+        );
+        assert_eq!(source, original);
+    }
+
+    // Reconstruct the previous RGBA-copy path, including ImageBuffer's handling
+    // of public image fields and the encoder's dimension errors.
+    fn previous_jpeg_encode(source: &Image) -> Result<Vec<u8>, String> {
+        let width = u32::try_from(source.width).map_err(|_| "Bildbreite zu groß")?;
+        let height = u32::try_from(source.height).map_err(|_| "Bildhöhe zu groß")?;
+        let mut previous_rgba = source.pixels.clone();
+        for pixel in previous_rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let previous_rgba = RgbaImage::from_raw(width, height, previous_rgba)
+            .ok_or("Ungültige Bildgröße")?
+            .into_raw();
+        let previous_rgb = previous_rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| {
+                let alpha = u16::from(pixel[3]);
+                pixel[..3].iter().map(move |channel| {
+                    ((u16::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+                })
+            })
+            .collect();
+        let mut previous = Cursor::new(Vec::new());
+        JpegEncoder::new_with_quality(&mut previous, 92)
+            .encode_image(&DynamicImage::ImageRgb8(
+                RgbImage::from_raw(width, height, previous_rgb).ok_or("Ungültige Bildgröße")?,
+            ))
+            .map_err(|error| error.to_string())?;
+        Ok(previous.into_inner())
+    }
+
+    #[test]
+    fn jpeg_preserves_previous_surplus_buffer_and_zero_dimension_behavior() {
+        for (width, height) in [(1, 1), (0, 1), (1, 0), (0, 0)] {
+            for surplus in 0..=8 {
+                let image = Image {
+                    width,
+                    height,
+                    pixels: vec![79; width * height * 4 + surplus],
+                };
+                let original = image.clone();
+                assert_eq!(
+                    encode(&image, ImageFormat::Jpeg),
+                    previous_jpeg_encode(&image)
+                );
+                assert_eq!(image, original);
+            }
+        }
+    }
+
+    #[test]
+    fn jpeg_export_rejects_invalid_public_image_fields() {
+        for image in [
+            Image {
+                width: 0,
+                height: 1,
+                pixels: vec![],
+            },
+            Image {
+                width: 1,
+                height: 0,
+                pixels: vec![],
+            },
+            Image {
+                width: 1,
+                height: 1,
+                pixels: vec![0; 3],
+            },
+            Image {
+                width: usize::MAX,
+                height: usize::MAX,
+                pixels: vec![],
+            },
+        ] {
+            assert!(encode(&image, ImageFormat::Jpeg).is_err());
+        }
     }
 
     #[test]
