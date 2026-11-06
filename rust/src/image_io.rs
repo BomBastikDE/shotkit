@@ -50,7 +50,9 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     let orientation = decoder.orientation().map_err(|e| e.to_string())?;
     let mut decoded = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     decoded.apply_orientation(orientation);
-    let rgba = decoded.to_rgba8();
+    // Consume the decoded image so already-RGBA input can reuse its pixel
+    // allocation instead of making another full-size copy during import.
+    let rgba = decoded.into_rgba8();
     let (w, h) = rgba.dimensions();
     let mut pixels = rgba.into_raw();
     for px in pixels.as_chunks_mut::<4>().0 {
@@ -192,6 +194,12 @@ mod tests {
             let dst = decode(&bytes).unwrap();
             assert_eq!(src, dst);
         }
+    }
+    #[test]
+    fn png_import_preserves_transparent_and_semitransparent_pixels() {
+        let source = Image::new(2, 1, vec![23, 45, 67, 0, 91, 122, 153, 128]).unwrap();
+        let bytes = encode(&source, ImageFormat::Png).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), source);
     }
     #[test]
     fn jpeg_exif_orientation_is_applied_on_load() {
