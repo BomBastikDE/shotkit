@@ -5,7 +5,7 @@ use image::{
     RgbImage, RgbaImage,
 };
 use std::{
-    io::{BufReader, Cursor, Read},
+    io::{BufReader, Cursor, Read, Write},
     path::Path,
 };
 
@@ -137,6 +137,34 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
         JpegEncoder::new_with_quality(&mut bytes, 92)
             .encode_image(&output)
             .map_err(|e| e.to_string())?;
+    } else if format == ImageFormat::Png {
+        let expected = image
+            .width
+            .checked_mul(image.height)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("Ungültige Bildgröße")?;
+        // ImageBuffer::from_raw accepts surplus bytes, but image's PNG encoder
+        // asserts an exact length. Return an error instead of that panic.
+        if image.pixels.len() != expected {
+            return Err("Ungültige Bildgröße".into());
+        }
+        let stored_bound =
+            png_stored_size_bound(expected, image.height).ok_or("Ungültige Bildgröße")?;
+        write_png_stream(&mut bytes, w, h, &image.pixels, png::Compression::Fast)?;
+        // Unlike write_image_data, png's Fast stream has no automatic stored
+        // fallback and can expand noise by over 30%. Retry once in the same
+        // output allocation, retaining the fast path for compressible images.
+        if bytes.get_ref().len() > stored_bound {
+            bytes.get_mut().clear();
+            bytes.set_position(0);
+            write_png_stream(
+                &mut bytes,
+                w,
+                h,
+                &image.pixels,
+                png::Compression::NoCompression,
+            )?;
+        }
     } else {
         let mut pixels = image.pixels.clone();
         for px in pixels.as_chunks_mut::<4>().0 {
@@ -148,6 +176,65 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(bytes.into_inner())
+}
+
+const PNG_STREAM_CHUNK_BYTES: usize = 4096;
+
+// Include scanline filter bytes, zlib's header/checksum, stored-block headers,
+// PNG signature/IHDR/IEND, and IDAT framing. The current flate2/miniz backend
+// stores at least 31 KiB per full block; budget a header per 16 KiB plus three
+// blocks for rounding/SYNC/FINAL. Two extra IDAT headers cover partial chunks
+// emitted by finalization as well as an empty final chunk.
+fn png_stored_size_bound(pixel_bytes: usize, height: usize) -> Option<usize> {
+    let filtered = pixel_bytes.checked_add(height)?;
+    let block_headers = (filtered / (16 * 1024)).checked_add(3)?.checked_mul(5)?;
+    let zlib = filtered.checked_add(block_headers)?.checked_add(6)?;
+    let chunk_headers = (zlib / PNG_STREAM_CHUNK_BYTES)
+        .checked_add(2)?
+        .checked_mul(12)?;
+    zlib.checked_add(chunk_headers)?.checked_add(45)
+}
+
+fn write_png_stream(
+    output: &mut Cursor<Vec<u8>>,
+    width: u32,
+    height: u32,
+    bgra: &[u8],
+    compression: png::Compression,
+) -> Result<(), String> {
+    let mut encoder = png::Encoder::new(output, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(compression);
+    // Match image 0.25's normal PNG defaults; stored data needs no filtering.
+    encoder.set_filter(if matches!(compression, png::Compression::NoCompression) {
+        png::Filter::NoFilter
+    } else {
+        png::Filter::Adaptive
+    });
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    {
+        let mut stream = writer
+            .stream_writer_with_size(PNG_STREAM_CHUNK_BYTES)
+            .map_err(|e| e.to_string())?;
+        // Conversion storage stays bounded even for wider scanlines. The
+        // encoder buffers its own scanlines and compressed IDAT chunks.
+        let mut rgba = [0u8; 32 * 1024];
+        for chunk in bgra.chunks(rgba.len()) {
+            let converted = &mut rgba[..chunk.len()];
+            for (src, dst) in chunk
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(converted.as_chunks_mut::<4>().0.iter_mut())
+            {
+                dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
+            }
+            stream.write_all(converted).map_err(|e| e.to_string())?;
+        }
+        stream.finish().map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())
 }
 
 /// Flatten borrowed BGRA pixels directly into RGB on white for JPEG.
@@ -286,6 +373,245 @@ mod tests {
         let source = Image::new(2, 1, vec![23, 45, 67, 0, 91, 122, 153, 128]).unwrap();
         let bytes = encode(&source, ImageFormat::Png).unwrap();
         assert_eq!(decode(&bytes).unwrap(), source);
+    }
+
+    fn assert_png_pixels(source: &Image) {
+        let original = source.clone();
+        let bytes = encode(source, ImageFormat::Png).unwrap();
+        let mut reader = png::Decoder::new(Cursor::new(&bytes)).read_info().unwrap();
+        let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut rgba).unwrap();
+        assert_eq!(
+            (info.width as usize, info.height as usize),
+            (source.width, source.height)
+        );
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        let expected: Vec<u8> = source.pixels[..source.width * source.height * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], p[3]])
+            .collect();
+        assert_eq!(&rgba[..info.buffer_size()], expected);
+        reader.finish().unwrap();
+        assert_eq!(&bytes[bytes.len() - 12..], b"\0\0\0\0IEND\xaeB`\x82");
+        assert_eq!(source, &original);
+    }
+
+    #[test]
+    fn png_stream_preserves_every_channel_and_alpha_value() {
+        let pixels = (0..=255u8)
+            .flat_map(|alpha| {
+                (0..=255u8).flat_map(move |channel| {
+                    [channel, channel.wrapping_add(73), 255 - channel, alpha]
+                })
+            })
+            .collect();
+        let source = Image::new(256, 256, pixels).unwrap();
+        assert_png_pixels(&source);
+        assert_eq!(
+            decode(&encode(&source, ImageFormat::Png).unwrap()).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn png_stream_crosses_conversion_blocks_and_scanlines() {
+        // 8193 pixels exceed the 32-KiB block by one pixel. Subsequent rows
+        // begin inside a block; 30000 also exercises the largest import width.
+        for width in [8191, 8192, 8193, 30_000] {
+            let pixels = (0..width * 3 * 4).map(|i| (i * 37 + i / 7) as u8).collect();
+            let source = Image::new(width, 3, pixels).unwrap();
+            assert_png_pixels(&source);
+            assert_eq!(
+                decode(&encode(&source, ImageFormat::Png).unwrap()).unwrap(),
+                source
+            );
+        }
+    }
+
+    fn png_with_compression(source: &Image, compression: png::Compression) -> Vec<u8> {
+        let mut output = Cursor::new(Vec::new());
+        write_png_stream(
+            &mut output,
+            source.width as u32,
+            source.height as u32,
+            &source.pixels,
+            compression,
+        )
+        .unwrap();
+        output.into_inner()
+    }
+
+    #[test]
+    fn png_stream_retries_incompressible_noise_with_bounded_stored_output() {
+        let (width, height) = (1024, 256);
+        let mut state = 0x1234_5678u32;
+        let pixels = (0..width * height * 4)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        let source = Image::new(width, height, pixels).unwrap();
+        let bound = png_stored_size_bound(source.pixels.len(), height).unwrap();
+        let fast = png_with_compression(&source, png::Compression::Fast);
+        assert!(fast.len() > bound, "noise must exercise the retry");
+        drop(fast);
+        let output = encode(&source, ImageFormat::Png).unwrap();
+        assert!(output.len() <= bound);
+        assert_eq!(decode(&output).unwrap(), source);
+        assert_eq!(
+            output,
+            png_with_compression(&source, png::Compression::NoCompression)
+        );
+        assert_png_pixels(&source);
+    }
+
+    #[test]
+    fn png_stream_keeps_fast_compression_for_flat_and_screenshot_like_images() {
+        for screenshot in [false, true] {
+            let (width, height) = (1024, 256);
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                for x in 0..width {
+                    let pixel = if screenshot && (32..992).contains(&x) && (24..232).contains(&y) {
+                        if y % 24 < 3 && x % 160 < 130 {
+                            [24, 47, 89, 255]
+                        } else {
+                            [230, 240, 250, 192]
+                        }
+                    } else {
+                        [255, 255, 255, 255]
+                    };
+                    pixels.extend_from_slice(&pixel);
+                }
+            }
+            let source = Image::new(width, height, pixels).unwrap();
+            let fast = png_with_compression(&source, png::Compression::Fast);
+            assert!(fast.len() < png_stored_size_bound(source.pixels.len(), height).unwrap());
+            let output = encode(&source, ImageFormat::Png).unwrap();
+            assert_eq!(
+                output, fast,
+                "compressible images must retain the fast path"
+            );
+            assert_eq!(decode(&output).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn png_stored_size_bound_checks_arithmetic_overflow() {
+        assert!(png_stored_size_bound(usize::MAX, 1).is_none());
+        assert!(png_stored_size_bound(usize::MAX, 0).is_none());
+        assert!(png_stored_size_bound(usize::MAX / 2, 1).is_some());
+    }
+
+    #[test]
+    fn png_stored_bound_covers_tiny_images_and_idat_chunk_boundaries() {
+        let mut below_chunk = false;
+        let mut above_chunk = false;
+        // Tiny inputs expose fixed/finalization overhead. Widths around 1024
+        // put RGBA scanlines and their stored zlib output around 4096 bytes.
+        for (width, height) in [(1, 1), (1, 2), (2, 1), (3, 3)]
+            .into_iter()
+            .chain((1016..=1026).map(|width| (width, 1)))
+            .chain([(341, 3), (1, 819), (1, 820)])
+        {
+            let source = Image::new(width, height, vec![42; width * height * 4]).unwrap();
+            let output = png_with_compression(&source, png::Compression::NoCompression);
+            let bound = png_stored_size_bound(source.pixels.len(), height).unwrap();
+            assert!(
+                output.len() <= bound,
+                "{width}x{height}: {} > {bound}",
+                output.len()
+            );
+            assert_eq!(decode(&output).unwrap(), source);
+            let mut position = 8;
+            let mut idat_bytes = 0;
+            while position < output.len() {
+                let length =
+                    u32::from_be_bytes(output[position..position + 4].try_into().unwrap()) as usize;
+                if &output[position + 4..position + 8] == b"IDAT" {
+                    idat_bytes += length;
+                }
+                position += length + 12;
+            }
+            below_chunk |= idat_bytes < PNG_STREAM_CHUNK_BYTES;
+            above_chunk |= idat_bytes > PNG_STREAM_CHUNK_BYTES;
+        }
+        assert!(
+            below_chunk && above_chunk,
+            "exercise both sides of the IDAT buffer size"
+        );
+    }
+
+    #[test]
+    fn png_stream_matches_previous_encoder_pixels() {
+        let source = Image::new(
+            3,
+            2,
+            vec![
+                23, 45, 67, 0, 91, 122, 153, 128, 200, 1, 47, 255, 12, 253, 76, 1, 29, 83, 199,
+                254, 65, 7, 44, 16,
+            ],
+        )
+        .unwrap();
+        let mut rgba = source.pixels.clone();
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let mut previous = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(RgbaImage::from_raw(3, 2, rgba).unwrap())
+            .write_to(&mut previous, ImageFormat::Png)
+            .unwrap();
+        let streamed = encode(&source, ImageFormat::Png).unwrap();
+        assert_eq!(
+            decode(&streamed).unwrap(),
+            decode(previous.get_ref()).unwrap()
+        );
+        // Streamed IDAT chunking/deflation need not produce identical bytes.
+        assert_png_pixels(&source);
+    }
+
+    #[test]
+    fn png_stream_rejects_surplus_instead_of_panicking_in_image_encoder() {
+        for surplus in 1..=8 {
+            let mut source = sample();
+            source.pixels.extend(vec![79; surplus]);
+            let original = source.clone();
+            assert_eq!(
+                encode(&source, ImageFormat::Png).unwrap_err(),
+                "Ungültige Bildgröße"
+            );
+            assert_eq!(source, original);
+        }
+    }
+
+    #[test]
+    fn png_stream_rejects_invalid_public_fields_without_panicking() {
+        for (width, height, pixels) in [
+            (0, 1, vec![]),
+            (1, 0, vec![]),
+            (0, 0, vec![]),
+            (1, 1, vec![0; 3]),
+            (8193, 2, vec![0; 8193 * 2 * 4 - 1]),
+            (u32::MAX as usize, u32::MAX as usize, vec![]),
+            (usize::MAX, 1, vec![]),
+            (1, usize::MAX, vec![]),
+        ] {
+            assert!(encode(
+                &Image {
+                    width,
+                    height,
+                    pixels
+                },
+                ImageFormat::Png
+            )
+            .is_err());
+        }
     }
     #[test]
     fn jpeg_exif_orientation_is_applied_on_load() {
