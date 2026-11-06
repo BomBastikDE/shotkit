@@ -20,16 +20,38 @@ pub fn read_image_file(path: &Path) -> Result<Vec<u8>, String> {
     read_bounded(file, MAX_IMAGE_BYTES)
 }
 
-fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+fn read_bounded(mut reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
-    reader
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit {
-        return Err("Die Bilddatei ist zu groß.".into());
+    let mut chunk = [0u8; 8192];
+    loop {
+        // Include one probe byte without overflowing even for a u64::MAX limit.
+        let remaining = limit - bytes.len() as u64;
+        let request = remaining.min((chunk.len() - 1) as u64) as usize + 1;
+        let count = match reader.read(&mut chunk[..request]) {
+            Ok(0) => return Ok(bytes),
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if count as u64 > remaining {
+            return Err("Die Bilddatei ist zu groß.".into());
+        }
+        // Reserve fallibly before extending: extend_from_slice then cannot
+        // invoke Vec's infallible growth path. Grow geometrically to avoid
+        // reallocating for every chunk, capped at the input byte limit.
+        let needed = bytes
+            .len()
+            .checked_add(count)
+            .ok_or("Bilddatei benötigt zu viel Speicher.")?;
+        if needed > bytes.capacity() {
+            let capacity_limit = usize::try_from(limit).unwrap_or(usize::MAX);
+            let capacity = needed.max(bytes.capacity().saturating_mul(2).min(capacity_limit));
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(|_| "Nicht genügend Speicher zum Lesen der Bilddatei.".to_owned())?;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
     }
-    Ok(bytes)
 }
 
 pub fn decode(data: &[u8]) -> Result<Image, String> {
@@ -155,6 +177,52 @@ mod tests {
     fn bounded_read_checks_actual_bytes_not_metadata() {
         assert_eq!(super::read_bounded(&b"1234"[..], 4).unwrap(), b"1234");
         assert!(super::read_bounded(&b"12345"[..], 4).is_err());
+    }
+    #[test]
+    fn bounded_read_handles_empty_and_chunk_boundaries() {
+        assert!(super::read_bounded(&b""[..], 0).unwrap().is_empty());
+        assert_eq!(
+            super::read_bounded(&b"1"[..], 0).unwrap_err(),
+            "Die Bilddatei ist zu groß."
+        );
+        let data = vec![42; 8193];
+        assert_eq!(super::read_bounded(data.as_slice(), 8193).unwrap(), data);
+        assert_eq!(
+            super::read_bounded(data.as_slice(), 8192).unwrap_err(),
+            "Die Bilddatei ist zu groß."
+        );
+        assert_eq!(super::read_bounded(&b"1"[..], u64::MAX).unwrap(), b"1");
+    }
+    #[test]
+    fn bounded_read_retries_interrupts_and_reports_read_errors() {
+        struct InterruptedThenData(bool);
+        impl std::io::Read for InterruptedThenData {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if !self.0 {
+                    self.0 = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                b"1234".as_slice().read(output)
+            }
+        }
+        // The limit probe reaches a real read failure after partial input.
+        struct FailsAfterData(bool);
+        impl std::io::Read for FailsAfterData {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::other("image read failed"));
+                }
+                self.0 = true;
+                output[0] = 42;
+                Ok(1)
+            }
+        }
+        let mut reader = InterruptedThenData(false).take(4);
+        assert_eq!(super::read_bounded(&mut reader, 4).unwrap(), b"1234");
+        assert_eq!(
+            super::read_bounded(FailsAfterData(false), 1).unwrap_err(),
+            "image read failed"
+        );
     }
     #[test]
     fn bounded_file_read_rejects_growth_after_metadata_check() {
