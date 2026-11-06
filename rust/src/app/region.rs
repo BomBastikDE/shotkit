@@ -242,14 +242,16 @@ pub(super) unsafe fn start_scroll(h: H) {
         _ => return,
     };
     let mut prefs = active_settings();
-    prefs.scroll_direction = match direction {
+    let selected_direction = match direction {
         Direction::Down => settings::ScrollDirection::Down,
         Direction::Right => settings::ScrollDirection::Right,
         Direction::Left => settings::ScrollDirection::Left,
     };
-    // save_settings refuses to replace unreadable or unsupported settings
-    // files; a persistence error must not prevent the requested capture.
-    let _ = save_settings(h, prefs);
+    if prefs.scroll_direction != selected_direction {
+        prefs.scroll_direction = selected_direction;
+        // A persistence error must not prevent the requested capture.
+        let _ = save_settings(h, prefs);
+    }
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, width, height)) = overlay::select() else {

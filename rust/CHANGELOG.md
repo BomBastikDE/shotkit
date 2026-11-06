@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Eine unveränderte Scrollrichtung schreibt die Einstellungsdatei nicht erneut; geänderte Richtungen werden weiterhin gespeichert ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
+
 - Fehlermeldungen bei Bearbeitungen erklären das Speicherlimit der Rückgängig-Historie statt interner Fehlernamen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
 
 - Beim erzwungenen „Speichern unter“ für ein geschütztes Original bleibt die geprüfte Originaldatei bis zum Ende des Speichervorgangs gegen Schreiben und Ersetzen geöffnet ([#62](https://github.com/BomBastikDE/shotkit/issues/62)).
