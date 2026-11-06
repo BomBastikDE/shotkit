@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fmt,
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    fs::{self, File},
+    io::{self, Read},
     path::{Path, PathBuf},
+};
+#[cfg(not(windows))]
+use std::{
+    fs::OpenOptions,
+    io::Write,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -28,6 +33,7 @@ pub const CURRENT_VERSION: u32 = 1;
 /// while bounding memory even if a local file is damaged or grows during read.
 const MAX_SETTINGS_BYTES: usize = 1024 * 1024;
 
+#[cfg(not(windows))]
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Scroll direction selected for a new capture.
@@ -298,38 +304,53 @@ pub fn save_atomic(path: impl AsRef<Path>, settings: &Settings) -> Result<(), Se
         source,
     })?;
 
-    let (temp_path, mut file) = create_temp_file(parent).map_err(|source| SettingsError::Io {
-        operation: "create temporary file for",
-        path: path.to_owned(),
-        source,
-    })?;
-
-    let write_result = (|| {
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        Ok::<(), io::Error>(())
-    })();
-    if let Err(source) = write_result {
-        let _ = fs::remove_file(&temp_path);
-        return Err(SettingsError::Io {
-            operation: "write",
-            path: path.to_owned(),
-            source,
-        });
+    #[cfg(windows)]
+    {
+        crate::atomic_save_windows::write_settings(path, &bytes).map_err(|error| {
+            SettingsError::Io {
+                operation: error.operation,
+                path: path.to_owned(),
+                source: error.source,
+            }
+        })
     }
+    #[cfg(not(windows))]
+    {
+        let (temp_path, mut file) =
+            create_temp_file(parent).map_err(|source| SettingsError::Io {
+                operation: "create temporary file for",
+                path: path.to_owned(),
+                source,
+            })?;
 
-    if let Err(source) = replace_file(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(SettingsError::Io {
-            operation: "replace",
-            path: path.to_owned(),
-            source,
-        });
+        let write_result = (|| {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            Ok::<(), io::Error>(())
+        })();
+        if let Err(source) = write_result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(SettingsError::Io {
+                operation: "write",
+                path: path.to_owned(),
+                source,
+            });
+        }
+
+        if let Err(source) = replace_file(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(SettingsError::Io {
+                operation: "replace",
+                path: path.to_owned(),
+                source,
+            });
+        }
+        Ok(())
     }
-    Ok(())
 }
 
+#[cfg(not(windows))]
 fn create_temp_file(parent: &Path) -> io::Result<(PathBuf, File)> {
     for _ in 0..128 {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -351,30 +372,6 @@ fn create_temp_file(parent: &Path) -> io::Result<(PathBuf, File)> {
     ))
 }
 
-#[cfg(windows)]
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-
-    let source = wide(source.as_os_str());
-    let destination = wide(destination.as_os_str());
-    // MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-    let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x1 | 0x8) };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn wide(path: &std::ffi::OsStr) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    path.encode_wide().chain(Some(0)).collect()
-}
-
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
@@ -384,6 +381,8 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(windows)]
+    use std::{fs::OpenOptions, io::Write};
 
     fn test_dir() -> PathBuf {
         let nonce = SystemTime::now()

@@ -23,6 +23,44 @@ const FILE_RENAME_INFO: i32 = 3;
 const FILE_DISPOSITION_INFO: i32 = 4;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Error phase and original operating-system error for the settings caller.
+pub(crate) struct SettingsWriteError {
+    pub(crate) operation: &'static str,
+    pub(crate) source: io::Error,
+}
+
+#[derive(Debug)]
+struct WriteContext {
+    source: io::Error,
+    temp: PathBuf,
+    target: Option<PathBuf>,
+    cleanup: Option<io::Error>,
+}
+
+impl std::fmt::Display for WriteContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; temporäre Datei: {}",
+            self.source,
+            self.temp.display()
+        )?;
+        if let Some(target) = &self.target {
+            write!(f, "; Ziel prüfen: {}", target.display())?;
+        }
+        if let Some(cleanup) = &self.cleanup {
+            write!(f, "; Bereinigung fehlgeschlagen: {cleanup}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for WriteContext {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn SetFileInformationByHandle(
@@ -52,6 +90,90 @@ fn candidate(dir: &Path) -> PathBuf {
         ".shotkit-{}-{stamp}-{sequence}.tmp",
         std::process::id()
     ))
+}
+
+/// Write settings through the same held-file contract as image export.
+/// This does not protect against concurrent replacement of the target itself.
+pub(crate) fn write_settings(path: &Path, bytes: &[u8]) -> Result<(), SettingsWriteError> {
+    write_settings_with(
+        path,
+        |file| file.write_all(bytes).and_then(|_| file.sync_all()),
+        |_| {},
+        delete_held,
+    )
+}
+
+fn write_settings_with(
+    path: &Path,
+    prepare: impl FnOnce(&mut File) -> io::Result<()>,
+    before_publish: impl FnOnce(&Path),
+    cleanup_temp: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<(), SettingsWriteError> {
+    let create_error = |source| SettingsWriteError {
+        operation: "create temporary file for",
+        source,
+    };
+    let absolute = std::path::absolute(path).map_err(create_error)?;
+    let dir = absolute.parent().ok_or_else(|| {
+        create_error(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Ungültiger Speicherordner",
+        ))
+    })?;
+    let mut created = None;
+    for _ in 0..128 {
+        let temp = candidate(dir);
+        match create_temp(&temp) {
+            Ok(file) => {
+                created = Some((temp, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(create_error(error)),
+        }
+    }
+    let (temp, mut file) = created.ok_or_else(|| {
+        create_error(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Kein freier temporärer Dateiname",
+        ))
+    })?;
+    if let Err(source) = prepare(&mut file) {
+        let cleanup = cleanup_temp(&file).err();
+        let source = if cleanup.is_some() {
+            io::Error::new(
+                source.kind(),
+                WriteContext {
+                    source,
+                    temp,
+                    target: None,
+                    cleanup,
+                },
+            )
+        } else {
+            source
+        };
+        return Err(SettingsWriteError {
+            operation: "write",
+            source,
+        });
+    }
+    before_publish(&temp);
+    rename_held(&file, &absolute, true).map_err(|source| {
+        let kind = source.kind();
+        SettingsWriteError {
+            operation: "replace",
+            source: io::Error::new(
+                kind,
+                WriteContext {
+                    source,
+                    temp,
+                    target: Some(absolute),
+                    cleanup: None,
+                },
+            ),
+        }
+    })
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
@@ -528,5 +650,154 @@ mod tests {
         assert_eq!(fs::read(files[0].path()).unwrap(), b"capture");
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(other).unwrap();
+    }
+
+    #[test]
+    fn settings_temp_is_complete_and_protected_until_publication() {
+        let dir = directory();
+        let target = dir.join("settings.json");
+        fs::write(&target, b"old").unwrap();
+        write_settings_with(
+            &target,
+            |file| {
+                file.write_all(b"new settings")?;
+                file.sync_all()
+            },
+            |temp| {
+                assert_eq!(fs::read(temp).unwrap(), b"new settings");
+                assert!(fs::remove_file(temp).is_err());
+                assert!(fs::rename(temp, temp.with_extension("other")).is_err());
+                assert!(fs::write(temp, b"foreign").is_err());
+                assert_eq!(fs::read(&target).unwrap(), b"old");
+            },
+            delete_held,
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", error.operation, error.source));
+        assert_eq!(fs::read(&target).unwrap(), b"new settings");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_preparation_failures_preserve_original_and_cleanup_owned_temp() {
+        for fail_after_write in [false, true] {
+            let dir = directory();
+            let target = dir.join("settings.json");
+            fs::write(&target, b"old").unwrap();
+            let error = write_settings_with(
+                &target,
+                |file| {
+                    if fail_after_write {
+                        file.write_all(b"partial")?;
+                    }
+                    Err(io::Error::from_raw_os_error(5))
+                },
+                |_| panic!("failed preparation must not publish"),
+                delete_held,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.operation, "write");
+            assert_eq!(error.source.raw_os_error(), Some(5));
+            assert_eq!(fs::read(&target).unwrap(), b"old");
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn settings_failed_replace_retains_complete_temp_and_error_source() {
+        use std::error::Error;
+        let dir = directory();
+        let target = dir.join("settings.json");
+        fs::write(&target, b"old").unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&target)
+            .unwrap();
+        let error = write_settings(&target, b"new").err().unwrap();
+        assert_eq!(error.operation, "replace");
+        let context = error
+            .source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<WriteContext>()
+            .unwrap();
+        assert_eq!(context.source.kind(), error.source.kind());
+        assert!(context.source.raw_os_error().is_some());
+        assert!(context.source.source().is_none());
+        assert_eq!(
+            error
+                .source
+                .source()
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .and_then(io::Error::raw_os_error),
+            context.source.raw_os_error()
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        let files: Vec<_> = fs::read_dir(&dir).unwrap().map(Result::unwrap).collect();
+        assert_eq!(files.len(), 2);
+        let temp = files
+            .iter()
+            .find(|entry| entry.path() != target)
+            .unwrap()
+            .path();
+        assert_eq!(fs::read(&temp).unwrap(), b"new");
+        assert!(error
+            .source
+            .to_string()
+            .contains(&temp.display().to_string()));
+        drop(held);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_cleanup_failure_retains_temp_and_original_error_context() {
+        use std::error::Error;
+        let dir = directory();
+        let target = dir.join("settings.json");
+        fs::write(&target, b"old").unwrap();
+        let error = write_settings_with(
+            &target,
+            |file| {
+                file.write_all(b"partial")?;
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |_| panic!("failed preparation must not publish"),
+            |_| Err(io::Error::other("injected cleanup failure")),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.operation, "write");
+        assert_eq!(error.source.kind(), io::ErrorKind::PermissionDenied);
+        let context = error
+            .source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<WriteContext>()
+            .unwrap();
+        assert_eq!(context.source.raw_os_error(), Some(5));
+        assert_eq!(
+            error
+                .source
+                .source()
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .and_then(io::Error::raw_os_error),
+            Some(5)
+        );
+        assert!(context
+            .cleanup
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("injected cleanup failure"));
+        assert_eq!(fs::read(&context.temp).unwrap(), b"partial");
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert!(error
+            .source
+            .to_string()
+            .contains(&context.temp.display().to_string()));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
