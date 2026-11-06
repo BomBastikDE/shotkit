@@ -5,6 +5,7 @@
 //! sanitized by every redaction, independent of their document order,
 //! and replaces only its clipped region in the accumulated result.
 
+mod cursor;
 mod effects;
 
 use std::sync::Arc;
@@ -126,6 +127,7 @@ fn render_document_over(
     for shape in shapes {
         match &shape.kind {
             ShapeKind::Redact { .. } => {}
+            ShapeKind::Cursor { data } => cursor::cursor(&mut output_pixels, source, data)?,
             ShapeKind::Spotlight { data } => {
                 effects::spotlight(&mut output_pixels, sampling_source, data)?
             }
@@ -348,6 +350,40 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn cursor_preview_matches_export_and_redaction_wins_in_both_orders() {
+        use crate::cursor_snapshot::CursorPixels;
+        use crate::shapes::{CursorSprite, Point};
+        let source = Arc::new(Image::new(3, 1, [10, 20, 30, 255].repeat(3)).unwrap());
+        let cursor = Shape::new(ShapeKind::Cursor {
+            data: CursorSprite::new(
+                Point::new(0.0, 0.0),
+                3,
+                1,
+                CursorPixels::Raster {
+                    and_mask: vec![255; 3],
+                    xor_rgb: vec![255; 9],
+                },
+            )
+            .unwrap(),
+        });
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(1.0, 0.0),
+            end: Point::new(2.0, 1.0),
+        });
+        for shapes in [vec![cursor.clone(), redact.clone()], vec![redact, cursor]] {
+            let expected = render_document(&source, &shapes).unwrap();
+            assert_eq!(&expected.pixels[4..8], &[0, 0, 0, 255]);
+            assert_eq!(&expected.pixels[0..4], &[245, 235, 225, 255]);
+            for split in 0..=shapes.len() {
+                assert_eq!(
+                    render_preview(&source, &shapes, split, &mut None).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn stamps_preview_matches_export_and_never_overpaints_redaction() {

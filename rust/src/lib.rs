@@ -4,6 +4,7 @@ pub mod alpha_document;
 pub mod alpha_render;
 pub mod capture_output;
 pub mod clipboard_retry;
+pub mod cursor_snapshot;
 pub mod delayed_capture;
 pub mod document;
 pub mod editor;

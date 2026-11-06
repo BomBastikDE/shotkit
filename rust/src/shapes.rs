@@ -2,9 +2,11 @@
 //! Coordinates are image-space pixels; rendering remains the caller's responsibility.
 
 mod callout;
+mod cursor_sprite;
 mod geometry;
 mod spotlight_magnifier;
 pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout, MAX_CALLOUT_TEXT_BYTES};
+pub use cursor_sprite::CursorSprite;
 #[cfg(windows)]
 pub(crate) use geometry::arrow_dot_radius;
 pub(crate) use geometry::rectangle_has_zero_axis;
@@ -318,6 +320,10 @@ pub enum ShapeKind {
         location: Point,
         text: String,
     },
+    /// Captured cursor data, independent of the native handle.
+    Cursor {
+        data: CursorSprite,
+    },
     /// Source-independent dimming outside the focus rectangle.
     Spotlight {
         data: Spotlight,
@@ -354,6 +360,7 @@ impl Shape {
     }
     pub fn bounds(&self) -> Rect {
         match &self.kind {
+            ShapeKind::Cursor { data } => data.bounds(),
             ShapeKind::Spotlight { data } => data.bounds(),
             ShapeKind::Magnifier { data } => data.bounds(),
             ShapeKind::Callout { data } => data
@@ -431,6 +438,7 @@ impl Shape {
     pub fn is_empty(&self) -> bool {
         match &self.kind {
             ShapeKind::Callout { data } => !data.validate() || data.text.trim().is_empty(),
+            ShapeKind::Cursor { data } => !data.validate(),
             ShapeKind::Spotlight { data } => {
                 data.validate().is_err() || data.focus.width < 3.0 || data.focus.height < 3.0
             }
@@ -457,6 +465,9 @@ impl Shape {
             p.y += dy;
         };
         match &mut self.kind {
+            ShapeKind::Cursor { data } => {
+                let _ = data.offset(dx, dy);
+            }
             ShapeKind::Spotlight { data } => {
                 let _ = data.offset(dx, dy);
             }
@@ -568,6 +579,12 @@ impl Shape {
     /// use an axis-aligned outer-minus-inner approximation.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> bool {
         match &self.kind {
+            ShapeKind::Cursor { data } => {
+                data.validate()
+                    && tolerance.is_finite()
+                    && tolerance >= 0.0
+                    && data.bounds().inflated(tolerance).contains(p)
+            }
             ShapeKind::Spotlight { data } => data.hit_test(p, tolerance),
             ShapeKind::Magnifier { data } => data.hit_test(p, tolerance),
             ShapeKind::Callout { data } => data

@@ -394,7 +394,8 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
         | ShapeKind::Stamp { .. }
         | ShapeKind::Callout { .. }
         | ShapeKind::Spotlight { .. }
-        | ShapeKind::Magnifier { .. } => false,
+        | ShapeKind::Magnifier { .. }
+        | ShapeKind::Cursor { .. } => false,
         ShapeKind::Blur { start, end } => {
             let r = bounds(*start, *end);
             let Some(src) = source else {

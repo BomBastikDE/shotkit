@@ -462,6 +462,21 @@ fn shapes_allocation_bytes(shapes: &Vec<Shape>) -> usize {
                             size_of::<f32>(),
                         ))
                 }
+                crate::shapes::ShapeKind::Cursor { data } => {
+                    use crate::cursor_snapshot::CursorPixels;
+                    let buffers = match data.pixels.as_ref() {
+                        CursorPixels::PremultipliedRgba(bytes) => {
+                            container_bytes(bytes.capacity(), 1)
+                        }
+                        CursorPixels::Raster { and_mask, xor_rgb } => {
+                            container_bytes(and_mask.capacity(), 1)
+                                .saturating_add(container_bytes(xor_rgb.capacity(), 1))
+                        }
+                    };
+                    buffers
+                        .saturating_add(size_of::<CursorPixels>())
+                        .saturating_add(ALLOCATION_OVERHEAD)
+                }
                 _ => 0,
             };
             sum.saturating_add(dynamic)

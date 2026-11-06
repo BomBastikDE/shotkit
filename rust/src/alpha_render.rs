@@ -37,7 +37,7 @@ pub enum RenderError {
 pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image, RenderError> {
     if matches!(
         shape.kind,
-        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. }
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } | ShapeKind::Cursor { .. }
     ) {
         return Err(RenderError::UnsupportedShape(
             "Effekt benötigt Dokumentkomposition",
@@ -532,9 +532,11 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             ))
         }
         ShapeKind::Callout { data } => callout::draw(g, pen.as_ptr(), data),
-        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } => Err(
-            RenderError::UnsupportedShape("Effekt benötigt Dokumentkomposition"),
-        ),
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } | ShapeKind::Cursor { .. } => {
+            Err(RenderError::UnsupportedShape(
+                "Effekt benötigt Dokumentkomposition",
+            ))
+        }
         ShapeKind::Text { location, text } => {
             draw_text(g, *location, text, shape.style.font_size, pen_color)
         }
