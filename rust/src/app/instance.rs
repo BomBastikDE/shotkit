@@ -53,16 +53,19 @@ pub(super) unsafe fn create_instance_mutex() -> Result<(InstanceHandle, bool), S
     Ok((InstanceHandle(handle), already_exists))
 }
 
-pub(super) fn absolute_argument_path(path: PathBuf) -> PathBuf {
-    if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    }
+pub(super) fn absolute_argument_path(path: PathBuf) -> Result<PathBuf, String> {
+    std::path::absolute(path)
+        .map_err(|error| format!("Der Dateipfad konnte nicht aufgelöst werden: {error}"))
 }
 
-fn is_unc_path(path: &Path) -> bool {
-    shotkit::network_path::is_unc_path_utf16(&path.as_os_str().encode_wide().collect::<Vec<_>>())
+fn drive_location(path: &Path) -> shotkit::network_path::DriveLocation {
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    shotkit::network_path::classify_drive_utf16(&units, |root| {
+        // SAFETY CONTRACT: root is a NUL-terminated UTF-16 drive root owned
+        // by the caller and lives through this call. No window-state borrow is
+        // held; the API is not asked to open the requested image file.
+        unsafe { GetDriveTypeW(root.as_ptr()) }
+    })
 }
 
 // SAFETY CONTRACT:
@@ -154,7 +157,7 @@ pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
         return send_to_primary(WM_INSTANCE_ACTIVATE, None);
     }
     for path in paths {
-        send_to_primary(WM_COPYDATA, Some(&absolute_argument_path(path)))?;
+        send_to_primary(WM_COPYDATA, Some(&absolute_argument_path(path)?))?;
     }
     Ok(())
 }
@@ -192,25 +195,36 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
         return 3;
     }
     let _busy_guard = InstanceFileBusyGuard;
-    let network_path = is_unc_path(&path);
-    let prompt = if network_path {
-        format!(
+    let path = match absolute_argument_path(path) {
+        Ok(path) => path,
+        Err(error) => {
+            MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
+            return 0;
+        }
+    };
+    use shotkit::network_path::DriveLocation;
+    let location = drive_location(&path);
+    let prompt = match location {
+        DriveLocation::Network => format!(
             "Warnung: Diese Datei liegt auf einem Netzwerkserver:\n\n{}\n\nWenn Sie fortfahren, kontaktiert ShotKit den Server. Windows kann dabei Ihre Anmeldeinformationen automatisch zur Authentifizierung verwenden.\n\nDatei jetzt öffnen?",
             path.display()
-        )
-    } else {
-        format!(
+        ),
+        DriveLocation::Unknown => format!(
+            "Der Laufwerkstyp dieser Datei konnte nicht sicher bestimmt werden:\n\n{}\n\nBeim Öffnen ist möglicherweise ein Netzwerkzugriff mit Windows-Authentifizierung erforderlich.\n\nDatei jetzt öffnen?",
+            path.display()
+        ),
+        DriveLocation::KnownDrive => format!(
             "Eine zweite ShotKit-Instanz möchte diese Datei öffnen:\n\n{}\n\nSoll sie jetzt geöffnet werden?",
             path.display()
-        )
+        ),
     };
     if MessageBoxW(
         h,
         wide(&prompt).as_ptr(),
-        wide(if network_path {
-            "Netzwerkdatei aus zweiter Instanz"
-        } else {
-            "Datei aus zweiter Instanz"
+        wide(match location {
+            DriveLocation::Network => "Netzwerkdatei aus zweiter Instanz",
+            DriveLocation::Unknown => "Datei mit unbekanntem Laufwerkstyp",
+            DriveLocation::KnownDrive => "Datei aus zweiter Instanz",
         })
         .as_ptr(),
         0x24,
@@ -224,5 +238,33 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
             MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn argument_paths_are_resolved_without_opening_the_file() {
+        let current = std::env::current_dir().unwrap();
+        let relative =
+            absolute_argument_path(PathBuf::from("shotkit-nonexistent-image.png")).unwrap();
+        assert_eq!(relative, current.join("shotkit-nonexistent-image.png"));
+        let drive_relative =
+            absolute_argument_path(PathBuf::from(r"C:shotkit-nonexistent-image.png")).unwrap();
+        assert!(drive_relative.is_absolute());
+        assert!(drive_relative.ends_with("shotkit-nonexistent-image.png"));
+        let verbatim = PathBuf::from(r"\\?\C:\shotkit-nonexistent-image.png");
+        assert_eq!(absolute_argument_path(verbatim.clone()).unwrap(), verbatim);
+    }
+
+    #[test]
+    fn actual_system_drive_is_recognized_as_a_known_drive() {
+        let path = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"));
+        assert_eq!(
+            drive_location(&path),
+            shotkit::network_path::DriveLocation::KnownDrive
+        );
     }
 }

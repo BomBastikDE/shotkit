@@ -289,6 +289,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> H;
+    fn GetDriveTypeW(root: *const u16) -> u32;
     fn MoveFileExW(old: *const u16, new: *const u16, flags: u32) -> i32;
     fn CreateMutexW(attributes: *mut c_void, initial_owner: i32, name: *const u16) -> H;
     fn SetLastError(error: u32);
@@ -652,7 +653,8 @@ unsafe fn run_application() {
     }
     hotkeys::register(h);
     for path in std::env::args_os().skip(1).map(PathBuf::from) {
-        if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
+        let result = absolute_argument_path(path).and_then(|path| open_image_path(h, path));
+        if let Err(error) = result {
             MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
         }
     }
