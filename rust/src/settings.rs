@@ -744,7 +744,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn reader_with_delete_sharing_allows_atomic_replace() {
+    fn reader_with_delete_sharing_still_prevents_handle_based_replace() {
         use std::os::windows::fs::OpenOptionsExt;
 
         const FILE_SHARE_READ: u32 = 1;
@@ -764,13 +764,23 @@ mod tests {
             ..Settings::default()
         };
 
-        save_atomic(&path, &changed).unwrap();
-        assert_eq!(load(&path).unwrap(), changed);
-        // The open handle remains a snapshot of the old file after replacement.
+        // FILE_SHARE_DELETE alone does not guarantee that FileRenameInfo can
+        // replace an existing open target on the Windows CI filesystem.
+        let error = save_atomic(&path, &changed).unwrap_err();
+        assert!(matches!(
+            &error,
+            SettingsError::Io {
+                operation: "replace",
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
         let mut old_bytes = Vec::new();
         (&reader).read_to_end(&mut old_bytes).unwrap();
         assert_eq!(old_bytes, original);
         drop(reader);
+        save_atomic(&path, &changed).unwrap();
+        assert_eq!(load(&path).unwrap(), changed);
         fs::remove_dir_all(dir).unwrap();
     }
 

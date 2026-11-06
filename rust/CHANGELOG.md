@@ -2,7 +2,7 @@
 
 ## In Entwicklung nach Beta 1
 
-- Der Windows-Ausgabetest liest Einstellungen mit Freigabe für atomaren Austausch und blockiert so die eigene Einstellungsprüfung nicht durch seinen Lesezugriff ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+- Ein Windows-Test prüft das Verhalten beim Ersetzen der Einstellungsdatei, während ein Leser auch die Löschfreigabe erteilt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
 
 - Bei horizontalen Scrollaufnahmen bleibt das zuletzt gültige Bild erhalten, wenn eine Drehung nicht reserviert werden kann. Muss die Schlussdrehung nachgeholt werden, wird die Aufnahme ausdrücklich zur Wiederherstellung zurückgehalten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 

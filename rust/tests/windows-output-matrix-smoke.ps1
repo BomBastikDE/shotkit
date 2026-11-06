@@ -197,14 +197,7 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
     do {
         if($shotKit.HasExited){throw 'ShotKit exited while waiting for persisted settings.'}
-        # Allow ShotKit to atomically replace the file while this test reads the
-        # previous snapshot. Get-Content does not request FILE_SHARE_DELETE.
-        $share=[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
-        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,$share)
-        try {
-            $reader=New-Object IO.StreamReader($stream,[Text.Encoding]::UTF8,$true)
-            try { $raw=$reader.ReadToEnd() } finally { $reader.Dispose() }
-        } finally { $stream.Dispose() }
+        $raw=Get-Content -LiteralPath $Path -Raw
         $value=$raw | ConvertFrom-Json
         if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
         Start-Sleep -Milliseconds 100
