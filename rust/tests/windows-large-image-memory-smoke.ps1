@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ExePath,
+    [ValidateSet('BMP', 'RGBA-PNG')][string] $FixtureFormat = 'BMP',
     [ValidateRange(30, 300)][int] $TimeoutSeconds = 90,
     [ValidateRange(1, 100)][int] $SampleIntervalMs = 10
 )
@@ -100,9 +101,53 @@ namespace ShotKitMemorySmoke {
 }
 '@
 
+if ($FixtureFormat -eq 'RGBA-PNG') {
+    Add-Type -AssemblyName System.Drawing
+    $drawingAssembly = [System.Drawing.Bitmap].Assembly.Location
+    Add-Type -ReferencedAssemblies @($drawingAssembly) -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+namespace ShotKitMemorySmoke {
+ public static class PngFixture {
+  public static void Write(string path) {
+   const int width=6000, height=4000;
+   using (var bitmap=new Bitmap(width,height,PixelFormat.Format32bppArgb)) {
+    var rect=new Rectangle(0,0,width,height);
+    BitmapData data=null;
+    try {
+     data=bitmap.LockBits(rect,ImageLockMode.WriteOnly,PixelFormat.Format32bppArgb);
+     int rowBytes=checked(width*4);
+     if(data.Scan0==IntPtr.Zero || Math.Abs((long)data.Stride)<rowBytes) throw new InvalidOperationException("Invalid 32bpp bitmap row bounds.");
+     var row=new byte[rowBytes];
+     for(int y=0;y<height;y++) {
+      for(int x=0;x<width;x++) {
+       int i=x*4;
+       row[i]=(byte)((x*11+y*3)&255); // B
+       row[i+1]=(byte)((x*3+y*7)&255); // G
+       row[i+2]=(byte)((x+y*5)&255); // R
+       row[i+3]=(byte)(64+((x+y)%192)); // A
+      }
+      Marshal.Copy(row,0,IntPtr.Add(data.Scan0,checked(y*data.Stride)),rowBytes);
+     }
+    } finally {
+     if(data!=null) bitmap.UnlockBits(data);
+    }
+    bitmap.Save(path,ImageFormat.Png);
+   }
+  }
+ }
+}
+'@
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Memory-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'
-$settingsDir = Join-Path $appData 'ShotKitRust'; $fixturePath = Join-Path $root '6000x4000.bmp'
+$settingsDir = Join-Path $appData 'ShotKitRust'
+$fixtureExtension = if ($FixtureFormat -eq 'BMP') { '.bmp' } else { '.png' }
+$fixturePath = Join-Path $root ('6000x4000' + $fixtureExtension)
+$fixtureGenerationMs = 0L; $fixtureBytes = 0L
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 $process = $null; $processStopped = $true; $mouseDown = $false; $failure = $null; $cleanupFailure = $null
 $sampleNames = @(); $sampleStats = @(); $editorHandle = [IntPtr]::Zero
@@ -138,6 +183,26 @@ function Write-LargeBmp([string] $Path) {
         } finally { $writer.Dispose() }
     } finally { $stream.Dispose() }
     if((Get-Item -LiteralPath $Path).Length -ne 72000054){throw 'FIXTURE_INVALID: generated BMP length was unexpected.'}
+}
+function Write-LargeRgbaPng([string] $Path) {
+    [ShotKitMemorySmoke.PngFixture]::Write($Path)
+    $stream=[IO.File]::OpenRead($Path)
+    try {
+        if($stream.Length -lt 33){throw 'FIXTURE_INVALID: generated PNG is shorter than its IHDR.'}
+        $header=[byte[]]::new(26)
+        if($stream.Read($header,0,$header.Length) -ne $header.Length){throw 'FIXTURE_INVALID: PNG header could not be read completely.'}
+    } finally { $stream.Dispose() }
+    $signature=[byte[]](137,80,78,71,13,10,26,10)
+    for($i=0;$i -lt $signature.Length;$i++){if($header[$i] -ne $signature[$i]){throw 'FIXTURE_INVALID: generated file lacks the PNG signature.'}}
+    if($header[8] -ne 0 -or $header[9] -ne 0 -or $header[10] -ne 0 -or $header[11] -ne 13 -or
+       $header[12] -ne 73 -or $header[13] -ne 72 -or $header[14] -ne 68 -or $header[15] -ne 82) {
+        throw 'FIXTURE_INVALID: generated PNG does not begin with a 13-byte IHDR chunk.'
+    }
+    if($header[16] -ne 0 -or $header[17] -ne 0 -or $header[18] -ne 23 -or $header[19] -ne 112 -or
+       $header[20] -ne 0 -or $header[21] -ne 0 -or $header[22] -ne 15 -or $header[23] -ne 160 -or
+       $header[24] -ne 8 -or $header[25] -ne 6) {
+        throw 'FIXTURE_INVALID: PNG IHDR must be 6000x4000, bit depth 8, color type 6 (RGBA).'
+    }
 }
 function Drag-Crop([IntPtr] $Editor,[int] $ShotKitProcessId) {
     $client=[ShotKitMemorySmoke.Rect]::new()
@@ -176,7 +241,10 @@ try {
     New-Item -ItemType Directory -Path $root,$appData,$localAppData,$settingsDir -Force | Out-Null
     $settings=@{version=1;save_folder=$null;open_editor=$true;copy_to_clipboard=$false;auto_save=$false;scroll_direction='down'}|ConvertTo-Json -Compress
     [IO.File]::WriteAllText((Join-Path $settingsDir 'settings.json'),$settings,[Text.UTF8Encoding]::new($false))
-    Write-LargeBmp $fixturePath
+    $fixtureTimer=[Diagnostics.Stopwatch]::StartNew()
+    if($FixtureFormat -eq 'BMP'){Write-LargeBmp $fixturePath}else{Write-LargeRgbaPng $fixturePath}
+    $fixtureTimer.Stop();$fixtureGenerationMs=$fixtureTimer.ElapsedMilliseconds
+    $fixtureBytes=(Get-Item -LiteralPath $fixturePath).Length
     $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
     try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixturePath) -WorkingDirectory $root -PassThru;$processStopped=$false}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
@@ -188,7 +256,7 @@ try {
     if(-not [ShotKitMemorySmoke.Native]::PostMessageW($notice.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_FAILED.'}
     [void](Wait-For {-not [ShotKitMemorySmoke.Native]::IsWindow($notice.H)} 'startup notice close' 10)
     # open_image_path sets current_path and refreshes the title only after read, decode, and display_image succeed.
-    $editor=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}|Select-Object -First 1} 'loaded BMP editor title readback'
+    $editor=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}|Select-Object -First 1} "loaded $FixtureFormat editor title readback"
     $editorHandle=$editor.H
     if([ShotKitMemorySmoke.Native]::OwnerPid($editorHandle) -ne $process.Id){throw 'EDITOR_OWNER_MISMATCH.'}
     if(-not [ShotKitMemorySmoke.Native]::SetForegroundWindow($editorHandle)){throw 'EDITOR_FOCUS_FAILED.'}
@@ -219,8 +287,8 @@ $requiredPhases=@('import_and_idle','edit_and_history_commit','undo_history')
 foreach($phase in $requiredPhases){$index=[Array]::IndexOf($sampleNames,$phase);if($index -lt 0 -or $sampleStats[$index].Samples -lt 1){throw "NO_MEMORY_SAMPLES: required phase '$phase' has no sample."}}
 
  $exeHash=(Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash
-Write-Host "MEASUREMENTS: format=BMP dimensions=6000x4000 input_bytes=72000054 sample_interval_ms=$SampleIntervalMs windows_version=$([Environment]::OSVersion.Version) exe_sha256=$exeHash"
+Write-Host "MEASUREMENTS: format=$FixtureFormat dimensions=6000x4000 input_bytes=$fixtureBytes fixture_generation_ms=$fixtureGenerationMs sample_interval_ms=$SampleIntervalMs windows_version=$([Environment]::OSVersion.Version) exe_sha256=$exeHash"
 Write-Host 'PrivateBytesMax is the largest sampled PROCESS_MEMORY_COUNTERS_EX.PrivateUsage value; brief peaks between samples can be missed.'
 Write-Host 'process_peak_working_set_bytes is the native lifetime PeakWorkingSetSize observed during each phase; it is cumulative across phases and is resident-set peak, not total committed memory.'
 for($i=0;$i -lt $sampleNames.Count;$i++){$s=$sampleStats[$i];Write-Host ('PHASE {0} samples={1} max_sampled_private_bytes={2} last_private_bytes={3} process_peak_working_set_bytes={4}' -f $sampleNames[$i],$s.Samples,$s.PrivateBytesMax,$s.PrivateBytesLast,$s.PeakWorkingSetBytesMax)}
-Write-Host 'PASS: real GUI import, crop commit, and Undo completed; measurements describe this build, Windows host, BMP fixture, and workload only. No memory threshold is asserted.'
+Write-Host "PASS: real GUI import, crop commit, and Undo completed; measurements describe this build, Windows host, $FixtureFormat fixture, and workload only. No memory threshold is asserted."
