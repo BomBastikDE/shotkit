@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ExePath,
     [ValidateSet('BMP', 'RGBA-PNG')][string] $FixtureFormat = 'BMP',
+    [ValidateSet(1, 2)][int] $DocumentCount = 1,
     [ValidateRange(30, 300)][int] $TimeoutSeconds = 90,
     [ValidateRange(1, 100)][int] $SampleIntervalMs = 10
 )
@@ -50,6 +51,7 @@ namespace ShotKitMemorySmoke {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
@@ -134,6 +136,7 @@ $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappd
 $settingsDir = Join-Path $appData 'ShotKitRust'
 $fixtureExtension = if ($FixtureFormat -eq 'BMP') { '.bmp' } else { '.png' }
 $fixturePath = Join-Path $root ('6000x4000' + $fixtureExtension)
+$secondFixturePath = Join-Path $root ('6000x4000-second' + $fixtureExtension)
 $fixtureGenerationMs = 0L; $fixtureBytes = 0L
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 $process = $null; $processStopped = $true; $mouseDown = $false; $failure = $null; $cleanupFailure = $null
@@ -218,7 +221,7 @@ function Drag-Crop([IntPtr] $Editor,[int] $ShotKitProcessId) {
     if(-not [ShotKitMemorySmoke.Native]::SetCursorPos($sx,$sy)){throw 'CROP_START_POSITION_FAILED.'}
     $cursor=[ShotKitMemorySmoke.Native+Point]::new();[void][ShotKitMemorySmoke.Native]::GetCursorPos([ref]$cursor)
     $under=[ShotKitMemorySmoke.Native]::WindowFromPoint($cursor)
-    if([ShotKitMemorySmoke.Native]::OwnerPid($under) -ne $ShotKitProcessId){throw 'INPUT_TARGET_MISMATCH: crop start is not owned by the launched ShotKit process.'}
+    if([ShotKitMemorySmoke.Native]::OwnerPid($under) -ne $ShotKitProcessId -or [ShotKitMemorySmoke.Native]::GetAncestor($under, 2) -ne $Editor){throw 'INPUT_TARGET_MISMATCH: crop start is not inside the selected editor.'}
     [ShotKitMemorySmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true;Start-Sleep -Milliseconds 100
     [void][ShotKitMemorySmoke.Native]::SetCursorPos($ex,$ey);Start-Sleep -Milliseconds 200
     [ShotKitMemorySmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
@@ -239,8 +242,14 @@ try {
     if($FixtureFormat -eq 'BMP'){Write-LargeBmp $fixturePath}else{Write-LargeRgbaPng $fixturePath}
     $fixtureTimer.Stop();$fixtureGenerationMs=$fixtureTimer.ElapsedMilliseconds
     $fixtureBytes=(Get-Item -LiteralPath $fixturePath).Length
+    $paths=@($fixturePath)
+    if($DocumentCount -eq 2){
+        Copy-Item -LiteralPath $fixturePath -Destination $secondFixturePath
+        if((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $secondFixturePath -Algorithm SHA256).Hash){throw 'SECOND_FIXTURE_MISMATCH.'}
+        $paths+= $secondFixturePath
+    }
     $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
-    try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixturePath) -WorkingDirectory $root -PassThru;$processStopped=$false}
+    try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"' + ($paths -join '" "') + '"') -WorkingDirectory $root -PassThru;$processStopped=$false}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     [ShotKitMemorySmoke.Sampler]::Start($process.Id,$SampleIntervalMs)
     if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('import_and_idle',10000)){throw 'NO_MEMORY_SAMPLE: import phase sampler did not return a sample.'}
@@ -253,15 +262,39 @@ try {
     $editor=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}|Select-Object -First 1} "loaded $FixtureFormat editor title readback"
     $editorHandle=$editor.H
     if([ShotKitMemorySmoke.Native]::OwnerPid($editorHandle) -ne $process.Id){throw 'EDITOR_OWNER_MISMATCH.'}
+    if($DocumentCount -eq 2){
+        $second=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($secondFixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}|Select-Object -First 1} 'second loaded editor title readback'
+        if($second.H -eq $editorHandle -or [ShotKitMemorySmoke.Native]::OwnerPid($second.H) -ne $process.Id){throw 'SECOND_EDITOR_IDENTITY_MISMATCH.'}
+        $editors=@(Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'})
+        if($editors.Count -ne 2){throw "EDITOR_COUNT_MISMATCH: expected 2, got $($editors.Count)."}
+        if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('two_documents_idle',10000)){throw 'NO_MEMORY_SAMPLE: two-document phase sampler did not return a sample.'}
+        Start-Sleep -Milliseconds 200
+    }
     if(-not [ShotKitMemorySmoke.Native]::SetForegroundWindow($editorHandle)){throw 'EDITOR_FOCUS_FAILED.'}
     if(-not [ShotKitMemorySmoke.Native]::PostMessageW($editorHandle,0x0111,[IntPtr]0x510B,[IntPtr]::Zero)){throw 'CROP_TOOL_ACTIVATION_FAILED.'}
     if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('edit_and_history_commit',10000)){throw 'NO_MEMORY_SAMPLE: edit/history phase sampler did not return a sample.'}
     Drag-Crop $editorHandle $process.Id
     $editor=Wait-For {Get-OwnedWindows|Where-Object {$_.H -eq $editorHandle -and $_.Title.StartsWith('* ')}} 'undoable crop commit' 30
+    if($DocumentCount -eq 2){
+        $other=@(Get-OwnedWindows|Where-Object {$_.H -eq $second.H -and $_.Visible -and $_.Title.IndexOf($secondFixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')})
+        if($other.Count -ne 1){throw 'SECOND_EDITOR_CHANGED_DURING_CROP.'}
+    }
 
     if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('undo_history',10000)){throw 'NO_MEMORY_SAMPLE: undo phase sampler did not return a sample.'}
     if(-not [ShotKitMemorySmoke.Native]::PostMessageW($editorHandle,0x0111,[IntPtr]0x5112,[IntPtr]::Zero)){throw 'UNDO_COMMAND_FAILED.'}
     [void](Wait-For {Get-OwnedWindows|Where-Object {$_.H -eq $editorHandle -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}} 'undo returned document to saved state' 30)
+    if($DocumentCount -eq 2){
+        $other=@(Get-OwnedWindows|Where-Object {$_.H -eq $second.H -and $_.Visible -and $_.Title.IndexOf($secondFixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')})
+        if($other.Count -ne 1){throw 'SECOND_EDITOR_CHANGED_AFTER_UNDO.'}
+        if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('undo_completed_two_documents',10000)){throw 'NO_MEMORY_SAMPLE: completed undo phase sampler did not return a sample.'}
+        if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('close_first_editor',10000)){throw 'NO_MEMORY_SAMPLE: close phase sampler did not return a sample.'}
+        if(-not [ShotKitMemorySmoke.Native]::PostMessageW($editorHandle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'FIRST_EDITOR_CLOSE_FAILED.'}
+        [void](Wait-For {-not [ShotKitMemorySmoke.Native]::IsWindow($editorHandle)} 'first editor closed' 30)
+        $remaining=@(Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'})
+        if($remaining.Count -ne 1 -or $remaining[0].H -ne $second.H -or $remaining[0].Title.IndexOf($secondFixturePath,[StringComparison]::OrdinalIgnoreCase) -lt 0 -or $remaining[0].Title.StartsWith('* ')){throw 'SECOND_EDITOR_NOT_RETAINED_AFTER_CLOSE.'}
+        if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('one_document_retained',10000)){throw 'NO_MEMORY_SAMPLE: remaining document sampler did not return a sample.'}
+        Start-Sleep -Milliseconds 200
+    }
 } catch { $failure=$_ }
 finally {
     if($mouseDown){try{[ShotKitMemorySmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}catch{}}
@@ -278,11 +311,12 @@ if($failure){
 }
 if($cleanupFailure){throw "CLEANUP_FAILED: $cleanupFailure"}
 $requiredPhases=@('import_and_idle','edit_and_history_commit','undo_history')
+if($DocumentCount -eq 2){$requiredPhases+= @('two_documents_idle','undo_completed_two_documents','close_first_editor','one_document_retained')}
 foreach($phase in $requiredPhases){$index=[Array]::IndexOf($sampleNames,$phase);if($index -lt 0 -or $sampleStats[$index].Samples -lt 1){throw "NO_MEMORY_SAMPLES: required phase '$phase' has no sample."}}
 
  $exeHash=(Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash
-Write-Host "MEASUREMENTS: format=$FixtureFormat dimensions=6000x4000 input_bytes=$fixtureBytes fixture_generation_ms=$fixtureGenerationMs sample_interval_ms=$SampleIntervalMs windows_version=$([Environment]::OSVersion.Version) exe_sha256=$exeHash"
+Write-Host "MEASUREMENTS: format=$FixtureFormat documents=$DocumentCount dimensions=6000x4000 input_bytes_each=$fixtureBytes fixture_generation_ms=$fixtureGenerationMs sample_interval_ms=$SampleIntervalMs windows_version=$([Environment]::OSVersion.Version) exe_sha256=$exeHash"
 Write-Host 'PrivateBytesMax is the largest sampled PROCESS_MEMORY_COUNTERS_EX.PrivateUsage value; brief peaks between samples can be missed.'
 Write-Host 'process_peak_working_set_bytes is the native lifetime PeakWorkingSetSize observed during each phase; it is cumulative across phases and is resident-set peak, not total committed memory.'
 for($i=0;$i -lt $sampleNames.Count;$i++){$s=$sampleStats[$i];Write-Host ('PHASE {0} samples={1} max_sampled_private_bytes={2} last_private_bytes={3} process_peak_working_set_bytes={4}' -f $sampleNames[$i],$s.Samples,$s.PrivateBytesMax,$s.PrivateBytesLast,$s.PeakWorkingSetBytesMax)}
-Write-Host "PASS: real GUI import, crop commit, and Undo completed; measurements describe this build, Windows host, $FixtureFormat fixture, and workload only. No memory threshold is asserted."
+Write-Host "PASS: real GUI import, crop commit, and Undo completed for $DocumentCount document(s); measurements describe this build, Windows host, $FixtureFormat fixture, and workload only. No memory threshold is asserted."
