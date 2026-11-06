@@ -74,6 +74,7 @@ pub struct Stitcher {
 }
 impl Stitcher {
     pub fn new(frame: Image) -> Result<Self, &'static str> {
+        frame.validate()?;
         if frame.height > MAX_LENGTH {
             return Err("Aufnahmebereich überschreitet 30000 Pixel");
         }
@@ -97,32 +98,53 @@ impl Stitcher {
         top: usize,
         bottom: usize,
     ) -> Result<(), &'static str> {
+        self.advance_with_reserve(next, dy, top, bottom, |rows, additional| {
+            rows.try_reserve(additional)
+                .map_err(|_| "Nicht genügend Speicher für die Scrollaufnahme")
+        })
+    }
+
+    fn advance_with_reserve(
+        &mut self,
+        next: Image,
+        dy: usize,
+        top: usize,
+        bottom: usize,
+        reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
         let h = self.prev.height;
+        next.validate()?;
         if next.width != self.prev.width
             || next.height != h
             || dy == 0
             || dy >= h
-            || top + bottom >= h
+            || top.checked_add(bottom).is_none_or(|total| total >= h)
         {
             return Err("Ungültiger Bildabgleich");
         }
-        let center = *self.center.get_or_insert((top + h - bottom) / 2);
+        let center = self.center.unwrap_or((top + h - bottom) / 2);
         let seam = (center + dy / 2).clamp(self.start, h);
         let next_start = seam.saturating_sub(dy);
         let stride = self.prev.width * 4;
         let new_len = self.rows.len() / stride + seam - self.start + h - next_start;
-        if new_len > MAX_LENGTH
-            || new_len
-                .checked_mul(stride)
-                .filter(|n| *n <= MAX_BYTES)
-                .is_none()
-        {
+        let Some(total_bytes) = new_len.checked_mul(stride).filter(|n| *n <= MAX_BYTES) else {
             return Err("Maximale Bildgröße erreicht");
+        };
+        if new_len > MAX_LENGTH {
+            return Err("Maximale Bildgröße erreicht");
+        }
+        // Reserve the entire accepted result, including the last frame's tail,
+        // before changing the stitcher. A failure leaves the previous partial
+        // capture finishable without another allocation.
+        if !(self.rows.is_empty() && seam == self.start && next_start == 0) {
+            let additional = total_bytes - self.rows.len();
+            reserve(&mut self.rows, additional)?;
         }
         self.rows
             .extend_from_slice(&self.prev.pixels[self.start * stride..seam * stride]);
         self.start = next_start;
         self.prev = next;
+        self.center = Some(center);
         Ok(())
     }
     pub fn finish(mut self) -> Result<Image, &'static str> {
@@ -136,6 +158,14 @@ impl Stitcher {
         {
             return Err("Maximale Bildgröße erreicht");
         }
+        if self.rows.is_empty() && self.start == 0 {
+            return Ok(self.prev);
+        }
+        // For a valid stitcher, advance already reserved the complete result;
+        // this does not allocate on the normal finalization path.
+        self.rows
+            .try_reserve((len * stride) - self.rows.len())
+            .map_err(|_| "Nicht genügend Speicher für die Scrollaufnahme")?;
         self.rows
             .extend_from_slice(&self.prev.pixels[self.start * stride..]);
         Image::new(self.prev.width, len, self.rows)
@@ -199,6 +229,72 @@ mod tests {
     #[test]
     fn rejects_inconsistent_image() {
         assert!(Image::new(2, 3, vec![0; 8]).is_err());
+    }
+
+    #[test]
+    fn failed_reservation_preserves_previous_scroll_capture() {
+        let initial = image(2, &[1, 2, 3, 4]);
+        let next = image(2, &[2, 3, 4, 5]);
+        let later = image(2, &[3, 4, 5, 6]);
+        let mut first_failure = Stitcher::new(initial.clone()).unwrap();
+        assert_eq!(
+            first_failure.advance_with_reserve(next.clone(), 1, 0, 0, |_, _| Err("reserve failed")),
+            Err("reserve failed")
+        );
+        assert!(first_failure.center.is_none());
+        assert_eq!(first_failure.finish().unwrap(), initial);
+        let mut stitcher = Stitcher::new(initial.clone()).unwrap();
+        let mut control = Stitcher::new(initial).unwrap();
+        stitcher.advance(next.clone(), 1, 0, 0).unwrap();
+        control.advance(next, 1, 0, 0).unwrap();
+        let before = stitcher.length();
+        assert_eq!(
+            stitcher.advance_with_reserve(later, 1, 0, 0, |_, _| Err("reserve failed")),
+            Err("reserve failed")
+        );
+        assert_eq!(stitcher.length(), before);
+        assert!(stitcher.rows.capacity() >= stitcher.length() * stitcher.prev.width * 4);
+        let allocation = stitcher.rows.as_ptr();
+        let recovered = stitcher.finish().unwrap();
+        assert_eq!(recovered.pixels.as_ptr(), allocation);
+        assert_eq!(recovered, control.finish().unwrap());
+    }
+
+    #[test]
+    fn empty_prefix_needs_no_finalization_reservation() {
+        let initial = image(1, &[1, 2]);
+        let next = image(1, &[2, 3]);
+        let allocation = next.pixels.as_ptr();
+        let mut stitcher = Stitcher::new(initial).unwrap();
+        stitcher
+            .advance_with_reserve(next, 1, 0, 1, |_, _| {
+                panic!("empty prefix must not require a reservation")
+            })
+            .unwrap();
+        let result = stitcher.finish().unwrap();
+        assert_eq!(result.pixels.as_ptr(), allocation);
+        assert_eq!(result, image(1, &[2, 3]));
+    }
+
+    #[test]
+    fn stitcher_rejects_invalid_public_image_fields_and_overflowing_margins() {
+        let invalid = Image {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 4],
+        };
+        assert!(Stitcher::new(invalid.clone()).is_err());
+        let frame = image(1, &[1, 2, 3]);
+        let mut stitcher = Stitcher::new(frame.clone()).unwrap();
+        assert!(stitcher.advance(invalid, 1, 0, 0).is_err());
+        let malformed_same_size = Image {
+            width: 1,
+            height: 3,
+            pixels: vec![0; 4],
+        };
+        assert!(stitcher.advance(malformed_same_size, 1, 0, 0).is_err());
+        assert!(stitcher.advance(frame.clone(), 1, usize::MAX, 1).is_err());
+        assert_eq!(stitcher.finish().unwrap(), frame);
     }
 
     #[test]

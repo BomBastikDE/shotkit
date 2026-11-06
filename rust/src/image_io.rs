@@ -168,7 +168,11 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             )?;
         }
     } else {
-        let mut pixels = image.pixels.clone();
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(image.pixels.len())
+            .map_err(|_| "Nicht genügend Speicher für den Bildexport.".to_owned())?;
+        pixels.extend_from_slice(&image.pixels);
         for px in pixels.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
@@ -678,6 +682,15 @@ mod tests {
             let image = decode(&bytes).unwrap();
             assert_eq!((image.width, image.height), (2, 2));
         }
+    }
+
+    #[test]
+    fn gif_export_preserves_source_and_opaque_palette_pixels() {
+        let source = sample();
+        let original = source.clone();
+        let bytes = encode(&source, ImageFormat::Gif).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), original);
+        assert_eq!(source, original);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Scrollaufnahmen reservieren vor einem neuen Stitch-Schritt Platz für den bisherigen Teilstand; bei einem Reservierungsfehler bleibt dieser abschließbar. Beim BMP-/GIF-Export wird die zusätzliche Pixelkopie fallibel reserviert ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Der Eingabepuffer beim Bildimport wächst in kleineren geometrischen Schritten und kann dadurch weniger Adressraum reservieren ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Beim Speichern eines Bildes ohne Anmerkungen wird das vorhandene Bild gemeinsam genutzt, statt es für den Export vollständig zu kopieren ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
