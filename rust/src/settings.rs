@@ -15,6 +15,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// Pure fail-closed planning; not yet connected to filesystem recovery.
+pub mod transaction_model;
+
 #[cfg(windows)]
 pub mod guarded_save_windows;
 #[cfg(windows)]
