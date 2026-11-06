@@ -29,6 +29,24 @@ pub enum DocumentError {
     InvalidShapeIndex,
     AllocationFailed,
 }
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Image(error) => write!(f, "{error}"),
+            Self::InvalidImage => f.write_str("Das Bild ist ungültig"),
+            Self::HistoryBudgetExceeded => f.write_str(
+                "Diese Änderung überschreitet das Speicherlimit für die Rückgängig-Historie",
+            ),
+            Self::TransactionAlreadyOpen => f.write_str("Eine Bearbeitung läuft bereits"),
+            Self::NoTransaction => f.write_str("Es läuft keine Bearbeitung"),
+            Self::InvalidShapeIndex => {
+                f.write_str("Das ausgewählte Objekt ist nicht mehr vorhanden")
+            }
+            Self::AllocationFailed => f.write_str("Es steht nicht genügend Speicher zur Verfügung"),
+        }
+    }
+}
+impl std::error::Error for DocumentError {}
 impl From<ImageEditError> for DocumentError {
     fn from(value: ImageEditError) -> Self {
         Self::Image(value)

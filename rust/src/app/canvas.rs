@@ -265,7 +265,7 @@ pub(super) unsafe fn resize(h: H) {
         editor(h)
             .document_mut()
             .begin_edit()
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| e.to_string())?;
         if let Err(error) = editor(h).document_mut().resize_canvas(
             options.width,
             options.height,
@@ -274,7 +274,7 @@ pub(super) unsafe fn resize(h: H) {
             options.fill,
         ) {
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+            return Err(error.to_string());
         }
         let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
@@ -287,7 +287,7 @@ pub(super) unsafe fn resize(h: H) {
         if let Err(error) = editor(h).document_mut().commit_edit() {
             DeleteObject(bitmap);
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+            return Err(error.to_string());
         }
         install_bitmap(h, bitmap, &output);
         window_state(h).pan_x = 0;

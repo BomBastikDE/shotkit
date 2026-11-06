@@ -431,7 +431,7 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
                 .unwrap_or_else(|p| p.into_inner())
                 .push(image);
             return Err(format!(
-                "Bild konnte nicht geladen werden: {e:?}. Die Aufnahme bleibt im Speicher."
+                "Bild konnte nicht geladen werden: {e}. Die Aufnahme bleibt im Speicher."
             ));
         }
     };
@@ -469,10 +469,10 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         editor(h)
             .document_mut()
             .begin_edit()
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| e.to_string())?;
         if let Err(e) = editor(h).crop(rect) {
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{e:?}"));
+            return Err(e.to_string());
         }
         let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
@@ -485,7 +485,7 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         if let Err(e) = editor(h).document_mut().commit_edit() {
             DeleteObject(bitmap);
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{e:?}"));
+            return Err(e.to_string());
         }
         install_bitmap(h, bitmap, &output);
         window_state(h).zoom = 1.0;

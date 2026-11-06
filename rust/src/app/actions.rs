@@ -6,12 +6,10 @@ use super::*;
 // Nachrichten: MessageBoxW kann Nachrichten verarbeiten.
 pub(super) unsafe fn report_editor_error(h: H) {
     if let Some(error) = editor(h).take_error() {
+        let message = format!("Die Bearbeitung konnte nicht übernommen werden: {error}");
         MessageBoxW(
             h,
-            wide(&format!(
-                "Die Bearbeitung konnte nicht übernommen werden: {error:?}"
-            ))
-            .as_ptr(),
+            wide(&message).as_ptr(),
             wide("ShotKit Rust").as_ptr(),
             0x10,
         );
@@ -172,10 +170,10 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
         editor(h)
             .document_mut()
             .begin_edit()
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| e.to_string())?;
         if let Err(error) = editor(h).add_frame(options) {
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+            return Err(error.to_string());
         }
         let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
@@ -188,7 +186,7 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
         if let Err(error) = editor(h).document_mut().commit_edit() {
             DeleteObject(bitmap);
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+            return Err(error.to_string());
         }
         install_bitmap(h, bitmap, &output);
         window_state(h).zoom = 1.0;
