@@ -200,36 +200,90 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             )?;
         }
     } else {
-        if format == ImageFormat::Gif {
-            let expected = image
-                .width
-                .checked_mul(image.height)
-                .and_then(|n| n.checked_mul(4))
-                .ok_or("Ungültige Bildgröße")?;
-            if w == 0 || h == 0 || image.pixels.len() != expected {
-                return Err("Ungültige Bildgröße".into());
-            }
-        }
-        let mut pixels = Vec::new();
-        pixels
-            .try_reserve_exact(image.pixels.len())
-            .map_err(|_| "Nicht genügend Speicher für den Bildexport.".to_owned())?;
-        pixels.extend_from_slice(&image.pixels);
-        for px in pixels.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
-        let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
-        if format == ImageFormat::Gif {
-            image::codecs::gif::GifEncoder::new(&mut bytes)
-                .encode_frame(image::Frame::new(rgba))
-                .map_err(|e| e.to_string())?;
-        } else {
-            DynamicImage::ImageRgba8(rgba)
-                .write_to(&mut bytes, format)
-                .map_err(|e| e.to_string())?;
-        }
+        write_gif_stream(image, &mut bytes)?;
     }
     Ok(bytes.into_inner())
+}
+
+// GIF's underlying encoder writes its trailer in Drop and ignores errors.
+// Retain every non-interrupted writer failure until after the encoder is gone.
+struct StickyWriter<'a, W> {
+    inner: &'a mut W,
+    failure: Option<String>,
+}
+
+impl<W: Write> Write for StickyWriter<'_, W> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let result = self.inner.write(data);
+        match &result {
+            Ok(0) if !data.is_empty() => self
+                .failure
+                .get_or_insert_with(|| "GIF-Schreiben lieferte keine Daten.".into()),
+            Err(error) if error.kind() != std::io::ErrorKind::Interrupted => {
+                self.failure.get_or_insert_with(|| error.to_string())
+            }
+            _ => return result,
+        };
+        result
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let result = self.inner.flush();
+        if let Err(error) = &result {
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                self.failure.get_or_insert_with(|| error.to_string());
+            }
+        }
+        result
+    }
+}
+
+fn write_gif_stream(image: &Image, output: &mut impl Write) -> Result<(), String> {
+    let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
+    let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
+    let expected = image
+        .width
+        .checked_mul(image.height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("Ungültige Bildgröße")?;
+    if w == 0 || h == 0 || image.pixels.len() != expected {
+        return Err("Ungültige Bildgröße".into());
+    }
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(expected)
+        .map_err(|_| "Nicht genügend Speicher für den Bildexport.".to_owned())?;
+    pixels.extend_from_slice(&image.pixels);
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
+    let mut checked = StickyWriter {
+        inner: output,
+        failure: None,
+    };
+    let result = {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut checked);
+        encoder
+            .encode_frame(image::Frame::new(rgba))
+            .map_err(|e| e.to_string())
+    };
+    if let Some(failure) = checked.failure {
+        return Err(failure);
+    }
+    result
+}
+
+/// Encode GIF into a held temporary file; caller syncs and publishes on success.
+pub fn write_gif_file(image: &Image, file: &mut std::fs::File) -> Result<(), String> {
+    file.set_len(0).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    write_buffered_gif(image, file)
+}
+
+fn write_buffered_gif(image: &Image, output: &mut impl Write) -> Result<(), String> {
+    let mut writer = BufWriter::new(output);
+    write_gif_stream(image, &mut writer)?;
+    writer.flush().map_err(|e| e.to_string())
 }
 
 fn write_bmp_or_jpeg(
@@ -1141,10 +1195,20 @@ mod tests {
             );
             let mut bytes = Cursor::new(Vec::new());
             old.write_to(&mut bytes, ImageFormat::Gif).unwrap();
-            assert_eq!(
-                encode(&source, ImageFormat::Gif).unwrap(),
-                bytes.into_inner()
-            );
+            let expected = bytes.into_inner();
+            assert_eq!(encode(&source, ImageFormat::Gif).unwrap(), expected);
+            let path = stream_test_path("stream.gif");
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(&vec![0xaa; expected.len() + 100]).unwrap();
+            write_gif_file(&source, &mut file).unwrap();
+            drop(file);
+            assert_eq!(std::fs::read(&path).unwrap(), expected);
+            std::fs::remove_file(path).unwrap();
             assert_eq!(source, original);
         }
         let invalid = Image {
@@ -1171,6 +1235,77 @@ mod tests {
             pixels: vec![],
         };
         assert!(encode(&empty_height, ImageFormat::Gif).is_err());
+    }
+
+    #[test]
+    fn gif_trailer_write_failure_is_not_lost_when_writer_recovers() {
+        struct FailOnce {
+            data: Vec<u8>,
+            limit: usize,
+            failed: bool,
+            mode: u8,
+        }
+        impl Write for FailOnce {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if !self.failed && self.data.len() == self.limit {
+                    self.failed = true;
+                    return match self.mode {
+                        0 => Err(std::io::Error::other("injected trailer failure")),
+                        1 => Ok(0),
+                        _ => Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                    };
+                }
+                let count = if self.failed {
+                    bytes.len()
+                } else {
+                    bytes.len().min(self.limit - self.data.len())
+                };
+                self.data.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let source = sample();
+        let encoded = encode(&source, ImageFormat::Gif).unwrap();
+        assert_eq!(encoded.last(), Some(&0x3b));
+        for mode in 0..3 {
+            let mut writer = FailOnce {
+                data: Vec::new(),
+                limit: encoded.len() - 1,
+                failed: false,
+                mode,
+            };
+            let result = write_gif_stream(&source, &mut writer);
+            assert!(writer.failed);
+            if mode == 2 {
+                result.unwrap(); // Interrupted must be retried by write_all.
+            } else {
+                assert!(
+                    result.is_err(),
+                    "a dropped trailer failure must not be lost"
+                );
+                writer.write_all(&[0x3b]).unwrap(); // failure was transient
+            }
+            assert_eq!(writer.data, encoded);
+        }
+    }
+
+    #[test]
+    fn gif_buffered_export_reports_final_flush_error() {
+        struct FlushFails(Vec<u8>);
+        impl Write for FlushFails {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected gif flush failure"))
+            }
+        }
+        let error = write_buffered_gif(&sample(), &mut FlushFails(Vec::new())).unwrap_err();
+        assert!(error.contains("injected gif flush failure"), "{error}");
     }
 
     #[test]

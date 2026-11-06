@@ -1,6 +1,8 @@
 use super::*;
 
-use shotkit::atomic_save_windows::{write_atomic, write_atomic_with};
+#[cfg(test)]
+use shotkit::atomic_save_windows::write_atomic;
+use shotkit::atomic_save_windows::write_atomic_with;
 
 fn write_image_atomic(
     path: &Path,
@@ -16,9 +18,12 @@ fn write_image_atomic(
         write_atomic_with(path, replace, |file| {
             image_io::write_bmp_or_jpeg_file(image, file, format).map_err(std::io::Error::other)
         })
+    } else if format == image::ImageFormat::Gif {
+        write_atomic_with(path, replace, |file| {
+            image_io::write_gif_file(image, file).map_err(std::io::Error::other)
+        })
     } else {
-        let bytes = image_io::encode(image, format)?;
-        write_atomic(path, &bytes, replace)
+        Err("Bitte PNG, JPG, BMP oder GIF wählen.".into())
     }
 }
 
@@ -780,6 +785,7 @@ mod save_safety_tests {
         for (name, format) in [
             ("test.bmp", image::ImageFormat::Bmp),
             ("test.jpg", image::ImageFormat::Jpeg),
+            ("test.gif", image::ImageFormat::Gif),
         ] {
             let path = root.join(name);
             std::fs::write(&path, b"existing").unwrap();
