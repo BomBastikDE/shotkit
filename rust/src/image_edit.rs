@@ -70,6 +70,7 @@ pub enum ImageEditError {
     InvalidCrop,
     InvalidShadow,
     ImageTooLarge,
+    AllocationFailed,
 }
 impl fmt::Display for ImageEditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,6 +80,9 @@ impl fmt::Display for ImageEditError {
             }
             Self::InvalidShadow => f.write_str("Ungültige Schlagschatten-Einstellungen"),
             Self::ImageTooLarge => f.write_str("Das bearbeitete Bild ist zu groß"),
+            Self::AllocationFailed => {
+                f.write_str("Nicht genügend Speicher für das bearbeitete Bild")
+            }
         }
     }
 }
@@ -103,7 +107,7 @@ pub fn crop(source: &Image, rect: CropRect) -> Result<Image, ImageEditError> {
         .checked_mul(rect.height)
         .and_then(|n| n.checked_mul(4))
         .ok_or(ImageEditError::ImageTooLarge)?;
-    let mut pixels = Vec::with_capacity(len);
+    let mut pixels = reserve_pixels(len)?;
     let source_stride = source
         .width
         .checked_mul(4)
@@ -196,7 +200,10 @@ pub fn add_frame(source: &Image, options: FrameOptions) -> Result<Image, ImageEd
         return Err(ImageEditError::ImageTooLarge);
     }
 
-    let mut pixels = vec![0u8; byte_len];
+    let mut pixels = reserve_pixels(byte_len)?;
+    // Reservation above makes initialization infallible: no further allocation
+    // is needed, and transparent padding keeps its original zero-filled bytes.
+    pixels.resize(byte_len, 0);
     if let Some(shadow) = shadow {
         if shadow.opacity > 0 {
             let sx = content_x as i64 + shadow.offset_x as i64;
@@ -249,6 +256,17 @@ pub fn add_frame(source: &Image, options: FrameOptions) -> Result<Image, ImageEd
     Image::new(out_width, out_height, pixels).map_err(|_| ImageEditError::ImageTooLarge)
 }
 
+/// Reserve the complete output before writing any pixels. The caller must not
+/// grow beyond `byte_len`, so allocation failure stays on the Result path even
+/// when release builds abort on panic. The source image is never modified.
+fn reserve_pixels(byte_len: usize) -> Result<Vec<u8>, ImageEditError> {
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(byte_len)
+        .map_err(|_| ImageEditError::AllocationFailed)?;
+    Ok(pixels)
+}
+
 fn interval_overlap(a0: i64, a1: i64, b0: i64, b1: i64) -> i64 {
     (a1.min(b1) - a0.max(b0) + 1).max(0)
 }
@@ -272,6 +290,35 @@ fn validate_source(source: &Image) -> Result<(), ImageEditError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_reservation_returns_error_for_unrepresentable_capacity() {
+        // Deterministically exercises reservation failure without exhausting RAM.
+        assert_eq!(
+            reserve_pixels(usize::MAX),
+            Err(ImageEditError::AllocationFailed)
+        );
+    }
+
+    #[test]
+    fn rejected_frame_size_preserves_source_pixels() {
+        let source = Image::new(1, 1, vec![1, 2, 3, 4]).unwrap();
+        for width in [usize::MAX, 100_000] {
+            assert_eq!(
+                add_frame(
+                    &source,
+                    FrameOptions {
+                        width,
+                        color: Color::RED,
+                        shadow: None,
+                    },
+                ),
+                Err(ImageEditError::ImageTooLarge)
+            );
+            assert_eq!((source.width, source.height), (1, 1));
+            assert_eq!(source.pixels, [1, 2, 3, 4]);
+        }
+    }
 
     fn rgba_pixel(r: u8, g: u8, b: u8, a: u8) -> [u8; 4] {
         [b, g, r, a]

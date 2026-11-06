@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Verpixelung schreibt direkt in das vorhandene Ergebnis und vermeidet ein vollständiges Zwischenbild. Zuschneiden und Rahmen melden fehlgeschlagene Reservierungen des Ausgabepuffers verständlich ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Scrollaufnahmen reservieren vor einem neuen Stitch-Schritt Platz für den bisherigen Teilstand; bei einem Reservierungsfehler bleibt dieser abschließbar. Beim BMP-/GIF-Export wird die zusätzliche Pixelkopie fallibel reserviert ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Der Eingabepuffer beim Bildimport wächst in kleineren geometrischen Schritten und kann dadurch weniger Adressraum reservieren ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

@@ -14,7 +14,7 @@ use crate::{
     alpha_composite::source_over,
     alpha_render,
     gaussian_blur::gaussian_blur_region,
-    pixelate::{pixelate_region, PixelateRect},
+    pixelate::{pixelate_into, PixelateRect},
     shapes::{Shape, ShapeKind},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
@@ -167,9 +167,8 @@ fn render_document_over(
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
                 let block_size = ((shape.style.width * 3.0) as usize).clamp(12, 4096);
-                let pixelated = pixelate_region(sampling_source, region, block_size)
+                pixelate_into(sampling_source, &mut output_pixels, region, block_size)
                     .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
-                copy_region(&pixelated, &mut output_pixels, region)?;
             }
             ShapeKind::GaussianBlur { start, end } => {
                 let Some(region) =
@@ -342,35 +341,10 @@ fn clipped_region(
     }))
 }
 
-fn copy_region(source: &Image, target: &mut [u8], region: PixelateRect) -> Result<(), String> {
-    for y in region.y..region.y + region.height {
-        let start = y
-            .checked_mul(source.width)
-            .and_then(|row| row.checked_add(region.x))
-            .and_then(|pixel| pixel.checked_mul(4))
-            .ok_or_else(|| "Pixelationsbereich läuft über.".to_owned())?;
-        let len = region
-            .width
-            .checked_mul(4)
-            .ok_or_else(|| "Pixelationsbereich läuft über.".to_owned())?;
-        let end = start
-            .checked_add(len)
-            .ok_or_else(|| "Pixelationsbereich läuft über.".to_owned())?;
-        let src = source
-            .pixels
-            .get(start..end)
-            .ok_or_else(|| "Pixelationsbereich liegt außerhalb des Quellbilds.".to_owned())?;
-        let dst = target
-            .get_mut(start..end)
-            .ok_or_else(|| "Pixelationsbereich liegt außerhalb des Ergebnisbilds.".to_owned())?;
-        dst.copy_from_slice(src);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pixelate::pixelate_region;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
 
