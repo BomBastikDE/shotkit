@@ -407,27 +407,64 @@ fn static_page_is_detected_as_end_after_two_attempts() {
 }
 
 #[test]
-fn moving_irregular_content_only_at_outer_edge_is_not_reported_as_end() {
+fn conflicting_matchers_never_authorize_estimated_fallback() {
+    let regular = MatchResult {
+        dy: 30,
+        top: 3,
+        bottom: 4,
+    };
+    let exact = MatchResult {
+        dy: 50,
+        top: 0,
+        bottom: 0,
+    };
+    let (result, strict) = reconcile_matches(Some(regular), Some(exact), false);
+    assert!(result.is_none());
+    assert!(
+        strict,
+        "conflict must latch strict mode before fallback selection"
+    );
+    let agreeing = MatchResult { dy: 50, ..regular };
+    assert_eq!(
+        reconcile_matches(Some(agreeing), Some(exact), false),
+        (Some(agreeing), false)
+    );
+    assert_eq!(
+        reconcile_matches(Some(agreeing), Some(exact), true),
+        (Some(exact), true)
+    );
+}
+
+#[test]
+fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
     const WIDTH: usize = 120;
     const HEIGHT: usize = 220;
     const PAGE_LEN: usize = 700;
 
     struct EdgeOnlyPage {
         offset: usize,
+        edge: usize,
+        ambiguous_after: Option<usize>,
     }
     impl EdgeOnlyPage {
         fn frame(&self) -> Image {
             let mut pixels = vec![255; WIDTH * HEIGHT * 4];
             for y in 0..HEIGHT {
                 // A deterministic, irregular pattern moves with the page in
-                // the leftmost eight pixels; the entire interior is uniform.
+                // one outermost eight-pixel strip; the interior is uniform.
                 let row = y + self.offset;
-                let value = if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                let value = if self.ambiguous_after.is_some_and(|at| self.offset >= at) {
+                    if y % 2 == 0 {
+                        0
+                    } else {
+                        255
+                    }
+                } else if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
                     0
                 } else {
                     255
                 };
-                for x in 0..8 {
+                for x in self.edge..self.edge + 8 {
                     let p = (y * WIDTH + x) * 4;
                     pixels[p..p + 3].fill(value);
                 }
@@ -458,26 +495,49 @@ fn moving_irregular_content_only_at_outer_edge_is_not_reported_as_end() {
         fn progress(&mut self, _: usize) {}
     }
 
-    let mut io = EdgeOnlyPage { offset: 0 };
-    let initial = io.frame();
-    let out = run(&mut io, Direction::Down).unwrap();
+    for edge in [0, WIDTH - 8] {
+        let mut io = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: None,
+        };
+        let out = run(&mut io, Direction::Down).unwrap();
+        assert_eq!(io.offset, PAGE_LEN - HEIGHT);
+        assert_eq!(out.reason, "Ende des scrollbaren Bereichs erreicht.");
+        assert_eq!(out.fallback_count, 0);
+        assert_eq!((out.image.width, out.image.height), (WIDTH, PAGE_LEN));
+        let mut expected = vec![255; WIDTH * PAGE_LEN * 4];
+        for row in 0..PAGE_LEN {
+            let value = if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                0
+            } else {
+                255
+            };
+            for x in edge..edge + 8 {
+                let p = (row * WIDTH + x) * 4;
+                expected[p..p + 3].fill(value);
+            }
+        }
+        assert_eq!(out.image.pixels, expected);
 
-    assert_eq!(io.offset, 50, "the initial scroll must move the fake page");
-    assert!(
-        !out.reason.contains("Ende des scrollbaren Bereichs"),
-        "moving edge content must not be reported as a successful end: {}",
-        out.reason
-    );
-    assert!(
-        out.reason.contains("Aufnahme bis hierhin übernommen"),
-        "{}",
-        out.reason
-    );
-    assert_eq!((out.image.width, out.image.height), (WIDTH, HEIGHT));
-    assert_eq!(
-        out.image, initial,
-        "an unmatched frame must not corrupt the saved prefix"
-    );
+        let mut ambiguous = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: Some(100),
+        };
+        let partial = run(&mut ambiguous, Direction::Down).unwrap();
+        assert!(
+            partial.reason.contains("Aufnahme bis hierhin übernommen"),
+            "{}",
+            partial.reason
+        );
+        assert_eq!(partial.fallback_count, 0);
+        assert_eq!(
+            (partial.image.width, partial.image.height),
+            (WIDTH, HEIGHT + 50)
+        );
+        assert_eq!(partial.image.pixels, expected[..WIDTH * (HEIGHT + 50) * 4]);
+    }
 }
 
 #[test]

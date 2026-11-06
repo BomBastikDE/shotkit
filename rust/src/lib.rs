@@ -25,6 +25,7 @@ pub mod save_path;
 pub mod scroll_capture;
 pub mod scroll_completion;
 pub mod scroll_diagnostics;
+pub mod scroll_edge_match;
 pub mod scroll_match;
 pub mod selection_rect;
 pub mod settings;

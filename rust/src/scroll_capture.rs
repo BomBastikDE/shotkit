@@ -1,9 +1,33 @@
 //! Platform-independent scroll orchestration; the caller supplies screen capture,
 //! scroll events, delays, cancellation and progress reporting.
+use crate::scroll_edge_match::find_edge_offset;
 use crate::scroll_match::{find_offset, Frame, MatchResult};
 use crate::stitch::{Image, Rotation, RotationFailure, Stitcher};
 
 const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
+
+fn reconcile_matches(
+    regular: Option<MatchResult>,
+    exact: Option<MatchResult>,
+    exact_mode: bool,
+) -> (Option<MatchResult>, bool) {
+    if let Some(exact) = exact {
+        if let Some(regular) = regular.filter(|result| result.dy > 0) {
+            if regular.dy != exact.dy {
+                return (None, true);
+            }
+            if !exact_mode {
+                return (Some(regular), false);
+            }
+        }
+        return (Some(exact), true);
+    }
+    if exact_mode {
+        (regular.filter(|result| result.dy == 0), false)
+    } else {
+        (regular, false)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -191,6 +215,7 @@ fn run_with_rotation(
     let (mut notches, mut expected, mut still) = (1i32, h / 3, 0usize);
     let (mut known, mut last_top, mut last_bottom, mut fallbacks) = (0f32, 0usize, 0usize, 0usize);
     let mut consecutive_fallbacks = 0usize;
+    let mut exact_edge_mode = false;
     let mut restored_image: Option<Image> = None;
     let initial_stop = interrupted(io);
     let mut reason = initial_error
@@ -239,7 +264,19 @@ fn run_with_rotation(
                     find_offset(a, b, expected)
                 }
             };
-            let mut m = matched(&prev, &analyzed, expected);
+            let match_frames = |old: &Frame, new: &Frame, current: &Image, exact_mode: bool| {
+                let regular = matched(old, new, expected);
+                if old.same(new) {
+                    return (regular, false);
+                }
+                let exact = find_edge_offset(
+                    restored_image.as_ref().unwrap_or_else(|| stitch.frame()),
+                    current,
+                );
+                reconcile_matches(regular, exact, exact_mode)
+            };
+            let (mut m, activate_exact) = match_frames(&prev, &analyzed, &cur, exact_edge_mode);
+            exact_edge_mode |= activate_exact;
             if m.is_none() && notches > 1 {
                 if let Err(e) = io.scroll(direction, -notches) {
                     reason = format!("{e} – Aufnahme bis hierhin übernommen.");
@@ -300,9 +337,12 @@ fn run_with_rotation(
                     reason = stop.into();
                     break;
                 }
-                m = matched(&prev, &analyzed, expected);
+                let (new_match, activate_exact) =
+                    match_frames(&prev, &analyzed, &cur, exact_edge_mode);
+                m = new_match;
+                exact_edge_mode |= activate_exact;
             }
-            let used_fallback = m.is_none() && known > 0.0;
+            let used_fallback = m.is_none() && known > 0.0 && !exact_edge_mode;
             if used_fallback && consecutive_fallbacks >= MAX_CONSECUTIVE_FALLBACKS {
                 reason = format!(
                     "{} aufeinanderfolgende Bildabgleiche fehlgeschlagen – Teilaufnahme bis hierhin übernommen.",

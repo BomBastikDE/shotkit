@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Scrollaufnahmen können auch bei ausschließlich randnaher Struktur einen eindeutigen, pixelgenauen Bildversatz erkennen. Nach Nutzung dieses Abgleichs bleibt bei unklaren Folgebildern die Teilaufnahme erhalten; bildidentische Überlagerungen lassen sich allein anhand der Pixel nicht sicher von Seiteninhalt unterscheiden ([#60](https://github.com/BomBastikDE/shotkit/issues/60)).
+
 - Bei Bild- und Objektbearbeitungen fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Passt selbst der einzelne neue Schritt nicht ins Limit, kann die Bearbeitung nur nach ausdrücklicher Warnung ohne Rückgängigmöglichkeit erfolgen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
 
 - Beim Speichern werden BMP, JPEG und GIF in eine geschützte temporäre Datei kodiert, ohne die vollständige kodierte Datei zusätzlich im Speicher zu halten. Beim GIF-Abschluss werden auch Schreibfehler am Trailer berücksichtigt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
