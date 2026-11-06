@@ -80,6 +80,7 @@ $cases = @(
     @{ Name = 'Interactive Windows rejected oversized image import preservation smoke test'; Script = 'windows-large-image-import-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Interactive Windows large image memory measurement'; Script = 'windows-large-image-memory-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows RGBA PNG memory measurement'; Script = 'windows-large-image-memory-smoke.ps1'; Extra = @('-FixtureFormat', 'RGBA-PNG'); TimeoutSeconds = 300; Toolbar = $false },
+    @{ Name = 'Interactive Windows PNG export pixels and memory measurement'; Script = 'windows-png-export-memory-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Windows settings recovery filesystem contract'; Script = 'windows-settings-recovery-contract.ps1'; Extra = @(); TimeoutSeconds = 60; Toolbar = $false },
     @{ Name = 'Interactive Windows mapped network drive warning'; Script = 'windows-mapped-drive-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
