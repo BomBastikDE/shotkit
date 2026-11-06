@@ -1,4 +1,5 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
+use crate::resource_budget::{AdmissionClass, BudgetLease, ResourceBudget};
 use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
 #[cfg(test)]
 use image::RgbImage;
@@ -12,6 +13,8 @@ use std::{
 };
 
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+// Policy allowance, not a measured or enforced bound on external codec memory.
+const IMPORT_WORKSPACE_ALLOWANCE: usize = 16 * 1024 * 1024;
 
 mod bounded_reader;
 
@@ -71,6 +74,48 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
 /// On Windows the open handle refuses concurrent write/delete access until the
 /// decoder finishes. Other platforms do not provide that guarantee here.
 pub fn decode_file(path: &Path) -> Result<(Image, Option<ImageFormat>), String> {
+    decode_file_inner(path, None)
+}
+
+/// Admit an import against a shared budget and return ownership of its pixels
+/// together with their lease. The caller must keep that lease alive until the
+/// image is disposed of (including any immutable shared owner of both values).
+///
+/// Policy: reserve a 16-MiB workspace allowance before opening/recognizing the
+/// file; after header parsing reserve that allowance plus two decoder raster
+/// buffers and one RGBA buffer for orientation/conversion before decoding. All
+/// size arithmetic is checked. Successful import retains pixels.capacity().
+/// Imports use Normal admission, preserving the budget's configured headroom.
+/// Accounting is constant-time per admission; pixel conversion is linear in
+/// pixel count. This path retains no complete encoded-file copy. Reservation
+/// does not itself allocate the represented bytes.
+///
+/// This is admission accounting for this import, not a process memory ceiling:
+/// codecs can allocate while parsing headers, potentially exceeding the initial
+/// 16-MiB allowance, and their internal scratch memory is not measured or capped
+/// by this allowance. Allocator overhead, other allocations and OS memory are
+/// uncounted. Existing decoder/file limits remain independently enforced.
+/// The returned lease does not automatically account for later image clones or
+/// edits. Errors release this import's reservation through RAII.
+pub fn decode_file_with_budget(
+    path: &Path,
+    budget: &ResourceBudget,
+) -> Result<(Image, Option<ImageFormat>, BudgetLease), String> {
+    let mut lease = budget
+        .try_acquire(IMPORT_WORKSPACE_ALLOWANCE, AdmissionClass::Normal)
+        .map_err(|error| error.to_string())?;
+    let (image, format) = decode_file_inner(path, Some(&mut lease))?;
+    // Decoder, orientation/conversion temporaries and file reader are gone.
+    lease
+        .try_resize(image.pixels.capacity())
+        .map_err(|error| error.to_string())?;
+    Ok((image, format, lease))
+}
+
+fn decode_file_inner(
+    path: &Path,
+    lease: Option<&mut BudgetLease>,
+) -> Result<(Image, Option<ImageFormat>), String> {
     let file = open_image_file(path, MAX_IMAGE_BYTES)?;
     // Keep the same file object available for the final length check and, on
     // Windows, keep the read-only sharing contract alive until that check.
@@ -81,7 +126,7 @@ pub fn decode_file(path: &Path) -> Result<(Image, Option<ImageFormat>), String> 
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     let format = reader.format();
-    let image = decode_reader(reader)?;
+    let image = decode_reader_admitted(reader, lease)?;
     if guard.metadata().map_err(|e| e.to_string())?.len() > MAX_IMAGE_BYTES {
         return Err("Die Bilddatei ist zu groß.".into());
     }
@@ -103,7 +148,27 @@ fn open_image_file(path: &Path, limit: u64) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-fn decode_reader<R: BufRead + Seek>(mut reader: ImageReader<R>) -> Result<Image, String> {
+fn decode_reader<R: BufRead + Seek>(reader: ImageReader<R>) -> Result<Image, String> {
+    decode_reader_admitted(reader, None)
+}
+
+fn import_peak_reservation(width: u32, height: u32, decoder_bytes: u64) -> Result<usize, String> {
+    let rgba = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("Die Bildgröße läuft über.")?;
+    let bytes = decoder_bytes
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(rgba))
+        .and_then(|bytes| bytes.checked_add(IMPORT_WORKSPACE_ALLOWANCE as u64))
+        .ok_or("Die Bildgröße läuft über.")?;
+    usize::try_from(bytes).map_err(|_| "Die Bildgröße läuft über.".into())
+}
+
+fn decode_reader_admitted<R: BufRead + Seek>(
+    mut reader: ImageReader<R>,
+    lease: Option<&mut BudgetLease>,
+) -> Result<Image, String> {
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
     limits.max_image_width = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
@@ -119,6 +184,15 @@ fn decode_reader<R: BufRead + Seek>(mut reader: ImageReader<R>) -> Result<Image,
     })?;
     let (width, height) = decoder.dimensions();
     validate_import_dimensions(width, height)?;
+    if let Some(lease) = lease {
+        lease
+            .try_resize(import_peak_reservation(
+                width,
+                height,
+                decoder.total_bytes(),
+            )?)
+            .map_err(|error| error.to_string())?;
+    }
     // Mirror ImageReader::decode's allocation reservation before decoding.
     limits
         .reserve(decoder.total_bytes())
@@ -644,6 +718,119 @@ mod tests {
     }
 
     #[test]
+    fn budgeted_file_decode_retains_exact_pixel_capacity_until_release() {
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Bmp,
+            ImageFormat::Jpeg,
+            ImageFormat::Gif,
+            ImageFormat::Tiff,
+        ] {
+            let mut bytes = Cursor::new(Vec::new());
+            DynamicImage::ImageRgba8(
+                RgbaImage::from_raw(2, 1, vec![67, 45, 23, 0, 153, 122, 91, 128]).unwrap(),
+            )
+            .write_to(&mut bytes, format)
+            .unwrap();
+            let path = stream_test_path("budgeted-wrong-extension.jpg");
+            std::fs::write(&path, bytes.get_ref()).unwrap();
+            let budget = ResourceBudget::new(64 * 1024 * 1024, 1024).unwrap();
+            let existing = budget.try_acquire(17, AdmissionClass::Reserved).unwrap();
+            let (image, detected, lease) = decode_file_with_budget(&path, &budget).unwrap();
+            assert_eq!(image, decode(bytes.get_ref()).unwrap());
+            assert_eq!(detected, Some(format));
+            assert_eq!(lease.class(), AdmissionClass::Normal);
+            assert_eq!(lease.bytes(), image.pixels.capacity());
+            assert_eq!(budget.snapshot().used_bytes, 17 + image.pixels.capacity());
+            // Caller disposes of its pixels before releasing their accounting.
+            drop(image);
+            drop(lease);
+            assert_eq!(budget.snapshot().used_bytes, 17);
+            drop(existing);
+            assert_eq!(budget.snapshot().used_bytes, 0);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes.into_inner());
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn budgeted_import_converts_sixteen_bit_pixels_with_identical_results() {
+        let source = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
+            2,
+            1,
+            vec![0, 32768, 65535, 0, 65535, 12345, 45678, 32768],
+        )
+        .unwrap();
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba16(source)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        let path = stream_test_path("sixteen-bit.png");
+        std::fs::write(&path, bytes.get_ref()).unwrap();
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        let (image, format, lease) = decode_file_with_budget(&path, &budget).unwrap();
+        assert_eq!(image, decode(bytes.get_ref()).unwrap());
+        assert_eq!(format, Some(ImageFormat::Png));
+        assert_eq!(lease.bytes(), image.pixels.capacity());
+        drop(image);
+        drop(lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn budgeted_import_rejects_initial_admission_before_file_access() {
+        let path = stream_test_path("does-not-exist");
+        let budget = ResourceBudget::new(IMPORT_WORKSPACE_ALLOWANCE + 37, 1).unwrap();
+        let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+        let error = decode_file_with_budget(&path, &budget).unwrap_err();
+        assert!(error.contains("cannot reserve"), "{error}");
+        assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+    }
+
+    #[test]
+    fn budgeted_import_rejects_after_headers_before_decoding_missing_pixels() {
+        let bytes = encode(&sample(), ImageFormat::Bmp).unwrap();
+        let pixel_offset = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+        let path = stream_test_path("header-only.bmp");
+        std::fs::write(&path, &bytes[..pixel_offset]).unwrap();
+        let budget = ResourceBudget::new(IMPORT_WORKSPACE_ALLOWANCE + 37, 0).unwrap();
+        let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+        let error = decode_file_with_budget(&path, &budget).unwrap_err();
+        // Valid headers reach peak admission; absent pixels must not be decoded.
+        assert!(error.contains("cannot reserve"), "{error}");
+        assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+        let larger = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        let decode_error = decode_file_with_budget(&path, &larger).unwrap_err();
+        assert!(!decode_error.contains("cannot reserve"), "{decode_error}");
+        assert_eq!(larger.snapshot().used_bytes, 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn budgeted_import_releases_on_open_and_header_errors() {
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+        let path = stream_test_path("bad-import");
+        assert!(decode_file_with_budget(&path, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+        std::fs::write(&path, b"invalid image header").unwrap();
+        assert!(decode_file_with_budget(&path, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn import_reservation_checks_decoder_bytes_and_all_arithmetic() {
+        assert_eq!(
+            import_peak_reservation(2, 3, 48).unwrap(),
+            IMPORT_WORKSPACE_ALLOWANCE + 2 * 48 + 2 * 3 * 4
+        );
+        assert!(import_peak_reservation(1, 1, u64::MAX).is_err());
+        assert!(import_peak_reservation(u32::MAX, u32::MAX, 0).is_err());
+    }
+
+    #[test]
     fn file_open_enforces_size_limit_and_rejects_bad_data() {
         let path = stream_test_path("limit");
         std::fs::write(&path, b"12345").unwrap();
@@ -1130,6 +1317,15 @@ mod tests {
         let (file_rotated, format) = decode_file(&path).unwrap();
         assert_eq!(format, Some(ImageFormat::Jpeg));
         assert_eq!(file_rotated, rotated);
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        let (admitted_rotated, admitted_format, lease) =
+            decode_file_with_budget(&path, &budget).unwrap();
+        assert_eq!(admitted_rotated, rotated);
+        assert_eq!(admitted_format, format);
+        assert_eq!(lease.bytes(), admitted_rotated.pixels.capacity());
+        drop(admitted_rotated);
+        drop(lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
         std::fs::remove_file(path).unwrap();
         assert_eq!((rotated.width, rotated.height), (3, 2));
         for y in 0..unrotated.height {

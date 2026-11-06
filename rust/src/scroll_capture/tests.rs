@@ -445,6 +445,7 @@ fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
         offset: usize,
         edge: usize,
         ambiguous_after: Option<usize>,
+        scrollbar_after: Option<usize>,
     }
     impl EdgeOnlyPage {
         fn frame(&self) -> Image {
@@ -467,6 +468,13 @@ fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
                 for x in self.edge..self.edge + 8 {
                     let p = (y * WIDTH + x) * 4;
                     pixels[p..p + 3].fill(value);
+                }
+                if self.scrollbar_after.is_some_and(|at| self.offset >= at)
+                    && (30..100).contains(&y)
+                {
+                    let x = if self.edge == 0 { WIDTH - 1 } else { 0 };
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(127);
                 }
             }
             Image::new(WIDTH, HEIGHT, pixels).unwrap()
@@ -500,6 +508,7 @@ fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
             offset: 0,
             edge,
             ambiguous_after: None,
+            scrollbar_after: None,
         };
         let out = run(&mut io, Direction::Down).unwrap();
         assert_eq!(io.offset, PAGE_LEN - HEIGHT);
@@ -524,8 +533,28 @@ fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
             offset: 0,
             edge,
             ambiguous_after: Some(100),
+            scrollbar_after: None,
         };
         let partial = run(&mut ambiguous, Direction::Down).unwrap();
+        assert!(
+            partial.reason.contains("Aufnahme bis hierhin übernommen"),
+            "{}",
+            partial.reason
+        );
+        assert_eq!(partial.fallback_count, 0);
+        assert_eq!(
+            (partial.image.width, partial.image.height),
+            (WIDTH, HEIGHT + 50)
+        );
+        assert_eq!(partial.image.pixels, expected[..WIDTH * (HEIGHT + 50) * 4]);
+
+        let mut with_scrollbar = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: None,
+            scrollbar_after: Some(100),
+        };
+        let partial = run(&mut with_scrollbar, Direction::Down).unwrap();
         assert!(
             partial.reason.contains("Aufnahme bis hierhin übernommen"),
             "{}",

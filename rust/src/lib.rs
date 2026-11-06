@@ -14,6 +14,7 @@ pub mod gaussian_blur;
 pub mod hotkey_action;
 pub mod image_edit;
 pub mod image_io;
+pub mod import_admission;
 pub mod magnifier_label;
 pub mod mouse_history;
 pub mod network_path;
@@ -21,6 +22,7 @@ pub mod output_windows;
 pub mod pixelate;
 #[cfg(windows)]
 pub mod render;
+pub mod resource_budget;
 pub mod save_path;
 pub mod scroll_capture;
 pub mod scroll_completion;
