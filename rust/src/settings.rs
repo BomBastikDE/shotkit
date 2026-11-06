@@ -16,6 +16,8 @@ use std::{
 };
 
 #[cfg(windows)]
+pub mod guarded_save_windows;
+#[cfg(windows)]
 pub mod recovery_windows;
 
 pub const CURRENT_VERSION: u32 = 1;
@@ -169,6 +171,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<Settings, SettingsError> {
         path: path.to_owned(),
         source,
     })?;
+    parse_settings(path, &bytes)
+}
+
+fn parse_settings(path: &Path, bytes: &[u8]) -> Result<Settings, SettingsError> {
     // Inspect the version before interpreting version-specific fields. A newer
     // file can legitimately contain fields or enum values this build does not
     // understand; reject it as a future version without changing the file.
@@ -177,7 +183,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Settings, SettingsError> {
         version: u32,
     }
     let header: VersionHeader =
-        serde_json::from_slice(&bytes).map_err(|source| SettingsError::Json {
+        serde_json::from_slice(bytes).map_err(|source| SettingsError::Json {
             path: path.to_owned(),
             source,
         })?;
@@ -188,7 +194,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Settings, SettingsError> {
         });
     }
     let settings: Settings =
-        serde_json::from_slice(&bytes).map_err(|source| SettingsError::Json {
+        serde_json::from_slice(bytes).map_err(|source| SettingsError::Json {
             path: path.to_owned(),
             source,
         })?;
@@ -206,6 +212,25 @@ pub fn load_or_default(path: impl AsRef<Path>) -> Result<Settings, SettingsError
             Ok(Settings::default())
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Load settings and retain the exact bytes parsed for a later guarded save.
+/// `None` means the file was absent at the time of the read; a later creator
+/// must still be protected by a no-replace publication operation.
+pub fn load_snapshot(path: impl AsRef<Path>) -> Result<(Settings, Option<Vec<u8>>), SettingsError> {
+    let path = path.as_ref();
+    match fs::read(path) {
+        Ok(bytes) => {
+            let settings = parse_settings(path, &bytes)?;
+            Ok((settings, Some(bytes)))
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok((Settings::default(), None)),
+        Err(source) => Err(SettingsError::Io {
+            operation: "read",
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -324,6 +349,19 @@ mod tests {
         let path = std::env::temp_dir().join(format!("shotkit-settings-test-{nonce}"));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn snapshot_retains_exact_parsed_bytes_and_distinguishes_missing() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        assert_eq!(load_snapshot(&path).unwrap(), (Settings::default(), None));
+        let original = b"{\n  \"version\": 1, \"open_editor\": false\n}";
+        fs::write(&path, original).unwrap();
+        let (settings, bytes) = load_snapshot(&path).unwrap();
+        assert!(!settings.open_editor);
+        assert_eq!(bytes.as_deref(), Some(original.as_slice()));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
