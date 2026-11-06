@@ -51,6 +51,19 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo build --locked --release
+      - name: Diagnose clipboard history availability
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          # Read-only capability diagnostic, not a privacy or history test.
+          try {
+            $clipboard = [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime]
+            $enabled = $clipboard::IsHistoryEnabled()
+            Write-Host "CLIPBOARD_HISTORY_CAPABILITY: IsHistoryEnabled=$enabled; actual history and exclusion are not tested."
+          } catch {
+            Write-Host "CLIPBOARD_HISTORY_CAPABILITY: unavailable or probe failed: $($_.Exception.Message); actual history and exclusion are not tested."
+          }
       - name: Run all interactive Windows smoke tests
         timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
