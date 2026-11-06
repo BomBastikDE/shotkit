@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Die Release-Automatik prüft das GitHub-Uploadziel und lehnt authentisierte HTTP-Weiterleitungen ab ([#57](https://github.com/BomBastikDE/shotkit/issues/57)).
+
 - Einstellungsdateien werden beim Lesen auf 1 MiB begrenzt; übergroße Dateien bleiben unverändert und erzeugen eine Fehlermeldung ([#56](https://github.com/BomBastikDE/shotkit/issues/56)).
 
 - Bearbeitbare Sprechblasen mit mehrzeiligem Text, eigener Text- und Füllfarbe sowie verschiebbarer Spitze ergänzt ([#28](https://github.com/BomBastikDE/shotkit/issues/28)).

@@ -15,6 +15,36 @@ API = "https://api.github.com"
 TAG_PATTERN = re.compile(r"v2\.\d+\.\d+-(?:alpha|beta)\.\d+\Z")
 
 
+class NoAuthenticatedRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward an Authorization header to a redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def validated_upload_url(template, repository, release_id):
+    """Bind the GitHub upload URL to this repository and release before using a token."""
+    if not isinstance(template, str) or not isinstance(repository, str):
+        raise ValueError("Invalid upload URL or repository")
+    if type(release_id) is not int or release_id <= 0:
+        raise ValueError("Invalid release ID")
+    parts = repository.split("/")
+    if len(parts) != 2 or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        raise ValueError("Invalid repository")
+    suffix = "{?name,label}"
+    if not template.endswith(suffix):
+        raise ValueError("Unexpected upload URL template")
+    raw = template[:-len(suffix)]
+    expected_path = f"/repos/{parts[0]}/{parts[1]}/releases/{release_id}/assets"
+    parsed = urllib.parse.urlsplit(raw)
+    if (not raw.isascii() or any(ord(c) <= 32 or ord(c) == 127 for c in raw)
+            or parsed.scheme != "https" or parsed.netloc != "uploads.github.com"
+            or parsed.path.casefold() != expected_path.casefold()
+            or "?" in raw or "#" in raw):
+        raise ValueError("Unexpected GitHub upload URL")
+    return raw
+
+
 def api(url, token, method="GET", data=None, content_type="application/json"):
     request = urllib.request.Request(
         url,
@@ -28,7 +58,8 @@ def api(url, token, method="GET", data=None, content_type="application/json"):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    opener = urllib.request.build_opener(NoAuthenticatedRedirect())
+    with opener.open(request, timeout=60) as response:
         return json.load(response)
 
 
@@ -70,7 +101,7 @@ def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=Non
     release = api(f"{base}/releases", token, "POST", payload)
     if not release["draft"] or not release["prerelease"]:
         raise ValueError("GitHub did not create a draft prerelease")
-    upload_url = release["upload_url"].split("{", 1)[0]
+    upload_url = validated_upload_url(release["upload_url"], repository, release["id"])
     for name, content, content_type in (
         (filename, exe, "application/vnd.microsoft.portable-executable"),
         (filename + ".sha256", checksum, "text/plain"),
