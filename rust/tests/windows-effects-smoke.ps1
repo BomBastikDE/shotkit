@@ -99,12 +99,39 @@ $appData=Join-Path $root 'appdata';$localAppData=Join-Path $root 'localappdata';
 $oldAppData=$env:APPDATA;$oldLocalAppData=$env:LOCALAPPDATA
 $proc=$null;$mouseDown=$false;$failure=$null
 function Get-OwnedWindows {if($null -ne $proc -and -not $proc.HasExited){[ShotKitEffectsSmoke.Native]::Windows($proc.Id)}}
+function Get-TimeoutDiagnostics {
+    $details=[Collections.Generic.List[string]]::new()
+    try {
+        foreach($frame in @(Get-PSCallStack)) {
+            $line=$frame.InvocationInfo.Line
+            if($null -ne $line){$line=$line.Trim()}
+            $details.Add(("CALLSTACK function={0} location={1}:{2} action='{3}' arguments='{4}'" -f $frame.FunctionName,$frame.ScriptName,$frame.ScriptLineNumber,$line,$frame.Arguments))
+        }
+        $foreground=[ShotKitEffectsSmoke.Native]::GetForegroundWindow()
+        $foregroundRect=[ShotKitEffectsSmoke.Rect]::new()
+        $foregroundRectValid=[ShotKitEffectsSmoke.Native]::GetWindowRect($foreground,[ref]$foregroundRect)
+        $details.Add(("FOREGROUND HWND=0x{0:X} PID={1} rectValid={2} rect={3},{4},{5},{6}" -f $foreground.ToInt64(),[ShotKitEffectsSmoke.Native]::Owner($foreground),$foregroundRectValid,$foregroundRect.Left,$foregroundRect.Top,$foregroundRect.Right,$foregroundRect.Bottom))
+        $cursor=[ShotKitEffectsSmoke.Point]::new()
+        $cursorValid=[ShotKitEffectsSmoke.Native]::GetCursorPos([ref]$cursor)
+        $cursorWindow=[ShotKitEffectsSmoke.Native]::WindowFromPoint($cursor)
+        $details.Add(("CURSOR valid={0} point={1},{2} HWND=0x{3:X} PID={4}" -f $cursorValid,$cursor.X,$cursor.Y,$cursorWindow.ToInt64(),[ShotKitEffectsSmoke.Native]::Owner($cursorWindow)))
+        $popups=@(Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq '#32768'})
+        $details.Add(("OWNED_VISIBLE_POPUPS count={0}" -f $popups.Count))
+        foreach($popup in $popups) {
+            $rect=[ShotKitEffectsSmoke.Rect]::new()
+            $rectValid=[ShotKitEffectsSmoke.Native]::GetWindowRect($popup.Handle,[ref]$rect)
+            $menu=[ShotKitEffectsSmoke.Native]::Menu($popup.Handle)
+            $details.Add(("POPUP HWND=0x{0:X} PID={1} HMENU=0x{2:X} rectValid={3} rect={4},{5},{6},{7}" -f $popup.Handle.ToInt64(),$popup.Pid,$menu.ToInt64(),$rectValid,$rect.Left,$rect.Top,$rect.Right,$rect.Bottom))
+        }
+    } catch {$details.Add(("DIAGNOSTIC_ERROR: {0}" -f $_.Exception.Message))}
+    return $details -join [Environment]::NewLine
+}
 function Wait-For([scriptblock]$Probe,[int]$Seconds,[string]$What) {
     $end=[DateTime]::UtcNow.AddSeconds($Seconds)
     while([DateTime]::UtcNow -lt $end){
         if($null -ne $proc -and $proc.HasExited){throw "PROCESS_EXITED waiting for $What."}
         $value=&$Probe;if($value){return $value};Start-Sleep -Milliseconds 100
-    };throw "TIMEOUT waiting for $What."
+    };throw ("TIMEOUT waiting for $What."+[Environment]::NewLine+(Get-TimeoutDiagnostics))
 }
 function Button([int]$Id) {
     $items=@([ShotKitEffectsSmoke.Native]::Controls($main.Handle)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and $_.Id -eq $Id -and $_.Pid -eq $proc.Id})
