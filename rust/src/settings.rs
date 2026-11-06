@@ -151,6 +151,56 @@ impl Error for SettingsError {
     }
 }
 
+impl SettingsError {
+    /// Fixed diagnostic fields only: never format error messages, paths or JSON.
+    pub fn diagnostic_summary(&self) -> String {
+        let (category, operation, source) = match self {
+            Self::Io {
+                operation, source, ..
+            } => {
+                // Even &'static str may contain arbitrary caller-provided text.
+                let operation = match *operation {
+                    "read" => "read",
+                    "create settings directory for" => "create_settings_directory",
+                    "create temporary file for" => "create_temporary_file",
+                    "write" => "write",
+                    "replace" => "replace",
+                    _ => "unknown",
+                };
+                ("Io", operation, Some(source))
+            }
+            Self::Json { .. } => ("Json", "none", None),
+            Self::UnsupportedVersion { .. } => ("UnsupportedVersion", "none", None),
+            Self::TooLarge { .. } => ("TooLarge", "none", None),
+            Self::NoConfigDirectory => ("NoConfigDirectory", "none", None),
+        };
+        let kind = source.map_or_else(|| "none".to_owned(), |error| format!("{:?}", error.kind()));
+        let code = source
+            .and_then(original_os_code)
+            .map_or_else(|| "none".to_owned(), |code| code.to_string());
+        format!("category={category} operation={operation} io_kind={kind} os_code={code}")
+    }
+}
+
+fn original_os_code(error: &io::Error) -> Option<i32> {
+    let mut current: &(dyn Error + 'static) = error;
+    // Bound traversal in case a custom error provides a cyclic source chain.
+    for _ in 0..32 {
+        let next = if let Some(error) = current.downcast_ref::<io::Error>() {
+            if let Some(code) = error.raw_os_error() {
+                return Some(code);
+            }
+            // io::Error::source may skip its custom payload itself. Inspect the
+            // payload too so an embedded io::Error's raw code is retained.
+            error.get_ref().map(|inner| inner as &(dyn Error + 'static))
+        } else {
+            current.source()
+        };
+        current = next?;
+    }
+    None
+}
+
 /// Return the conventional per-user Windows settings path. The caller may use
 /// this with [`load_or_default`] and [`save_atomic`].
 pub fn settings_path() -> Result<PathBuf, SettingsError> {
@@ -384,6 +434,81 @@ mod tests {
     #[cfg(windows)]
     use std::{fs::OpenOptions, io::Write};
 
+    #[test]
+    fn diagnostic_fields_have_fixed_format_and_follow_nested_os_error() {
+        #[derive(Debug)]
+        struct Context(io::Error);
+        impl fmt::Display for Context {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("secret-path-and-content")
+            }
+        }
+        impl Error for Context {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let source = io::Error::other(Context(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            io::Error::from_raw_os_error(5),
+        )));
+        assert_eq!(source.raw_os_error(), None);
+        let error = SettingsError::Io {
+            operation: "replace",
+            path: PathBuf::from("secret-settings-path"),
+            source,
+        };
+        assert_eq!(
+            error.diagnostic_summary(),
+            "category=Io operation=replace io_kind=Other os_code=5"
+        );
+    }
+
+    #[test]
+    fn diagnostics_never_include_paths_contents_or_unknown_operation_text() {
+        let secret = "secret-path-content-token\nsettings_save=success";
+        let path = PathBuf::from(secret);
+        let errors = [
+            (
+                SettingsError::Io {
+                    operation: secret,
+                    path: path.clone(),
+                    source: io::Error::other(secret),
+                },
+                "category=Io operation=unknown io_kind=Other os_code=none",
+            ),
+            (
+                SettingsError::Json {
+                    path: path.clone(),
+                    source: serde_json::from_str::<Settings>(&format!("{{\"{secret}\":"))
+                        .unwrap_err(),
+                },
+                "category=Json operation=none io_kind=none os_code=none",
+            ),
+            (
+                SettingsError::TooLarge { path },
+                "category=TooLarge operation=none io_kind=none os_code=none",
+            ),
+            (
+                SettingsError::UnsupportedVersion {
+                    found: 123456,
+                    supported: 987654,
+                },
+                "category=UnsupportedVersion operation=none io_kind=none os_code=none",
+            ),
+            (
+                SettingsError::NoConfigDirectory,
+                "category=NoConfigDirectory operation=none io_kind=none os_code=none",
+            ),
+        ];
+        for (error, expected) in errors {
+            let diagnostic = error.diagnostic_summary();
+            assert_eq!(diagnostic, expected);
+            assert!(!diagnostic.contains("secret"));
+            assert!(!diagnostic.contains('\n'));
+        }
+    }
+
     fn test_dir() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -568,6 +693,52 @@ mod tests {
             })
         ));
         assert_eq!(fs::read(marker).unwrap(), b"existing data");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reader_without_delete_sharing_blocks_replace_until_reader_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let original = br#"{"version":1,"open_editor":true}"#;
+        fs::write(&path, original).unwrap();
+        let changed = Settings {
+            open_editor: false,
+            ..Settings::default()
+        };
+
+        // Deterministically model a reader that permits reads/writes but not
+        // replacement. This does not establish which handles a past CI run held.
+        let reader = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let error = save_atomic(&path, &changed).unwrap_err();
+        assert!(matches!(
+            &error,
+            SettingsError::Io {
+                operation: "replace",
+                ..
+            }
+        ));
+        assert_ne!(
+            original_os_code(match &error {
+                SettingsError::Io { source, .. } => source,
+                _ => unreachable!(),
+            }),
+            None
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        drop(reader);
+        save_atomic(&path, &changed).unwrap();
+        assert_eq!(load(&path).unwrap(), changed);
         fs::remove_dir_all(dir).unwrap();
     }
 

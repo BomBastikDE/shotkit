@@ -21,6 +21,10 @@ pub(super) unsafe fn load_settings(h: H) {
         Err(e) => {
             *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
             SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
+            crate::uia_picker::log_diagnostic(&format!(
+                "settings_load_stage=failed {}",
+                e.diagnostic_summary()
+            ));
             MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert; die vorhandene Datei bleibt unverändert.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
         }
     }
@@ -30,7 +34,11 @@ pub(super) unsafe fn load_settings(h: H) {
 // Warum erfüllt: Menü- und Editoraktionen übergeben ihr eigenes Fenster.
 // Nachrichten: MessageBoxW kann reentrieren; bei Fehlerdialogen wird kein SETTINGS-Guard gehalten.
 pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
+    crate::uia_picker::log_diagnostic("settings_save_stage=attempt");
     if !SETTINGS_WRITABLE.load(Ordering::SeqCst) {
+        crate::uia_picker::log_diagnostic(
+            "settings_save_stage=blocked reason=settings_not_writable",
+        );
         MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die vorhandene Datei nicht lesbar ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
         return false;
     }
@@ -38,9 +46,14 @@ pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
     match result {
         Ok(()) => {
             *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
+            crate::uia_picker::log_diagnostic("settings_save_stage=success");
             true
         }
         Err(e) => {
+            crate::uia_picker::log_diagnostic(&format!(
+                "settings_save_stage=failed {}",
+                e.diagnostic_summary()
+            ));
             MessageBoxW(
                 h,
                 wide(&format!(

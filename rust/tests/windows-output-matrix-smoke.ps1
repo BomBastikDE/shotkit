@@ -205,10 +205,14 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
     $appDiagnostic=''
     if($script:trayDiagnosticsPath -and (Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf)) {
         $appDiagnostic=(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {
-            $_ -match '^tray_track_popup_choice=\d+$' -or $_ -match '^settings_save=(success|failed)$'
+            $_ -match '^tray_track_popup_choice=\d+$' -or $_ -match '^settings_save=(success|failed)$' -or
+            $_ -match '^settings_save_stage=(attempt|success)$' -or
+            $_ -match '^settings_save_stage=blocked reason=settings_not_writable$' -or
+            $_ -match '^settings_(save|load)_stage=failed category=(Io|Json|UnsupportedVersion|TooLarge|NoConfigDirectory) operation=(read|create_settings_directory|create_temporary_file|write|replace|unknown|none) io_kind=([A-Za-z]+|none) os_code=(-?\d+|none)$'
         }) -join '; '
     }
-    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic"
+    $visibleOwnDialogs=@(Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'}).Count
+    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic; visibleOwnDialogs=$visibleOwnDialogs"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
