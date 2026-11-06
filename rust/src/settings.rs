@@ -742,6 +742,38 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn reader_with_delete_sharing_allows_atomic_replace() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let original = br#"{"version":1,"open_editor":true}"#;
+        fs::write(&path, original).unwrap();
+        let reader = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        let changed = Settings {
+            open_editor: false,
+            ..Settings::default()
+        };
+
+        save_atomic(&path, &changed).unwrap();
+        assert_eq!(load(&path).unwrap(), changed);
+        // The open handle remains a snapshot of the old file after replacement.
+        let mut old_bytes = Vec::new();
+        (&reader).read_to_end(&mut old_bytes).unwrap();
+        assert_eq!(old_bytes, original);
+        drop(reader);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn future_version_with_unknown_fields_and_values_is_not_modified() {
         let dir = test_dir();
