@@ -35,6 +35,14 @@ pub enum RenderError {
 /// Render a shape to a transparent straight-alpha BGRA layer of `width` x `height`.
 /// Shape coordinates are image-space pixels. Output bounds are clipped by GDI+.
 pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image, RenderError> {
+    if matches!(
+        shape.kind,
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. }
+    ) {
+        return Err(RenderError::UnsupportedShape(
+            "Effekt benötigt Dokumentkomposition",
+        ));
+    }
     if matches!(shape.kind, ShapeKind::Redact { .. }) {
         return Err(RenderError::UnsupportedShape(
             "Schwärzen ist eine Dokumentoperation",
@@ -524,6 +532,9 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             ))
         }
         ShapeKind::Callout { data } => callout::draw(g, pen.as_ptr(), data),
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } => Err(
+            RenderError::UnsupportedShape("Effekt benötigt Dokumentkomposition"),
+        ),
         ShapeKind::Text { location, text } => {
             draw_text(g, *location, text, shape.style.font_size, pen_color)
         }

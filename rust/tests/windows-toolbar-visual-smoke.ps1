@@ -333,7 +333,7 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- # Stage 0 uses compact spacing for 31 buttons: 2*4 + 31*(31+1) - 1 = 999 logical
+ # Stage 0 uses compact spacing for 33 buttons: 2*4 + 33*(29+1) - 1 = 997 logical
  # client pixels. Include measured nonclient borders, and keep the complete
  # window on the primary display so every GetPixel sample is screen-backed.
  $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
@@ -341,15 +341,15 @@ try {
  if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$outer) -or -not [ShotKitToolbarVisual.Native]::GetClientRect($main.H,[ref]$initialClient)){throw 'RESPONSIVE_INITIAL_GEOMETRY_FAILED'}
  # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
  $margin=[int][Math]::Floor((4*$dpi+48)/96)
- $size=[int][Math]::Floor((31*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
- $wide=2*$margin+31*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
+ $size=[int][Math]::Floor((29*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
+ $wide=2*$margin+33*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
  $tall=[int][Math]::Round(600*$dpi/96)
  $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
  if($wide -gt $screenWidth -or $tall -gt $screenHeight){throw "RESPONSIVE_DISPLAY_TOO_SMALL: required outer=${wide}x${tall}; primary display=${screenWidth}x${screenHeight}; dpi=$dpi"}
  if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_WIDE_RESIZE_FAILED'}
- Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 31 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
+ Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 33 } 'RESPONSIVE_WIDE_TOOLBAR_NOT_RESTORED'
  $buttons=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
- $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Sprechblase','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Weichzeichnen (W) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stempel auswählen…','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Formstil…','Linienbreite…','Schriftgröße…','Rahmen / Schatten / Leinwand…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
+ $expected=@('Auswahl (V)','Pfeil (A)','Linie (L)','Rechteck (R)','Ellipse (E)','Text (T)','Sprechblase','Marker (M)','Verpixeln (B) – keine sichere Schwärzung','Weichzeichnen (W) – keine sichere Schwärzung','Schwärzen (S)','Nummer (N)','Stempel auswählen…','Spotlight – Bereich hervorheben','Bildlupe – Ausschnitt vergrößern','Stift (P)','Zuschneiden (C)','Farbe…','Rot','Schwarz','Gelb','Blau','Formstil…','Linienbreite…','Schriftgröße…','Rahmen / Schatten / Leinwand…','Neue Aufnahme (Strg+N)','Kopieren','Speichern','Zurück','Wiederholen','Ansicht','Datei')
  foreach($label in $expected){if(-not($buttons|Where-Object{$_.Text -ceq $label}|Select-Object -First 1)){throw "NATIVE_BUTTON_LABEL_MISSING: '$label'"}}
  $wideHeight=Assert-ToolbarRow $toolbar $buttons
  if($PopupOnly) {
@@ -443,7 +443,7 @@ try {
     $styleEntry=@($entries|Where-Object{$_.Text -ceq 'Formstil…' -and $_.Submenu -ne [IntPtr]::Zero})
     if($styleEntry.Count -ne 1){throw 'RESPONSIVE_FORM_STYLE_SUBMENU_MISSING'}
     $styleEntries=@([ShotKitToolbarVisual.Native]::MenuItems($styleEntry[0].Submenu))
-    if((@($styleEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5170,0x5171,0x5172,0x5173,0x5174,0x5175,0x5176,0x5177,0x5178,0x5179,0x517a,0x517b,0x517c,0x517d) -join ',')){throw 'RESPONSIVE_FORM_STYLE_ACTIONS_INCOMPLETE'}
+    if((@($styleEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5170,0x5171,0x5172,0x5173,0x5174,0x5175,0x5176,0x5177,0x5178,0x5179,0x517a,0x517b,0x517c,0x517d,0x5180,0x5181,0x5182,0x5183,0x5184,0x5185,0x5186,0x5187,0x5188,0x5189) -join ',')){throw 'RESPONSIVE_FORM_STYLE_ACTIONS_INCOMPLETE'}
     $reachable+=0x5128
    }
    foreach($id in $allOriginalIds){if($id -notin $reachable){throw "RESPONSIVE_ACTION_UNREACHABLE: $id at $logicalWidth"}}
@@ -470,7 +470,7 @@ try {
    } else { Press-ToolbarKey 0x1b }
    Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_STILL_OPEN'
    if(-not [ShotKitToolbarVisual.Native]::SetWindowPos($main.H,[IntPtr]::Zero,0,0,$wide,$tall,4)){throw 'RESPONSIVE_RESTORE_RESIZE_FAILED'}
-   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 31 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
+   Wait-ToolbarCondition { @([ShotKitToolbarVisual.Native]::Buttons($toolbar.H)).Count -eq 33 } 'RESPONSIVE_WIDE_BUTTONS_NOT_RESTORED'
    $restored=@([ShotKitToolbarVisual.Native]::Buttons($toolbar.H))
    foreach($label in $expected){if(-not($restored|Where-Object{$_.Text -ceq $label})){throw "RESPONSIVE_RESTORED_LABEL_MISSING: $label"}}
    if((Assert-ToolbarRow $toolbar $restored) -ne $wideHeight){throw 'RESPONSIVE_RESTORED_HEIGHT_CHANGED'}

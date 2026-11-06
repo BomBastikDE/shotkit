@@ -984,3 +984,40 @@ fn callout_edits_keep_measured_layout_atomic_and_undoable() {
         matches!(&editor.shapes()[index].kind, ShapeKind::Callout {data: found} if **found == replacement)
     );
 }
+
+#[test]
+fn effect_gestures_and_strength_changes_are_independently_undoable() {
+    use crate::shapes::MagnifierFrame;
+    let mut e = EditorController::new();
+    e.set_tool(Tool::Spotlight);
+    e.mouse_down(Point::new(10.0, 20.0));
+    e.mouse_up(Point::new(30.0, 40.0));
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.5)
+    );
+    assert!(e.set_spotlight_opacity(0.75));
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.75)
+    );
+    assert!(e.undo());
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.5)
+    );
+    assert!(e.redo());
+
+    e.set_tool(Tool::Magnifier);
+    e.clear_selection();
+    e.mouse_down(Point::new(40.0, 40.0));
+    e.mouse_up(Point::new(80.0, 80.0));
+    assert!(e.set_magnifier_zoom(3.0));
+    assert!(e.set_magnifier_frame(MagnifierFrame::Rectangle));
+    assert!(
+        matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 3.0 && data.frame == MagnifierFrame::Rectangle)
+    );
+    assert!(e.undo());
+    assert!(
+        matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 3.0 && data.frame == MagnifierFrame::Circle)
+    );
+    assert!(e.undo());
+    assert!(matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 2.0));
+}

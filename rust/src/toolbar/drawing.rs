@@ -370,6 +370,26 @@ pub(super) unsafe fn draw_icon(
             icon_line(hdc, ox + 2, oy + 6, ox + 14, oy + 6);
             icon_line(hdc, ox + 14, oy + 6, ox + 14, oy + 18);
         }
+        Icon::Spotlight => {
+            // Four open corner brackets frame the target area; center dot marks focus.
+            icon_line(hdc, ox + 3, oy + 7, ox + 3, oy + 3);
+            icon_line(hdc, ox + 3, oy + 3, ox + 7, oy + 3);
+            icon_line(hdc, ox + 13, oy + 3, ox + 17, oy + 3);
+            icon_line(hdc, ox + 17, oy + 3, ox + 17, oy + 7);
+            icon_line(hdc, ox + 3, oy + 13, ox + 3, oy + 17);
+            icon_line(hdc, ox + 3, oy + 17, ox + 7, oy + 17);
+            icon_line(hdc, ox + 13, oy + 17, ox + 17, oy + 17);
+            icon_line(hdc, ox + 17, oy + 13, ox + 17, oy + 17);
+            icon_fill_ellipse(hdc, rect(8, 8, 12, 12), color);
+        }
+        Icon::Magnifier => {
+            // Lens and angled handle read as a magnifying glass at toolbar scale.
+            Ellipse(hdc, ox + 2, oy + 2, ox + 14, oy + 14);
+            icon_line(hdc, ox + 11, oy + 12, ox + 18, oy + 19);
+            icon_line(hdc, ox + 10, oy + 13, ox + 17, oy + 20);
+            icon_line(hdc, ox + 5, oy + 8, ox + 11, oy + 8);
+            icon_line(hdc, ox + 8, oy + 5, ox + 8, oy + 11);
+        }
         Icon::Color => {
             draw_swatch(hdc, bounds, current_color);
         }

@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Bearbeitbares Spotlight und Bildlupe mit einstellbarer Stärke beziehungsweise Vergrößerung ergänzt ([#29](https://github.com/BomBastikDE/shotkit/issues/29)); die Lupe verwendet eine durch sämtliche Schwärzungen bereinigte Bildquelle.
+
 - Die Release-Automatik prüft das GitHub-Uploadziel und lehnt authentisierte HTTP-Weiterleitungen ab ([#57](https://github.com/BomBastikDE/shotkit/issues/57)).
 
 - Einstellungsdateien werden beim Lesen auf 1 MiB begrenzt; übergroße Dateien bleiben unverändert und erzeugen eine Fehlermeldung ([#56](https://github.com/BomBastikDE/shotkit/issues/56)).

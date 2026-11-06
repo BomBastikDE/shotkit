@@ -7,6 +7,7 @@
 //! controller intentionally does not own a text-entry widget. Image operations
 //! and annotation edits share the same `Document` history.
 
+mod effects;
 mod history;
 
 use crate::{
@@ -62,6 +63,7 @@ pub fn compose_preview_shapes(
 enum Drag {
     Create {
         shape: Shape,
+        origin: Point,
         selection_before: Option<usize>,
     },
     Move {
@@ -88,6 +90,9 @@ pub struct EditorController {
     hit_tolerance: f32,
     next_step: i32,
     stamp_kind: StampKind,
+    spotlight_opacity: f32,
+    magnifier_zoom: f32,
+    magnifier_frame: crate::shapes::MagnifierFrame,
     current_style: Style,
     last_error: Option<DocumentError>,
 }
@@ -119,6 +124,9 @@ impl EditorController {
             hit_tolerance: 6.0,
             next_step: 1,
             stamp_kind: StampKind::default(),
+            spotlight_opacity: 0.5,
+            magnifier_zoom: 2.0,
+            magnifier_frame: crate::shapes::MagnifierFrame::Circle,
             current_style: Style::default(),
             last_error: None,
         })
@@ -484,6 +492,30 @@ impl EditorController {
             Tool::Highlight => ShapeKind::Highlight { start: at, end: at },
             Tool::Blur => ShapeKind::Blur { start: at, end: at },
             Tool::GaussianBlur => ShapeKind::GaussianBlur { start: at, end: at },
+            Tool::Spotlight => ShapeKind::Spotlight {
+                data: crate::shapes::Spotlight {
+                    focus: crate::shapes::Rect {
+                        x: at.x,
+                        y: at.y,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    dim_opacity: self.spotlight_opacity,
+                },
+            },
+            Tool::Magnifier => ShapeKind::Magnifier {
+                data: crate::shapes::Magnifier {
+                    viewport: crate::shapes::Rect {
+                        x: at.x,
+                        y: at.y,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    focus: at,
+                    zoom: self.magnifier_zoom,
+                    frame: self.magnifier_frame,
+                },
+            },
             Tool::Redact => ShapeKind::Redact { start: at, end: at },
             Tool::Pen => ShapeKind::Freehand { points: vec![at] },
             Tool::Stamp => ShapeKind::Stamp {
@@ -500,6 +532,7 @@ impl EditorController {
         shape.style = self.current_style.clone();
         self.drag = Some(Drag::Create {
             shape,
+            origin: at,
             selection_before: self.selected,
         });
         self.last_position = Some(at);
@@ -516,7 +549,7 @@ impl EditorController {
             return;
         }
         self.last_position = Some(at);
-        if let Some(Drag::Create { shape, .. }) = self.drag.as_mut() {
+        if let Some(Drag::Create { shape, origin, .. }) = self.drag.as_mut() {
             match &mut shape.kind {
                 ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
                     *end = if shift {
@@ -536,6 +569,29 @@ impl EditorController {
                     } else {
                         at
                     };
+                }
+                ShapeKind::Spotlight { data } => {
+                    let end = if shift {
+                        constrain_endpoint(*origin, at, true)
+                    } else {
+                        at
+                    };
+                    let mut rect = crate::shapes::Rect::from_points(*origin, end);
+                    rect.width = rect.width.max(0.001);
+                    rect.height = rect.height.max(0.001);
+                    data.focus = rect;
+                }
+                ShapeKind::Magnifier { data } => {
+                    let end = if shift {
+                        constrain_endpoint(*origin, at, true)
+                    } else {
+                        at
+                    };
+                    let mut rect = crate::shapes::Rect::from_points(*origin, end);
+                    rect.width = rect.width.max(0.001);
+                    rect.height = rect.height.max(0.001);
+                    data.viewport = rect;
+                    data.focus = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
                 }
                 ShapeKind::Freehand { points }
                     if points.last().is_none_or(|p| distance(*p, at) >= 1.0) =>

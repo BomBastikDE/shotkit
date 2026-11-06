@@ -206,12 +206,13 @@ pub fn dirty_shape_region(
     if shapes.is_empty() {
         return None;
     }
-    // Redaction changes the source sampled by pixelation, potentially changing
-    // entire blocks outside the rectangle. Repaint the full image view.
+    // Redaction changes sampling outside its rectangle; spotlight changes
+    // everything outside its focus. Text bounds are approximate. Repaint the
+    // full image view for each of these cases.
     if shapes.iter().any(|shape| {
         matches!(
             shape.kind,
-            ShapeKind::Text { .. } | ShapeKind::Redact { .. }
+            ShapeKind::Text { .. } | ShapeKind::Redact { .. } | ShapeKind::Spotlight { .. }
         )
     }) {
         return Some(view);
@@ -649,6 +650,34 @@ mod tests {
         assert_eq!(
             pan_after_wheel(image, viewport, 1.5, (40, 99), 120, false),
             (40, 0)
+        );
+    }
+    #[test]
+    fn moving_spotlight_invalidates_the_entire_image_view() {
+        use crate::shapes::{Rect, Shape, ShapeKind, Spotlight};
+        let view = View {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+        };
+        let mut before = Shape::new(ShapeKind::Spotlight {
+            data: Spotlight::new(
+                Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+                0.5,
+            )
+            .unwrap(),
+        });
+        let after = before.clone();
+        before.offset(5.0, 0.0);
+        assert_eq!(
+            dirty_shape_region(view, (300, 200), Some(&before), Some(&after)),
+            Some(view)
         );
     }
 }

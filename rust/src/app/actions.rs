@@ -275,6 +275,8 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
         Tool::Ellipse => toolbar::ID_ELLIPSE,
         Tool::Text => toolbar::ID_TEXT,
         Tool::Callout => toolbar::ID_CALLOUT,
+        Tool::Spotlight => toolbar::ID_SPOTLIGHT,
+        Tool::Magnifier => toolbar::ID_MAGNIFIER,
         Tool::Highlight => toolbar::ID_MARKER,
         Tool::Blur => toolbar::ID_BLUR,
         Tool::GaussianBlur => toolbar::ID_GAUSSIAN_BLUR,
@@ -359,6 +361,45 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     } else {
         id
     };
+    if (toolbar::ID_SPOTLIGHT_25..=toolbar::ID_MAGNIFIER_RECT).contains(&id) {
+        match id {
+            toolbar::ID_SPOTLIGHT_25 => {
+                editor(h).set_spotlight_opacity(0.25);
+            }
+            toolbar::ID_SPOTLIGHT_50 => {
+                editor(h).set_spotlight_opacity(0.5);
+            }
+            toolbar::ID_SPOTLIGHT_75 => {
+                editor(h).set_spotlight_opacity(0.75);
+            }
+            toolbar::ID_SPOTLIGHT_90 => {
+                editor(h).set_spotlight_opacity(0.9);
+            }
+            toolbar::ID_MAGNIFY_150 => {
+                editor(h).set_magnifier_zoom(1.5);
+            }
+            toolbar::ID_MAGNIFY_200 => {
+                editor(h).set_magnifier_zoom(2.0);
+            }
+            toolbar::ID_MAGNIFY_300 => {
+                editor(h).set_magnifier_zoom(3.0);
+            }
+            toolbar::ID_MAGNIFY_400 => {
+                editor(h).set_magnifier_zoom(4.0);
+            }
+            toolbar::ID_MAGNIFIER_CIRCLE => {
+                editor(h).set_magnifier_frame(shotkit::shapes::MagnifierFrame::Circle);
+            }
+            toolbar::ID_MAGNIFIER_RECT => {
+                editor(h).set_magnifier_frame(shotkit::shapes::MagnifierFrame::Rectangle);
+            }
+            _ => unreachable!(),
+        }
+        report_editor_error(h);
+        SetFocus(h);
+        InvalidateRect(h, std::ptr::null(), 0);
+        return;
+    }
     if (toolbar::ID_CALLOUT_FILL..=toolbar::ID_CALLOUT_POINTER).contains(&id) {
         let selected = editor(h).selected_index().and_then(|index| {
             editor(h).selection().and_then(|shape| match &shape.kind {
@@ -431,6 +472,8 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         toolbar::ID_ELLIPSE => Some(Tool::Ellipse),
         toolbar::ID_TEXT => Some(Tool::Text),
         toolbar::ID_CALLOUT => Some(Tool::Callout),
+        toolbar::ID_SPOTLIGHT => Some(Tool::Spotlight),
+        toolbar::ID_MAGNIFIER => Some(Tool::Magnifier),
         toolbar::ID_MARKER => Some(Tool::Highlight),
         toolbar::ID_BLUR => Some(Tool::Blur),
         toolbar::ID_GAUSSIAN_BLUR => Some(Tool::GaussianBlur),

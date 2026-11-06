@@ -70,6 +70,16 @@ const FORM_STYLES: &[(usize, &str)] = &[
     (ID_CALLOUT_FILL, "Sprechblase: Füllfarbe …"),
     (ID_CALLOUT_TEXT_COLOR, "Sprechblase: Textfarbe …"),
     (ID_CALLOUT_POINTER, "Sprechblase: Spitze ein / aus"),
+    (ID_SPOTLIGHT_25, "Spotlight: Abdunklung 25 %"),
+    (ID_SPOTLIGHT_50, "Spotlight: Abdunklung 50 %"),
+    (ID_SPOTLIGHT_75, "Spotlight: Abdunklung 75 %"),
+    (ID_SPOTLIGHT_90, "Spotlight: Abdunklung 90 %"),
+    (ID_MAGNIFY_150, "Bildlupe: 1,5×"),
+    (ID_MAGNIFY_200, "Bildlupe: 2×"),
+    (ID_MAGNIFY_300, "Bildlupe: 3×"),
+    (ID_MAGNIFY_400, "Bildlupe: 4×"),
+    (ID_MAGNIFIER_CIRCLE, "Bildlupe: Rund / oval"),
+    (ID_MAGNIFIER_RECT, "Bildlupe: Rechteck"),
 ];
 
 #[derive(Clone, Copy)]
@@ -81,6 +91,13 @@ pub enum StyleTarget {
     Line,
     Freehand,
     Callout,
+    Spotlight {
+        opacity: f32,
+    },
+    Magnifier {
+        zoom: f32,
+        frame: shotkit::shapes::MagnifierFrame,
+    },
     Other,
 }
 
@@ -93,6 +110,13 @@ pub fn style_target(kind: Option<&ShapeKind>) -> StyleTarget {
         Some(ShapeKind::Line { .. }) => StyleTarget::Line,
         Some(ShapeKind::Freehand { .. }) => StyleTarget::Freehand,
         Some(ShapeKind::Callout { .. }) => StyleTarget::Callout,
+        Some(ShapeKind::Spotlight { data }) => StyleTarget::Spotlight {
+            opacity: data.dim_opacity,
+        },
+        Some(ShapeKind::Magnifier { data }) => StyleTarget::Magnifier {
+            zoom: data.zoom,
+            frame: data.frame,
+        },
         Some(_) => StyleTarget::Other,
     }
 }
@@ -116,11 +140,41 @@ pub fn form_style_applies(id: usize, target: StyleTarget) -> bool {
         ID_CORNERS_SQUARE..=ID_CORNERS_ROUNDED => matches!(target, StyleTarget::Rectangle),
         ID_ARROW_SINGLE..=ID_ARROW_DOT => matches!(target, StyleTarget::Arrow),
         ID_CALLOUT_FILL..=ID_CALLOUT_POINTER => matches!(target, StyleTarget::Callout),
+        ID_SPOTLIGHT_25..=ID_SPOTLIGHT_90 => matches!(target, StyleTarget::Spotlight { .. }),
+        ID_MAGNIFY_150..=ID_MAGNIFIER_RECT => matches!(target, StyleTarget::Magnifier { .. }),
         _ => false,
     }
 }
 
-fn form_style_checked(id: usize, style: &Style) -> bool {
+fn form_style_checked(id: usize, style: &Style, target: StyleTarget) -> bool {
+    if let StyleTarget::Spotlight { opacity } = target {
+        if let Some(expected) = match id {
+            ID_SPOTLIGHT_25 => Some(0.25),
+            ID_SPOTLIGHT_50 => Some(0.5),
+            ID_SPOTLIGHT_75 => Some(0.75),
+            ID_SPOTLIGHT_90 => Some(0.9),
+            _ => None,
+        } {
+            return opacity == expected;
+        }
+    }
+    if let StyleTarget::Magnifier { zoom, frame } = target {
+        if let Some(expected) = match id {
+            ID_MAGNIFY_150 => Some(1.5),
+            ID_MAGNIFY_200 => Some(2.0),
+            ID_MAGNIFY_300 => Some(3.0),
+            ID_MAGNIFY_400 => Some(4.0),
+            _ => None,
+        } {
+            return zoom == expected;
+        }
+        if id == ID_MAGNIFIER_CIRCLE {
+            return frame == shotkit::shapes::MagnifierFrame::Circle;
+        }
+        if id == ID_MAGNIFIER_RECT {
+            return frame == shotkit::shapes::MagnifierFrame::Rectangle;
+        }
+    }
     match id {
         ID_FILL_NONE => style.fill == FillMode::None,
         ID_FILL_SOLID => style.fill == FillMode::Solid,
@@ -206,7 +260,7 @@ pub unsafe fn popup(
                 };
                 let built = children.iter().all(|&(id, label)| {
                     let mut flags = if stamp_kind_for_command(id) == Some(stamp_kind)
-                        || form_style_checked(id, style)
+                        || form_style_checked(id, style, target)
                     {
                         0x0008 // MF_CHECKED
                     } else {
@@ -228,7 +282,7 @@ pub unsafe fn popup(
         } else {
             allowed.push(entry_id);
             let mut flags = if stamp_kind_for_command(entry_id) == Some(stamp_kind)
-                || form_style_checked(entry_id, style)
+                || form_style_checked(entry_id, style, target)
             {
                 0x0008 // MF_CHECKED
             } else {
@@ -271,7 +325,7 @@ mod tests {
         assert_eq!(
             FORM_STYLES
                 .iter()
-                .filter(|entry| form_style_checked(entry.0, &style))
+                .filter(|entry| form_style_checked(entry.0, &style, StyleTarget::Any))
                 .count(),
             4
         );

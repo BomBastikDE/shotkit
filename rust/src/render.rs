@@ -390,9 +390,11 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
         }
         // Soft blur and stamps use the shared alpha renderer. The GDI primitive
         // path cannot reproduce their alpha-correct output.
-        ShapeKind::GaussianBlur { .. } | ShapeKind::Stamp { .. } | ShapeKind::Callout { .. } => {
-            false
-        }
+        ShapeKind::GaussianBlur { .. }
+        | ShapeKind::Stamp { .. }
+        | ShapeKind::Callout { .. }
+        | ShapeKind::Spotlight { .. }
+        | ShapeKind::Magnifier { .. } => false,
         ShapeKind::Blur { start, end } => {
             let r = bounds(*start, *end);
             let Some(src) = source else {

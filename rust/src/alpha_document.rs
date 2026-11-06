@@ -5,6 +5,8 @@
 //! sanitized by every redaction, independent of their document order,
 //! and replaces only its clipped region in the accumulated result.
 
+mod effects;
+
 use std::sync::Arc;
 
 use crate::{
@@ -124,6 +126,12 @@ fn render_document_over(
     for shape in shapes {
         match &shape.kind {
             ShapeKind::Redact { .. } => {}
+            ShapeKind::Spotlight { data } => {
+                effects::spotlight(&mut output_pixels, sampling_source, data)?
+            }
+            ShapeKind::Magnifier { data } => {
+                effects::magnifier(&mut output_pixels, sampling_source, data, &shape.style)?
+            }
             ShapeKind::Blur { start, end } => {
                 let Some(region) =
                     clipped_region(source.width, source.height, start.x, start.y, end.x, end.y)?

@@ -3,6 +3,7 @@
 
 mod callout;
 mod geometry;
+mod spotlight_magnifier;
 pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout, MAX_CALLOUT_TEXT_BYTES};
 #[cfg(windows)]
 pub(crate) use geometry::arrow_dot_radius;
@@ -15,6 +16,9 @@ pub(crate) use geometry::styled_arrow_head;
 use geometry::{
     distance_segment, distance_to_ellipse, rounded_rectangle_distance, rounded_rectangle_radius,
     styled_arrow_hit_test,
+};
+pub use spotlight_magnifier::{
+    GeometryError as EffectGeometryError, Magnifier, MagnifierFrame, Spotlight,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -112,6 +116,8 @@ pub enum Tool {
     Ellipse,
     Text,
     Callout,
+    Spotlight,
+    Magnifier,
     Highlight,
     Blur,
     GaussianBlur,
@@ -312,6 +318,14 @@ pub enum ShapeKind {
         location: Point,
         text: String,
     },
+    /// Source-independent dimming outside the focus rectangle.
+    Spotlight {
+        data: Spotlight,
+    },
+    /// Magnifies the globally redaction-sanitized source into a viewport.
+    Magnifier {
+        data: Magnifier,
+    },
     /// The heap payload keeps the inline size and history cost of other shapes stable.
     Callout {
         data: Box<CalloutData>,
@@ -340,6 +354,8 @@ impl Shape {
     }
     pub fn bounds(&self) -> Rect {
         match &self.kind {
+            ShapeKind::Spotlight { data } => data.bounds(),
+            ShapeKind::Magnifier { data } => data.bounds(),
             ShapeKind::Callout { data } => data
                 .geometry()
                 .map(|geometry| geometry.bounds)
@@ -415,6 +431,12 @@ impl Shape {
     pub fn is_empty(&self) -> bool {
         match &self.kind {
             ShapeKind::Callout { data } => !data.validate() || data.text.trim().is_empty(),
+            ShapeKind::Spotlight { data } => {
+                data.validate().is_err() || data.focus.width < 3.0 || data.focus.height < 3.0
+            }
+            ShapeKind::Magnifier { data } => {
+                data.validate().is_err() || data.viewport.width < 3.0 || data.viewport.height < 3.0
+            }
             ShapeKind::Line { start, end }
             | ShapeKind::Arrow { start, end }
             | ShapeKind::Rectangle { start, end }
@@ -435,6 +457,12 @@ impl Shape {
             p.y += dy;
         };
         match &mut self.kind {
+            ShapeKind::Spotlight { data } => {
+                let _ = data.offset(dx, dy);
+            }
+            ShapeKind::Magnifier { data } => {
+                let _ = data.offset(dx, dy);
+            }
             ShapeKind::Callout { data } => {
                 data.offset(dx, dy);
             }
@@ -461,6 +489,8 @@ impl Shape {
     /// Two endpoint handles for lines; four normalized corner handles for box annotations.
     pub fn handles(&self) -> Vec<Point> {
         match &self.kind {
+            ShapeKind::Spotlight { data } => data.handles().to_vec(),
+            ShapeKind::Magnifier { data } => data.handles().to_vec(),
             ShapeKind::Callout { data } => {
                 if data.validate() {
                     data.tip.into_iter().collect()
@@ -482,6 +512,8 @@ impl Shape {
     /// Resize by handle index. Box handles retain the original corner identity when crossing over.
     pub fn set_handle(&mut self, index: usize, p: Point) -> bool {
         match &mut self.kind {
+            ShapeKind::Spotlight { data } => return data.set_handle(index, p).is_ok(),
+            ShapeKind::Magnifier { data } => return data.set_handle(index, p).is_ok(),
             ShapeKind::Callout { data } => {
                 return index == 0 && data.tip.is_some() && data.set_tip(Some(p))
             }
@@ -536,6 +568,8 @@ impl Shape {
     /// use an axis-aligned outer-minus-inner approximation.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> bool {
         match &self.kind {
+            ShapeKind::Spotlight { data } => data.hit_test(p, tolerance),
+            ShapeKind::Magnifier { data } => data.hit_test(p, tolerance),
             ShapeKind::Callout { data } => data
                 .geometry()
                 .is_some_and(|geometry| geometry.hit_test(p, tolerance)),
