@@ -6,7 +6,9 @@
 
 use crate::shapes::{Shape, ShapeKind};
 use crate::stitch::Image;
+mod callout;
 mod stamps;
+pub use callout::measure_callout_text;
 #[cfg(windows)]
 mod styles;
 #[cfg(windows)]
@@ -521,6 +523,7 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
                 pts.len() as i32,
             ))
         }
+        ShapeKind::Callout { data } => callout::draw(g, pen.as_ptr(), data),
         ShapeKind::Text { location, text } => {
             draw_text(g, *location, text, shape.style.font_size, pen_color)
         }

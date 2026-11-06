@@ -67,6 +67,9 @@ const FORM_STYLES: &[(usize, &str)] = &[
     (ID_ARROW_SINGLE, "Pfeilenden: Einfach"),
     (ID_ARROW_DOUBLE, "Pfeilenden: Doppelt"),
     (ID_ARROW_DOT, "Pfeilenden: Punkt"),
+    (ID_CALLOUT_FILL, "Sprechblase: Füllfarbe …"),
+    (ID_CALLOUT_TEXT_COLOR, "Sprechblase: Textfarbe …"),
+    (ID_CALLOUT_POINTER, "Sprechblase: Spitze ein / aus"),
 ];
 
 #[derive(Clone, Copy)]
@@ -77,6 +80,7 @@ pub enum StyleTarget {
     Arrow,
     Line,
     Freehand,
+    Callout,
     Other,
 }
 
@@ -88,6 +92,7 @@ pub fn style_target(kind: Option<&ShapeKind>) -> StyleTarget {
         Some(ShapeKind::Arrow { .. }) => StyleTarget::Arrow,
         Some(ShapeKind::Line { .. }) => StyleTarget::Line,
         Some(ShapeKind::Freehand { .. }) => StyleTarget::Freehand,
+        Some(ShapeKind::Callout { .. }) => StyleTarget::Callout,
         Some(_) => StyleTarget::Other,
     }
 }
@@ -110,6 +115,7 @@ pub fn form_style_applies(id: usize, target: StyleTarget) -> bool {
         ),
         ID_CORNERS_SQUARE..=ID_CORNERS_ROUNDED => matches!(target, StyleTarget::Rectangle),
         ID_ARROW_SINGLE..=ID_ARROW_DOT => matches!(target, StyleTarget::Arrow),
+        ID_CALLOUT_FILL..=ID_CALLOUT_POINTER => matches!(target, StyleTarget::Callout),
         _ => false,
     }
 }

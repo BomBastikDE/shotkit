@@ -55,6 +55,7 @@ pub const ID_CROP: usize = 0x510B;
 pub const ID_REDACT: usize = 0x510C;
 pub const ID_GAUSSIAN_BLUR: usize = 0x510D;
 pub const ID_STAMP: usize = 0x510E;
+pub const ID_CALLOUT: usize = 0x510F;
 pub const ID_STAMP_CHECK: usize = 0x5160;
 pub const ID_STAMP_CROSS: usize = 0x5161;
 pub const ID_STAMP_WARNING: usize = 0x5162;
@@ -85,6 +86,9 @@ pub const ID_CORNERS_ROUNDED: usize = 0x5177;
 pub const ID_ARROW_SINGLE: usize = 0x5178;
 pub const ID_ARROW_DOUBLE: usize = 0x5179;
 pub const ID_ARROW_DOT: usize = 0x517A;
+pub const ID_CALLOUT_FILL: usize = 0x517B;
+pub const ID_CALLOUT_TEXT_COLOR: usize = 0x517C;
+pub const ID_CALLOUT_POINTER: usize = 0x517D;
 
 const CLASS_NAME: &str = "ShotKitRustEditorToolbar";
 const WM_NCCREATE: u32 = 0x0081;

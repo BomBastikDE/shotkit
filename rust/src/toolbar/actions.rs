@@ -15,6 +15,7 @@ pub(super) enum Icon {
     Rectangle,
     Ellipse,
     Text,
+    Callout,
     Marker,
     Pixelate,
     GaussianBlur,
@@ -41,7 +42,7 @@ pub(super) enum Icon {
     File,
     View,
 }
-pub(super) const ACTIONS: [Action; 31] = [
+pub(super) const ACTIONS: [Action; 32] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -76,6 +77,12 @@ pub(super) const ACTIONS: [Action; 31] = [
         id: ID_TEXT,
         label: "Text (T)",
         icon: Icon::Text,
+        tool: true,
+    },
+    Action {
+        id: ID_CALLOUT,
+        label: "Sprechblase",
+        icon: Icon::Callout,
         tool: true,
     },
     Action {
@@ -263,7 +270,7 @@ mod tests {
     fn stamp_toolbar_preserves_client_width_boundary_and_dpi_geometry() {
         use shotkit::toolbar_layout::{layout, scale};
         let items = layout_items();
-        assert_eq!(items.len(), 30);
+        assert_eq!(items.len(), 31);
         for dpi in [96, 120, 144, 192] {
             let full_width = 2 * scale(4, dpi)
                 + items.len() as i32 * (scale(32, dpi) + scale(1, dpi))
@@ -306,7 +313,15 @@ mod tests {
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [(1000, 0), (990, 1), (930, 2), (700, 3), (430, 3), (180, 3)] {
+        for (width, stage) in [
+            (1040, 0),
+            (1000, 1),
+            (990, 2),
+            (930, 2),
+            (700, 3),
+            (430, 3),
+            (180, 3),
+        ] {
             let plan = layout(width, 96, &items);
             assert_eq!(plan.stage, stage);
             let mut reachable: Vec<_> = plan

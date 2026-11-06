@@ -134,6 +134,17 @@ fn layout(dpi: u32) -> DialogLayout {
     }
 }
 
+fn layout_for(dpi: u32, multiline: bool) -> DialogLayout {
+    let mut result = layout(dpi);
+    if multiline {
+        result.height = scale(250, dpi);
+        result.edit.3 = scale(148, dpi);
+        result.ok.1 = scale(180, dpi);
+        result.cancel.1 = scale(180, dpi);
+    }
+    result
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn RegisterClassW(class: *const WndClassW) -> u16;
@@ -214,6 +225,10 @@ const WS_CAPTION: u32 = 0x00C00000;
 const WS_SYSMENU: u32 = 0x00080000;
 const WS_POPUP: u32 = 0x80000000;
 const ES_AUTOHSCROLL: u32 = 0x0080;
+const ES_MULTILINE: u32 = 0x0004;
+const ES_AUTOVSCROLL: u32 = 0x0040;
+const ES_WANTRETURN: u32 = 0x1000;
+const WS_VSCROLL: u32 = 0x00200000;
 const BS_DEFPUSHBUTTON: u32 = 0x0001;
 const BS_PUSHBUTTON: u32 = 0x0000;
 const SW_SHOW: i32 = 5;
@@ -237,6 +252,7 @@ struct DialogState {
     font: Hwnd,
     owned_fonts: Vec<Hwnd>,
     dpi: u32,
+    multiline: bool,
     result: Option<String>,
     done: bool,
     accepted: bool,
@@ -399,14 +415,22 @@ unsafe extern "system" fn dialog_proc(
             if ptr.is_null() {
                 return -1;
             }
-            let d = layout((*ptr).dpi);
+            let d = layout_for((*ptr).dpi, (*ptr).multiline);
             let edit_class = wide("EDIT");
             let button_class = wide("BUTTON");
             let edit = CreateWindowExW(
                 0,
                 edit_class.as_ptr(),
                 null(),
-                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_BORDER
+                    | WS_TABSTOP
+                    | if (*ptr).multiline {
+                        ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+                    } else {
+                        ES_AUTOHSCROLL
+                    },
                 d.edit.0,
                 d.edit.1,
                 d.edit.2,
@@ -491,17 +515,23 @@ unsafe extern "system" fn dialog_proc(
             // Create the font before borrowing state; this API call must not run
             // while a mutable DialogState reference exists.
             let new_font = create_dialog_font(dpi);
-            let (edit, ok, cancel, active_font) = {
+            let (edit, ok, cancel, active_font, multiline) = {
                 let state = &mut *ptr;
                 state.dpi = dpi;
                 if !new_font.is_null() {
                     state.font = new_font;
                     state.owned_fonts.push(new_font);
                 }
-                (state.edit, state.ok, state.cancel, state.font)
+                (
+                    state.edit,
+                    state.ok,
+                    state.cancel,
+                    state.font,
+                    state.multiline,
+                )
             };
             set_control_font(edit, ok, cancel, active_font);
-            layout_controls(edit, ok, cancel, layout(dpi));
+            layout_controls(edit, ok, cancel, layout_for(dpi, multiline));
 
             // Windows supplies a RECT for WM_DPICHANGED. Null, zero-sized, or
             // inverted rectangles are ignored; never pass invalid dimensions to SetWindowPos.
@@ -569,6 +599,20 @@ unsafe fn ensure_class(instance: Hinstance) -> bool {
 // Warum erfüllt bzw. offen: Der State lebt bis zum Ende der Nachrichtenschleife; vollständige Threadzugehörigkeit ist nicht geprüft.
 // Nachrichten: Fensteranlage, Aktivierung, Schleife und Zerstörung können Nachrichten auslösen.
 pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
+    prompt_with_mode(owner, initial, false)
+}
+
+/// Show the same owned modal dialog with a multiline edit control.
+// SAFETY CONTRACT: The owner is null or a live window on the current UI thread;
+// prompt_with_mode retains all dialog state through the modal loop. The loop can
+// dispatch messages, so callers must not hold window-state references across it.
+pub unsafe fn prompt_multiline(owner: *mut c_void, initial: &str) -> Option<String> {
+    prompt_with_mode(owner, initial, true)
+}
+
+// SAFETY CONTRACT: The caller supplies a live owner on its UI thread and keeps
+// no borrowed window state through this modal loop, which can dispatch messages.
+unsafe fn prompt_with_mode(owner: *mut c_void, initial: &str, multiline: bool) -> Option<String> {
     if !owner.is_null() && IsWindow(owner) == 0 {
         return None;
     }
@@ -601,12 +645,17 @@ pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
                 dpi
             }
         },
+        multiline,
         result: Some(initial.to_owned()),
         done: false,
         accepted: false,
     };
     let class_name = wide("ShotKitRustTextEntryDialog");
-    let title = wide("Text eingeben");
+    let title = wide(if multiline {
+        "Beschriftung eingeben"
+    } else {
+        "Text eingeben"
+    });
     let hwnd = CreateWindowExW(
         0x00000001,
         class_name.as_ptr(),
@@ -614,8 +663,8 @@ pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
         0x80000000u32 as i32,
         0x80000000u32 as i32,
-        layout(state.dpi).width,
-        layout(state.dpi).height,
+        layout_for(state.dpi, multiline).width,
+        layout_for(state.dpi, multiline).height,
         owner,
         null_mut(),
         instance,
@@ -629,7 +678,7 @@ pub unsafe fn prompt(owner: *mut c_void, initial: &str) -> Option<String> {
         return None;
     }
     let (mut x, mut y) = (0, 0);
-    let d = layout(state.dpi);
+    let d = layout_for(state.dpi, multiline);
     let (width, height) = (d.width, d.height);
     if !owner.is_null() {
         let mut rect: NativeRect = zeroed();

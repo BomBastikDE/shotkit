@@ -236,7 +236,34 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
         }
         _ => return,
     }
-    editor(h).set_selected_style(replacement);
+    let callout = editor(h).selected_index().and_then(|index| {
+        editor(h).selection().and_then(|shape| match &shape.kind {
+            shotkit::shapes::ShapeKind::Callout { data } => Some((index, data.as_ref().clone())),
+            _ => None,
+        })
+    });
+    if let Some((index, mut data)) = callout {
+        if replacement.font_size != data.layout.font_size {
+            match shotkit::alpha_render::measure_callout_text(&data.text, replacement.font_size) {
+                Ok(layout) => data.layout = layout,
+                Err(error) => {
+                    MessageBoxW(
+                        h,
+                        wide(&format!(
+                            "Der Text konnte nicht vermessen werden: {error:?}"
+                        ))
+                        .as_ptr(),
+                        wide("Sprechblase").as_ptr(),
+                        0x10,
+                    );
+                    return;
+                }
+            }
+        }
+        editor(h).replace_callout_with_style(index, data, replacement);
+    } else {
+        editor(h).set_selected_style(replacement);
+    }
 }
 
 pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
@@ -247,6 +274,7 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
         Tool::Rectangle => toolbar::ID_RECTANGLE,
         Tool::Ellipse => toolbar::ID_ELLIPSE,
         Tool::Text => toolbar::ID_TEXT,
+        Tool::Callout => toolbar::ID_CALLOUT,
         Tool::Highlight => toolbar::ID_MARKER,
         Tool::Blur => toolbar::ID_BLUR,
         Tool::GaussianBlur => toolbar::ID_GAUSSIAN_BLUR,
@@ -331,6 +359,47 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     } else {
         id
     };
+    if (toolbar::ID_CALLOUT_FILL..=toolbar::ID_CALLOUT_POINTER).contains(&id) {
+        let selected = editor(h).selected_index().and_then(|index| {
+            editor(h).selection().and_then(|shape| match &shape.kind {
+                shotkit::shapes::ShapeKind::Callout { data } => {
+                    Some((index, data.as_ref().clone()))
+                }
+                _ => None,
+            })
+        });
+        if let Some((index, mut data)) = selected {
+            match id {
+                toolbar::ID_CALLOUT_FILL => {
+                    let Some(color) = choose_color(h) else {
+                        return;
+                    };
+                    data.fill_color = color;
+                }
+                toolbar::ID_CALLOUT_TEXT_COLOR => {
+                    let Some(color) = choose_color(h) else {
+                        return;
+                    };
+                    data.text_color = color;
+                }
+                _ => {
+                    data.tip = if data.tip.is_some() {
+                        None
+                    } else {
+                        Some(ShapePoint::new(
+                            data.origin.x + 20.0,
+                            data.origin.y + data.layout.body_height + 35.0,
+                        ))
+                    };
+                }
+            }
+            editor(h).replace_callout(index, data);
+            report_editor_error(h);
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        SetFocus(h);
+        return;
+    }
     if (toolbar::ID_FILL_NONE..=toolbar::ID_ARROW_DOT).contains(&id) {
         let mut current = editor(h).current_style().clone();
         if !apply_form_style(&mut current, id) {
@@ -361,6 +430,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         toolbar::ID_RECTANGLE => Some(Tool::Rectangle),
         toolbar::ID_ELLIPSE => Some(Tool::Ellipse),
         toolbar::ID_TEXT => Some(Tool::Text),
+        toolbar::ID_CALLOUT => Some(Tool::Callout),
         toolbar::ID_MARKER => Some(Tool::Highlight),
         toolbar::ID_BLUR => Some(Tool::Blur),
         toolbar::ID_GAUSSIAN_BLUR => Some(Tool::GaussianBlur),

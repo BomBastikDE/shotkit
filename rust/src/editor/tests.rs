@@ -944,3 +944,43 @@ fn stamp_kind_change_cancels_draft_and_preserves_existing_symbol() {
         }
     ));
 }
+
+#[test]
+fn callout_edits_keep_measured_layout_atomic_and_undoable() {
+    use crate::shapes::{CalloutData, CalloutTextLayout, Color};
+    let mut editor = EditorController::new();
+    let size = editor.current_style().font_size;
+    let data = CalloutData {
+        origin: Point::new(5.0, 8.0),
+        text: "one\ntwo".into(),
+        fill_color: Color::rgba(255, 255, 255, 255),
+        text_color: Color::rgba(0, 0, 0, 255),
+        tip: Some(Point::new(10.0, 100.0)),
+        layout: CalloutTextLayout {
+            font_size: size,
+            body_width: 100.0,
+            body_height: 80.0,
+            line_height: 20.0,
+            line_widths: vec![30.0, 30.0],
+        },
+    };
+    assert!(editor.place_callout(data.clone()));
+    let index = editor.selected_index().unwrap();
+    let mut style = editor.current_style().clone();
+    style.font_size += 1.0;
+    assert!(!editor.set_selected_style(style.clone()));
+    assert!(!editor.replace_callout_with_style(index, data.clone(), style.clone()));
+    let mut replacement = data.clone();
+    replacement.text = "changed".into();
+    replacement.layout.font_size = style.font_size;
+    replacement.layout.line_widths = vec![60.0];
+    assert!(editor.replace_callout_with_style(index, replacement.clone(), style));
+    assert!(editor.undo());
+    assert!(
+        matches!(&editor.shapes()[index].kind, ShapeKind::Callout {data: found} if **found == data)
+    );
+    assert!(editor.redo());
+    assert!(
+        matches!(&editor.shapes()[index].kind, ShapeKind::Callout {data: found} if **found == replacement)
+    );
+}

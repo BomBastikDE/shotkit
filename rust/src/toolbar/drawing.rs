@@ -292,6 +292,13 @@ pub(super) unsafe fn draw_icon(
             icon_line(hdc, ox + 4, oy + 4, ox + 16, oy + 4);
             icon_line(hdc, ox + 10, oy + 4, ox + 10, oy + 17);
         }
+        Icon::Callout => {
+            // Compact outlined speech bubble with a lower-left pointer.
+            Rectangle(hdc, ox + 3, oy + 3, ox + 17, oy + 13);
+            icon_line(hdc, ox + 6, oy + 13, ox + 4, oy + 17);
+            icon_line(hdc, ox + 4, oy + 17, ox + 10, oy + 13);
+            icon_line(hdc, ox + 6, oy + 7, ox + 14, oy + 7);
+        }
         Icon::Marker => {
             let (fill, ink) = if high_contrast_enabled() {
                 (GetSysColor(13), GetSysColor(14))

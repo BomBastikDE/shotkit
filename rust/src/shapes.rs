@@ -1,7 +1,9 @@
 //! Renderer-independent annotation geometry and edit history.
 //! Coordinates are image-space pixels; rendering remains the caller's responsibility.
 
+mod callout;
 mod geometry;
+pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout};
 #[cfg(windows)]
 pub(crate) use geometry::arrow_dot_radius;
 pub(crate) use geometry::rectangle_has_zero_axis;
@@ -109,6 +111,7 @@ pub enum Tool {
     Rectangle,
     Ellipse,
     Text,
+    Callout,
     Highlight,
     Blur,
     GaussianBlur,
@@ -309,6 +312,10 @@ pub enum ShapeKind {
         location: Point,
         text: String,
     },
+    /// The heap payload keeps the inline size and history cost of other shapes stable.
+    Callout {
+        data: Box<CalloutData>,
+    },
     /// Square symbol size in image pixels is stored in `Style::font_size`.
     Stamp {
         center: Point,
@@ -333,6 +340,10 @@ impl Shape {
     }
     pub fn bounds(&self) -> Rect {
         match &self.kind {
+            ShapeKind::Callout { data } => data
+                .geometry()
+                .map(|geometry| geometry.bounds)
+                .unwrap_or_default(),
             ShapeKind::Arrow { start, end } if self.style.arrow_ends != ArrowEnds::Single => {
                 styled_arrow_bounds(*start, *end, &self.style).unwrap_or_default()
             }
@@ -403,6 +414,7 @@ impl Shape {
     }
     pub fn is_empty(&self) -> bool {
         match &self.kind {
+            ShapeKind::Callout { data } => !data.validate() || data.text.trim().is_empty(),
             ShapeKind::Line { start, end }
             | ShapeKind::Arrow { start, end }
             | ShapeKind::Rectangle { start, end }
@@ -423,6 +435,9 @@ impl Shape {
             p.y += dy;
         };
         match &mut self.kind {
+            ShapeKind::Callout { data } => {
+                data.offset(dx, dy);
+            }
             ShapeKind::Line { start, end }
             | ShapeKind::Arrow { start, end }
             | ShapeKind::Rectangle { start, end }
@@ -446,6 +461,13 @@ impl Shape {
     /// Two endpoint handles for lines; four normalized corner handles for box annotations.
     pub fn handles(&self) -> Vec<Point> {
         match &self.kind {
+            ShapeKind::Callout { data } => {
+                if data.validate() {
+                    data.tip.into_iter().collect()
+                } else {
+                    vec![]
+                }
+            }
             ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => vec![*start, *end],
             ShapeKind::Stamp { .. }
             | ShapeKind::Rectangle { .. }
@@ -460,6 +482,9 @@ impl Shape {
     /// Resize by handle index. Box handles retain the original corner identity when crossing over.
     pub fn set_handle(&mut self, index: usize, p: Point) -> bool {
         match &mut self.kind {
+            ShapeKind::Callout { data } => {
+                return index == 0 && data.tip.is_some() && data.set_tip(Some(p))
+            }
             ShapeKind::Stamp { center, .. } => {
                 if index >= 4 || !p.x.is_finite() || !p.y.is_finite() {
                     return false;
@@ -511,6 +536,9 @@ impl Shape {
     /// use an axis-aligned outer-minus-inner approximation.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> bool {
         match &self.kind {
+            ShapeKind::Callout { data } => data
+                .geometry()
+                .is_some_and(|geometry| geometry.hit_test(p, tolerance)),
             ShapeKind::Stamp { kind, .. } => {
                 let bounds = self.bounds();
                 let size = self.style.font_size;

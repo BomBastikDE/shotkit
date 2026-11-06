@@ -1,3 +1,4 @@
+mod callout;
 mod canvas;
 mod mouse_history;
 mod preview_scaling;

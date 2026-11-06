@@ -10,8 +10,11 @@ const WM_DPICHANGED: u32 = 0x02e0;
 const WM_GETFONT: u32 = 0x0031;
 const WM_GETTEXT: u32 = 0x000d;
 const WM_GETTEXTLENGTH: u32 = 0x000e;
+const WM_CHAR: u32 = 0x0102;
 const WM_QUIT: u32 = 0x0012;
 const GW_OWNER: u32 = 4;
+const GWL_STYLE: i32 = -16;
+const ES_MULTILINE: isize = 0x0004;
 const SMTO_BLOCK: u32 = 0x0001;
 const SMTO_ABORTIFHUNG: u32 = 0x0002;
 
@@ -56,6 +59,7 @@ extern "system" {
     fn GetParent(hwnd: Hwnd) -> Hwnd;
     fn GetClassNameW(hwnd: Hwnd, text: *mut u16, max: i32) -> i32;
     fn GetDlgCtrlID(hwnd: Hwnd) -> i32;
+    fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
     fn GetCurrentThreadId() -> u32;
     fn GetDpiForWindow(hwnd: Hwnd) -> u32;
     fn SetThreadDpiAwarenessContext(context: Hwnd) -> Hwnd;
@@ -384,3 +388,238 @@ fn recv(receiver: &Receiver<WorkerEvent>) -> WorkerEvent {
 }
 
 include!("text_dialog_test_case.rs");
+
+#[test]
+fn multiline_prompt_enters_crlf_returns_exact_text_and_cancels() {
+    let (tx, rx): (Sender<WorkerEvent>, Receiver<WorkerEvent>) = mpsc::channel();
+    let worker = thread::spawn(move || unsafe {
+        let _dpi_context = DpiContext::enter().expect("could not set worker thread to PMv2");
+        let class = wide("STATIC");
+        let title = wide("ShotKit multiline test owner");
+        let owner = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            title.as_ptr(),
+            WS_POPUP,
+            40,
+            40,
+            100,
+            80,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            null_mut(),
+        );
+        assert!(!owner.is_null(), "could not create multiline test owner");
+        let _owner_guard = TestOwner(owner);
+        EnableWindow(owner, 1);
+        let thread_id = GetCurrentThreadId();
+        tx.send(WorkerEvent::Ready {
+            owner: owner as usize,
+            thread_id,
+            stage: 3,
+        })
+        .unwrap();
+        let accepted = prompt_multiline(owner, "first");
+        tx.send(WorkerEvent::Returned {
+            value: accepted,
+            owner_enabled: IsWindowEnabled(owner) != 0,
+            stage: 3,
+        })
+        .unwrap();
+
+        tx.send(WorkerEvent::Ready {
+            owner: owner as usize,
+            thread_id,
+            stage: 4,
+        })
+        .unwrap();
+        let cancelled = prompt_multiline(owner, "cancel me");
+        tx.send(WorkerEvent::Returned {
+            value: cancelled,
+            owner_enabled: IsWindowEnabled(owner) != 0,
+            stage: 4,
+        })
+        .unwrap();
+        DestroyWindow(owner);
+    });
+
+    let (owner, thread_id) = match recv(&rx) {
+        WorkerEvent::Ready {
+            owner,
+            thread_id,
+            stage: 3,
+        } => (owner as Hwnd, thread_id),
+        other => panic!("unexpected multiline worker event: {other:?}"),
+    };
+    let mut latest_dialog = null_mut();
+    let mut cleanup = DialogThreadCleanup {
+        thread_id,
+        owner,
+        dialog: &mut latest_dialog,
+        armed: true,
+    };
+    let dialog = wait_dialog(owner, &mut latest_dialog);
+    unsafe {
+        assert_eq!(
+            IsWindowEnabled(owner),
+            0,
+            "owner should be disabled while multiline prompt is modal"
+        );
+        let edit = control(dialog, ID_EDIT);
+        let edit_style = GetWindowLongPtrW(edit, GWL_STYLE);
+        assert_ne!(
+            edit_style & ES_MULTILINE,
+            0,
+            "prompt_multiline must create a native multiline EDIT"
+        );
+        assert_eq!(read_control_text(edit), "first");
+
+        // Exercise the native EDIT's Enter handling, then type a second line.
+        let mut ignored = 0usize;
+        for ch in "\rsecond".encode_utf16() {
+            assert_ne!(
+                SendMessageTimeoutW(
+                    edit,
+                    WM_CHAR,
+                    ch as usize,
+                    0,
+                    SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                    2_000,
+                    &mut ignored
+                ),
+                0,
+                "WM_CHAR {ch:#x} timed out"
+            );
+        }
+        assert_eq!(
+            read_control_text(edit),
+            "first\r\nsecond",
+            "Enter should insert a CRLF line break"
+        );
+
+        // Also check the multiline-specific layout across synthetic 96/144 DPI changes.
+        let (base_window, base_controls) = snapshot(dialog);
+        assert_eq!(
+            base_controls.len(),
+            3,
+            "unexpected multiline controls: {base_controls:?}"
+        );
+        assert_eq!(
+            base_controls
+                .iter()
+                .find(|item| item.id == ID_EDIT as i32)
+                .unwrap()
+                .class,
+            "Edit",
+            "multiline input must be a native EDIT control"
+        );
+        let base_dpi = GetDpiForWindow(dialog) as i32;
+        assert!(
+            (96..=480).contains(&base_dpi),
+            "invalid baseline DPI: {base_dpi}"
+        );
+        for dpi in [144, 96] {
+            let mut suggested = Box::new(NativeRect {
+                left: base_window.left + dpi / 4,
+                top: base_window.top + dpi / 6,
+                right: base_window.left + dpi / 4 + scaled_from(base_window.width(), dpi, base_dpi),
+                bottom: base_window.top
+                    + dpi / 6
+                    + scaled_from(base_window.height(), dpi, base_dpi),
+            });
+            let mut result = 0usize;
+            let sent = SendMessageTimeoutW(
+                dialog,
+                WM_DPICHANGED,
+                ((dpi as usize) << 16) | dpi as usize,
+                (&mut *suggested as *mut NativeRect) as isize,
+                SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                2_000,
+                &mut result,
+            );
+            if sent == 0 {
+                let _ = Box::leak(suggested);
+                panic!("multiline WM_DPICHANGED {dpi} timed out; RECT intentionally retained");
+            }
+            let (actual, controls) = snapshot(dialog);
+            assert_eq!(
+                actual.width(),
+                suggested.right - suggested.left,
+                "multiline outer width at {dpi} DPI"
+            );
+            assert_eq!(
+                actual.height(),
+                suggested.bottom - suggested.top,
+                "multiline outer height at {dpi} DPI"
+            );
+            assert_scaled_controls(&base_controls, &controls, dpi, base_dpi);
+            assert_eq!(
+                read_control_text(edit),
+                "first\r\nsecond",
+                "DPI change damaged multiline text"
+            );
+        }
+        assert_ne!(
+            SendMessageTimeoutW(
+                dialog,
+                WM_COMMAND,
+                ID_OK,
+                0,
+                SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                2_000,
+                &mut 0usize
+            ),
+            0,
+            "multiline OK command timed out"
+        );
+    }
+    match recv(&rx) {
+        WorkerEvent::Returned {
+            value,
+            owner_enabled,
+            stage: 3,
+        } => {
+            assert_eq!(value.as_deref(), Some("first\r\nsecond"));
+            assert!(owner_enabled, "owner was not restored after multiline OK");
+        }
+        other => panic!("unexpected multiline result: {other:?}"),
+    }
+    match recv(&rx) {
+        WorkerEvent::Ready {
+            owner: next_owner,
+            stage: 4,
+            ..
+        } => assert_eq!(next_owner as Hwnd, owner),
+        other => panic!("unexpected worker event before multiline Cancel: {other:?}"),
+    }
+    let cancel_dialog = wait_dialog(owner, &mut latest_dialog);
+    unsafe {
+        assert_ne!(
+            PostMessageW(cancel_dialog, WM_CLOSE, 0, 0),
+            0,
+            "could not post multiline Cancel/close"
+        );
+    }
+    match recv(&rx) {
+        WorkerEvent::Returned {
+            value,
+            owner_enabled,
+            stage: 4,
+        } => {
+            assert_eq!(value, None, "WM_CLOSE should cancel multiline prompt");
+            assert!(
+                owner_enabled,
+                "owner was not restored after multiline Cancel"
+            );
+        }
+        other => panic!("unexpected multiline Cancel result: {other:?}"),
+    }
+    wait_thread(&worker);
+    cleanup.armed = false;
+    worker.join().expect("multiline dialog worker panicked");
+    assert!(
+        unsafe { IsWindow(owner) } == 0,
+        "multiline test owner was not destroyed"
+    );
+}

@@ -64,6 +64,13 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
             }
             let (x, y) = point(h, l);
             let image_point = ShapePoint::new(x as f32, y as f32);
+            if m == 0x0203 && callout::edit_at(h, image_point, false) {
+                return Some(0);
+            }
+            if editor(h).tool() == Tool::Callout && !editor(h).selected_handle_hit(image_point) {
+                callout::edit_at(h, image_point, true);
+                return Some(0);
+            }
             if m == 0x0203 {
                 // A double-click should edit only the text object actually
                 // under the pointer. Other double-clicks continue through the

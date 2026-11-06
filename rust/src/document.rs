@@ -451,6 +451,17 @@ fn shapes_allocation_bytes(shapes: &Vec<Shape>) -> usize {
                 crate::shapes::ShapeKind::Text { text, .. } => {
                     container_bytes(text.capacity(), size_of::<u8>())
                 }
+                crate::shapes::ShapeKind::Callout { data } => {
+                    // Every snapshot owns a deep-cloned payload, in addition to
+                    // the text and per-line measurements owned by that payload.
+                    size_of::<crate::shapes::CalloutData>()
+                        .saturating_add(ALLOCATION_OVERHEAD)
+                        .saturating_add(container_bytes(data.text.capacity(), size_of::<u8>()))
+                        .saturating_add(container_bytes(
+                            data.layout.line_widths.capacity(),
+                            size_of::<f32>(),
+                        ))
+                }
                 _ => 0,
             };
             sum.saturating_add(dynamic)

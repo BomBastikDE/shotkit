@@ -8,6 +8,7 @@ use super::*;
 /// | --- | --- |
 /// | `ID_SELECT` / `ID_ARROW` / `ID_LINE` | Auswahl / Pfeil / Linie |
 /// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
+/// | `ID_CALLOUT` | Sprechblase |
 /// | `ID_MARKER` / `ID_BLUR` / `ID_GAUSSIAN_BLUR` | Marker / Verpixeln / Weichzeichnen |
 /// | `ID_REDACT` / `ID_STEP` / `ID_PEN` | Schwärzen / Nummer / Stift |
 /// | `ID_STAMP` / `ID_CROP` | Stempelauswahl / Zuschneiden |

@@ -266,7 +266,7 @@ impl EditorController {
             .document
             .shapes()
             .get(index)
-            .is_none_or(|shape| shape.style == style)
+            .is_none_or(|shape| shape.style == style || matches!(&shape.kind, ShapeKind::Callout { data } if data.layout.font_size != style.font_size))
         {
             return false;
         }
@@ -494,7 +494,7 @@ impl EditorController {
                 center: at,
                 number: self.next_step,
             },
-            Tool::Select | Tool::Text | Tool::Crop => return,
+            Tool::Select | Tool::Text | Tool::Callout | Tool::Crop => return,
         };
         let mut shape = Shape::new(kind);
         shape.style = self.current_style.clone();
