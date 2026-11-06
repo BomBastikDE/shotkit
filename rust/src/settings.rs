@@ -10,7 +10,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -21,6 +21,9 @@ pub mod guarded_save_windows;
 pub mod recovery_windows;
 
 pub const CURRENT_VERSION: u32 = 1;
+/// More than sufficient for the supported preferences and a Windows path,
+/// while bounding memory even if a local file is damaged or grows during read.
+const MAX_SETTINGS_BYTES: usize = 1024 * 1024;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -92,6 +95,9 @@ pub enum SettingsError {
         found: u32,
         supported: u32,
     },
+    TooLarge {
+        path: PathBuf,
+    },
     NoConfigDirectory,
 }
 
@@ -114,6 +120,11 @@ impl fmt::Display for SettingsError {
                 f,
                 "settings version {found} is unsupported (this build supports version {supported})"
             ),
+            Self::TooLarge { path } => write!(
+                f,
+                "Die Einstellungsdatei {} überschreitet das Größenlimit von 1 MiB",
+                path.display()
+            ),
             Self::NoConfigDirectory => f.write_str("neither APPDATA nor LOCALAPPDATA is available"),
         }
     }
@@ -124,7 +135,9 @@ impl Error for SettingsError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Json { source, .. } => Some(source),
-            Self::UnsupportedVersion { .. } | Self::NoConfigDirectory => None,
+            Self::UnsupportedVersion { .. } | Self::TooLarge { .. } | Self::NoConfigDirectory => {
+                None
+            }
         }
     }
 }
@@ -166,12 +179,36 @@ impl Settings {
 /// error; use [`load_or_default`] when absence should select safe defaults.
 pub fn load(path: impl AsRef<Path>) -> Result<Settings, SettingsError> {
     let path = path.as_ref();
-    let bytes = fs::read(path).map_err(|source| SettingsError::Io {
+    let bytes = read_settings_file(path)?;
+    parse_settings(path, &bytes)
+}
+
+/// Limit the bytes actually read, not merely metadata observed before reading.
+fn read_settings_file(path: &Path) -> Result<Vec<u8>, SettingsError> {
+    let file = File::open(path).map_err(|source| SettingsError::Io {
         operation: "read",
         path: path.to_owned(),
         source,
     })?;
-    parse_settings(path, &bytes)
+    read_settings_bounded(file, path)
+}
+
+fn read_settings_bounded(reader: impl Read, path: &Path) -> Result<Vec<u8>, SettingsError> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_SETTINGS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| SettingsError::Io {
+            operation: "read",
+            path: path.to_owned(),
+            source,
+        })?;
+    if bytes.len() > MAX_SETTINGS_BYTES {
+        return Err(SettingsError::TooLarge {
+            path: path.to_owned(),
+        });
+    }
+    Ok(bytes)
 }
 
 fn parse_settings(path: &Path, bytes: &[u8]) -> Result<Settings, SettingsError> {
@@ -220,17 +257,15 @@ pub fn load_or_default(path: impl AsRef<Path>) -> Result<Settings, SettingsError
 /// must still be protected by a no-replace publication operation.
 pub fn load_snapshot(path: impl AsRef<Path>) -> Result<(Settings, Option<Vec<u8>>), SettingsError> {
     let path = path.as_ref();
-    match fs::read(path) {
+    match read_settings_file(path) {
         Ok(bytes) => {
             let settings = parse_settings(path, &bytes)?;
             Ok((settings, Some(bytes)))
         }
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok((Settings::default(), None)),
-        Err(source) => Err(SettingsError::Io {
-            operation: "read",
-            path: path.to_owned(),
-            source,
-        }),
+        Err(SettingsError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok((Settings::default(), None))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -243,6 +278,12 @@ pub fn save_atomic(path: impl AsRef<Path>, settings: &Settings) -> Result<(), Se
         path: path.to_owned(),
         source,
     })?;
+
+    if bytes.len() > MAX_SETTINGS_BYTES {
+        return Err(SettingsError::TooLarge {
+            path: path.to_owned(),
+        });
+    }
 
     let parent = path
         .parent()
@@ -349,6 +390,62 @@ mod tests {
         let path = std::env::temp_dir().join(format!("shotkit-settings-test-{nonce}"));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn settings_read_limit_handles_boundary_and_growth_without_overwriting() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let mut at_limit = br#"{"version":1}"#.to_vec();
+        at_limit.resize(MAX_SETTINGS_BYTES, b' ');
+        fs::write(&path, &at_limit).unwrap();
+        assert_eq!(load(&path).unwrap(), Settings::default());
+        assert_eq!(load_snapshot(&path).unwrap().1.unwrap(), at_limit);
+
+        // Keep the same open handle while the file grows after it was opened.
+        let opened = File::open(&path).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b" ")
+            .unwrap();
+        assert!(matches!(
+            read_settings_bounded(opened, &path),
+            Err(SettingsError::TooLarge { .. })
+        ));
+        assert!(matches!(load(&path), Err(SettingsError::TooLarge { .. })));
+        assert!(matches!(
+            load_snapshot(&path),
+            Err(SettingsError::TooLarge { .. })
+        ));
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            (MAX_SETTINGS_BYTES + 1) as u64
+        );
+        assert_eq!(
+            &fs::read(&path).unwrap()[..at_limit.len()],
+            at_limit.as_slice()
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_serialized_settings_leave_existing_file_intact() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let original = br#"{"version":1}"#;
+        fs::write(&path, original).unwrap();
+        let settings = Settings {
+            save_folder: Some(PathBuf::from("a".repeat(MAX_SETTINGS_BYTES))),
+            ..Settings::default()
+        };
+        assert!(matches!(
+            save_atomic(&path, &settings),
+            Err(SettingsError::TooLarge { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

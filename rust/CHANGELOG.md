@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Einstellungsdateien werden beim Lesen auf 1 MiB begrenzt; übergroße Dateien bleiben unverändert und erzeugen eine Fehlermeldung ([#56](https://github.com/BomBastikDE/shotkit/issues/56)).
+
 - Bearbeitbare Sprechblasen mit mehrzeiligem Text, eigener Text- und Füllfarbe sowie verschiebbarer Spitze ergänzt ([#28](https://github.com/BomBastikDE/shotkit/issues/28)).
 
 - Das Menü „Formstil…“ ergänzt Füllung, gestrichelte und gepunktete Linien, gerundete Rechtecke sowie doppelte Pfeilspitzen oder einen Punkt am Pfeilende ([#31](https://github.com/BomBastikDE/shotkit/issues/31)).
