@@ -58,6 +58,17 @@ pub(super) fn absolute_argument_path(path: PathBuf) -> Result<PathBuf, String> {
         .map_err(|error| format!("Der Dateipfad konnte nicht aufgelöst werden: {error}"))
 }
 
+fn normalize_instance_path(path: PathBuf) -> Result<PathBuf, String> {
+    // Preserve recognized UNC spellings, including native forms that
+    // Path::is_absolute does not necessarily classify as absolute.
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if shotkit::network_path::is_unc_path_utf16(&units) {
+        Ok(path)
+    } else {
+        absolute_argument_path(path)
+    }
+}
+
 fn drive_location(path: &Path) -> shotkit::network_path::DriveLocation {
     let units: Vec<u16> = path.as_os_str().encode_wide().collect();
     shotkit::network_path::classify_drive_utf16(&units, |root| {
@@ -157,7 +168,7 @@ pub(super) unsafe fn forward_second_instance() -> Result<(), String> {
         return send_to_primary(WM_INSTANCE_ACTIVATE, None);
     }
     for path in paths {
-        send_to_primary(WM_COPYDATA, Some(&absolute_argument_path(path)?))?;
+        send_to_primary(WM_COPYDATA, Some(&normalize_instance_path(path)?))?;
     }
     Ok(())
 }
@@ -195,7 +206,7 @@ pub(super) unsafe fn handle_instance_file(h: H, l: L) -> L {
         return 3;
     }
     let _busy_guard = InstanceFileBusyGuard;
-    let path = match absolute_argument_path(path) {
+    let path = match normalize_instance_path(path) {
         Ok(path) => path,
         Err(error) => {
             MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
@@ -255,6 +266,11 @@ mod path_tests {
             absolute_argument_path(PathBuf::from(r"C:shotkit-nonexistent-image.png")).unwrap();
         assert!(drive_relative.is_absolute());
         assert!(drive_relative.ends_with("shotkit-nonexistent-image.png"));
+        let native_unc = PathBuf::from(r"\??\UNC\server\share\image.png");
+        assert_eq!(
+            normalize_instance_path(native_unc.clone()).unwrap(),
+            native_unc
+        );
         let verbatim = PathBuf::from(r"\\?\C:\shotkit-nonexistent-image.png");
         assert_eq!(absolute_argument_path(verbatim.clone()).unwrap(), verbatim);
     }
