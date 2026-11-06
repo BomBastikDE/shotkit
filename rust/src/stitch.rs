@@ -12,6 +12,20 @@ pub struct Image {
     pub height: usize,
     pub pixels: Vec<u8>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rotation {
+    Clockwise,
+    Counterclockwise,
+}
+
+/// A rejected rotation retains the original image, including its allocation.
+#[derive(Debug)]
+pub struct RotationFailure {
+    pub image: Image,
+    pub error: &'static str,
+}
+
 impl Image {
     pub fn new(width: usize, height: usize, pixels: Vec<u8>) -> Result<Self, &'static str> {
         let image = Self {
@@ -33,6 +47,50 @@ impl Image {
             return Err("Ungültige Bildgröße");
         }
         Ok(())
+    }
+
+    /// Rotate by 90 degrees, returning the unchanged source if validation or
+    /// destination reservation fails. The source stays alive until completion.
+    pub fn try_rotate(self, rotation: Rotation) -> Result<Self, RotationFailure> {
+        self.try_rotate_with_reserve(rotation, |pixels, additional| {
+            pixels
+                .try_reserve_exact(additional)
+                .map_err(|_| "Nicht genügend Speicher für die Bilddrehung")
+        })
+    }
+
+    fn try_rotate_with_reserve(
+        self,
+        rotation: Rotation,
+        reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), &'static str>,
+    ) -> Result<Self, RotationFailure> {
+        if let Err(error) = self.validate() {
+            return Err(RotationFailure { image: self, error });
+        }
+        let mut pixels = Vec::new();
+        if let Err(error) = reserve(&mut pixels, self.pixels.len()) {
+            return Err(RotationFailure { image: self, error });
+        }
+        // Reservation precedes initialization, so resize cannot allocate on the
+        // production path. OS overcommit can still prevent physical page access.
+        pixels.resize(self.pixels.len(), 0);
+        let w = self.height;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let (nx, ny) = match rotation {
+                    Rotation::Clockwise => (self.height - 1 - y, x),
+                    Rotation::Counterclockwise => (y, self.width - 1 - x),
+                };
+                let src = (y * self.width + x) * 4;
+                let dst = (ny * w + nx) * 4;
+                pixels[dst..dst + 4].copy_from_slice(&self.pixels[src..src + 4]);
+            }
+        }
+        Ok(Self {
+            width: self.height,
+            height: self.width,
+            pixels,
+        })
     }
 
     /// Rotate clockwise by 90 degrees, as in the original rightward capture.
@@ -209,6 +267,113 @@ mod tests {
         assert_eq!(a, a.clockwise().counterclockwise());
         assert_eq!(a, a.counterclockwise().clockwise());
     }
+
+    #[test]
+    fn fallible_rotations_match_existing_pixels_for_varied_dimensions_and_alpha() {
+        for (width, height) in [(1, 1), (2, 2), (3, 3), (2, 3), (3, 2), (1, 5), (6, 1)] {
+            let pixels = (0..width * height)
+                .flat_map(|i| [i as u8, (i * 3) as u8, (i * 7) as u8, (i * 17) as u8])
+                .collect();
+            let original = Image::new(width, height, pixels).unwrap();
+            let clockwise = original.clone().try_rotate(Rotation::Clockwise).unwrap();
+            let counterclockwise = original
+                .clone()
+                .try_rotate(Rotation::Counterclockwise)
+                .unwrap();
+            assert_eq!(clockwise, original.clockwise());
+            assert_eq!(counterclockwise, original.counterclockwise());
+            assert_eq!((clockwise.width, clockwise.height), (height, width));
+            assert_eq!(
+                clockwise.try_rotate(Rotation::Counterclockwise).unwrap(),
+                original
+            );
+            assert_eq!(
+                counterclockwise.try_rotate(Rotation::Clockwise).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn fallible_rotations_have_expected_rectangular_pixel_order() {
+        let original = Image::new(
+            3,
+            2,
+            (1..=6).flat_map(|i| [i, 20 + i, 40 + i, 60 + i]).collect(),
+        )
+        .unwrap();
+        for (rotation, order) in [
+            (Rotation::Clockwise, [4, 1, 5, 2, 6, 3]),
+            (Rotation::Counterclockwise, [3, 6, 2, 5, 1, 4]),
+        ] {
+            let result = original.clone().try_rotate(rotation).unwrap();
+            let expected = order
+                .into_iter()
+                .flat_map(|i| [i, 20 + i, 40 + i, 60 + i])
+                .collect::<Vec<_>>();
+            assert_eq!(result, Image::new(2, 3, expected).unwrap());
+        }
+    }
+
+    #[test]
+    fn invalid_rotation_preserves_source_before_reserving() {
+        for rotation in [Rotation::Clockwise, Rotation::Counterclockwise] {
+            for (width, height, len) in [(2, 2, 15), (0, 3, 0), (usize::MAX, 2, 4)] {
+                let mut pixels = Vec::with_capacity(len + 16);
+                pixels.resize(len, 123);
+                let original = Image {
+                    width,
+                    height,
+                    pixels,
+                };
+                let expected = original.clone();
+                let allocation = original.pixels.as_ptr();
+                let capacity = original.pixels.capacity();
+                let expected_error = original.validate().unwrap_err();
+                let failure = original
+                    .try_rotate_with_reserve(rotation, |_, _| {
+                        panic!("invalid images must not reserve a destination")
+                    })
+                    .unwrap_err();
+                assert_eq!(failure.error, expected_error);
+                assert_eq!(failure.image.pixels.as_ptr(), allocation);
+                assert_eq!(failure.image.pixels.capacity(), capacity);
+                assert_eq!(failure.image, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_rotation_reservation_preserves_original_allocation_and_pixels() {
+        for rotation in [Rotation::Clockwise, Rotation::Counterclockwise] {
+            let mut original = image(3, &[1, 2, 3, 4, 5]);
+            original.pixels.reserve(31);
+            let expected = original.clone();
+            let allocation = original.pixels.as_ptr();
+            let capacity = original.pixels.capacity();
+            let failure = original
+                .try_rotate_with_reserve(rotation, |pixels, additional| {
+                    assert!(pixels.is_empty());
+                    assert_eq!(pixels.capacity(), 0);
+                    assert_eq!(additional, expected.pixels.len());
+                    Err("injected reservation failure")
+                })
+                .unwrap_err();
+            assert_eq!(failure.error, "injected reservation failure");
+            assert_eq!(failure.image.pixels.as_ptr(), allocation);
+            assert_eq!(failure.image.pixels.capacity(), capacity);
+            assert_eq!(failure.image, expected);
+            // The recovered image remains usable for a later successful retry.
+            assert_eq!(
+                failure.image.try_rotate(rotation).unwrap(),
+                match rotation {
+                    Rotation::Clockwise => expected.clockwise(),
+                    Rotation::Counterclockwise => expected.counterclockwise(),
+                }
+            );
+        }
+    }
+
     #[test]
     fn seams_reconstruct_content() {
         let mut s = Stitcher::new(image(2, &[0, 1, 2, 3, 4, 5])).unwrap();

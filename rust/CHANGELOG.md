@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Bei horizontalen Scrollaufnahmen bleibt das zuletzt gültige Bild erhalten, wenn eine Drehung nicht reserviert werden kann. Muss die Schlussdrehung nachgeholt werden, wird die Aufnahme ausdrücklich zur Wiederherstellung zurückgehalten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Verpixelung schreibt direkt in das vorhandene Ergebnis und vermeidet ein vollständiges Zwischenbild. Zuschneiden und Rahmen melden fehlgeschlagene Reservierungen des Ausgabepuffers verständlich ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Scrollaufnahmen reservieren vor einem neuen Stitch-Schritt Platz für den bisherigen Teilstand; bei einem Reservierungsfehler bleibt dieser abschließbar. Beim BMP-/GIF-Export wird die zusätzliche Pixelkopie fallibel reserviert ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

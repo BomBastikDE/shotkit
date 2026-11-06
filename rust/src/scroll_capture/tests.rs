@@ -634,6 +634,158 @@ fn leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order() {
 }
 
 #[test]
+fn horizontal_rotation_failures_preserve_the_last_accepted_capture() {
+    for direction in [Direction::Right, Direction::Left] {
+        for fail_at in [1, 2, 3, 4, 5] {
+            let make_io = || match direction {
+                Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+                Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+                Direction::Down => unreachable!(),
+            };
+            let mut expected_io = make_io();
+            let first = expected_io.capture().unwrap();
+            let mut io = make_io();
+            let mut calls = 0;
+            let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+                calls += 1;
+                if calls == fail_at {
+                    Err(RotationFailure {
+                        image,
+                        error: "simulierter Speichermangel",
+                    })
+                } else {
+                    image.try_rotate(rotation)
+                }
+            })
+            .unwrap();
+            assert!(out.reason.contains("simulierter Speichermangel"));
+            assert_eq!(out.pending_rotation, None);
+            if fail_at <= 4 {
+                assert_eq!(
+                    out.image, first,
+                    "direction={direction:?}, failure={fail_at}"
+                );
+            } else {
+                assert!(out.image.width >= first.width && out.image.width <= 610);
+                assert_eq!(out.image.height, first.height);
+                let origin = if direction == Direction::Left {
+                    610 - out.image.width
+                } else {
+                    0
+                };
+                for y in 0..out.image.height {
+                    for x in 0..out.image.width {
+                        let value = FakeScrollIo::pixel(origin + x, y);
+                        let offset = (y * out.image.width + x) * 4;
+                        assert_eq!(
+                            &out.image.pixels[offset..offset + 4],
+                            &[value, value, value, 255]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn persistent_rotation_failure_preserves_matcher_image_for_recovery() {
+    for direction in [Direction::Right, Direction::Left] {
+        for fail_at in [2, 3, 4, 5] {
+            let mut io = match direction {
+                Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+                Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+                Direction::Down => unreachable!(),
+            };
+            let mut calls = 0;
+            let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+                calls += 1;
+                if calls >= fail_at {
+                    Err(RotationFailure {
+                        image,
+                        error: "simulierter Speichermangel",
+                    })
+                } else {
+                    image.try_rotate(rotation)
+                }
+            })
+            .unwrap();
+            let required = out
+                .pending_rotation
+                .expect("failed final rotation must be recoverable");
+            assert!(out.reason.contains("Wiederherstellung"));
+            let image = out.image.try_rotate(required).unwrap();
+            let origin = if direction == Direction::Left {
+                610 - image.width
+            } else {
+                0
+            };
+            assert!(image.width >= 260 && image.width <= 610);
+            assert_eq!(image.height, 220);
+            for y in 0..image.height {
+                for x in 0..image.width {
+                    let value = FakeScrollIo::pixel(origin + x, y);
+                    let offset = (y * image.width + x) * 4;
+                    assert_eq!(
+                        &image.pixels[offset..offset + 4],
+                        &[value, value, value, 255]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_initial_rotation_image_is_not_delivered_as_a_capture() {
+    let mut io = FakeScrollIo::horizontal(220, 260, 610);
+    let result = run_with_rotation(&mut io, Direction::Right, &mut |_, _| {
+        Err(RotationFailure {
+            image: Image {
+                width: 2,
+                height: 2,
+                pixels: vec![],
+            },
+            error: "Ungültige Bildgröße",
+        })
+    });
+    assert_eq!(result.unwrap_err(), "Ungültige Bildgröße");
+    assert_eq!(io.scroll_calls, 0);
+}
+
+#[test]
+fn failed_final_rotation_retains_image_and_required_orientation() {
+    for direction in [Direction::Right, Direction::Left] {
+        let mut io = match direction {
+            Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+            Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+            Direction::Down => unreachable!(),
+        };
+        let final_rotation = match direction {
+            Direction::Right => Rotation::Counterclockwise,
+            Direction::Left => Rotation::Clockwise,
+            Direction::Down => unreachable!(),
+        };
+        let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+            if rotation == final_rotation {
+                Err(RotationFailure {
+                    image,
+                    error: "simulierter Speichermangel",
+                })
+            } else {
+                image.try_rotate(rotation)
+            }
+        })
+        .unwrap();
+        assert_eq!(out.pending_rotation, Some(final_rotation));
+        assert!(out.reason.contains("Wiederherstellung"));
+        let restored = out.image.try_rotate(final_rotation).unwrap();
+        assert_eq!((restored.width, restored.height), (610, 220));
+        assert_eq!(restored.pixels, io.capture_page_horizontal(610));
+    }
+}
+
+#[test]
 fn final_unmatched_first_step_saves_matching_frames_and_keeps_partial_image() {
     let mut io = FakeScrollIo::vertical(220, 270);
     io.animate_at_end = true;

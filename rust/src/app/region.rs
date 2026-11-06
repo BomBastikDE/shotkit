@@ -201,6 +201,15 @@ pub(super) unsafe fn start_scroll(h: H) {
         return;
     }
     let mut busy = BusyGuard(true);
+    if scroll_recovery_pending() {
+        MessageBoxW(
+            h,
+            wide("Eine Scroll-Aufnahme wartet noch auf ihre Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(),
+            wide("Scroll-Aufnahme sichern").as_ptr(),
+            0x30,
+        );
+        return;
+    }
     let previous_direction = active_settings().scroll_direction;
     let previous_label = match previous_direction {
         settings::ScrollDirection::Down => "nach unten",

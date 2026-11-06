@@ -193,25 +193,106 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     }
 }
 
+fn prepare_scroll_recovery(
+    pending: &mut Option<PendingScrollRecovery>,
+    rotate: impl FnOnce(Image, Rotation) -> Result<Image, shotkit::stitch::RotationFailure>,
+) -> Result<(), &'static str> {
+    let Some(recovery) = pending.take() else {
+        return Ok(());
+    };
+    let Some(rotation) = recovery.pending_rotation else {
+        *pending = Some(recovery);
+        return Ok(());
+    };
+    match rotate(recovery.image, rotation) {
+        Ok(image) => {
+            // Commit the orientation before exporting: a later export failure
+            // must retry the correctly oriented image without rotating it again.
+            *pending = Some(PendingScrollRecovery {
+                image,
+                pending_rotation: None,
+            });
+            Ok(())
+        }
+        Err(failure) => {
+            *pending = Some(PendingScrollRecovery {
+                image: failure.image,
+                pending_rotation: Some(rotation),
+            });
+            Err(failure.error)
+        }
+    }
+}
+
+fn save_scroll_recovery(
+    pending: &mut Option<PendingScrollRecovery>,
+    path: &Path,
+    replace_existing: bool,
+) -> Result<(), String> {
+    prepare_scroll_recovery(pending, Image::try_rotate)
+        .map_err(|error| format!("Die Rückdrehung ist erneut fehlgeschlagen: {error}. Die Aufnahme und ihre Drehrichtung bleiben im Speicher."))?;
+    let Some(recovery) = pending.as_ref() else {
+        return Ok(());
+    };
+    let format = image_io::format_from_path(path)?;
+    let bytes = image_io::encode(&recovery.image, format)?;
+    write_atomic(path, &bytes, replace_existing)?;
+    pending.take();
+    Ok(())
+}
+
+struct RecoveryResolveGuard;
+impl Drop for RecoveryResolveGuard {
+    fn drop(&mut self) {
+        RECOVERY_RESOLVING.store(false, Ordering::SeqCst);
+    }
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein gültiger Besitzer für synchrone Dialoge.
-// Warum zu prüfen: Neben dem Tray-Ablauf gibt es WM_CLOSE; deren Reentranzschutz ist noch nicht vollständig belegt.
-// Nachrichten: MessageBoxW und GetSaveFileNameW können reentrieren; RECOVERY-Guards enden vor Dialogen, beim Dateischreiben bleibt ein Guard bestehen.
+// Warum erfüllt: ModalGuard schützt den Besitzer, RecoveryResolveGuard verhindert
+// einen zweiten Recovery-Ablauf während einer verschachtelten Nachrichtenpumpe.
+// Nachrichten: MessageBoxW und GetSaveFileNameW können reentrieren; alle Mutex-
+// Guards enden vor Dialogen. Rotation, Encoding und Dateischreiben pumpen nicht.
 pub(super) unsafe fn resolve_recovery(h: H) -> bool {
+    if RECOVERY_RESOLVING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let _resolving = RecoveryResolveGuard;
+    let _modal = ModalGuard::new(h);
     loop {
-        if RECOVERY
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_empty()
+        let scroll_pending = scroll_recovery_pending();
+        if !scroll_pending
+            && RECOVERY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
         {
             return true;
         }
-        let answer=MessageBoxW(h,wide("Eine Aufnahme konnte nicht im Editor geöffnet werden und ist noch im Speicher. Jetzt speichern?").as_ptr(),wide("Ungesicherte Aufnahme").as_ptr(),0x23);
+        let message = if scroll_pending {
+            "Eine horizontale Scroll-Aufnahme ist noch im Speicher. Vor dem Speichern wird eine noch ausstehende Rückdrehung erneut versucht.\n\nJa = speichern\nNein = Aufnahme verwerfen\nAbbrechen = im Speicher behalten"
+        } else {
+            "Eine Aufnahme konnte nicht im Editor geöffnet werden und ist noch im Speicher. Jetzt speichern?"
+        };
+        let answer = MessageBoxW(
+            h,
+            wide(message).as_ptr(),
+            wide("Ungesicherte Aufnahme").as_ptr(),
+            0x23,
+        );
         if answer == 2 {
             return false;
         }
         if answer == 7 {
-            RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+            if scroll_pending {
+                SCROLL_RECOVERY
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
+            } else {
+                RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+            }
             continue;
         }
         if answer != 6 {
@@ -225,7 +306,10 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
                 return false;
             }
         };
-        let result = {
+        let result = if scroll_pending {
+            let mut pending = SCROLL_RECOVERY.lock().unwrap_or_else(|p| p.into_inner());
+            save_scroll_recovery(&mut pending, &path, replace_existing)
+        } else {
             let pending = RECOVERY.lock().unwrap_or_else(|p| p.into_inner());
             let Some(image) = pending.last() else {
                 continue;
@@ -236,7 +320,9 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
         };
         match result {
             Ok(()) => {
-                RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+                if !scroll_pending {
+                    RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).pop();
+                }
             }
             Err(e) => {
                 MessageBoxW(
@@ -550,6 +636,81 @@ pub(super) unsafe fn history(h: H, redo: bool) {
         InvalidateRect(h, std::ptr::null(), 1);
     } else if let Some(bitmap) = replacement {
         DeleteObject(bitmap);
+    }
+}
+
+#[cfg(test)]
+mod scroll_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn failed_rotation_keeps_pixels_allocation_and_direction_for_retry() {
+        for rotation in [Rotation::Clockwise, Rotation::Counterclockwise] {
+            let image = Image::new(2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255]).unwrap();
+            let source = image.pixels.as_ptr();
+            let expected = image.clone();
+            let mut pending = Some(PendingScrollRecovery {
+                image,
+                pending_rotation: Some(rotation),
+            });
+            let error = prepare_scroll_recovery(&mut pending, |image, direction| {
+                assert_eq!(direction, rotation);
+                Err(shotkit::stitch::RotationFailure {
+                    image,
+                    error: "injected allocation failure",
+                })
+            });
+            assert_eq!(error, Err("injected allocation failure"));
+            let retained = pending.as_ref().unwrap();
+            assert_eq!(retained.image, expected);
+            assert_eq!(retained.image.pixels.as_ptr(), source);
+            assert_eq!(retained.pending_rotation, Some(rotation));
+            prepare_scroll_recovery(&mut pending, Image::try_rotate).unwrap();
+            assert_eq!(pending.as_ref().unwrap().pending_rotation, None);
+            assert_eq!(pending.as_ref().unwrap().image.width, 1);
+            assert_eq!(pending.as_ref().unwrap().image.height, 2);
+        }
+    }
+
+    #[test]
+    fn failed_export_retains_correct_orientation_and_retry_saves_it_once() {
+        let root = std::env::temp_dir().join(format!(
+            "shotkit-scroll-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (name, rotation) in [
+            ("right", Rotation::Counterclockwise),
+            ("left", Rotation::Clockwise),
+        ] {
+            let image =
+                Image::new(2, 3, (1..=6).flat_map(|value| [value, 0, 0, 255]).collect()).unwrap();
+            let expected = image.clone().try_rotate(rotation).unwrap();
+            let mut pending = Some(PendingScrollRecovery {
+                image,
+                pending_rotation: Some(rotation),
+            });
+            let path = root.join(name).join("capture.png");
+            // The absent directory makes the actual atomic file export fail
+            // after rotation/encoding, without simulating a successful save.
+            assert!(save_scroll_recovery(&mut pending, &path, false).is_err());
+            let retained = pending.as_ref().unwrap();
+            assert_eq!(retained.image, expected);
+            assert_eq!(retained.pending_rotation, None);
+            prepare_scroll_recovery(&mut pending, |_, _| {
+                panic!("an export retry must not rotate again")
+            })
+            .unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            save_scroll_recovery(&mut pending, &path, false).unwrap();
+            assert!(pending.is_none());
+            let decoded = image_io::decode(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(decoded, expected);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

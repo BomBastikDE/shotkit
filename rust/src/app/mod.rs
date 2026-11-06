@@ -46,7 +46,7 @@ use shotkit::{
     scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
-    stitch::Image,
+    stitch::{Image, Rotation},
     view,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -315,6 +315,21 @@ static SCROLL_COMPLETION: Mutex<ScrollCompletion<Result<Outcome, String>>> =
 const SCROLL_POLL_TIMER: usize = 0x5343_524c;
 static NEXT_WINDOW_GENERATION: AtomicUsize = AtomicUsize::new(1);
 static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
+// A failed horizontal return rotation must not grow RECOVERY's Vec while the
+// image allocator is already under pressure. This inline slot needs no queue
+// allocation. start_scroll refuses another job until it has been resolved.
+static SCROLL_RECOVERY: Mutex<Option<PendingScrollRecovery>> = Mutex::new(None);
+static RECOVERY_RESOLVING: AtomicBool = AtomicBool::new(false);
+struct PendingScrollRecovery {
+    image: Image,
+    pending_rotation: Option<Rotation>,
+}
+fn scroll_recovery_pending() -> bool {
+    SCROLL_RECOVERY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_some()
+}
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
 static LAST_REGION: Mutex<Option<last_region::Rect>> = Mutex::new(None);

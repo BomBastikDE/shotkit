@@ -1,7 +1,7 @@
 //! Platform-independent scroll orchestration; the caller supplies screen capture,
 //! scroll events, delays, cancellation and progress reporting.
 use crate::scroll_match::{find_offset, Frame, MatchResult};
-use crate::stitch::{Image, Stitcher};
+use crate::stitch::{Image, Rotation, RotationFailure, Stitcher};
 
 const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
 
@@ -16,6 +16,9 @@ pub struct Outcome {
     pub image: Image,
     pub reason: String,
     pub fallback_count: usize,
+    /// A horizontal result still in matcher orientation; it must enter recovery
+    /// and must not be automatically copied or saved before this rotation.
+    pub pending_rotation: Option<Rotation>,
 }
 
 pub trait ScrollIo {
@@ -33,11 +36,15 @@ pub trait ScrollIo {
         None
     }
 }
-fn oriented(image: Image, direction: Direction) -> Image {
+fn oriented(
+    image: Image,
+    direction: Direction,
+    rotate: &mut impl FnMut(Image, Rotation) -> Result<Image, RotationFailure>,
+) -> Result<Image, RotationFailure> {
     match direction {
-        Direction::Down => image,
-        Direction::Right => image.clockwise(),
-        Direction::Left => image.counterclockwise(),
+        Direction::Down => Ok(image),
+        Direction::Right => rotate(image, Rotation::Clockwise),
+        Direction::Left => rotate(image, Rotation::Counterclockwise),
     }
 }
 fn analyze(image: &Image) -> Result<Frame, String> {
@@ -58,9 +65,29 @@ struct Captured {
     frame: Frame,
     error: Option<String>,
 }
-fn capture_settled(io: &mut impl ScrollIo, direction: Direction) -> Result<Captured, String> {
-    let mut image = oriented(io.capture()?, direction);
-    let mut frame = analyze(&image)?;
+#[derive(Debug)]
+enum CaptureError {
+    Capture(String),
+    Rotation(RotationFailure),
+}
+
+impl CaptureError {
+    fn message(&self) -> String {
+        match self {
+            Self::Capture(error) => error.clone(),
+            Self::Rotation(error) => error.error.to_owned(),
+        }
+    }
+}
+
+fn capture_settled_with_rotation(
+    io: &mut impl ScrollIo,
+    direction: Direction,
+    rotate: &mut impl FnMut(Image, Rotation) -> Result<Image, RotationFailure>,
+) -> Result<Captured, CaptureError> {
+    let image = io.capture().map_err(CaptureError::Capture)?;
+    let mut image = oriented(image, direction, rotate).map_err(CaptureError::Rotation)?;
+    let mut frame = analyze(&image).map_err(CaptureError::Capture)?;
     for _ in 0..12 {
         if interrupted(io).is_some() {
             break;
@@ -72,7 +99,16 @@ fn capture_settled(io: &mut impl ScrollIo, direction: Direction) -> Result<Captu
             break;
         }
         let next = match io.capture() {
-            Ok(image) => oriented(image, direction),
+            Ok(next) => match oriented(next, direction, rotate) {
+                Ok(next) => next,
+                Err(error) => {
+                    return Ok(Captured {
+                        image,
+                        frame,
+                        error: Some(error.error.to_owned()),
+                    });
+                }
+            },
             Err(error) => {
                 return Ok(Captured {
                     image,
@@ -107,10 +143,43 @@ fn capture_settled(io: &mut impl ScrollIo, direction: Direction) -> Result<Captu
         error: None,
     })
 }
+
+#[cfg(test)]
+fn capture_settled(io: &mut impl ScrollIo, direction: Direction) -> Result<Captured, CaptureError> {
+    capture_settled_with_rotation(io, direction, &mut |image, rotation| {
+        image.try_rotate(rotation)
+    })
+}
 /// Run up to 150 steps and return the usable portion even on cancellation or an
 /// ambiguous match. The caller owns selection, UI, cursor restoration and diagnostics.
 pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, String> {
-    let initial = capture_settled(io, direction)?;
+    run_with_rotation(io, direction, &mut |image, rotation| {
+        image.try_rotate(rotation)
+    })
+}
+
+fn run_with_rotation(
+    io: &mut impl ScrollIo,
+    direction: Direction,
+    rotate: &mut impl FnMut(Image, Rotation) -> Result<Image, RotationFailure>,
+) -> Result<Outcome, String> {
+    let initial = match capture_settled_with_rotation(io, direction, rotate) {
+        Ok(initial) => initial,
+        Err(CaptureError::Capture(error)) => return Err(error),
+        Err(CaptureError::Rotation(error)) => {
+            // Only a valid captured screen frame can be delivered as the
+            // fallback image. A malformed public Image must remain an error.
+            if error.image.validate().is_err() {
+                return Err(error.error.to_owned());
+            }
+            return Ok(Outcome {
+                image: error.image,
+                reason: format!("Scrollaufnahme konnte nicht gestartet werden: {}. Die erste Aufnahme bleibt erhalten.", error.error),
+                fallback_count: 0,
+                pending_rotation: None,
+            });
+        }
+    };
     let first = initial.image;
     let mut prev = initial.frame;
     let initial_error = initial.error;
@@ -143,10 +212,10 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 reason = stop.into();
                 break;
             }
-            let captured = match capture_settled(io, direction) {
+            let captured = match capture_settled_with_rotation(io, direction, rotate) {
                 Ok(frame) => frame,
                 Err(e) => {
-                    reason = format!("{e} – Aufnahme bis hierhin übernommen.");
+                    reason = format!("{} – Aufnahme bis hierhin übernommen.", e.message());
                     break;
                 }
             };
@@ -183,10 +252,10 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                     reason = stop.into();
                     break;
                 }
-                let captured = match capture_settled(io, direction) {
+                let captured = match capture_settled_with_rotation(io, direction, rotate) {
                     Ok(frame) => frame,
                     Err(e) => {
-                        reason = format!("{e} – Aufnahme bis hierhin übernommen.");
+                        reason = format!("{} – Aufnahme bis hierhin übernommen.", e.message());
                         break;
                     }
                 };
@@ -215,10 +284,10 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                     reason = stop.into();
                     break;
                 }
-                let captured = match capture_settled(io, direction) {
+                let captured = match capture_settled_with_rotation(io, direction, rotate) {
                     Ok(frame) => frame,
                     Err(e) => {
-                        reason = format!("{e} – Aufnahme bis hierhin übernommen.");
+                        reason = format!("{} – Aufnahme bis hierhin übernommen.", e.message());
                         break;
                     }
                 };
@@ -306,15 +375,26 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
         ));
     }
     let combined = stitch.finish().map_err(str::to_owned)?;
-    let image = match direction {
-        Direction::Down => combined,
-        Direction::Right => combined.counterclockwise(),
-        Direction::Left => combined.clockwise(),
+    let final_rotation = match direction {
+        Direction::Down => None,
+        Direction::Right => Some(Rotation::Counterclockwise),
+        Direction::Left => Some(Rotation::Clockwise),
+    };
+    let (image, pending_rotation) = match final_rotation {
+        None => (combined, None),
+        Some(rotation) => match rotate(combined, rotation) {
+            Ok(image) => (image, None),
+            Err(error) => {
+                reason.push_str(&format!("\nDie Aufnahme konnte nicht zurückgedreht werden: {}. Sie bleibt zur Wiederherstellung im Speicher.", error.error));
+                (error.image, Some(rotation))
+            }
+        },
     };
     Ok(Outcome {
         image,
         reason,
         fallback_count: fallbacks,
+        pending_rotation,
     })
 }
 
