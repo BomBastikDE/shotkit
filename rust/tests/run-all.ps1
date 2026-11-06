@@ -78,6 +78,7 @@ $cases = @(
     @{ Name = 'Interactive Windows saved-state undo and redo close smoke test'; Script = 'windows-save-undo-redo-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows image formats smoke test'; Script = 'windows-formats-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows rejected oversized image import preservation smoke test'; Script = 'windows-large-image-import-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
+    @{ Name = 'Interactive Windows crop history eviction confirmation smoke test'; Script = 'windows-crop-history-confirmation-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows large image memory measurement'; Script = 'windows-large-image-memory-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows two large documents memory measurement'; Script = 'windows-large-image-memory-smoke.ps1'; Extra = @('-DocumentCount', '2'); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Interactive Windows RGBA PNG memory measurement'; Script = 'windows-large-image-memory-smoke.ps1'; Extra = @('-FixtureFormat', 'RGBA-PNG'); TimeoutSeconds = 300; Toolbar = $false },

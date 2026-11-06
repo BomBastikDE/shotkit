@@ -12,7 +12,7 @@ use crate::{
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     mem::size_of,
     sync::Arc,
 };
@@ -29,6 +29,8 @@ pub enum DocumentError {
     NoTransaction,
     InvalidShapeIndex,
     AllocationFailed,
+    HistoryEvictionNotApproved,
+    StaleHistoryPlan,
 }
 impl std::fmt::Display for DocumentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +49,12 @@ impl std::fmt::Display for DocumentError {
                 f.write_str("Das ausgewählte Objekt ist nicht mehr vorhanden")
             }
             Self::AllocationFailed => f.write_str("Es steht nicht genügend Speicher zur Verfügung"),
+            Self::HistoryEvictionNotApproved => f.write_str(
+                "Das Entfernen von Rückgängig- oder Wiederherstellen-Schritten wurde nicht bestätigt",
+            ),
+            Self::StaleHistoryPlan => f.write_str(
+                "Das Dokument wurde seit der Speicherprüfung verändert. Bitte erneut prüfen.",
+            ),
         }
     }
 }
@@ -77,7 +85,38 @@ struct NavigationPlan {
     redo: Vec<State>,
 }
 
-#[derive(Clone, Debug)]
+/// Prepared transaction commit. Planning never changes the document or grants
+/// permission to discard undo steps. Consume this exact plan to use the
+/// replacement container whose actual capacity was checked against the budget.
+#[derive(Debug)]
+pub struct HistorySnapshotPlan {
+    generation: Arc<()>,
+    snapshot: State,
+    suspended_after: Option<State>,
+    undo: VecDeque<State>,
+    undo_entries_to_evict: usize,
+    redo_entries_to_discard: usize,
+    history_bytes: usize,
+    history_budget: usize,
+}
+
+impl HistorySnapshotPlan {
+    pub fn undo_entries_to_evict(&self) -> usize {
+        self.undo_entries_to_evict
+    }
+    /// Redo belongs to the abandoned branch, independently of budget eviction.
+    pub fn redo_entries_to_discard(&self) -> usize {
+        self.redo_entries_to_discard
+    }
+    pub fn history_bytes(&self) -> usize {
+        self.history_bytes
+    }
+    pub fn history_budget(&self) -> usize {
+        self.history_budget
+    }
+}
+
+#[derive(Debug)]
 pub struct Document {
     current: State,
     undo: VecDeque<State>,
@@ -85,6 +124,23 @@ pub struct Document {
     staged_before: Option<State>,
     saved_revision: Option<Arc<()>>,
     history_budget: usize,
+    history_generation: Arc<()>,
+}
+
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        Self {
+            current: self.current.clone(),
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+            staged_before: self.staged_before.clone(),
+            saved_revision: self.saved_revision.clone(),
+            history_budget: self.history_budget,
+            // Cloning may change allocation capacities. A plan belongs only
+            // to the original document, even when logical contents are equal.
+            history_generation: Arc::new(()),
+        }
+    }
 }
 
 impl Document {
@@ -124,6 +180,7 @@ impl Document {
             staged_before: None,
             saved_revision: None,
             history_budget: history_budget_bytes,
+            history_generation: Arc::new(()),
         })
     }
 
@@ -148,6 +205,7 @@ impl Document {
             return false;
         }
         self.saved_revision = Some(Arc::clone(&self.current.revision));
+        self.invalidate_history_plans();
         true
     }
     pub fn is_dirty(&self) -> bool {
@@ -196,6 +254,7 @@ impl Document {
     }
 
     pub fn set_history_budget(&mut self, bytes: usize) {
+        self.invalidate_history_plans();
         self.history_budget = bytes;
         self.trim_history();
     }
@@ -206,6 +265,7 @@ impl Document {
             return Err(DocumentError::TransactionAlreadyOpen);
         }
         self.staged_before = Some(self.current.clone());
+        self.invalidate_history_plans();
         Ok(())
     }
 
@@ -217,6 +277,7 @@ impl Document {
         };
         if states_equal(before, &self.current) {
             self.staged_before = None;
+            self.invalidate_history_plans();
             return Ok(false);
         }
         self.record_snapshot(before.clone(), Arc::clone(&self.current.image))?;
@@ -226,12 +287,148 @@ impl Document {
         Ok(true)
     }
 
+    /// Prepare a staged transaction without changing pixels, shapes, dirty
+    /// state, either history, or the transaction. Returns `None` for a no-op.
+    /// The newest snapshot must fit by itself; otherwise planning fails without
+    /// clearing redo or evicting anything. Image allocations are deduplicated by
+    /// Arc identity, excluding the resulting current image, just as in
+    /// `history_bytes`. Existing snapshot capacities and the actual cloned
+    /// snapshot/replacement-container capacities are charged conservatively.
+    ///
+    /// This API is opt-in: legacy `commit_edit` and direct edits retain their
+    /// existing automatic-eviction behavior until callers integrate this plan.
+    pub fn plan_commit_edit(&self) -> Result<Option<HistorySnapshotPlan>, DocumentError> {
+        let before = self
+            .staged_before
+            .as_ref()
+            .ok_or(DocumentError::NoTransaction)?;
+        if states_equal(before, &self.current) {
+            return Ok(None);
+        }
+        let snapshot = before.clone();
+        let mut images: HashMap<usize, (usize, usize)> = HashMap::new();
+        images
+            .try_reserve(self.undo.len().saturating_add(1))
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        let current_image = Arc::as_ptr(&self.current.image) as usize;
+        let mut bytes = 0usize;
+        for state in self.undo.iter().chain(std::iter::once(&snapshot)) {
+            bytes = bytes
+                .checked_add(snapshot_storage_bytes(state))
+                .ok_or(DocumentError::HistoryBudgetExceeded)?;
+            let image = Arc::as_ptr(&state.image) as usize;
+            if image != current_image {
+                if let Some(entry) = images.get_mut(&image) {
+                    entry.0 += 1;
+                } else {
+                    let image_bytes = image_allocation_bytes(&state.image);
+                    bytes = bytes
+                        .checked_add(image_bytes)
+                        .ok_or(DocumentError::HistoryBudgetExceeded)?;
+                    images.insert(image, (1, image_bytes));
+                }
+            }
+        }
+        let mut evictions = 0;
+        loop {
+            let mut undo = VecDeque::new();
+            undo.try_reserve_exact(self.undo.len() - evictions + 1)
+                .map_err(|_| DocumentError::AllocationFailed)?;
+            let history_bytes = bytes
+                .checked_add(container_bytes(undo.capacity(), size_of::<State>()))
+                .ok_or(DocumentError::HistoryBudgetExceeded)?;
+            if history_bytes <= self.history_budget {
+                return Ok(Some(HistorySnapshotPlan {
+                    generation: Arc::clone(&self.history_generation),
+                    snapshot,
+                    suspended_after: None,
+                    undo,
+                    undo_entries_to_evict: evictions,
+                    redo_entries_to_discard: self.redo.len(),
+                    history_bytes,
+                    history_budget: self.history_budget,
+                }));
+            }
+            let Some(oldest) = self.undo.get(evictions) else {
+                return Err(DocumentError::HistoryBudgetExceeded);
+            };
+            bytes = bytes.saturating_sub(snapshot_storage_bytes(oldest));
+            let image = Arc::as_ptr(&oldest.image) as usize;
+            if image != current_image {
+                let entry = images.get_mut(&image).expect("accounted history image");
+                entry.0 -= 1;
+                if entry.0 == 0 {
+                    bytes = bytes.saturating_sub(entry.1);
+                }
+            }
+            evictions += 1;
+        }
+    }
+
+    /// Restore the pre-transaction state while a caller asks for permission.
+    /// The staged result moves into the returned plan, so paints and other
+    /// readers see the original document during a modal dialog. Dropping the
+    /// returned plan cancels the edit. Any intervening mutation makes it stale.
+    pub fn suspend_edit_with_plan(
+        &mut self,
+        mut plan: HistorySnapshotPlan,
+    ) -> Result<HistorySnapshotPlan, DocumentError> {
+        if !Arc::ptr_eq(&plan.generation, &self.history_generation) {
+            return Err(DocumentError::StaleHistoryPlan);
+        }
+        let before = self
+            .staged_before
+            .take()
+            .ok_or(DocumentError::NoTransaction)?;
+        plan.suspended_after = Some(std::mem::replace(&mut self.current, before));
+        self.invalidate_history_plans();
+        plan.generation = Arc::clone(&self.history_generation);
+        Ok(plan)
+    }
+
+    /// Commit a previously checked transaction. A stale plan or unapproved
+    /// history discard leaves the transaction and all document state untouched.
+    /// `false` never authorizes dropping undo or redo steps, including redo
+    /// discarded by a new branch. The plan reports both counts separately.
+    /// The preallocated container is used without reallocation.
+    pub fn commit_edit_with_plan(
+        &mut self,
+        mut plan: HistorySnapshotPlan,
+        allow_history_discard: bool,
+    ) -> Result<bool, DocumentError> {
+        if !Arc::ptr_eq(&plan.generation, &self.history_generation) {
+            return Err(DocumentError::StaleHistoryPlan);
+        }
+        if (plan.undo_entries_to_evict > 0 || plan.redo_entries_to_discard > 0)
+            && !allow_history_discard
+        {
+            return Err(DocumentError::HistoryEvictionNotApproved);
+        }
+        let revision = Arc::new(());
+        self.invalidate_history_plans();
+        for _ in 0..plan.undo_entries_to_evict {
+            self.undo.pop_front();
+        }
+        plan.undo.extend(self.undo.drain(..));
+        plan.undo.push_back(plan.snapshot);
+        self.undo = plan.undo;
+        self.redo = Vec::new();
+        if let Some(after) = plan.suspended_after {
+            self.current = after;
+        }
+        self.current.revision = revision;
+        self.staged_before = None;
+        debug_assert_eq!(self.history_bytes(), plan.history_bytes);
+        Ok(true)
+    }
+
     /// Discard all staged changes and restore image and shapes atomically.
     pub fn abort_edit(&mut self) -> Result<(), DocumentError> {
         let Some(before) = self.staged_before.take() else {
             return Err(DocumentError::NoTransaction);
         };
         self.current = before;
+        self.invalidate_history_plans();
         Ok(())
     }
 
@@ -386,6 +583,7 @@ impl Document {
             .push(std::mem::replace(&mut self.current, previous));
         self.undo = plan.undo;
         self.redo = plan.redo;
+        self.invalidate_history_plans();
         Ok(true)
     }
 
@@ -410,6 +608,7 @@ impl Document {
         }
         self.undo = plan.undo;
         self.redo = plan.redo;
+        self.invalidate_history_plans();
         Ok(true)
     }
 
@@ -428,6 +627,7 @@ impl Document {
             next.revision = Arc::new(());
         }
         self.current = next;
+        self.invalidate_history_plans();
         if self.staged_before.is_none() {
             self.trim_history();
         }
@@ -445,7 +645,12 @@ impl Document {
         self.redo.clear();
         self.redo.shrink_to_fit();
         self.undo.push_back(snapshot);
+        self.invalidate_history_plans();
         Ok(())
+    }
+
+    fn invalidate_history_plans(&mut self) {
+        self.history_generation = Arc::new(());
     }
 
     fn trim_history(&mut self) {
@@ -559,6 +764,12 @@ impl Document {
 }
 
 const ALLOCATION_OVERHEAD: usize = 4 * size_of::<usize>();
+
+fn snapshot_storage_bytes(state: &State) -> usize {
+    size_of::<State>()
+        .saturating_add(revision_allocation_bytes())
+        .saturating_add(shapes_allocation_bytes(&state.shapes))
+}
 
 fn revision_allocation_bytes() -> usize {
     2 * size_of::<usize>() + ALLOCATION_OVERHEAD

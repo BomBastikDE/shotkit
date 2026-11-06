@@ -610,3 +610,507 @@ fn canvas_limits_and_history_failure_are_atomic() {
     assert_eq!(d.image(), &image());
     assert!(!d.can_undo());
 }
+
+// Include identities and allocation capacities as well as logical contents:
+// rejected plans must preserve staged rollback, save state and both branches.
+fn plan_observation(d: &Document) -> (String, Vec<usize>) {
+    let mut identities = vec![
+        Arc::as_ptr(&d.history_generation) as usize,
+        d.undo.capacity(),
+        d.redo.capacity(),
+        usize::from(d.is_dirty()),
+    ];
+    identities.push(
+        d.saved_revision
+            .as_ref()
+            .map_or(0, |r| Arc::as_ptr(r) as usize),
+    );
+    for state in std::iter::once(&d.current)
+        .chain(d.staged_before.iter())
+        .chain(d.undo.iter())
+        .chain(d.redo.iter())
+    {
+        identities.extend([
+            Arc::as_ptr(&state.image) as usize,
+            Arc::as_ptr(&state.revision) as usize,
+            state.image.pixels.capacity(),
+            shapes_allocation_bytes(&state.shapes),
+        ]);
+    }
+    (format!("{d:?}"), identities)
+}
+
+#[test]
+fn snapshot_planning_requires_transaction_and_leaves_no_op_untouched() {
+    let mut d = Document::new(image()).unwrap();
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit(),
+        Err(DocumentError::NoTransaction)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    d.begin_edit().unwrap();
+    let before = plan_observation(&d);
+    assert!(d.plan_commit_edit().unwrap().is_none());
+    assert_eq!(plan_observation(&d), before);
+    assert!(!d.commit_edit().unwrap());
+}
+
+#[test]
+fn prepared_snapshot_accounts_actual_capacities_and_preserves_shared_images() {
+    let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
+    let mut d = Document::with_history_budget(large, 8192).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.undo.try_reserve_exact(128).unwrap(); // Excess capacity need not be retained.
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let before = plan_observation(&d);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert_eq!(plan_observation(&d), before);
+    assert_eq!(plan.undo_entries_to_evict(), 0);
+    assert_eq!(plan.redo_entries_to_discard(), 0);
+    let expected = d.undo.iter().map(snapshot_storage_bytes).sum::<usize>()
+        + snapshot_storage_bytes(&plan.snapshot)
+        + container_bytes(plan.undo.capacity(), size_of::<State>());
+    assert_eq!(plan.history_bytes(), expected); // No duplicate 64 KiB image.
+    assert_eq!(plan.history_budget(), d.history_budget());
+    let planned_bytes = plan.history_bytes();
+    d.commit_edit_with_plan(plan, false).unwrap();
+    assert_eq!(d.history_bytes(), planned_bytes);
+    assert!(d.undo());
+    assert_eq!(d.shapes().len(), 2);
+}
+
+#[test]
+fn prepared_snapshot_reports_redo_reset_separately_from_undo_eviction() {
+    let mut d = Document::new(image()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.undo());
+    d.mark_saved();
+    d.begin_edit().unwrap();
+    d.add_shape(Shape::new(ShapeKind::Step {
+        center: Point::new(1.0, 1.0),
+        number: 1,
+    }))
+    .unwrap();
+    let before = plan_observation(&d);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert_eq!(plan_observation(&d), before);
+    assert_eq!(plan.undo_entries_to_evict(), 0);
+    assert_eq!(plan.redo_entries_to_discard(), 1);
+    assert_eq!(
+        d.commit_edit_with_plan(plan, false),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(plan_observation(&d), before);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    d.commit_edit_with_plan(plan, true).unwrap();
+    assert!(!d.can_redo());
+    assert!(d.is_dirty());
+    assert!(d.undo());
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn undo_eviction_requires_explicit_approval_and_consumes_exact_plan() {
+    let mut d = Document::new(image()).unwrap();
+    for _ in 0..12 {
+        d.add_shape(shape()).unwrap();
+    }
+    let old_count = d.undo.len();
+    d.set_history_budget(d.history_bytes());
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let before = plan_observation(&d);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let evictions = plan.undo_entries_to_evict();
+    assert!(evictions > 0 && evictions < old_count);
+    let mut one_more: VecDeque<State> = VecDeque::new();
+    one_more
+        .try_reserve_exact(old_count + 2 - evictions)
+        .unwrap();
+    let one_more_bytes = d
+        .undo
+        .iter()
+        .skip(evictions - 1)
+        .map(snapshot_storage_bytes)
+        .sum::<usize>()
+        + snapshot_storage_bytes(&plan.snapshot)
+        + container_bytes(one_more.capacity(), size_of::<State>());
+    assert!(one_more_bytes > d.history_budget());
+    assert_eq!(plan_observation(&d), before);
+    assert_eq!(
+        d.commit_edit_with_plan(plan, false),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(plan_observation(&d), before);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert_eq!(plan.undo_entries_to_evict(), evictions);
+    let planned_bytes = plan.history_bytes();
+    let expected_oldest_revision = Arc::clone(&d.undo[evictions].revision);
+    d.commit_edit_with_plan(plan, true).unwrap();
+    assert_eq!(d.undo.len(), old_count + 1 - evictions);
+    assert!(Arc::ptr_eq(
+        &d.undo.front().unwrap().revision,
+        &expected_oldest_revision
+    ));
+    assert_eq!(d.history_bytes(), planned_bytes);
+    assert!(planned_bytes <= d.history_budget());
+    assert!(d.staged_before.is_none());
+}
+
+#[test]
+fn shared_old_image_is_charged_once_across_retained_snapshots() {
+    let mut pixels = Vec::with_capacity(4096);
+    pixels.extend_from_slice(&image().pixels);
+    let original = Image::new(3, 2, pixels).unwrap();
+    let mut d = Document::new(original).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.begin_edit().unwrap();
+    d.replace_image(Image::new(1, 1, vec![99; 4]).unwrap())
+        .unwrap();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let expected = d.undo.iter().map(snapshot_storage_bytes).sum::<usize>()
+        + snapshot_storage_bytes(&plan.snapshot)
+        + image_allocation_bytes(&plan.snapshot.image)
+        + container_bytes(plan.undo.capacity(), size_of::<State>());
+    assert_eq!(plan.history_bytes(), expected);
+    assert!(image_allocation_bytes(&plan.snapshot.image) > 4096);
+    d.commit_edit_with_plan(plan, false).unwrap();
+    assert_eq!(d.history_bytes(), expected);
+}
+
+#[test]
+fn unaffordable_snapshot_plan_preserves_transaction_redo_and_history() {
+    let mut d = Document::new(Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.undo());
+    d.set_history_budget(8192);
+    d.begin_edit().unwrap();
+    d.replace_image(image()).unwrap();
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit(),
+        Err(DocumentError::HistoryBudgetExceeded)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    assert!(!d.redo.is_empty());
+    d.abort_edit().unwrap();
+    assert_eq!(d.image().width, 128);
+    assert!(d.can_redo());
+}
+
+#[test]
+fn stale_snapshot_plans_reject_every_successful_mutation_without_side_effects() {
+    let mutations: &[fn(&mut Document)] = &[
+        |d| {
+            d.add_shape(shape()).unwrap();
+        }, // Staging retains the revision Arc.
+        |d| {
+            d.edit_shape(0, |s| s.offset(1.0, 0.0)).unwrap();
+        },
+        |d| {
+            d.remove_shape(0).unwrap();
+        },
+        |d| {
+            d.replace_image(Image::new(1, 1, vec![5; 4]).unwrap())
+                .unwrap();
+        },
+        |d| {
+            d.set_history_budget(d.history_budget());
+        },
+        |d| {
+            d.abort_edit().unwrap();
+        },
+        |d| {
+            d.commit_edit().unwrap();
+        },
+        |d| {
+            d.abort_edit().unwrap();
+            d.begin_edit().unwrap();
+            d.add_shape(shape()).unwrap();
+        },
+        |d| {
+            d.commit_edit().unwrap();
+            assert!(d.undo());
+        },
+        |d| {
+            d.commit_edit().unwrap();
+            assert!(d.undo());
+            assert!(d.redo());
+        },
+        |d| {
+            let other = d.plan_commit_edit().unwrap().unwrap();
+            d.commit_edit_with_plan(other, false).unwrap();
+        },
+    ];
+    for (index, mutate) in mutations.iter().enumerate() {
+        let mut d = Document::new(image()).unwrap();
+        d.add_shape(shape()).unwrap();
+        d.mark_saved();
+        d.begin_edit().unwrap();
+        d.add_shape(shape()).unwrap();
+        let plan = d.plan_commit_edit().unwrap().unwrap();
+        mutate(&mut d);
+        let before = plan_observation(&d);
+        assert_eq!(
+            d.commit_edit_with_plan(plan, true),
+            Err(DocumentError::StaleHistoryPlan),
+            "mutation {index}"
+        );
+        assert_eq!(plan_observation(&d), before, "mutation {index}");
+    }
+}
+
+#[test]
+fn snapshot_plan_is_bound_to_one_document_and_survives_rejected_operations() {
+    let mut d = Document::new(image()).unwrap();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let mut cloned = d.clone();
+    let before = plan_observation(&cloned);
+    assert_eq!(
+        cloned.commit_edit_with_plan(plan, true),
+        Err(DocumentError::StaleHistoryPlan)
+    );
+    assert_eq!(plan_observation(&cloned), before);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let before = plan_observation(&d);
+    assert_eq!(d.begin_edit(), Err(DocumentError::TransactionAlreadyOpen));
+    assert_eq!(d.remove_shape(99), Err(DocumentError::InvalidShapeIndex));
+    assert!(!d.mark_saved());
+    assert!(!d.try_undo().unwrap());
+    assert!(!d.try_redo().unwrap());
+    assert_eq!(plan_observation(&d), before);
+    d.commit_edit_with_plan(plan, false).unwrap();
+}
+
+#[test]
+fn suspended_snapshot_restores_original_document_until_approved_apply() {
+    let mut d = Document::new(image()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.mark_saved();
+    let old_image = d.image_arc();
+    let old_revision = Arc::clone(&d.current.revision);
+    let old_shapes = d.shapes().to_vec();
+    let undo_before = d.undo.clone();
+    let redo_before = d.redo.clone();
+    d.begin_edit().unwrap();
+    d.replace_image(Image::new(1, 1, vec![42; 4]).unwrap())
+        .unwrap();
+    d.add_shape(shape()).unwrap();
+    let new_image = d.image_arc();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let planned_bytes = plan.history_bytes();
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    assert!(Arc::ptr_eq(&d.image_arc(), &old_image));
+    assert!(Arc::ptr_eq(&d.current.revision, &old_revision));
+    assert_eq!(d.shapes(), old_shapes);
+    assert!(!d.is_dirty());
+    assert!(d.staged_before.is_none());
+    assert_eq!(d.undo, undo_before);
+    assert_eq!(d.redo, redo_before);
+    d.commit_edit_with_plan(plan, false).unwrap();
+    assert!(Arc::ptr_eq(&d.image_arc(), &new_image));
+    assert_eq!(d.shapes().len(), 2);
+    assert!(d.is_dirty());
+    assert_eq!(d.history_bytes(), planned_bytes);
+    assert!(d.undo());
+    assert!(Arc::ptr_eq(&d.image_arc(), &old_image));
+    assert_eq!(d.shapes(), old_shapes);
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn dropping_suspended_plan_cancels_edit_preserving_redo_and_saved_state() {
+    let mut d = Document::new(image()).unwrap();
+    d.add_shape(shape()).unwrap();
+    assert!(d.undo());
+    d.mark_saved();
+    let original = d.current.clone();
+    let undo_before = d.undo.clone();
+    let redo_before = d.redo.clone();
+    let bytes_before = d.history_bytes();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    drop(plan);
+    assert_eq!(d.current, original);
+    assert!(Arc::ptr_eq(&d.current.revision, &original.revision));
+    assert_eq!(d.undo, undo_before);
+    assert_eq!(d.redo, redo_before);
+    assert_eq!(d.history_bytes(), bytes_before);
+    assert!(!d.is_dirty());
+    assert!(d.can_redo());
+    assert!(d.staged_before.is_none());
+}
+
+#[test]
+fn suspended_plan_rejects_intervening_edits_and_stale_suspend_is_atomic() {
+    let mut d = Document::new(image()).unwrap();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let stale = d.plan_commit_edit().unwrap().unwrap();
+    d.add_shape(shape()).unwrap();
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.suspend_edit_with_plan(stale),
+        Err(DocumentError::StaleHistoryPlan)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    d.add_shape(shape()).unwrap();
+    let before = plan_observation(&d);
+    assert_eq!(
+        d.commit_edit_with_plan(plan, true),
+        Err(DocumentError::StaleHistoryPlan)
+    );
+    assert_eq!(plan_observation(&d), before);
+}
+
+#[test]
+fn rejecting_suspended_eviction_leaves_original_state_and_histories_intact() {
+    let mut d = Document::new(image()).unwrap();
+    for _ in 0..12 {
+        d.add_shape(shape()).unwrap();
+    }
+    d.set_history_budget(d.history_bytes());
+    d.mark_saved();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert!(plan.undo_entries_to_evict() > 0);
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    let before = plan_observation(&d);
+    assert_eq!(
+        d.commit_edit_with_plan(plan, false),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(plan_observation(&d), before);
+    assert_eq!(d.shapes().len(), 12);
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn suspended_plan_is_invalidated_by_save_navigation_budget_and_new_transaction() {
+    let mutations: &[fn(&mut Document)] = &[
+        |d| {
+            assert!(d.mark_saved());
+        },
+        |d| {
+            d.begin_edit().unwrap();
+        },
+        |d| {
+            d.set_history_budget(d.history_budget());
+        },
+        |d| {
+            assert!(d.undo());
+        },
+        |d| {
+            assert!(d.redo());
+        },
+    ];
+    for (index, mutate) in mutations.iter().enumerate() {
+        let mut d = Document::new(image()).unwrap();
+        d.add_shape(shape()).unwrap();
+        d.add_shape(shape()).unwrap();
+        assert!(d.undo()); // Both navigation directions are available.
+        d.begin_edit().unwrap();
+        d.add_shape(shape()).unwrap();
+        let plan = d.plan_commit_edit().unwrap().unwrap();
+        let plan = d.suspend_edit_with_plan(plan).unwrap();
+        mutate(&mut d);
+        let before = plan_observation(&d);
+        assert_eq!(
+            d.commit_edit_with_plan(plan, true),
+            Err(DocumentError::StaleHistoryPlan),
+            "mutation {index}"
+        );
+        assert_eq!(plan_observation(&d), before, "mutation {index}");
+    }
+}
+
+#[test]
+fn prepared_snapshot_accepts_exact_minimum_budget_and_rejects_one_byte_less() {
+    let mut d = Document::new(image()).unwrap();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let minimum = d.plan_commit_edit().unwrap().unwrap().history_bytes();
+    d.set_history_budget(minimum - 1);
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit(),
+        Err(DocumentError::HistoryBudgetExceeded)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    d.set_history_budget(minimum);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert_eq!(plan.history_bytes(), minimum);
+    d.commit_edit_with_plan(plan, false).unwrap();
+    assert_eq!(d.history_bytes(), minimum);
+}
+
+#[test]
+fn eviction_releases_shared_image_only_after_its_last_snapshot_is_removed() {
+    let a = Image::new(32, 32, vec![1; 4096]).unwrap();
+    let b = Image::new(32, 32, vec![2; 4096]).unwrap();
+    let mut d = Document::new(a).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.add_shape(shape()).unwrap();
+    d.replace_image(b).unwrap();
+    let old_count = d.undo.len();
+    d.set_history_budget(d.history_bytes());
+    d.begin_edit().unwrap();
+    d.replace_image(image()).unwrap();
+    let before = plan_observation(&d);
+    let plan = d.plan_commit_edit().unwrap().unwrap();
+    assert_eq!(plan.undo_entries_to_evict(), old_count);
+    assert_eq!(plan_observation(&d), before);
+    let expected = snapshot_storage_bytes(&plan.snapshot)
+        + image_allocation_bytes(&plan.snapshot.image)
+        + container_bytes(plan.undo.capacity(), size_of::<State>());
+    assert_eq!(plan.history_bytes(), expected);
+    d.commit_edit_with_plan(plan, true).unwrap();
+    assert_eq!(d.undo.len(), 1);
+    assert_eq!(d.history_bytes(), expected);
+}
+
+#[test]
+fn suspended_redo_discard_requires_approval_and_preserves_original_on_rejection() {
+    for approve in [false, true] {
+        let mut d = Document::new(image()).unwrap();
+        d.add_shape(shape()).unwrap();
+        d.add_shape(shape()).unwrap();
+        assert!(d.undo());
+        d.mark_saved();
+        d.begin_edit().unwrap();
+        d.edit_shape(0, |shape| shape.offset(1.0, 1.0)).unwrap();
+        let plan = d.plan_commit_edit().unwrap().unwrap();
+        assert_eq!(plan.undo_entries_to_evict(), 0);
+        assert_eq!(plan.redo_entries_to_discard(), 1);
+        let plan = d.suspend_edit_with_plan(plan).unwrap();
+        let before = plan_observation(&d);
+        if approve {
+            assert!(d.commit_edit_with_plan(plan, true).unwrap());
+            assert!(!d.can_redo());
+            assert!(d.is_dirty());
+            assert_eq!(d.shapes()[0].bounds().x, 3.0);
+        } else {
+            assert_eq!(
+                d.commit_edit_with_plan(plan, false),
+                Err(DocumentError::HistoryEvictionNotApproved)
+            );
+            assert_eq!(plan_observation(&d), before);
+            assert!(d.can_redo());
+            assert!(!d.is_dirty());
+            assert_eq!(d.shapes()[0].bounds().x, 2.0);
+        }
+    }
+}

@@ -1,5 +1,42 @@
 use super::*;
 
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt: Aufruf aus der bewachten Ereignisbehandlung; der Plan ist ein
+// eigener Wert und alle Editor-Borrows enden vor dem Dialog.
+// Nachrichten: MessageBoxW kann reentrieren; ModalGuard blockiert Änderungen
+// und Schließen dieses Editors, der Plan prüft zusätzlich den Dokumentzustand.
+pub(super) unsafe fn confirm_and_commit_staged_edit(
+    h: H,
+) -> Result<Option<bool>, shotkit::document::DocumentError> {
+    let plan = editor(h).document_mut().plan_commit_edit()?;
+    let Some(mut plan) = plan else {
+        return editor(h).document_mut().commit_edit().map(Some);
+    };
+    let evictions = plan.undo_entries_to_evict();
+    let redo_discarded = plan.redo_entries_to_discard();
+    if evictions > 0 || redo_discarded > 0 {
+        // Restore the old document while the modal loop may repaint; the
+        // prepared new state stays owned by the plan until approval.
+        plan = editor(h).document_mut().suspend_edit_with_plan(plan)?;
+        let _modal = ModalGuard::new(h);
+        let message = format!("Für diese Bearbeitung werden {evictions} ältere Rückgängig-Schritte und {redo_discarded} Wiederholen-Schritte entfernt. Möchten Sie fortfahren?");
+        if MessageBoxW(
+            h,
+            wide(&message).as_ptr(),
+            wide("Rückgängig-Verlauf").as_ptr(),
+            0x124,
+        ) != 6
+        {
+            return Ok(None);
+        }
+    }
+    editor(h)
+        .document_mut()
+        .commit_edit_with_plan(plan, evictions > 0 || redo_discarded > 0)
+        .map(Some)
+}
+
 pub(super) fn active_settings() -> Settings {
     SETTINGS
         .lock()

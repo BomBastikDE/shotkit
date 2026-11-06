@@ -183,10 +183,18 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
                 return Err(error);
             }
         };
-        if let Err(error) = editor(h).document_mut().commit_edit() {
-            DeleteObject(bitmap);
-            let _ = editor(h).document_mut().abort_edit();
-            return Err(error.to_string());
+        match confirm_and_commit_staged_edit(h) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                DeleteObject(bitmap);
+                let _ = editor(h).document_mut().abort_edit();
+                return Ok(());
+            }
+            Err(error) => {
+                DeleteObject(bitmap);
+                let _ = editor(h).document_mut().abort_edit();
+                return Err(error.to_string());
+            }
         }
         install_bitmap(h, bitmap, &output);
         window_state(h).zoom = 1.0;

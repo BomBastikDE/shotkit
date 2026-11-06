@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Bei Zuschneiden, Rahmen und Leinwandgröße fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Die Umstellung der übrigen Bearbeitungswerkzeuge ist noch offen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+
 - Beim Speichern werden BMP, JPEG und GIF in eine geschützte temporäre Datei kodiert, ohne die vollständige kodierte Datei zusätzlich im Speicher zu halten. Beim GIF-Abschluss werden auch Schreibfehler am Trailer berücksichtigt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - JPEG vermeidet beim Kodieren einen vollständigen RGB-Zwischenpuffer; GIF vermeidet eine zusätzliche RGBA-Kopie. Ungültige GIF-Bilddaten werden kontrolliert abgelehnt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
