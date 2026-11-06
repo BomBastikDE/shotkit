@@ -33,6 +33,8 @@ namespace ShotKitCanvasSmoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h,uint m,IntPtr w,IntPtr l);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
@@ -60,6 +62,14 @@ namespace ShotKitCanvasSmoke {
   public static string ControlSnapshot(IntPtr dialog,int id) {
    var h=GetDlgItem(dialog,id);
    return "dialog HWND="+dialog+" live="+IsWindow(dialog)+" PID="+Owner(dialog)+" class='"+Read(dialog,true)+"' title='"+Read(dialog,false)+"' owner HWND="+GetWindow(dialog,4)+"; ID="+id+" HWND="+h+" PID="+Owner(h)+" class='"+Read(h,true)+"' text='"+Read(h,false)+"' visible="+IsWindowVisible(h);
+  }
+  public static string DialogChildrenSnapshot(IntPtr dialog) {
+   // Enumerate every descendant, including non-buttons and hidden controls:
+   // a missing IDOK alone cannot distinguish initialization from a different native ID.
+   var entries=new List<string>();
+   EnumProc cb=(h,d)=>{entries.Add("HWND="+h+" parent HWND="+GetParent(h)+" ID="+GetDlgCtrlID(h)+" PID="+Owner(h)+" class='"+Read(h,true)+"' text='"+Read(h,false).Replace("\r","\\r").Replace("\n","\\n")+"' visible="+IsWindowVisible(h)+" enabled="+IsWindowEnabled(h));return true;};
+   EnumChildWindows(dialog,cb,IntPtr.Zero);GC.KeepAlive(cb);
+   return "dialog HWND="+dialog+" live="+IsWindow(dialog)+" enabled="+IsWindowEnabled(dialog)+" children="+entries.Count+"; ["+String.Join("; ",entries)+"]";
   }
   public static IntPtr ReadyControl(IntPtr dialog,int id,string cls,int pid) {
    // An absent child may still be initializing; an existing wrong identity is a failure.
@@ -254,10 +264,11 @@ try {
   Dialog-Button $d 1 'Übernehmen'
   $errorDialog=Wait-For {Owned-Dialogs|Where-Object{$_.H -ne $d.H -and $_.Title -ceq 'Leinwandgröße' -and [ShotKitCanvasSmoke.N]::GetWindow($_.H,4) -eq $d.H}|Select-Object -First 1} "validation error: $($case.Name)" $ActionTimeoutSeconds
   if(-not [ShotKitCanvasSmoke.N]::IsWindow($d.H)){throw "INVALID_INPUT_CLOSED_CANVAS: $($case.Name)"}
-  # MessageBox IDOK is localized by Windows; assert class/ID/ownership instead of its caption.
+  # MessageBox captions are localized by Windows; assert class/ID/ownership instead.
   # Enumerating a visible dialog does not synchronize with creation of its children.
   # Wait only for the real IDOK; never replace it with WM_CLOSE or a synthetic command.
-  $readyStarted=[DateTime]::UtcNow
+  $readyWatch=[Diagnostics.Stopwatch]::StartNew()
+  Write-Host "VALIDATION_CHILDREN_INITIAL: case='$($case.Name)' timeoutSeconds=$ActionTimeoutSeconds; $([ShotKitCanvasSmoke.N]::DialogChildrenSnapshot($errorDialog.H))"
   Write-Host "VALIDATION_DIALOG: case='$($case.Name)'; $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
   try {
    $ok=Wait-For {
@@ -267,8 +278,11 @@ try {
     $candidate=[ShotKitCanvasSmoke.N]::ReadyControl($errorDialog.H,1,'Button',$process.Id)
     if($candidate -ne [IntPtr]::Zero){return $candidate}
    } "validation IDOK: $($case.Name)" $ActionTimeoutSeconds
-  } catch {throw "VALIDATION_IDOK_FAILED case='$($case.Name)': $($_.Exception.Message); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"}
-  Write-Host "VALIDATION_IDOK_READY: case='$($case.Name)' elapsedMs=$([int]([DateTime]::UtcNow-$readyStarted).TotalMilliseconds); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
+  } catch {
+   Write-Host "VALIDATION_CHILDREN_FAILED: case='$($case.Name)' elapsedMs=$($readyWatch.ElapsedMilliseconds); $([ShotKitCanvasSmoke.N]::DialogChildrenSnapshot($errorDialog.H))"
+   throw "VALIDATION_IDOK_FAILED case='$($case.Name)': $($_.Exception.Message); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
+  }
+  Write-Host "VALIDATION_IDOK_READY: case='$($case.Name)' elapsedMs=$($readyWatch.ElapsedMilliseconds); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
   if(-not [ShotKitCanvasSmoke.N]::PostMessageW($ok,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'VALIDATION_ERROR_CLOSE_FAILED'}
   [void](Wait-For {if(-not [ShotKitCanvasSmoke.N]::IsWindow($errorDialog.H)){return $true}} 'validation message close' $ActionTimeoutSeconds)
   Close-Canvas $d 2 'Abbrechen'
