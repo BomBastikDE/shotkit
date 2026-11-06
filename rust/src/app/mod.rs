@@ -15,6 +15,7 @@ mod capture;
 use capture::*;
 mod rendering;
 use rendering::*;
+mod atomic_save;
 mod document;
 use document::*;
 mod actions;
@@ -29,14 +30,11 @@ use crate::{
 use std::{
     cell::RefCell,
     ffi::c_void,
-    fs::OpenOptions,
-    io::Write,
     mem::{size_of, zeroed},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
     rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use shotkit::{
@@ -291,7 +289,6 @@ extern "system" {
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> H;
     fn GetDriveTypeW(root: *const u16) -> u32;
-    fn MoveFileExW(old: *const u16, new: *const u16, flags: u32) -> i32;
     fn CreateMutexW(attributes: *mut c_void, initial_owner: i32, name: *const u16) -> H;
     fn SetLastError(error: u32);
     fn GetLastError() -> u32;
