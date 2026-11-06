@@ -103,38 +103,25 @@ namespace ShotKitMemorySmoke {
 
 if ($FixtureFormat -eq 'RGBA-PNG') {
     Add-Type -AssemblyName System.Drawing
-    $drawingAssembly = [System.Drawing.Bitmap].Assembly.Location
-    Add-Type -ReferencedAssemblies @($drawingAssembly) -TypeDefinition @'
+    Add-Type -TypeDefinition @'
 using System;
-using System.Drawing;
-using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 namespace ShotKitMemorySmoke {
  public static class PngFixture {
-  public static void Write(string path) {
+  public static void Fill(IntPtr scan0, int stride) {
    const int width=6000, height=4000;
-   using (var bitmap=new Bitmap(width,height,PixelFormat.Format32bppArgb)) {
-    var rect=new Rectangle(0,0,width,height);
-    BitmapData data=null;
-    try {
-     data=bitmap.LockBits(rect,ImageLockMode.WriteOnly,PixelFormat.Format32bppArgb);
-     int rowBytes=checked(width*4);
-     if(data.Scan0==IntPtr.Zero || Math.Abs((long)data.Stride)<rowBytes) throw new InvalidOperationException("Invalid 32bpp bitmap row bounds.");
-     var row=new byte[rowBytes];
-     for(int y=0;y<height;y++) {
-      for(int x=0;x<width;x++) {
-       int i=x*4;
-       row[i]=(byte)((x*11+y*3)&255); // B
-       row[i+1]=(byte)((x*3+y*7)&255); // G
-       row[i+2]=(byte)((x+y*5)&255); // R
-       row[i+3]=(byte)(64+((x+y)%192)); // A
-      }
-      Marshal.Copy(row,0,IntPtr.Add(data.Scan0,checked(y*data.Stride)),rowBytes);
-     }
-    } finally {
-     if(data!=null) bitmap.UnlockBits(data);
+   int rowBytes=checked(width*4);
+   if(scan0==IntPtr.Zero || Math.Abs((long)stride)<rowBytes) throw new InvalidOperationException("Invalid 32bpp bitmap row bounds.");
+   var row=new byte[rowBytes];
+   for(int y=0;y<height;y++) {
+    for(int x=0;x<width;x++) {
+     int i=x*4;
+     row[i]=(byte)((x*11+y*3)&255);
+     row[i+1]=(byte)((x*3+y*7)&255);
+     row[i+2]=(byte)((x+y*5)&255);
+     row[i+3]=(byte)(64+((x+y)%192));
     }
-    bitmap.Save(path,ImageFormat.Png);
+    Marshal.Copy(row,0,IntPtr.Add(scan0,checked(y*stride)),rowBytes);
    }
   }
  }
@@ -185,7 +172,14 @@ function Write-LargeBmp([string] $Path) {
     if((Get-Item -LiteralPath $Path).Length -ne 72000054){throw 'FIXTURE_INVALID: generated BMP length was unexpected.'}
 }
 function Write-LargeRgbaPng([string] $Path) {
-    [ShotKitMemorySmoke.PngFixture]::Write($Path)
+    $bitmap=[System.Drawing.Bitmap]::new(6000,4000,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    try {
+        $rectangle=[System.Drawing.Rectangle]::new(0,0,6000,4000)
+        $data=$bitmap.LockBits($rectangle,[System.Drawing.Imaging.ImageLockMode]::WriteOnly,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        try { [ShotKitMemorySmoke.PngFixture]::Fill($data.Scan0,$data.Stride) }
+        finally { $bitmap.UnlockBits($data) }
+        $bitmap.Save($Path,[System.Drawing.Imaging.ImageFormat]::Png)
+    } finally { $bitmap.Dispose() }
     $stream=[IO.File]::OpenRead($Path)
     try {
         if($stream.Length -lt 33){throw 'FIXTURE_INVALID: generated PNG is shorter than its IHDR.'}
