@@ -4,7 +4,7 @@
 //! physical coordinate space as the screen capture; sampling cursor shape and
 //! position is best effort, not an atomic screen/cursor transaction. No native
 //! handle escapes this module. Hidden/suppressed cursors produce `Ok(None)`.
-//! Animated cursors yield the frame exposed by GetIconInfo, not an animation.
+//! The displayed frame of animated cursors is not established by this code.
 //!
 //! Win32's legacy cursor operation is `(destination AND mask) XOR color`.
 //! Inversion needs the destination and cannot be represented by an RGBA image.

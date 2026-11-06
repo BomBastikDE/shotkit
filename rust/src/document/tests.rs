@@ -22,6 +22,42 @@ fn shape() -> Shape {
 }
 
 #[test]
+fn cursor_shape_move_remove_and_undo_preserve_image() {
+    use crate::{cursor_snapshot::CursorPixels, shapes::CursorSprite};
+    let original = image();
+    let mut document = Document::new(original.clone()).unwrap();
+    let sprite = CursorSprite::new(
+        Point::new(0.0, 0.0),
+        1,
+        1,
+        CursorPixels::Raster {
+            and_mask: vec![255],
+            xor_rgb: vec![255; 3],
+        },
+    )
+    .unwrap();
+    document
+        .add_shape(Shape::new(ShapeKind::Cursor { data: sprite }))
+        .unwrap();
+    document
+        .edit_shape(0, |shape| shape.offset(1.0, 1.0))
+        .unwrap();
+    assert_eq!(document.shapes()[0].bounds().x, 1.0);
+    document.remove_shape(0).unwrap();
+    assert!(document.shapes().is_empty());
+    assert!(document.undo());
+    assert_eq!(document.shapes()[0].bounds().x, 1.0);
+    assert!(document.undo());
+    assert_eq!(document.shapes()[0].bounds().x, 0.0);
+    assert!(document.undo());
+    assert!(document.shapes().is_empty());
+    assert_eq!(document.image(), &original);
+    assert!(document.redo());
+    assert!(document.redo());
+    assert_eq!(document.shapes()[0].bounds().x, 1.0);
+}
+
+#[test]
 fn saved_revision_tracks_undo_redo_and_new_capture() {
     let mut d = Document::new(image()).unwrap();
     assert!(d.is_dirty()); // An unsaved capture stays dirty even at its initial state.
