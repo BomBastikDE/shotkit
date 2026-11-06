@@ -214,6 +214,16 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             )?;
         }
     } else {
+        if format == ImageFormat::Gif {
+            let expected = image
+                .width
+                .checked_mul(image.height)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or("Ungültige Bildgröße")?;
+            if w == 0 || h == 0 || image.pixels.len() != expected {
+                return Err("Ungültige Bildgröße".into());
+            }
+        }
         let mut pixels = Vec::new();
         pixels
             .try_reserve_exact(image.pixels.len())
@@ -223,9 +233,15 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             px.swap(0, 2);
         }
         let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
-        DynamicImage::ImageRgba8(rgba)
-            .write_to(&mut bytes, format)
-            .map_err(|e| e.to_string())?;
+        if format == ImageFormat::Gif {
+            image::codecs::gif::GifEncoder::new(&mut bytes)
+                .encode_frame(image::Frame::new(rgba))
+                .map_err(|e| e.to_string())?;
+        } else {
+            DynamicImage::ImageRgba8(rgba)
+                .write_to(&mut bytes, format)
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(bytes.into_inner())
 }
@@ -924,6 +940,71 @@ mod tests {
         let bytes = encode(&source, ImageFormat::Gif).unwrap();
         assert_eq!(decode(&bytes).unwrap(), original);
         assert_eq!(source, original);
+    }
+
+    #[test]
+    fn gif_owned_frame_matches_previous_encoder_bytes() {
+        for (width, height, many_colors) in [(1, 1, false), (17, 9, false), (33, 29, true)] {
+            let pixels: Vec<u8> = (0..width * height)
+                .flat_map(|n| {
+                    if many_colors {
+                        [
+                            (n * 17) as u8,
+                            (n * 31) as u8,
+                            (n * 47 + n / 3) as u8,
+                            (n * 13) as u8,
+                        ]
+                    } else {
+                        [
+                            if n % 2 == 0 { 255 } else { 0 },
+                            42,
+                            17,
+                            if n % 3 == 0 { 0 } else { 255 },
+                        ]
+                    }
+                })
+                .collect();
+            let source = Image::new(width, height, pixels).unwrap();
+            let original = source.clone();
+            let mut rgba = source.pixels.clone();
+            for pixel in rgba.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let old = DynamicImage::ImageRgba8(
+                RgbaImage::from_raw(width as u32, height as u32, rgba).unwrap(),
+            );
+            let mut bytes = Cursor::new(Vec::new());
+            old.write_to(&mut bytes, ImageFormat::Gif).unwrap();
+            assert_eq!(
+                encode(&source, ImageFormat::Gif).unwrap(),
+                bytes.into_inner()
+            );
+            assert_eq!(source, original);
+        }
+        let invalid = Image {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 15],
+        };
+        assert!(encode(&invalid, ImageFormat::Gif).is_err());
+        let surplus = Image {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 17],
+        };
+        assert!(encode(&surplus, ImageFormat::Gif).is_err());
+        let empty = Image {
+            width: 0,
+            height: 1,
+            pixels: vec![],
+        };
+        assert!(encode(&empty, ImageFormat::Gif).is_err());
+        let empty_height = Image {
+            width: 1,
+            height: 0,
+            pixels: vec![],
+        };
+        assert!(encode(&empty_height, ImageFormat::Gif).is_err());
     }
 
     #[test]
