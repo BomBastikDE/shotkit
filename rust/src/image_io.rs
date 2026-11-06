@@ -37,15 +37,17 @@ fn read_bounded(mut reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
             return Err("Die Bilddatei ist zu groß.".into());
         }
         // Reserve fallibly before extending: extend_from_slice then cannot
-        // invoke Vec's infallible growth path. Grow geometrically to avoid
-        // reallocating for every chunk, capped at the input byte limit.
+        // invoke Vec's infallible growth path. Geometric 25% growth limits
+        // excess address-space reservation while remaining amortized linear;
+        // the allocator may still reserve more or move an existing buffer.
         let needed = bytes
             .len()
             .checked_add(count)
             .ok_or("Bilddatei benötigt zu viel Speicher.")?;
         if needed > bytes.capacity() {
             let capacity_limit = usize::try_from(limit).unwrap_or(usize::MAX);
-            let capacity = needed.max(bytes.capacity().saturating_mul(2).min(capacity_limit));
+            let growth = bytes.capacity().saturating_add(bytes.capacity() / 4);
+            let capacity = needed.max(growth.min(capacity_limit));
             bytes
                 .try_reserve_exact(capacity - bytes.len())
                 .map_err(|_| "Nicht genügend Speicher zum Lesen der Bilddatei.".to_owned())?;
@@ -288,6 +290,27 @@ mod tests {
             "Die Bilddatei ist zu groß."
         );
         assert_eq!(super::read_bounded(&b"1"[..], u64::MAX).unwrap(), b"1");
+    }
+    #[test]
+    fn bounded_read_preserves_short_reads_across_multiple_growths() {
+        struct ShortReads<'a>(&'a [u8]);
+        impl std::io::Read for ShortReads<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = output.len().min(self.0.len()).min(37);
+                output[..count].copy_from_slice(&self.0[..count]);
+                self.0 = &self.0[count..];
+                Ok(count)
+            }
+        }
+        let bytes: Vec<_> = (0..100_000).map(|i| (i % 251) as u8).collect();
+        assert_eq!(
+            super::read_bounded(ShortReads(&bytes), bytes.len() as u64).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            super::read_bounded(ShortReads(&bytes), (bytes.len() - 1) as u64).unwrap_err(),
+            "Die Bilddatei ist zu groß."
+        );
     }
     #[test]
     fn bounded_read_retries_interrupts_and_reports_read_errors() {
