@@ -145,6 +145,34 @@ mod tests {
         assert_eq!(super::read_bounded(&b"1234"[..], 4).unwrap(), b"1234");
         assert!(super::read_bounded(&b"12345"[..], 4).is_err());
     }
+    #[test]
+    fn bounded_file_read_rejects_growth_after_metadata_check() {
+        use std::io::Write;
+        let unique = format!(
+            "shotkit-growing-image-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        );
+        let path = std::env::temp_dir().join(unique);
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        writer.write_all(b"1234").unwrap();
+        writer.flush().unwrap();
+        let reader = std::fs::File::open(&path).unwrap();
+        assert_eq!(reader.metadata().unwrap().len(), 4);
+        writer.write_all(b"5").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(reader.metadata().unwrap().len(), 5);
+        assert_eq!(
+            super::read_bounded(reader, 4).unwrap_err(),
+            "Die Bilddatei ist zu groß."
+        );
+        drop(writer);
+        std::fs::remove_file(path).unwrap();
+    }
     use super::*;
     fn sample() -> Image {
         Image::new(
