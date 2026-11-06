@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Beim Speichern eines Bildes ohne Anmerkungen wird das vorhandene Bild gemeinsam genutzt, statt es für den Export vollständig zu kopieren ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
+
 - Beim Rendern ausschließlich geschwärzter Bereiche entfällt eine unnötige Kopie des gesamten Originalbilds; bei gemischten Werkzeugen bleibt der Schutz der Effektquellen bestehen ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
 
 - Die Bildvorschau vermeidet zwei unnötige Bildpuffer, wenn das stabile Formenpräfix leer ist beziehungsweise die Transparenzdarstellung vorbereitet wird ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).

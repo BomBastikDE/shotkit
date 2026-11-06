@@ -177,7 +177,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
 // Voraussetzung: h erfüllt den Fensterzustandsvertrag und enthält gültige Bilddaten.
 // Warum erfüllt bzw. offen: Arc und Formen werden vor dem Renderer kopiert.
 // Nachrichten: Native GDI-Aufrufe können Reentranz nicht pauschal ausschließen.
-pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
+pub(super) unsafe fn bitmap_image(h: H) -> Result<std::sync::Arc<Image>, String> {
     if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0
     {
         return Err("Kein Bild geöffnet.".into());
@@ -187,7 +187,7 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
         let state = editor(h);
         (state.image_arc(), state.shapes().to_vec())
     };
-    shotkit::alpha_document::render_document(&image, &shapes)
+    shotkit::alpha_document::render_document_shared(&image, &shapes)
 }
 
 // SAFETY CONTRACT:

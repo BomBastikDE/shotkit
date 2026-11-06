@@ -32,6 +32,15 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
     render_document_over(source, source, shapes)
 }
 
+/// Return the original immutable image when there are no annotations.
+pub fn render_document_shared(source: &Arc<Image>, shapes: &[Shape]) -> Result<Arc<Image>, String> {
+    if shapes.is_empty() {
+        validate_image(source)?;
+        return Ok(Arc::clone(source));
+    }
+    render_document(source, shapes).map(Arc::new)
+}
+
 /// Cached, fully rendered prefix of one image's annotation stack.
 /// The original image is retained because pixelation samples that image even
 /// when earlier annotations are already present in the accumulated output.
@@ -364,6 +373,59 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+
+    #[test]
+    fn shared_export_reuses_unannotated_image_and_validates_it() {
+        use crate::shapes::Point;
+        let source = Arc::new(Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap());
+        let reused = render_document_shared(&source, &[]).unwrap();
+        assert!(Arc::ptr_eq(&source, &reused));
+        assert_eq!(*reused, render_document(&source, &[]).unwrap());
+        let png = crate::image_io::encode(&reused, image::ImageFormat::Png).unwrap();
+        assert_eq!(crate::image_io::decode(&png).unwrap(), *source);
+
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0),
+        });
+        let rendered = render_document_shared(&source, std::slice::from_ref(&redact)).unwrap();
+        assert!(!Arc::ptr_eq(&source, &rendered));
+        assert_eq!(*rendered, render_document(&source, &[redact]).unwrap());
+        assert_eq!(&source.pixels[..4], &[10, 20, 30, 40]);
+        assert_eq!(&rendered.pixels[..4], &[0, 0, 0, 255]);
+
+        let malformed = Arc::new(Image {
+            width: 1,
+            height: 1,
+            pixels: vec![],
+        });
+        let too_wide = Arc::new(Image::new(30_001, 1, vec![0; 30_001 * 4]).unwrap());
+        let too_tall = Arc::new(Image::new(1, 30_001, vec![0; 30_001 * 4]).unwrap());
+        let zero = Arc::new(Image {
+            width: 0,
+            height: 1,
+            pixels: vec![],
+        });
+        let excess = Arc::new(Image {
+            width: 1,
+            height: 1,
+            pixels: vec![0; 8],
+        });
+        let overflow = Arc::new(Image {
+            width: usize::MAX,
+            height: 2,
+            pixels: vec![],
+        });
+        let boundary = Arc::new(Image::new(30_000, 1, vec![0; 30_000 * 4]).unwrap());
+        assert!(Arc::ptr_eq(
+            &boundary,
+            &render_document_shared(&boundary, &[]).unwrap()
+        ));
+        for image in [malformed, too_wide, too_tall, zero, excess, overflow] {
+            assert!(render_document_shared(&image, &[]).is_err());
+            assert!(render_document(&image, &[]).is_err());
+        }
+    }
 
     #[test]
     fn cursor_preview_matches_export_and_redaction_wins_in_both_orders() {
