@@ -260,9 +260,9 @@ mod native {
     struct OwnedCursor(Handle);
     impl Drop for OwnedCursor {
         fn drop(&mut self) {
-            // SAFETY CONTRACT: CopyImage without LR_COPYRETURNORG returned
-            // this unique non-null owned HCURSOR. It remains live until
-            // this sole owner drops; no borrowed
+            // SAFETY CONTRACT: CopyImage without LR_COPYRETURNORG (or the
+            // test fixture's CreateCursor) returned this unique owned HCURSOR.
+            // It remains live until this sole owner drops; no borrowed
             // GetCursorInfo handle is destroyed. No messages/callbacks installed.
             if !self.0.is_null() {
                 unsafe {
@@ -368,6 +368,15 @@ mod native {
                 "cursor position changed during sampling",
             ));
         }
+        extract_copied_cursor(&icon, position).map(Some)
+    }
+
+    /// Read a live, independently copied cursor without sampling desktop state.
+    /// The caller retains ownership; only GetIconInfo's bitmap copies are freed.
+    fn extract_copied_cursor(
+        icon: &OwnedCursor,
+        position: Point,
+    ) -> Result<CursorSnapshot, SnapshotError> {
         let mut info = IconInfo {
             is_icon: 0,
             hotspot_x: 0,
@@ -460,13 +469,13 @@ mod native {
         if info.hotspot_x >= width || info.hotspot_y >= height {
             return Err(SnapshotError::Invalid("hotspot outside cursor"));
         }
-        Ok(Some(CursorSnapshot {
+        Ok(CursorSnapshot {
             width,
             height,
             screen_hotspot: (i64::from(position.x), i64::from(position.y)),
             hotspot: (info.hotspot_x, info.hotspot_y),
             pixels,
-        }))
+        })
     }
 
     fn positive(value: i32) -> Result<u32, SnapshotError> {
@@ -561,6 +570,167 @@ mod native {
             ));
         }
         Ok(bytes)
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn CreateCursor(
+                instance: Handle,
+                hotspot_x: i32,
+                hotspot_y: i32,
+                width: i32,
+                height: i32,
+                and_bits: *const c_void,
+                xor_bits: *const c_void,
+            ) -> Handle;
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+
+        #[test]
+        fn native_monochrome_copy_preserves_planes_hotspot_and_row_order() {
+            // SAFETY CONTRACT: these documented metric indices take no pointers
+            // and only query dimensions; neither call alters the desktop cursor.
+            let (width, height) = unsafe { (GetSystemMetrics(13), GetSystemMetrics(14)) };
+            assert!(width >= 4 && height >= 3);
+            let (w, h) = (width as usize, height as usize);
+            // CreateCursor consumes WORD-aligned monochrome rows, unlike the
+            // DWORD-aligned DIB rows used by the extraction path.
+            let stride = w.div_ceil(16) * 2;
+            let mut and_bits = vec![0; stride * h];
+            let mut xor_bits = vec![0; stride * h];
+            let mut expected_and = vec![0; w * h];
+            let mut expected_xor = vec![0; w * h * 3];
+            for y in 0..h {
+                for x in 0..w {
+                    // Four adjacent truth-table states plus asymmetric rows
+                    // catch plane swaps, bit reversal and vertical inversion.
+                    let and = (x + 2 * y) % 4 >= 2;
+                    let xor = (x + y) % 2 != 0;
+                    if and {
+                        and_bits[y * stride + x / 8] |= 0x80 >> (x % 8);
+                        expected_and[y * w + x] = 255;
+                    }
+                    if xor {
+                        xor_bits[y * stride + x / 8] |= 0x80 >> (x % 8);
+                        expected_xor[(y * w + x) * 3..(y * w + x + 1) * 3].fill(255);
+                    }
+                }
+            }
+            // SAFETY CONTRACT: positive system cursor dimensions and in-bounds
+            // hotspot (3,2); initialized WORD-aligned planes contain every row
+            // and remain live for this synchronous copy. NULL is permitted for
+            // hInstance. This creates a private cursor; SetCursor is never called.
+            let source = OwnedCursor(unsafe {
+                CreateCursor(
+                    null_mut(),
+                    3,
+                    2,
+                    width,
+                    height,
+                    and_bits.as_ptr().cast(),
+                    xor_bits.as_ptr().cast(),
+                )
+            });
+            assert!(!source.0.is_null(), "CreateCursor failed");
+            // SAFETY CONTRACT: live private HCURSOR, IMAGE_CURSOR and flags=0
+            // request an independently owned copy with original dimensions.
+            let copied = OwnedCursor(unsafe { CopyImage(source.0, 2, 0, 0, 0) });
+            assert!(!copied.0.is_null(), "CopyImage failed");
+            assert_ne!(copied.0, source.0);
+            let snapshot = extract_copied_cursor(&copied, Point { x: -1915, y: -20 })
+                .expect("native monochrome extraction failed");
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (width as u32, height as u32)
+            );
+            assert_eq!(snapshot.hotspot, (3, 2));
+            assert_eq!(snapshot.screen_hotspot, (-1915, -20));
+            assert_eq!(snapshot.top_left_in_capture((-1920, -100)), Ok((2, 78)));
+            assert_eq!(
+                snapshot.pixels,
+                CursorPixels::Raster {
+                    and_mask: expected_and,
+                    xor_rgb: expected_xor,
+                }
+            );
+            assert_eq!(
+                snapshot.to_rgba(),
+                Err(SnapshotError::Unsupported(
+                    "destination-dependent XOR pixel",
+                ))
+            );
+            drop(copied);
+            drop(source);
+            drop(and_bits);
+            drop(xor_bits);
+            // The owned snapshot stays usable after both native cursors and
+            // their input buffers are released; no native handle escapes it.
+            assert_eq!(snapshot.top_left_in_capture((0, 0)), Ok((-1918, -22)));
+            assert_eq!(snapshot.pixels.clone(), snapshot.pixels);
+        }
+
+        #[test]
+        fn bitmap_guard_releases_get_icon_info_copies() {
+            let and_bits = [0u8; 128];
+            let xor_bits = [0u8; 128];
+            // SAFETY CONTRACT: two initialized 32x32, WORD-aligned planes,
+            // in-bounds hotspot and NULL module; arrays outlive the synchronous
+            // copy. The private result is owned and never installed on desktop.
+            let source = OwnedCursor(unsafe {
+                CreateCursor(
+                    null_mut(),
+                    0,
+                    0,
+                    32,
+                    32,
+                    and_bits.as_ptr().cast(),
+                    xor_bits.as_ptr().cast(),
+                )
+            });
+            assert!(!source.0.is_null(), "CreateCursor failed");
+            let mut info = IconInfo {
+                is_icon: 0,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                mask: null_mut(),
+                color: null_mut(),
+            };
+            // SAFETY CONTRACT: live owned cursor and exclusive initialized
+            // repr(C) output; successful bitmap allocations are guarded below.
+            assert_ne!(unsafe { GetIconInfo(source.0, &mut info) }, 0);
+            let bitmaps = OwnedBitmaps {
+                mask: info.mask,
+                color: info.color,
+            };
+            assert!(!bitmaps.mask.is_null());
+            assert!(bitmaps.color.is_null(), "fixture must be monochrome");
+            assert!(metadata(bitmaps.mask).is_ok());
+            let released_mask = bitmaps.mask;
+            drop(bitmaps);
+            // SAFETY CONTRACT: GetObjectW accepts an object handle and reports
+            // invalid/deleted handles as failure; no freed memory is dereferenced
+            // by Rust. NULL output with size=0 only queries required buffer size.
+            // No allocation occurs on this thread between deletion and query.
+            assert_eq!(unsafe { GetObjectW(released_mask, 0, null_mut()) }, 0);
+            // Source cursor remains independently live after its bitmap copies
+            // were deleted; a second extraction must allocate fresh copies.
+            // SAFETY CONTRACT: the source is still a live private HCURSOR;
+            // IMAGE_CURSOR with flags=0 returns an independent owned cursor.
+            let copied = OwnedCursor(unsafe { CopyImage(source.0, 2, 0, 0, 0) });
+            assert!(!copied.0.is_null(), "CopyImage failed");
+            let snapshot = extract_copied_cursor(&copied, Point::default()).unwrap();
+            assert_eq!((snapshot.width, snapshot.height), (32, 32));
+            assert_eq!(
+                snapshot.pixels,
+                CursorPixels::Raster {
+                    and_mask: vec![0; 1024],
+                    xor_rgb: vec![0; 3072],
+                }
+            );
+        }
     }
 }
 
