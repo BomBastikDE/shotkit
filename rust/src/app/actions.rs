@@ -252,6 +252,7 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
         Tool::GaussianBlur => toolbar::ID_GAUSSIAN_BLUR,
         Tool::Redact => toolbar::ID_REDACT,
         Tool::Step => toolbar::ID_STEP,
+        Tool::Stamp => toolbar::ID_STAMP,
         Tool::Pen => toolbar::ID_PEN,
         Tool::Crop => toolbar::ID_CROP,
     }
@@ -289,8 +290,12 @@ pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
 pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     // Native popup loops run inside the parent's existing ModalGuard. Return
     // only validated ordinary commands and reuse their exact editor workflows.
-    let id = if matches!(id, toolbar::ID_MORE | toolbar::ID_FILE | toolbar::ID_VIEW) {
-        let Some(selected) = toolbar::popup(h, id) else {
+    let id = if matches!(
+        id,
+        toolbar::ID_MORE | toolbar::ID_FILE | toolbar::ID_VIEW | toolbar::ID_STAMP
+    ) {
+        let stamp_kind = editor(h).stamp_kind();
+        let Some(selected) = toolbar::popup(h, id, stamp_kind) else {
             SetFocus(h);
             return;
         };
@@ -298,6 +303,10 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     } else {
         id
     };
+    let stamp_kind = toolbar::stamp_kind_for_command(id);
+    if let Some(kind) = stamp_kind {
+        editor(h).set_stamp_kind(kind);
+    }
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
         toolbar::ID_ARROW => Some(Tool::Arrow),
@@ -310,6 +319,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         toolbar::ID_GAUSSIAN_BLUR => Some(Tool::GaussianBlur),
         toolbar::ID_REDACT => Some(Tool::Redact),
         toolbar::ID_STEP => Some(Tool::Step),
+        _ if stamp_kind.is_some() => Some(Tool::Stamp),
         toolbar::ID_PEN => Some(Tool::Pen),
         toolbar::ID_CROP => Some(Tool::Crop),
         _ => None,

@@ -12,7 +12,7 @@ mod history;
 use crate::{
     document::{Document, DocumentError},
     image_edit::{CropRect, FrameOptions},
-    shapes::{Color, Point, Shape, ShapeKind, Style, Tool},
+    shapes::{Color, Point, Shape, ShapeKind, StampKind, Style, Tool},
     stitch::Image,
 };
 use std::sync::Arc;
@@ -87,6 +87,7 @@ pub struct EditorController {
     last_position: Option<Point>,
     hit_tolerance: f32,
     next_step: i32,
+    stamp_kind: StampKind,
     current_style: Style,
     last_error: Option<DocumentError>,
 }
@@ -117,6 +118,7 @@ impl EditorController {
             last_position: None,
             hit_tolerance: 6.0,
             next_step: 1,
+            stamp_kind: StampKind::default(),
             current_style: Style::default(),
             last_error: None,
         })
@@ -147,6 +149,15 @@ impl EditorController {
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
         self.cancel_drag();
         self.document.add_frame(options)
+    }
+    pub fn stamp_kind(&self) -> StampKind {
+        self.stamp_kind
+    }
+    /// Select the symbol for subsequent Stamp-tool clicks. Existing objects
+    /// retain their own kind, and an unfinished gesture is discarded.
+    pub fn set_stamp_kind(&mut self, kind: StampKind) {
+        self.cancel_drag();
+        self.stamp_kind = kind;
     }
     pub fn tool(&self) -> Tool {
         self.tool
@@ -475,6 +486,10 @@ impl EditorController {
             Tool::GaussianBlur => ShapeKind::GaussianBlur { start: at, end: at },
             Tool::Redact => ShapeKind::Redact { start: at, end: at },
             Tool::Pen => ShapeKind::Freehand { points: vec![at] },
+            Tool::Stamp => ShapeKind::Stamp {
+                center: at,
+                kind: self.stamp_kind,
+            },
             Tool::Step => ShapeKind::Step {
                 center: at,
                 number: self.next_step,

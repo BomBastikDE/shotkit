@@ -35,8 +35,15 @@ pub fn layout(width: i32, dpi: u32, items: &[Item]) -> Layout {
     let fixed = items.iter().filter(|i| i.group == Group::Fixed).count();
     let slots = fixed as i32 + 1;
     let margin = scale(4, dpi).min(width / (slots * 2 + 2));
-    let gap = scale(3, dpi).min((width - 2 * margin) / (slots * 2));
+    let mut gap = scale(3, dpi).min((width - 2 * margin) / (slots * 2));
     let size = scale(32, dpi).min(((width - 2 * margin - (slots - 1) * gap) / slots).max(1));
+    // Preserve full-size controls on a narrow desktop by tightening spacing
+    // slightly when that alone keeps every action visible.
+    let count = items.len() as i32;
+    let compact_gap = scale(2, dpi).min(gap);
+    if count > 1 && 2 * margin + count * size + (count - 1) * compact_gap <= width {
+        gap = gap.min((width - 2 * margin - count * size) / (count - 1));
+    }
     let top = scale(4, dpi);
     let height = scale(36, dpi);
     let fits = |count: usize| 2 * margin + count as i32 * (size + gap) - gap <= width;
@@ -129,8 +136,8 @@ mod tests {
     fn stages_move_groups_in_reference_order_and_restore_on_growth() {
         let items = items();
         for (width, stage, hidden) in [
-            (355, 0, vec![]),
-            (354, 1, vec![4, 5]),
+            (346, 0, vec![]),
+            (345, 1, vec![4, 5]),
             (319, 2, vec![3, 4, 5]),
             (284, 3, vec![2, 3, 4, 5]),
         ] {
@@ -185,5 +192,25 @@ mod tests {
         assert_eq!(plan.overflow, vec![0, 1, 2, 3, 4, 5]);
         let empty = layout(1, 96, &[]);
         assert!(empty.buttons.is_empty() && empty.more.is_none());
+    }
+
+    #[test]
+    fn compact_spacing_keeps_full_size_buttons_on_a_1024_pixel_desktop() {
+        let items: Vec<_> = (0..29)
+            .map(|id| Item {
+                id,
+                group: if id >= 25 { Group::Fixed } else { Group::Tool },
+            })
+            .collect();
+        let plan = layout(1008, 96, &items);
+        assert_eq!(plan.stage, 0);
+        assert!(plan.overflow.is_empty());
+        assert!(plan.buttons.iter().all(|(_, rect)| rect.2 == 32));
+        let mut rects: Vec<_> = plan.buttons.iter().map(|entry| entry.1).collect();
+        rects.sort_by_key(|rect| rect.0);
+        assert!(rects
+            .windows(2)
+            .all(|pair| pair[0].0 + pair[0].2 < pair[1].0));
+        assert!(!layout(991, 96, &items).overflow.is_empty());
     }
 }

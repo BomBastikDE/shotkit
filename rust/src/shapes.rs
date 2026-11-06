@@ -100,8 +100,87 @@ pub enum Tool {
     GaussianBlur,
     Redact,
     Step,
+    Stamp,
     Pen,
     Crop,
+}
+
+/// Original, font-independent symbols drawn in a normalized unit square.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StampKind {
+    #[default]
+    Check,
+    Cross,
+    Warning,
+    Info,
+    Cursor,
+}
+impl StampKind {
+    pub const ALL: [Self; 5] = [
+        Self::Check,
+        Self::Cross,
+        Self::Warning,
+        Self::Info,
+        Self::Cursor,
+    ];
+
+    /// Geometry shared by raster output and selection. `p` is relative to the
+    /// unit square's top left; padding expands the ink, not its empty interior.
+    pub fn hit_test(self, p: Point, padding: f32) -> bool {
+        if !p.x.is_finite() || !p.y.is_finite() || !padding.is_finite() || padding < 0.0 {
+            return false;
+        }
+        let segment = |a: (f32, f32), b: (f32, f32), radius: f32| {
+            distance_segment(p, Point::new(a.0, a.1), Point::new(b.0, b.1)) <= radius + padding
+        };
+        match self {
+            Self::Check => {
+                segment((0.16, 0.52), (0.40, 0.76), 0.075)
+                    || segment((0.40, 0.76), (0.84, 0.23), 0.075)
+            }
+            Self::Cross => {
+                segment((0.23, 0.23), (0.77, 0.77), 0.075)
+                    || segment((0.23, 0.77), (0.77, 0.23), 0.075)
+            }
+            Self::Warning => {
+                segment((0.50, 0.12), (0.89, 0.84), 0.045)
+                    || segment((0.89, 0.84), (0.11, 0.84), 0.045)
+                    || segment((0.11, 0.84), (0.50, 0.12), 0.045)
+                    || segment((0.50, 0.40), (0.50, 0.58), 0.045)
+                    || segment((0.50, 0.72), (0.50, 0.72), 0.045)
+            }
+            Self::Info => {
+                (((p.x - 0.5).hypot(p.y - 0.5) - 0.37).abs() <= 0.045 + padding)
+                    || segment((0.50, 0.46), (0.50, 0.71), 0.05)
+                    || segment((0.50, 0.30), (0.50, 0.30), 0.05)
+            }
+            Self::Cursor => {
+                // A deliberately original pointer silhouette, including stem.
+                let vertices = [
+                    (0.18, 0.10),
+                    (0.82, 0.59),
+                    (0.56, 0.62),
+                    (0.71, 0.87),
+                    (0.57, 0.94),
+                    (0.42, 0.68),
+                    (0.23, 0.87),
+                ];
+                let mut inside = false;
+                for i in 0..vertices.len() {
+                    let (a, b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if segment(a, b, 0.0) {
+                        return true;
+                    }
+                    if (a.1 > p.y) != (b.1 > p.y)
+                        && p.x < (b.0 - a.0) * (p.y - a.1) / (b.1 - a.1) + a.0
+                    {
+                        inside = !inside;
+                    }
+                }
+                inside
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,6 +242,11 @@ pub enum ShapeKind {
         location: Point,
         text: String,
     },
+    /// Square symbol size in image pixels is stored in `Style::font_size`.
+    Stamp {
+        center: Point,
+        kind: StampKind,
+    },
     Step {
         center: Point,
         number: i32,
@@ -216,6 +300,15 @@ impl Shape {
                     height: (size * 1.4).max(10.0),
                 }
             }
+            ShapeKind::Stamp { center, .. } => {
+                let size = self.style.font_size;
+                Rect {
+                    x: center.x - size / 2.0,
+                    y: center.y - size / 2.0,
+                    width: size,
+                    height: size,
+                }
+            }
             ShapeKind::Step { center, .. } => {
                 let r = 10.0 + self.style.width * 2.2;
                 Rect {
@@ -266,14 +359,15 @@ impl Shape {
                 }
             }
             ShapeKind::Text { location, .. } => add(location),
-            ShapeKind::Step { center, .. } => add(center),
+            ShapeKind::Step { center, .. } | ShapeKind::Stamp { center, .. } => add(center),
         }
     }
     /// Two endpoint handles for lines; four normalized corner handles for box annotations.
     pub fn handles(&self) -> Vec<Point> {
         match &self.kind {
             ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => vec![*start, *end],
-            ShapeKind::Rectangle { .. }
+            ShapeKind::Stamp { .. }
+            | ShapeKind::Rectangle { .. }
             | ShapeKind::Ellipse { .. }
             | ShapeKind::Highlight { .. }
             | ShapeKind::Blur { .. }
@@ -285,6 +379,14 @@ impl Shape {
     /// Resize by handle index. Box handles retain the original corner identity when crossing over.
     pub fn set_handle(&mut self, index: usize, p: Point) -> bool {
         match &mut self.kind {
+            ShapeKind::Stamp { center, .. } => {
+                if index >= 4 || !p.x.is_finite() || !p.y.is_finite() {
+                    return false;
+                }
+                // Keep the center fixed and preserve the symbol's aspect ratio.
+                self.style.font_size =
+                    (2.0 * (p.x - center.x).abs().max((p.y - center.y).abs())).clamp(1.0, 512.0);
+            }
             ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => match index {
                 0 => *start = p,
                 1 => *end = p,
@@ -328,6 +430,16 @@ impl Shape {
     /// use an axis-aligned outer-minus-inner approximation.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> bool {
         match &self.kind {
+            ShapeKind::Stamp { kind, .. } => {
+                let bounds = self.bounds();
+                let size = self.style.font_size;
+                size.is_finite()
+                    && size > 0.0
+                    && kind.hit_test(
+                        Point::new((p.x - bounds.x) / size, (p.y - bounds.y) / size),
+                        tolerance / size,
+                    )
+            }
             ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
                 distance_segment(p, *start, *end) <= tolerance + self.style.width / 2.0
             }
@@ -511,6 +623,25 @@ impl ShapeDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stamp_hit_test_tracks_ink_and_offsets_and_preserves_aspect_ratio() {
+        let mut shape = Shape::new(ShapeKind::Stamp {
+            center: Point::new(100.0, 100.0),
+            kind: StampKind::Check,
+        });
+        shape.style.font_size = 100.0;
+        assert!(shape.hit_test(Point::new(90.0, 126.0), 0.0));
+        assert!(!shape.hit_test(Point::new(55.0, 55.0), 0.0));
+        assert!(!shape.hit_test(Point::new(f32::NAN, 100.0), 0.0));
+        shape.offset(20.0, -10.0);
+        assert!(shape.hit_test(Point::new(110.0, 116.0), 0.0));
+        assert!(shape.set_handle(2, Point::new(200.0, 100.0)));
+        assert_eq!(shape.bounds().width, 160.0);
+        assert_eq!(shape.bounds().width, shape.bounds().height);
+        assert_eq!(shape.bounds().x + shape.bounds().width / 2.0, 120.0);
+        assert!(!shape.set_handle(4, Point::new(0.0, 0.0)));
+    }
+
     #[test]
     fn text_hitbox_covers_rendered_label_approximately() {
         let mut shape = Shape::new(ShapeKind::Text {

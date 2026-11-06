@@ -20,6 +20,7 @@ pub(super) enum Icon {
     GaussianBlur,
     Redact,
     Step,
+    Stamp,
     Pen,
     Crop,
     Color,
@@ -39,7 +40,7 @@ pub(super) enum Icon {
     File,
     View,
 }
-pub(super) const ACTIONS: [Action; 29] = [
+pub(super) const ACTIONS: [Action; 30] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -104,6 +105,12 @@ pub(super) const ACTIONS: [Action; 29] = [
         id: ID_STEP,
         label: "Nummer (N)",
         icon: Icon::Step,
+        tool: true,
+    },
+    Action {
+        id: ID_STAMP,
+        label: "Stempel auswählen…",
+        icon: Icon::Stamp,
         tool: true,
     },
     Action {
@@ -244,10 +251,53 @@ pub(super) fn layout_items() -> Vec<shotkit::toolbar_layout::Item> {
 mod tests {
     use super::*;
     #[test]
+    fn stamp_toolbar_preserves_client_width_boundary_and_dpi_geometry() {
+        use shotkit::toolbar_layout::{layout, scale};
+        let items = layout_items();
+        assert_eq!(items.len(), 29);
+        for dpi in [96, 120, 144, 192] {
+            let full_width = 2 * scale(4, dpi)
+                + items.len() as i32 * (scale(32, dpi) + scale(2, dpi))
+                - scale(2, dpi);
+            let full = layout(full_width, dpi, &items);
+            assert_eq!(full.stage, 0);
+            assert!(full.more.is_none() && full.overflow.is_empty());
+            assert_eq!(full.buttons.len(), items.len());
+            let compact = layout(full_width - 1, dpi, &items);
+            assert!(compact.more.is_some());
+            assert!(!compact.overflow.is_empty());
+            for width in [scale(180, dpi), scale(430, dpi), full_width - 1, full_width] {
+                let plan = layout(width, dpi, &items);
+                let mut rects: Vec<_> = plan
+                    .buttons
+                    .iter()
+                    .map(|entry| entry.1)
+                    .chain(plan.more)
+                    .collect();
+                rects.sort_by_key(|rect| rect.0);
+                for rect in &rects {
+                    assert!(rect.0 >= 0 && rect.0 + rect.2 <= width);
+                }
+                for pair in rects.windows(2) {
+                    assert!(pair[0].0 + pair[0].2 < pair[1].0);
+                }
+                assert_eq!(
+                    plan.buttons
+                        .iter()
+                        .filter(|entry| entry.0 == ID_STAMP)
+                        .count()
+                        + plan.overflow.iter().filter(|&&id| id == ID_STAMP).count(),
+                    1,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [(1040, 0), (970, 1), (890, 2), (700, 3), (430, 3), (180, 3)] {
+        for (width, stage) in [(1000, 0), (990, 1), (930, 2), (700, 3), (430, 3), (180, 3)] {
             let plan = layout(width, 96, &items);
             assert_eq!(plan.stage, stage);
             let mut reachable: Vec<_> = plan

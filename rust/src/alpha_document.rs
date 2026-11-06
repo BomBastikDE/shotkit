@@ -342,6 +342,46 @@ mod tests {
     use crate::shapes::{Color, Point, Style};
 
     #[test]
+    fn stamps_preview_matches_export_and_never_overpaints_redaction() {
+        use crate::shapes::{Point, StampKind};
+        let source = Arc::new(Image::new(60, 60, [20, 40, 60, 90].repeat(3600)).unwrap());
+        for kind in StampKind::ALL {
+            let mut stamp = Shape::new(ShapeKind::Stamp {
+                center: Point::new(30.0, 30.0),
+                kind,
+            });
+            stamp.style.font_size = 48.0;
+            stamp.style.color.a = 128;
+            let redact = Shape::new(ShapeKind::Redact {
+                start: Point::new(20.0, 20.0),
+                end: Point::new(40.0, 40.0),
+            });
+            for shapes in [
+                vec![stamp.clone()],
+                vec![stamp.clone(), redact.clone()],
+                vec![redact.clone(), stamp.clone()],
+            ] {
+                let expected = render_document(&source, &shapes).unwrap();
+                let mut cache = None;
+                for split in 0..=shapes.len() {
+                    assert_eq!(
+                        render_preview(&source, &shapes, split, &mut cache).unwrap(),
+                        expected
+                    );
+                }
+                if shapes.len() == 2 {
+                    for y in 20..40 {
+                        for x in 20..40 {
+                            let i = (y * 60 + x) * 4;
+                            assert_eq!(&expected.pixels[i..i + 4], &[0, 0, 0, 255]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gaussian_blur_matches_kernel_preserves_outside_and_ignores_style_color() {
         use crate::shapes::{Color, Point};
         let source = Image::new(

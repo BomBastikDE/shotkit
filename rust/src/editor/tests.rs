@@ -872,3 +872,67 @@ fn gaussian_blur_crop_and_frame_offset_and_history_are_consistent() {
     assert!(e.redo());
     assert_eq!(e.shapes()[0], framed);
 }
+
+#[test]
+fn stamps_place_resize_move_and_round_trip_history_without_advancing_steps() {
+    let mut editor = EditorController::new();
+    editor.set_stamp_kind(StampKind::Warning);
+    editor.set_tool(Tool::Stamp);
+    assert!(editor.set_current_font_size(40.0));
+    editor.mouse_down(p(100.0, 100.0));
+    editor.mouse_up(p(100.0, 100.0));
+    let placed = editor.shapes()[0].clone();
+    assert_eq!(
+        placed.kind,
+        ShapeKind::Stamp {
+            center: p(100.0, 100.0),
+            kind: StampKind::Warning
+        }
+    );
+    assert_eq!(placed.bounds().width, 40.0);
+    assert_eq!(placed.handles().len(), 4);
+    editor.mouse_down(p(120.0, 120.0));
+    editor.mouse_move(p(140.0, 140.0));
+    assert_eq!(editor.preview().unwrap().bounds().width, 80.0);
+    assert_eq!(editor.shapes()[0], placed);
+    editor.mouse_up(p(140.0, 140.0));
+    let resized = editor.shapes()[0].clone();
+    assert_eq!(resized.bounds().width, 80.0);
+    assert!(editor.undo());
+    assert_eq!(editor.shapes()[0], placed);
+    assert!(editor.redo());
+    assert_eq!(editor.shapes()[0], resized);
+    assert!(editor.nudge_selected(12.0, -3.0));
+    assert_eq!(editor.shapes()[0].bounds().x, resized.bounds().x + 12.0);
+    assert!(editor.undo());
+    assert_eq!(editor.shapes()[0], resized);
+    editor.clear_selection();
+    editor.set_tool(Tool::Step);
+    editor.mouse_down(p(220.0, 220.0));
+    editor.mouse_up(p(220.0, 220.0));
+    assert!(matches!(
+        editor.shapes()[1].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+}
+
+#[test]
+fn stamp_kind_change_cancels_draft_and_preserves_existing_symbol() {
+    let mut editor = EditorController::new();
+    editor.set_tool(Tool::Stamp);
+    editor.mouse_down(p(50.0, 50.0));
+    editor.set_stamp_kind(StampKind::Info);
+    assert!(editor.preview().is_none());
+    editor.mouse_up(p(50.0, 50.0));
+    assert!(editor.shapes().is_empty());
+    editor.mouse_down(p(100.0, 100.0));
+    editor.mouse_up(p(100.0, 100.0));
+    editor.set_stamp_kind(StampKind::Cross);
+    assert!(matches!(
+        editor.shapes()[0].kind,
+        ShapeKind::Stamp {
+            kind: StampKind::Info,
+            ..
+        }
+    ));
+}

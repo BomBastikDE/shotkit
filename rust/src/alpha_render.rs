@@ -1,4 +1,4 @@
-//! Windows GDI+ rendering of one annotation into a transparent straight-BGRA layer.
+//! Original symbol rasterization and Windows GDI+ rendering of one annotation into a transparent straight-BGRA layer.
 //!
 //! The output is an independent full-size image; untouched pixels remain fully
 //! transparent. Blur/pixelation is deliberately rejected because it needs the
@@ -6,6 +6,7 @@
 
 use crate::shapes::{Shape, ShapeKind};
 use crate::stitch::Image;
+mod stamps;
 #[cfg(windows)]
 use std::{ffi::c_void, ptr};
 
@@ -61,6 +62,11 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
         .try_reserve_exact(bytes)
         .map_err(|_| RenderError::AllocationFailed)?;
     pargb.resize(bytes, 0);
+
+    if let ShapeKind::Stamp { center, kind } = shape.kind {
+        stamps::render(width, height, center, kind, &shape.style, &mut pargb)?;
+        return Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions);
+    }
 
     #[cfg(windows)]
     {
@@ -519,6 +525,10 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             let text_color = step_text_color(shape.style.color);
             draw_centered_text(g, *center, radius, &text, text_color)
         }
+        // Stamp is dispatched to the shared rasterizer before GDI+ starts.
+        ShapeKind::Stamp { .. } => Err(RenderError::UnsupportedShape(
+            "Stempel verwendet den eigenen Rasterrenderer",
+        )),
         ShapeKind::Redact { .. } => Err(RenderError::UnsupportedShape(
             "Schwärzen ist eine Dokumentoperation",
         )),

@@ -94,3 +94,61 @@ fn gaussian_blur_requires_document_sampling_source() {
         ))
     );
 }
+
+#[test]
+fn original_stamps_render_straight_alpha_clipped_antialiased_and_scaled() {
+    use crate::shapes::{Color, StampKind};
+    for kind in StampKind::ALL {
+        let mut shape = Shape::new(ShapeKind::Stamp {
+            center: Point::new(40.0, 40.0),
+            kind,
+        });
+        shape.style.color = Color::rgba(200, 30, 80, 128);
+        shape.style.font_size = 48.0;
+        let small = render_shape(80, 80, &shape).unwrap();
+        let mut count = 0;
+        let mut partial = false;
+        for (index, pixel) in small.pixels.as_chunks::<4>().0.iter().enumerate() {
+            if pixel[3] != 0 {
+                count += 1;
+                assert_eq!(&pixel[..3], &[80, 30, 200]);
+                assert!(pixel[3] <= 128);
+                partial |= pixel[3] < 128;
+                let p = Point::new((index % 80) as f32, (index / 80) as f32);
+                assert!(shape.bounds().contains(p));
+            }
+        }
+        assert!(count > 30, "{kind:?} must contain ink");
+        assert!(partial, "{kind:?} must have antialiased edges");
+        assert_eq!(&small.pixels[..4], &[0, 0, 0, 0]);
+        shape.style.font_size = 72.0;
+        let large = render_shape(80, 80, &shape).unwrap();
+        assert!(
+            large
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 0)
+                .count()
+                > count
+        );
+        shape.offset(-40.0, -40.0);
+        let clipped = render_shape(80, 80, &shape).unwrap();
+        assert!(clipped.pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+        shape.style.color.a = 0;
+        assert!(render_shape(80, 80, &shape)
+            .unwrap()
+            .pixels
+            .iter()
+            .all(|v| *v == 0));
+        shape.style.color.a = 128;
+        for size in [0.0, -1.0, f32::NAN, f32::INFINITY, 513.0] {
+            shape.style.font_size = size;
+            assert_eq!(
+                render_shape(80, 80, &shape),
+                Err(RenderError::InvalidDimensions)
+            );
+        }
+    }
+}

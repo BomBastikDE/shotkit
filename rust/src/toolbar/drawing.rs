@@ -345,6 +345,14 @@ pub(super) unsafe fn draw_icon(
             SelectObject(hdc, previous);
             DeleteObject(number_pen);
         }
+        Icon::Stamp => {
+            // A distinct check badge plus chevron advertises symbol selection.
+            Ellipse(hdc, ox + 1, oy + 2, ox + 15, oy + 16);
+            icon_line(hdc, ox + 4, oy + 9, ox + 7, oy + 12);
+            icon_line(hdc, ox + 7, oy + 12, ox + 12, oy + 6);
+            icon_line(hdc, ox + 14, oy + 16, ox + 17, oy + 19);
+            icon_line(hdc, ox + 17, oy + 19, ox + 20, oy + 16);
+        }
         Icon::Pen => {
             let curve = [p(3, 15), p(6, 3), p(12, 20), p(17, 5)];
             PolyBezier(hdc, curve.as_ptr(), curve.len() as u32);

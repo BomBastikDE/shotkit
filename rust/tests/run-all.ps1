@@ -59,6 +59,7 @@ $cases = @(
     @{ Name = 'Interactive Windows redaction export smoke test'; Script = 'windows-redaction-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows soft blur export smoke test'; Script = 'windows-gaussian-blur-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows canvas resize smoke test'; Script = 'windows-canvas-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Windows stamp editor smoke test'; Script = 'windows-stamp-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows single-instance smoke test'; Script = 'windows-instance-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows hover suggestion smoke test'; Script = 'windows-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser hover smoke test'; Script = 'windows-browser-hover-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
