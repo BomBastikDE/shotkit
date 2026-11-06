@@ -2,6 +2,12 @@
 
 ## In Entwicklung nach Beta 1
 
+- Beim Speichern werden BMP, JPEG und GIF in eine geschützte temporäre Datei kodiert, ohne die vollständige kodierte Datei zusätzlich im Speicher zu halten. Beim GIF-Abschluss werden auch Schreibfehler am Trailer berücksichtigt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- JPEG vermeidet beim Kodieren einen vollständigen RGB-Zwischenpuffer; GIF vermeidet eine zusätzliche RGBA-Kopie. Ungültige GIF-Bilddaten werden kontrolliert abgelehnt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Beim Rendern von Schwärzungen mit quellunabhängigen Formen entfällt eine weitere Bildkopie. Verpixelung, Weichzeichnung und Bildlupe verwenden weiterhin eine zuvor geschwärzte Quelle ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Rückgängig und Wiederholen werden mit einer Meldung abgelehnt, wenn der vollständige resultierende Verlauf nicht in das Verlaufslimit passt; das Bild und alle bestehenden Verlaufsschritte bleiben erhalten ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
 
 - PNG-Dateien werden direkt in eine geschützte temporäre Datei kodiert und erst nach erfolgreichem Schreiben und Synchronisieren veröffentlicht. Das vermeidet beim Datei-Export einen vollständigen kodierten PNG-Puffer im Arbeitsspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
@@ -26,7 +32,7 @@
 
 - Beim Speichern eines Bildes ohne Anmerkungen wird das vorhandene Bild gemeinsam genutzt, statt es für den Export vollständig zu kopieren ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
 
-- Beim Rendern ausschließlich geschwärzter Bereiche entfällt eine unnötige Kopie des gesamten Originalbilds; bei gemischten Werkzeugen bleibt der Schutz der Effektquellen bestehen ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
+- Beim Rendern ausschließlich geschwärzter Bereiche entfiel bereits eine unnötige Kopie des gesamten Originalbilds; Effektquellen bleiben geschützt ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
 
 - Die Bildvorschau vermeidet zwei unnötige Bildpuffer, wenn das stabile Formenpräfix leer ist beziehungsweise die Transparenzdarstellung vorbereitet wird ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
 
@@ -55,6 +61,8 @@
 - Beim Öffnen über eine zweite Instanz erhalten erkannte Netzlaufwerke mit Laufwerksbuchstaben eine Warnung vor möglicher Netzwerk-Authentifizierung; unbestimmbare Laufwerke erhalten einen Unsicherheitshinweis ([#55](https://github.com/BomBastikDE/shotkit/issues/55)). Die Laufwerksprüfung erkennt nicht jede Verzeichnisverknüpfung auf ein Netzwerkziel.
 
 ## Beta 1 – Stand vor Veröffentlichung
+
+Die [Beta 1](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-beta.1) wurde am 5. November 2026 als Vorabversion mit Windows-EXE und SHA256-Datei veröffentlicht. Der folgende Absatz beschreibt den früheren Vorbereitungsstand.
 
 Der Entwicklungszweig wird für `v2.0.0-beta.1` vorbereitet. Seit Alpha 20 wurden unter anderem Auswahlkorrektur und Scroll-Diagnose ergänzt sowie Fehler und Tests bearbeitet. Der [CI-Lauf 42056863647](https://github.com/BomBastikDE/shotkit/actions/runs/42056863647) bestand auf Linux und Windows mit 43 Windows-Szenarien für den Vorbereitungscommit `db5372e`. Die Freigabe des Release-Tags steht noch aus. Gemischte DPI, mehrere Monitore und visuelle Owner-Abnahmen bleiben offen; Verpixelung ist keine sichere Schwärzung.
 
