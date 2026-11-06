@@ -5,8 +5,9 @@
 //! [`Frame::analyze`] builds a full-width per-row hash and a coarse horizontal
 //! luminance profile. [`find_offset`] returns the downward displacement of
 //! content between equal-sized frames, plus stationary top/bottom margins.
-//! `None` means no unambiguous evidence; `Some(dy=0)` indicates a stationary
-//! match (the caller treats this as a stationary/end condition).
+//! `None` means no unambiguous evidence; `Some(dy=0)` is a stationary-profile
+//! candidate. The caller must check full-width equality before treating that
+//! candidate as a stationary/end condition.
 //!
 //! Limitations inherited from the source algorithm: grayscale bins can confuse
 //! repeated patterns, matching expects equal frame dimensions, and very flat
@@ -36,7 +37,8 @@ pub struct Frame {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchResult {
-    /// Downward content displacement, in pixels; zero represents stationary.
+    /// Candidate downward displacement, in pixels. Zero still requires a
+    /// full-width equality check before establishing a stationary/end condition.
     pub dy: usize,
     /// Stationary top and bottom edge extents.
     pub top: usize,
@@ -400,6 +402,50 @@ mod tests {
             assert_eq!(find_offset(&a, &b, 30), None);
             assert_eq!(find_offset(&a, &a, 30).unwrap().dy, 0);
         }
+    }
+    #[test]
+    fn structured_zero_vote_can_hide_moving_edges() {
+        const WIDTH: usize = 120;
+        const HEIGHT: usize = 300;
+        let make_frame = |shift: usize| {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let value = if !(12..108).contains(&x) {
+                        let row = y + shift;
+                        if ((row * 73) ^ (row >> 2)) % 7 < 3 {
+                            0
+                        } else {
+                            255
+                        }
+                    } else {
+                        let bin = (x - 12) / 12;
+                        // A fixed textured interior changes by two gray levels:
+                        // every bin is active, but still matches at zero offset.
+                        (25 + (y * 73 + bin * 41 + y * bin * 19 + y * y % 251) % 200
+                            + if shift > 0 { 2 } else { 0 }) as u8
+                    };
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+            }
+            Frame::analyze(WIDTH, HEIGHT, &pixels).unwrap()
+        };
+        let a = make_frame(0);
+        for shift in [30, 60] {
+            let b = make_frame(shift);
+            assert!(!a.same(&b));
+            assert!(!a.settled_with(&b));
+            // More than four active bins exercise the structured voting path,
+            // rather than the existing low-activity hash guard.
+            assert!((0..a.bins).all(|bin| (0..HEIGHT).all(|y| {
+                diff(a.signature[y * a.bins + bin], b.signature[y * b.bins + bin]) == 2
+            })));
+            // The tolerant profile votes for zero despite full-width changes.
+            // This candidate must not become an end condition in the caller.
+            assert_eq!(find_offset(&a, &b, 30).unwrap().dy, 0);
+        }
+        assert_eq!(find_offset(&a, &a, 30).unwrap().dy, 0);
     }
     #[test]
     fn animated_scrollbar_preserves_offset_and_settled_row_threshold() {

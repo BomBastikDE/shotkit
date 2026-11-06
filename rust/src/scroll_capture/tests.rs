@@ -481,6 +481,71 @@ fn moving_irregular_content_only_at_outer_edge_is_not_reported_as_end() {
 }
 
 #[test]
+fn unconfirmed_zero_vote_after_progress_preserves_prefix_without_fallback() {
+    const WIDTH: usize = 120;
+    const HEIGHT: usize = 300;
+    struct Page {
+        offset: usize,
+    }
+    impl Page {
+        fn frame(&self) -> Image {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let value = if !(12..108).contains(&x) {
+                        let row = y + self.offset;
+                        if ((row * 73) ^ (row >> 2)) % 7 < 3 {
+                            0
+                        } else {
+                            255
+                        }
+                    } else {
+                        let row = y + self.offset.min(30);
+                        let bin = (x - 12) / 12;
+                        (25 + (row * 73 + bin * 41 + row * bin * 19 + row * row % 251) % 200
+                            + if self.offset > 30 { 2 } else { 0 }) as u8
+                    };
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+            }
+            Image::new(WIDTH, HEIGHT, pixels).unwrap()
+        }
+    }
+    impl ScrollIo for Page {
+        fn capture(&mut self) -> Result<Image, String> {
+            Ok(self.frame())
+        }
+        fn scroll(&mut self, _: Direction, notches: i32) -> Result<(), String> {
+            self.offset = (self.offset as i32 + notches * 30).max(0) as usize;
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+    let mut page = Page { offset: 0 };
+    let first = page.frame();
+    let second = Page { offset: 30 }.frame();
+    let out = run(&mut page, Direction::Down).unwrap();
+    assert!(
+        out.reason.contains("nicht sicher nachweisbar"),
+        "{}",
+        out.reason
+    );
+    assert_eq!(out.fallback_count, 0);
+    assert_eq!((out.image.width, out.image.height), (WIDTH, HEIGHT + 30));
+    let mut expected = first.pixels;
+    expected.extend_from_slice(&second.pixels[(HEIGHT - 30) * WIDTH * 4..]);
+    assert_eq!(out.image.pixels, expected);
+}
+
+#[test]
 fn animated_page_end_bounds_fallbacks_and_keeps_the_pixel_exact_prefix() {
     const VIEW_H: usize = 220;
     const COMMITTED_PREFIX: usize = 485;

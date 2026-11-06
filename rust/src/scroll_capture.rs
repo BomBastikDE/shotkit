@@ -265,6 +265,10 @@ pub fn run(io: &mut impl ScrollIo, direction: Direction) -> Result<Outcome, Stri
                 break;
             };
             if m.dy == 0 {
+                if !prev.same(&analyzed) {
+                    reason = "Scrollstillstand ist wegen veränderter Bildinhalte nicht sicher nachweisbar – Teilaufnahme bis hierhin übernommen.".into();
+                    break;
+                }
                 still += 1;
                 if still >= 2 {
                     reason = "Ende des scrollbaren Bereichs erreicht.".into();
