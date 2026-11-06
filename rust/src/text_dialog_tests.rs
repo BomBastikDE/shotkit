@@ -10,6 +10,7 @@ const WM_DPICHANGED: u32 = 0x02e0;
 const WM_GETFONT: u32 = 0x0031;
 const WM_GETTEXT: u32 = 0x000d;
 const WM_GETTEXTLENGTH: u32 = 0x000e;
+const EM_SETSEL: u32 = 0x00b1;
 const WM_CHAR: u32 = 0x0102;
 const WM_QUIT: u32 = 0x0012;
 const GW_OWNER: u32 = 4;
@@ -476,6 +477,20 @@ fn multiline_prompt_enters_crlf_returns_exact_text_and_cancels() {
         assert_eq!(read_control_text(edit), "first");
 
         // Exercise the native EDIT's Enter handling, then type a second line.
+        let text_length = send_timeout(
+            edit,
+            WM_GETTEXTLENGTH,
+            0,
+            0,
+            "WM_GETTEXTLENGTH before Enter",
+        );
+        send_timeout(
+            edit,
+            EM_SETSEL,
+            text_length,
+            text_length as isize,
+            "EM_SETSEL caret at end before Enter",
+        );
         let mut ignored = 0usize;
         for ch in "\rsecond".encode_utf16() {
             assert_ne!(
