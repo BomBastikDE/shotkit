@@ -139,7 +139,7 @@ function Write-LargeBmp([string] $Path) {
     } finally { $stream.Dispose() }
     if((Get-Item -LiteralPath $Path).Length -ne 72000054){throw 'FIXTURE_INVALID: generated BMP length was unexpected.'}
 }
-function Drag-Crop([IntPtr] $Editor,[int] $Pid) {
+function Drag-Crop([IntPtr] $Editor,[int] $ShotKitProcessId) {
     $client=[ShotKitMemorySmoke.Rect]::new()
     if(-not [ShotKitMemorySmoke.Native]::GetClientRect($Editor,[ref]$client)){throw 'EDITOR_CLIENT_RECT_FAILED.'}
     $toolbar=@([ShotKitMemorySmoke.Native]::Children($Editor)|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'})
@@ -159,7 +159,7 @@ function Drag-Crop([IntPtr] $Editor,[int] $Pid) {
     if(-not [ShotKitMemorySmoke.Native]::SetCursorPos($sx,$sy)){throw 'CROP_START_POSITION_FAILED.'}
     $cursor=[ShotKitMemorySmoke.Native+Point]::new();[void][ShotKitMemorySmoke.Native]::GetCursorPos([ref]$cursor)
     $under=[ShotKitMemorySmoke.Native]::WindowFromPoint($cursor)
-    if([ShotKitMemorySmoke.Native]::OwnerPid($under) -ne $Pid){throw 'INPUT_TARGET_MISMATCH: crop start is not owned by the launched ShotKit process.'}
+    if([ShotKitMemorySmoke.Native]::OwnerPid($under) -ne $ShotKitProcessId){throw 'INPUT_TARGET_MISMATCH: crop start is not owned by the launched ShotKit process.'}
     [ShotKitMemorySmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true;Start-Sleep -Milliseconds 100
     [void][ShotKitMemorySmoke.Native]::SetCursorPos($ex,$ey);Start-Sleep -Milliseconds 200
     [ShotKitMemorySmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
