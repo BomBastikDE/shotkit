@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Bilddateien werden beim Öffnen direkt aus einem größenbegrenzten Dateileser dekodiert, statt die vollständige Eingabedatei gleichzeitig mit dem Bildpuffer im Speicher zu halten. Unter Windows schützt der geöffnete Lesehandle die Datei während des Imports vor gleichzeitigen Schreib- und Ersetzungsvorgängen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Die Anleitung erklärt, dass automatische Datei- und Zwischenablageausgabe vor einer Schwärzung im Editor erfolgen und vorher ausgeschaltet werden müssen, wenn nur die geschwärzte Aufnahme ausgegeben werden soll ([#52](https://github.com/BomBastikDE/shotkit/issues/52)).
 
 - Der Windows-Ausgabetest wartet nach Änderungen im Tray-Menü auf den Abschluss des jeweiligen Speichervorgangs, bevor er die Einstellungsdatei prüft ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).

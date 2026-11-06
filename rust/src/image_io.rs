@@ -5,11 +5,13 @@ use image::{
     RgbImage, RgbaImage,
 };
 use std::{
-    io::{BufReader, Cursor, Read, Write},
+    io::{BufRead, BufReader, Cursor, Read, Seek, Write},
     path::Path,
 };
 
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+
+mod bounded_reader;
 
 /// Enforce the limit on bytes actually read, even if the file changes after opening.
 pub fn read_image_file(path: &Path) -> Result<Vec<u8>, String> {
@@ -57,9 +59,49 @@ fn read_bounded(mut reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
 }
 
 pub fn decode(data: &[u8]) -> Result<Image, String> {
-    let mut reader = ImageReader::new(BufReader::new(Cursor::new(data)))
+    let reader = ImageReader::new(BufReader::new(Cursor::new(data)))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
+    decode_reader(reader)
+}
+
+/// Decode a file without retaining a second, complete copy of its encoded bytes.
+/// On Windows the open handle refuses concurrent write/delete access until the
+/// decoder finishes. Other platforms do not provide that guarantee here.
+pub fn decode_file(path: &Path) -> Result<(Image, Option<ImageFormat>), String> {
+    let file = open_image_file(path, MAX_IMAGE_BYTES)?;
+    // Keep the same file object available for the final length check and, on
+    // Windows, keep the read-only sharing contract alive until that check.
+    let guard = file.try_clone().map_err(|e| e.to_string())?;
+    let bounded =
+        bounded_reader::BoundedReader::new(file, MAX_IMAGE_BYTES).map_err(|e| e.to_string())?;
+    let reader = ImageReader::new(BufReader::new(bounded))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let format = reader.format();
+    let image = decode_reader(reader)?;
+    if guard.metadata().map_err(|e| e.to_string())?.len() > MAX_IMAGE_BYTES {
+        return Err("Die Bilddatei ist zu groß.".into());
+    }
+    Ok((image, format))
+}
+
+fn open_image_file(path: &Path, limit: u64) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(1); // FILE_SHARE_READ; refuse concurrent writes or replacement.
+    }
+    let file = options.open(path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > limit {
+        return Err("Die Bilddatei ist zu groß.".into());
+    }
+    Ok(file)
+}
+
+fn decode_reader<R: BufRead + Seek>(mut reader: ImageReader<R>) -> Result<Image, String> {
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
     limits.max_image_width = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
@@ -386,6 +428,75 @@ mod tests {
         )
         .unwrap()
     }
+    fn stream_test_path(suffix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shotkit-stream-{}-{:?}-{}-{suffix}",
+            std::process::id(),
+            std::thread::current().id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn file_decode_matches_byte_decode_and_detects_actual_format() {
+        let image = sample();
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Bmp,
+            ImageFormat::Jpeg,
+            ImageFormat::Gif,
+        ] {
+            let bytes = encode(&image, format).unwrap();
+            // Intentionally misleading extension: format must follow bytes.
+            let path = stream_test_path("misleading.png");
+            std::fs::write(&path, &bytes).unwrap();
+            let (decoded, detected) = decode_file(&path).unwrap();
+            assert_eq!(detected, Some(format));
+            assert_eq!(decoded, decode(&bytes).unwrap());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn file_open_enforces_size_limit_and_rejects_bad_data() {
+        let path = stream_test_path("limit");
+        std::fs::write(&path, b"12345").unwrap();
+        assert!(open_image_file(&path, 5).is_ok());
+        assert!(open_image_file(&path, 4).is_err());
+        assert!(decode_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"12345");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_import_handle_blocks_writers_and_replacement_until_closed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = stream_test_path("locked.png");
+        let other = stream_test_path("replacement.png");
+        let bytes = encode(&sample(), ImageFormat::Png).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(&other, &bytes).unwrap();
+        let reader = open_image_file(&path, MAX_IMAGE_BYTES).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(std::fs::rename(&other, &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        drop(reader);
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(7)
+            .open(&path)
+            .unwrap();
+        assert!(decode_file(&path).is_err());
+        drop(writer);
+        assert_eq!(decode_file(&path).unwrap().0, sample());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(other).unwrap();
+    }
     #[test]
     fn png_and_bmp_round_trip_color() {
         for fmt in [ImageFormat::Png, ImageFormat::Bmp] {
@@ -662,6 +773,12 @@ mod tests {
         with_exif.extend_from_slice(&exif);
         with_exif.extend_from_slice(&jpeg[2..]);
         let rotated = decode(&with_exif).unwrap();
+        let path = stream_test_path("orientation.jpg");
+        std::fs::write(&path, &with_exif).unwrap();
+        let (file_rotated, format) = decode_file(&path).unwrap();
+        assert_eq!(format, Some(ImageFormat::Jpeg));
+        assert_eq!(file_rotated, rotated);
+        std::fs::remove_file(path).unwrap();
         assert_eq!((rotated.width, rotated.height), (3, 2));
         for y in 0..unrotated.height {
             for x in 0..unrotated.width {
@@ -705,7 +822,14 @@ mod tests {
         tiff_image
             .write_to(&mut fixture, ImageFormat::Tiff)
             .unwrap();
-        assert_eq!(decode(&fixture.into_inner()).unwrap(), src);
+        let bytes = fixture.into_inner();
+        assert_eq!(decode(&bytes).unwrap(), src);
+        let path = stream_test_path("tiff-with-png-extension.png");
+        std::fs::write(&path, &bytes).unwrap();
+        let (file_image, format) = decode_file(&path).unwrap();
+        assert_eq!(format, Some(ImageFormat::Tiff));
+        assert_eq!(file_image, src);
+        std::fs::remove_file(path).unwrap();
         assert!(encode(&src, ImageFormat::Tiff).is_err());
         assert!(format_from_path(Path::new("capture.tif")).is_err());
         assert!(format_from_path(Path::new("capture.tiff")).is_err());

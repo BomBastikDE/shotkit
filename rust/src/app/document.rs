@@ -12,11 +12,11 @@ fn requires_save_as(path: &Path) -> bool {
     )
 }
 
-fn opened_original_requires_save_as(path: &Path, bytes: &[u8]) -> bool {
+fn opened_original_requires_save_as(path: &Path, format: Option<image::ImageFormat>) -> bool {
     requires_save_as(path)
         || !matches!(
-            image::guess_format(bytes),
-            Ok(image::ImageFormat::Png | image::ImageFormat::Bmp)
+            format,
+            Some(image::ImageFormat::Png | image::ImageFormat::Bmp)
         )
 }
 
@@ -404,9 +404,9 @@ pub(super) unsafe fn open_image(h: H) {
 // Nachrichten: Fensteranlage und SetWindowTextW können reentrieren; Bild und Pfad sind besitzend, State-Zuweisungen enden vor der Titelaktualisierung.
 pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
     let result = (|| -> Result<(Image, bool), String> {
-        let bytes = image_io::read_image_file(&path)?;
-        let protected_original = opened_original_requires_save_as(&path, &bytes);
-        Ok((image_io::decode(&bytes)?, protected_original))
+        let (image, format) = image_io::decode_file(&path)?;
+        let protected_original = opened_original_requires_save_as(&path, format);
+        Ok((image, protected_original))
     })();
     match result {
         Ok((image, protected_original)) => match display_image(h, image) {
@@ -750,15 +750,15 @@ mod save_safety_tests {
         let jpeg = shotkit::image_io::encode(&pixels, image::ImageFormat::Jpeg).unwrap();
         assert!(!opened_original_requires_save_as(
             Path::new("image.png"),
-            &png
+            image::guess_format(&png).ok()
         ));
         assert!(opened_original_requires_save_as(
             Path::new("image.png"),
-            &jpeg
+            image::guess_format(&jpeg).ok()
         ));
         assert!(opened_original_requires_save_as(
             Path::new("image.jpg"),
-            &png
+            image::guess_format(&png).ok()
         ));
     }
 
