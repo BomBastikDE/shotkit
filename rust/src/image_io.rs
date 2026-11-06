@@ -7,7 +7,7 @@ use image::{
     ImageReader, Limits, Rgb, RgbaImage,
 };
 use std::{
-    io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -169,22 +169,8 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
     let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
     let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
     let mut bytes = Cursor::new(Vec::new());
-    if format == ImageFormat::Jpeg {
-        let expected = image
-            .width
-            .checked_mul(image.height)
-            .and_then(|n| n.checked_mul(4))
-            .ok_or("Ungültige Bildgröße")?;
-        // Match ImageBuffer::from_raw: ignore surplus bytes after the image.
-        let bgra = image.pixels.get(..expected).ok_or("Ungültige Bildgröße")?;
-        let output = JpegRgbView {
-            bgra,
-            width: w,
-            height: h,
-        };
-        JpegEncoder::new_with_quality(&mut bytes, 92)
-            .encode_image(&output)
-            .map_err(|e| e.to_string())?;
+    if matches!(format, ImageFormat::Jpeg | ImageFormat::Bmp) {
+        write_bmp_or_jpeg(image, &mut bytes, format)?;
     } else if format == ImageFormat::Png {
         let expected = image
             .width
@@ -244,6 +230,69 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
         }
     }
     Ok(bytes.into_inner())
+}
+
+fn write_bmp_or_jpeg(
+    image: &Image,
+    output: &mut (impl Write + Seek),
+    format: ImageFormat,
+) -> Result<(), String> {
+    let w = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
+    let h = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
+    match format {
+        ImageFormat::Jpeg => {
+            let expected = image
+                .width
+                .checked_mul(image.height)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or("Ungültige Bildgröße")?;
+            let bgra = image.pixels.get(..expected).ok_or("Ungültige Bildgröße")?;
+            let view = JpegRgbView {
+                bgra,
+                width: w,
+                height: h,
+            };
+            JpegEncoder::new_with_quality(output, 92)
+                .encode_image(&view)
+                .map_err(|e| e.to_string())
+        }
+        ImageFormat::Bmp => {
+            let mut pixels = Vec::new();
+            pixels
+                .try_reserve_exact(image.pixels.len())
+                .map_err(|_| "Nicht genügend Speicher für den Bildexport.".to_owned())?;
+            pixels.extend_from_slice(&image.pixels);
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let rgba = RgbaImage::from_raw(w, h, pixels).ok_or("Ungültige Bildgröße")?;
+            DynamicImage::ImageRgba8(rgba)
+                .write_to(output, format)
+                .map_err(|e| e.to_string())
+        }
+        _ => Err("Dieses Format wird nicht als BMP oder JPEG kodiert.".into()),
+    }
+}
+
+/// Encode into a held temporary file; the caller must sync and publish it.
+pub fn write_bmp_or_jpeg_file(
+    image: &Image,
+    file: &mut std::fs::File,
+    format: ImageFormat,
+) -> Result<(), String> {
+    file.set_len(0).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    write_buffered_bmp_or_jpeg(image, file, format)
+}
+
+fn write_buffered_bmp_or_jpeg(
+    image: &Image,
+    output: &mut (impl Write + Seek),
+    format: ImageFormat,
+) -> Result<(), String> {
+    let mut writer = BufWriter::new(output);
+    write_bmp_or_jpeg(image, &mut writer, format)?;
+    writer.flush().map_err(|e| e.to_string())
 }
 
 const PNG_STREAM_CHUNK_BYTES: usize = 4096;
@@ -677,6 +726,123 @@ mod tests {
         let output = std::fs::read(&path).unwrap();
         std::fs::remove_file(path).unwrap();
         output
+    }
+
+    #[test]
+    fn bmp_and_jpeg_file_export_matches_previous_bytes_and_truncates() {
+        let source = Image::new(
+            9,
+            7,
+            (0..9 * 7 * 4).map(|n| (n * 37 + n / 3) as u8).collect(),
+        )
+        .unwrap();
+        let original = source.clone();
+        for format in [ImageFormat::Bmp, ImageFormat::Jpeg] {
+            let path = stream_test_path("buffered-image.tmp");
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(&vec![0xaa; 16_384]).unwrap();
+            write_bmp_or_jpeg_file(&source, &mut file, format).unwrap();
+            let end = file.stream_position().unwrap();
+            drop(file);
+            let actual = std::fs::read(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(end, actual.len() as u64);
+            let expected = if format == ImageFormat::Jpeg {
+                previous_jpeg_encode(&source).unwrap()
+            } else {
+                let mut rgba = source.pixels.clone();
+                for pixel in rgba.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                let mut old = Cursor::new(Vec::new());
+                DynamicImage::ImageRgba8(RgbaImage::from_raw(9, 7, rgba).unwrap())
+                    .write_to(&mut old, format)
+                    .unwrap();
+                old.into_inner()
+            };
+            assert_eq!(actual, expected);
+            assert_eq!(source, original);
+        }
+    }
+
+    #[test]
+    fn bmp_and_jpeg_buffered_export_reports_write_and_flush_errors() {
+        struct FailingWriter {
+            cursor: Cursor<Vec<u8>>,
+            fail_write: bool,
+        }
+        impl Write for FailingWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if self.fail_write {
+                    return Err(std::io::Error::other("injected write failure"));
+                }
+                self.cursor.write(data)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected flush failure"))
+            }
+        }
+        impl Seek for FailingWriter {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.cursor.seek(pos)
+            }
+        }
+        for format in [ImageFormat::Bmp, ImageFormat::Jpeg] {
+            for fail_write in [true, false] {
+                let mut sink = FailingWriter {
+                    cursor: Cursor::new(Vec::new()),
+                    fail_write,
+                };
+                let error = write_buffered_bmp_or_jpeg(&sample(), &mut sink, format).unwrap_err();
+                assert!(
+                    error.contains(if fail_write {
+                        "injected write failure"
+                    } else {
+                        "injected flush failure"
+                    }),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bmp_buffered_export_reports_failure_during_encoding() {
+        struct LimitedWriter {
+            cursor: Cursor<Vec<u8>>,
+            remaining: usize,
+        }
+        impl Write for LimitedWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(std::io::Error::other("injected midstream failure"));
+                }
+                let count = data.len().min(self.remaining);
+                self.remaining -= count;
+                self.cursor.write(&data[..count])
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for LimitedWriter {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.cursor.seek(pos)
+            }
+        }
+        let source = Image::new(100, 100, [3, 7, 11, 255].repeat(10_000)).unwrap();
+        let mut sink = LimitedWriter {
+            cursor: Cursor::new(Vec::new()),
+            remaining: 9_000,
+        };
+        let error = write_buffered_bmp_or_jpeg(&source, &mut sink, ImageFormat::Bmp).unwrap_err();
+        assert!(error.contains("injected midstream failure"), "{error}");
+        assert_eq!(sink.remaining, 0);
     }
 
     #[test]

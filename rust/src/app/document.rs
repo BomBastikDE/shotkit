@@ -12,6 +12,10 @@ fn write_image_atomic(
         write_atomic_with(path, replace, |file| {
             image_io::write_png_file(image, file).map_err(std::io::Error::other)
         })
+    } else if matches!(format, image::ImageFormat::Bmp | image::ImageFormat::Jpeg) {
+        write_atomic_with(path, replace, |file| {
+            image_io::write_bmp_or_jpeg_file(image, file, format).map_err(std::io::Error::other)
+        })
     } else {
         let bytes = image_io::encode(image, format)?;
         write_atomic(path, &bytes, replace)
@@ -752,9 +756,43 @@ mod scroll_recovery_tests {
 mod save_safety_tests {
     use super::{
         opened_original_requires_save_as, protect_original, requires_save_as, same_existing_path,
-        write_atomic,
+        write_atomic, write_image_atomic,
     };
     use std::path::Path;
+
+    #[test]
+    fn failed_streamed_image_export_preserves_existing_target() {
+        let root = std::env::temp_dir().join(format!(
+            "shotkit-stream-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let invalid = shotkit::stitch::Image {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 15],
+        };
+        let valid = shotkit::stitch::Image::new(2, 2, [10, 20, 30, 255].repeat(4)).unwrap();
+        for (name, format) in [
+            ("test.bmp", image::ImageFormat::Bmp),
+            ("test.jpg", image::ImageFormat::Jpeg),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, b"existing").unwrap();
+            assert!(write_image_atomic(&path, &invalid, format, true).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+            write_image_atomic(&path, &valid, format, true).unwrap();
+            let output = std::fs::read(&path).unwrap();
+            assert_eq!(image::guess_format(&output).unwrap(), format);
+            let decoded = shotkit::image_io::decode(&output).unwrap();
+            assert_eq!((decoded.width, decoded.height), (2, 2));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn png_and_bmp_can_be_overwritten_directly() {
