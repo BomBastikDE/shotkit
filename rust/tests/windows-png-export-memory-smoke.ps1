@@ -51,7 +51,7 @@ namespace ShotKitPngExportMemorySmoke {
   delegate bool EnumProc(IntPtr h, IntPtr d);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr d);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr d);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, System.Text.StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern int GetClassNameW(IntPtr h, System.Text.StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -65,7 +65,16 @@ namespace ShotKitPngExportMemorySmoke {
   [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)]
   static extern IntPtr ReadTimeoutText(IntPtr h, uint m, IntPtr w, System.Text.StringBuilder text, uint flags, uint timeout, out IntPtr result);
   [DllImport("psapi.dll", SetLastError=true)] static extern bool GetProcessMemoryInfo(IntPtr process, ref CountersEx counters, uint size);
-  static string Read(IntPtr h, bool cls) { var s=new System.Text.StringBuilder(32768); if(cls)GetClassNameW(h,s,s.Capacity);else GetWindowTextW(h,s,s.Capacity);return s.ToString(); }
+  static string Read(IntPtr h, bool cls) {
+   // Match the proven class-name buffer in windows-large-image-memory-smoke.ps1.
+   // Keep long path-bearing window titles in a separate, larger buffer.
+   if(cls) {
+    var name=new System.Text.StringBuilder(512);int length=GetClassNameW(h,name,name.Capacity);
+    if(length==0)return "[GetClassNameW failed; return=0; win32_error="+Marshal.GetLastWin32Error()+"]";
+    return name.ToString();
+   }
+   var title=new System.Text.StringBuilder(32768);GetWindowTextW(h,title,title.Capacity);return title.ToString();
+  }
   public static int OwnerPid(IntPtr h) { uint p; GetWindowThreadProcessId(h,out p);return (int)p; }
   static Win Describe(IntPtr h) { return new Win{H=h,Id=GetDlgCtrlID(h),Pid=OwnerPid(h),ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h)}; }
   public static Win[] Windows(int pid) {
