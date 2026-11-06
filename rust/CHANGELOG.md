@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Rückgängig und Wiederholen werden mit einer Meldung abgelehnt, wenn der vollständige resultierende Verlauf nicht in das Verlaufslimit passt; das Bild und alle bestehenden Verlaufsschritte bleiben erhalten ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+
 - PNG-Dateien werden direkt in eine geschützte temporäre Datei kodiert und erst nach erfolgreichem Schreiben und Synchronisieren veröffentlicht. Das vermeidet beim Datei-Export einen vollständigen kodierten PNG-Puffer im Arbeitsspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Der Edge-Scrolltest protokolliert begrenzt Scrollposition und Ereigniszähler; beim Aufräumen seines eigenen Testprofils werden vorübergehende Dateisperren mit begrenzten Wiederholungen behandelt ([#58](https://github.com/BomBastikDE/shotkit/issues/58)).

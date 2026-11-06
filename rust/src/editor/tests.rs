@@ -754,6 +754,34 @@ fn history_budget_errors_are_exposed_and_leave_document_unchanged() {
 }
 
 #[test]
+fn undo_that_cannot_preserve_redo_reports_error_and_keeps_document() {
+    let original = Image::new(3, 2, vec![31; 3 * 2 * 4]).unwrap();
+    let large = Image::new(16, 16, vec![77; 16 * 16 * 4]).unwrap();
+    let mut editor = EditorController::with_image(original.clone()).unwrap();
+    editor.document_mut().set_history_budget(1024);
+    editor.document_mut().mark_saved();
+    editor.document_mut().replace_image(large.clone()).unwrap();
+    assert!(editor.document().can_undo());
+    assert!(!editor.undo());
+    assert_eq!(editor.document().image(), &large);
+    assert!(editor.document().can_undo());
+    assert!(!editor.document().can_redo());
+    assert!(editor.document().is_dirty());
+    assert_eq!(
+        editor.take_error(),
+        Some(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert!(editor.take_error().is_none());
+
+    editor.document_mut().set_history_budget(8192);
+    assert!(editor.undo());
+    assert_eq!(editor.document().image(), &original);
+    assert!(!editor.document().is_dirty());
+    assert!(editor.redo());
+    assert_eq!(editor.document().image(), &large);
+}
+
+#[test]
 fn failed_delete_keeps_shape_and_selection_and_exposes_error() {
     let mut e = rect_editor();
     e.set_tool(Tool::Select);

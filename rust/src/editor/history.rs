@@ -136,7 +136,13 @@ impl EditorController {
     pub fn undo(&mut self) -> bool {
         self.cancel_drag();
         let previous_count = self.document.shapes().len();
-        let changed = self.document.undo();
+        let changed = match self.document.try_undo() {
+            Ok(changed) => changed,
+            Err(error) => {
+                self.last_error = Some(error);
+                false
+            }
+        };
         if changed && self.document.shapes().len() != previous_count {
             // Adding/removing a shape shifts indices, which are not stable IDs.
             self.selected = None;
@@ -146,7 +152,13 @@ impl EditorController {
     pub fn redo(&mut self) -> bool {
         self.cancel_drag();
         let previous_count = self.document.shapes().len();
-        let changed = self.document.redo();
+        let changed = match self.document.try_redo() {
+            Ok(changed) => changed,
+            Err(error) => {
+                self.last_error = Some(error);
+                false
+            }
+        };
         if changed && self.document.shapes().len() != previous_count {
             // Adding/removing a shape shifts indices, which are not stable IDs.
             self.selected = None;

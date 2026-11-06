@@ -610,6 +610,24 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
 // Nachrichten: ReleaseCapture und MessageBoxW können reentrieren; History-Ergebnisse und Bilder sind Werte beziehungsweise eigene Arcs.
 pub(super) unsafe fn history(h: H, redo: bool) {
     cancel_gesture(h);
+    let admission = if redo {
+        editor(h).document().check_redo()
+    } else {
+        editor(h).document().check_undo()
+    };
+    match admission {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            MessageBoxW(
+                h,
+                wide(&error.to_string()).as_ptr(),
+                wide("Rückgängig/Wiederholen").as_ptr(),
+                0x10,
+            );
+            return;
+        }
+    }
     let before = editor(h).image_arc();
     let next = if redo {
         editor(h).document().redo_image_arc()
@@ -647,8 +665,11 @@ pub(super) unsafe fn history(h: H, redo: bool) {
             install_bitmap(h, bitmap, &next);
         }
         InvalidateRect(h, std::ptr::null(), 1);
-    } else if let Some(bitmap) = replacement {
-        DeleteObject(bitmap);
+    } else {
+        if let Some(bitmap) = replacement {
+            DeleteObject(bitmap);
+        }
+        report_editor_error(h);
     }
 }
 

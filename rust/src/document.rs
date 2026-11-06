@@ -24,6 +24,7 @@ pub enum DocumentError {
     Image(ImageEditError),
     InvalidImage,
     HistoryBudgetExceeded,
+    HistoryNavigationBudgetExceeded,
     TransactionAlreadyOpen,
     NoTransaction,
     InvalidShapeIndex,
@@ -36,6 +37,9 @@ impl std::fmt::Display for DocumentError {
             Self::InvalidImage => f.write_str("Das Bild ist ungültig"),
             Self::HistoryBudgetExceeded => f.write_str(
                 "Diese Änderung überschreitet das Speicherlimit für die Rückgängig-Historie",
+            ),
+            Self::HistoryNavigationBudgetExceeded => f.write_str(
+                "Diese Aktion wurde nicht ausgeführt, weil das Speicherlimit für die Rückgängig-Historie nicht ausreicht. Bild und Verlauf bleiben unverändert.",
             ),
             Self::TransactionAlreadyOpen => f.write_str("Eine Bearbeitung läuft bereits"),
             Self::NoTransaction => f.write_str("Es läuft keine Bearbeitung"),
@@ -66,6 +70,11 @@ struct State {
     image: Arc<Image>,
     shapes: Vec<Shape>,
     revision: Arc<()>,
+}
+
+struct NavigationPlan {
+    undo: VecDeque<State>,
+    redo: Vec<State>,
 }
 
 #[derive(Clone, Debug)]
@@ -349,30 +358,65 @@ impl Document {
         self.install(next)
     }
 
-    pub fn undo(&mut self) -> bool {
-        if self.staged_before.is_some() {
-            return false;
-        }
-        let Some(previous) = self.undo.pop_back() else {
-            return false;
-        };
-        self.redo
-            .push(std::mem::replace(&mut self.current, previous));
-        self.trim_history();
-        true
+    /// Check whether undo can preserve all existing history within the budget.
+    pub fn check_undo(&self) -> Result<bool, DocumentError> {
+        Ok(self.plan_navigation(false)?.is_some())
     }
 
-    pub fn redo(&mut self) -> bool {
-        if self.staged_before.is_some() {
-            return false;
-        }
-        let Some(next) = self.redo.pop() else {
-            return false;
+    /// Check whether redo can preserve all existing history within the budget.
+    pub fn check_redo(&self) -> Result<bool, DocumentError> {
+        Ok(self.plan_navigation(true)?.is_some())
+    }
+
+    pub fn try_undo(&mut self) -> Result<bool, DocumentError> {
+        let Some(mut plan) = self.plan_navigation(false)? else {
+            return Ok(false);
         };
-        self.undo
+        let previous = self
+            .undo
+            .pop_back()
+            .expect("navigation plan has an undo target");
+        while let Some(state) = self.undo.pop_front() {
+            plan.undo.push_back(state);
+        }
+        for state in self.redo.drain(..) {
+            plan.redo.push(state);
+        }
+        plan.redo
+            .push(std::mem::replace(&mut self.current, previous));
+        self.undo = plan.undo;
+        self.redo = plan.redo;
+        Ok(true)
+    }
+
+    /// Compatibility wrapper; use `try_undo` to distinguish a budget or
+    /// allocation failure from an empty history.
+    pub fn undo(&mut self) -> bool {
+        self.try_undo().unwrap_or(false)
+    }
+
+    pub fn try_redo(&mut self) -> Result<bool, DocumentError> {
+        let Some(mut plan) = self.plan_navigation(true)? else {
+            return Ok(false);
+        };
+        let next = self.redo.pop().expect("navigation plan has a redo target");
+        while let Some(state) = self.undo.pop_front() {
+            plan.undo.push_back(state);
+        }
+        plan.undo
             .push_back(std::mem::replace(&mut self.current, next));
-        self.trim_history();
-        true
+        for state in self.redo.drain(..) {
+            plan.redo.push(state);
+        }
+        self.undo = plan.undo;
+        self.redo = plan.redo;
+        Ok(true)
+    }
+
+    /// Compatibility wrapper; use `try_redo` to distinguish a budget or
+    /// allocation failure from an empty history.
+    pub fn redo(&mut self) -> bool {
+        self.try_redo().unwrap_or(false)
     }
 
     fn install(&mut self, mut next: State) -> Result<(), DocumentError> {
@@ -418,6 +462,84 @@ impl Document {
         }
         self.undo.shrink_to_fit();
         self.redo.shrink_to_fit();
+    }
+
+    // Reserve both replacement containers first, and account their actual
+    // capacities and all retained states against the destination image. No
+    // user-visible state changes or evictions occur on failure.
+    fn plan_navigation(&self, redo: bool) -> Result<Option<NavigationPlan>, DocumentError> {
+        if self.staged_before.is_some() {
+            return Ok(None);
+        }
+        let target = if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let undo_len = if redo {
+            self.undo.len() + 1
+        } else {
+            self.undo.len() - 1
+        };
+        let redo_len = if redo {
+            self.redo.len() - 1
+        } else {
+            self.redo.len() + 1
+        };
+        let mut plan = NavigationPlan {
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+        };
+        plan.undo
+            .try_reserve_exact(undo_len)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        plan.redo
+            .try_reserve_exact(redo_len)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        let retained_undo = if redo {
+            self.undo.len()
+        } else {
+            self.undo.len() - 1
+        };
+        let retained_redo = if redo {
+            self.redo.len() - 1
+        } else {
+            self.redo.len()
+        };
+        let states = self
+            .undo
+            .iter()
+            .take(retained_undo)
+            .chain(self.redo.iter().take(retained_redo))
+            .chain(std::iter::once(&self.current));
+        let count = retained_undo
+            .saturating_add(retained_redo)
+            .saturating_add(1);
+        let mut seen = HashSet::new();
+        seen.try_reserve(count.saturating_add(1))
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        seen.insert(Arc::as_ptr(&target.image) as usize);
+        let mut bytes = container_bytes(plan.undo.capacity(), size_of::<State>())
+            .saturating_add(container_bytes(plan.redo.capacity(), size_of::<State>()));
+        for state in states {
+            let image_bytes = if seen.insert(Arc::as_ptr(&state.image) as usize) {
+                image_allocation_bytes(&state.image)
+            } else {
+                0
+            };
+            bytes = bytes
+                .saturating_add(size_of::<State>())
+                .saturating_add(revision_allocation_bytes())
+                .saturating_add(image_bytes)
+                .saturating_add(shapes_allocation_bytes(&state.shapes));
+        }
+        if bytes > self.history_budget {
+            return Err(DocumentError::HistoryNavigationBudgetExceeded);
+        }
+        Ok(Some(plan))
     }
 
     fn snapshot_bytes_after_redo_clear(&self, snapshot: &State, next_image: &Arc<Image>) -> usize {

@@ -199,7 +199,9 @@ fn transaction_abort_restores_image_and_shapes_and_adds_no_history() {
 
 #[test]
 fn budget_is_enforced_and_oldest_snapshots_are_evicted() {
-    let mut d = Document::with_history_budget(image(), 8192).unwrap();
+    // Enough for the current 100-shape snapshot and its inverse, but far too
+    // small for all historical snapshots: oldest eviction must still occur.
+    let mut d = Document::with_history_budget(image(), 64 * 1024).unwrap();
     for i in 0..100 {
         d.add_shape(Shape::new(ShapeKind::Step {
             center: Point::new(i as f32, 0.0),
@@ -208,11 +210,16 @@ fn budget_is_enforced_and_oldest_snapshots_are_evicted() {
         .unwrap();
     }
     assert!(d.history_bytes() <= d.history_budget());
+    let retained = d.undo.len();
+    assert!(retained > 0 && retained < 100);
+    // Give navigation enough room to retain all remaining steps. The edit
+    // phase above still proves older snapshots were evicted at 64 KiB.
+    d.set_history_budget(4 * 1024 * 1024);
     let mut count = 0;
     while d.undo() {
         count += 1;
     }
-    assert!(count > 0 && count < 100);
+    assert_eq!(count, retained);
     let mut tight = Document::with_history_budget(image(), 1).unwrap();
     assert_eq!(
         tight.add_shape(shape()),
@@ -225,7 +232,9 @@ fn budget_is_enforced_and_oldest_snapshots_are_evicted() {
 #[test]
 fn large_current_image_is_not_charged_again_for_shape_history() {
     let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
-    let mut d = Document::with_history_budget(large, 512).unwrap();
+    // Far below the 64-KiB image allocation, while allowing shape metadata
+    // for both the snapshot and its immediate inverse.
+    let mut d = Document::with_history_budget(large, 4096).unwrap();
     d.add_shape(shape()).unwrap();
     assert!(d.history_bytes() <= d.history_budget());
     assert!(d.undo());
@@ -293,14 +302,153 @@ fn transaction_image_change_rejects_unaffordable_snapshot() {
 }
 
 #[test]
-fn undo_evicts_redo_state_that_cannot_fit_budget() {
+fn undo_rejects_when_it_would_evict_redo_and_preserves_document_state() {
     let mut d = Document::with_history_budget(image(), 1024).unwrap();
-    d.replace_image(Image::new(16, 16, vec![9; 16 * 16 * 4]).unwrap())
-        .unwrap();
-    assert!(d.undo());
-    assert_eq!((d.image().width, d.image().height), (3, 2));
+    let original = d.image().clone();
+    d.mark_saved();
+    let replacement = Image::new(16, 16, vec![9; 16 * 16 * 4]).unwrap();
+    d.replace_image(replacement.clone()).unwrap();
+    let bytes_before = d.history_bytes();
+
+    assert_eq!(
+        d.check_undo(),
+        Err(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert_eq!(
+        d.try_undo(),
+        Err(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert_eq!(d.image(), &replacement);
+    assert!(d.can_undo());
     assert!(!d.can_redo());
+    assert!(d.is_dirty());
+    assert_eq!(d.history_bytes(), bytes_before);
+    assert_eq!(
+        DocumentError::HistoryNavigationBudgetExceeded.to_string(),
+        "Diese Aktion wurde nicht ausgeführt, weil das Speicherlimit für die Rückgängig-Historie nicht ausreicht. Bild und Verlauf bleiben unverändert."
+    );
+
+    d.set_history_budget(8 * 1024);
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.image(), &original);
+    assert!(!d.can_undo());
+    assert!(d.can_redo());
+    assert!(!d.is_dirty());
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.image(), &replacement);
+    assert!(d.can_undo());
+    assert!(!d.can_redo());
+    assert!(d.is_dirty());
+}
+
+#[test]
+fn undo_at_exact_minimum_budget_keeps_the_immediate_redo() {
+    let mut d = Document::with_history_budget(image(), 8192).unwrap();
+    let original = d.image().clone();
+    let replacement = Image::new(16, 16, vec![9; 16 * 16 * 4]).unwrap();
+    d.replace_image(replacement.clone()).unwrap();
+    let mut planned_redo: Vec<State> = Vec::new();
+    planned_redo.try_reserve_exact(1).unwrap();
+    let minimum = size_of::<State>()
+        + revision_allocation_bytes()
+        + image_allocation_bytes(&d.current.image)
+        + shapes_allocation_bytes(&d.current.shapes)
+        + container_bytes(planned_redo.capacity(), size_of::<State>());
+    d.set_history_budget(minimum - 1);
+    let bytes_before = d.history_bytes();
+    assert_eq!(
+        d.try_undo(),
+        Err(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert_eq!(d.image(), &replacement);
+    assert!(d.can_undo());
+    assert_eq!(d.history_bytes(), bytes_before);
+    d.set_history_budget(minimum);
+    assert_eq!(d.check_undo(), Ok(true));
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.image(), &original);
+    assert!(d.can_redo());
     assert!(d.history_bytes() <= d.history_budget());
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.image(), &replacement);
+}
+
+#[test]
+fn history_navigation_checks_are_false_without_entries_or_during_staging() {
+    let mut d = Document::new(image()).unwrap();
+    assert_eq!(d.check_undo(), Ok(false));
+    assert_eq!(d.check_redo(), Ok(false));
+    assert_eq!(d.try_undo(), Ok(false));
+    assert_eq!(d.try_redo(), Ok(false));
+
+    let replacement = Image::new(4, 4, vec![11; 4 * 4 * 4]).unwrap();
+    d.replace_image(replacement.clone()).unwrap();
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.image(), &image());
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let staged_image = d.image().clone();
+    let staged_shapes = d.shapes().to_vec();
+    let bytes_before = d.history_bytes();
+
+    assert_eq!(d.check_undo(), Ok(false));
+    assert_eq!(d.check_redo(), Ok(false));
+    assert_eq!(d.try_undo(), Ok(false));
+    assert_eq!(d.try_redo(), Ok(false));
+    assert_eq!(d.image(), &staged_image);
+    assert_eq!(d.shapes(), staged_shapes);
+    assert!(!d.can_redo());
+    assert_eq!(d.history_bytes(), bytes_before);
+
+    d.abort_edit().unwrap();
+    assert_eq!(d.image(), &image());
+    assert!(d.can_redo());
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.image(), &replacement);
+}
+
+#[test]
+fn redo_preserves_all_history_when_states_compete_for_budget() {
+    let mut d = Document::with_history_budget(image(), 80 * 1024).unwrap();
+    let large = Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap();
+    let small_next = Image::new(1, 1, vec![11; 4]).unwrap();
+    let small_later = Image::new(1, 1, vec![22; 4]).unwrap();
+    d.replace_image(large.clone()).unwrap();
+    d.replace_image(small_next.clone()).unwrap();
+    d.replace_image(small_later).unwrap();
+    assert!(d.try_undo().unwrap());
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.image(), &large);
+    let target = d.redo_image_arc().unwrap();
+    let minimum = d.snapshot_bytes_after_redo_clear(&d.current, &target);
+    d.set_history_budget(minimum);
+    let undo_count = d.undo.len();
+    let redo_count = d.redo.len();
+    let undo_before: Vec<_> = d.undo.iter().cloned().collect();
+    let redo_before = d.redo.to_vec();
+    let bytes_before = d.history_bytes();
+    assert_eq!(
+        d.check_redo(),
+        Err(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert_eq!(
+        d.try_redo(),
+        Err(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert_eq!(d.image(), &large);
+    assert_eq!(d.undo.len(), undo_count);
+    assert_eq!(d.redo.len(), redo_count);
+    assert!(d.undo.iter().eq(undo_before.iter()));
+    assert!(d.redo.iter().eq(redo_before.iter()));
+    assert_eq!(d.history_bytes(), bytes_before);
+    d.set_history_budget(80 * 1024);
+    assert!(d.try_redo().unwrap());
+    assert_eq!(d.image(), &small_next);
+    assert_eq!(d.redo.len(), redo_count - 1);
+    assert!(d.can_undo());
+    assert!(d.history_bytes() <= d.history_budget());
+    assert!(d.try_undo().unwrap());
+    assert_eq!(d.image(), &large);
 }
 
 #[test]
