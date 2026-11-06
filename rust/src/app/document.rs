@@ -14,19 +14,30 @@ pub(super) fn write_atomic(
         .unwrap_or_default()
         .as_nanos();
     let temp = dir.join(format!(".shotkit-{}-{stamp}.tmp", std::process::id()));
+    write_atomic_with_temp(path, bytes, replace_existing, &temp)
+}
+
+fn write_atomic_with_temp(
+    path: &Path,
+    bytes: &[u8],
+    replace_existing: bool,
+    temp: &Path,
+) -> Result<(), String> {
+    // Only clean up a name after this process has created it. A failed
+    // create_new may mean the name belongs to another file.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
         file.write_all(bytes)
             .and_then(|_| file.sync_all())
             .map_err(|e| e.to_string())?;
         drop(file);
         if unsafe {
             MoveFileExW(
-                path_wide(&temp).as_ptr(),
+                path_wide(temp).as_ptr(),
                 path_wide(path).as_ptr(),
                 (if replace_existing { 0x1 } else { 0 }) | 0x8,
             )
@@ -37,7 +48,7 @@ pub(super) fn write_atomic(
         Ok(())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(temp);
     }
     result
 }
@@ -576,8 +587,29 @@ pub(super) unsafe fn history(h: H, redo: bool) {
 mod save_safety_tests {
     use super::{
         opened_original_requires_save_as, requires_save_as, same_existing_path, write_atomic,
+        write_atomic_with_temp,
     };
     use std::path::Path;
+
+    #[test]
+    fn preexisting_temporary_file_is_never_removed_on_create_collision() {
+        let dir = std::env::temp_dir().join(format!(
+            "shotkit-temp-collision-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let temp = dir.join("foreign.tmp");
+        let target = dir.join("output.png");
+        std::fs::write(&temp, b"foreign content").unwrap();
+        assert!(write_atomic_with_temp(&target, b"image", false, &temp).is_err());
+        assert_eq!(std::fs::read(&temp).unwrap(), b"foreign content");
+        assert!(!target.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn png_and_bmp_can_be_overwritten_directly() {
