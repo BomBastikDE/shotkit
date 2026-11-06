@@ -77,6 +77,16 @@ namespace ShotKitCanvasSmoke {
    var h=Control(dialog,id,cls,pid);
    return IsWindowVisible(h)?h:IntPtr.Zero;
   }
+  public static IntPtr ReadyValidationOk(IntPtr dialog,int pid) {
+   // CI 42134301891: MB_OK exposes its sole OK button as IDCANCEL (2).
+   // Match native identity, not the Windows-localized caption or return code.
+   var h=ReadyControl(dialog,2,"Button",pid);
+   if(h==IntPtr.Zero)return IntPtr.Zero;
+   var visible=new List<Btn>();foreach(var b in Buttons(dialog))if(b.Visible)visible.Add(b);
+   if(visible.Count!=1||visible[0].H!=h||GetParent(h)!=dialog)
+    throw new InvalidOperationException("Validation OK button identity mismatch; "+DialogChildrenSnapshot(dialog));
+   return IsWindowEnabled(h)?h:IntPtr.Zero;
+  }
   static IntPtr SafeSend(IntPtr h,uint m,IntPtr w,IntPtr l) {
    IntPtr result;if(SendTimeout(h,m,w,l,2,3000,out result)==IntPtr.Zero)throw new TimeoutException("Native message timed out: "+m);return result;
   }
@@ -266,23 +276,24 @@ try {
   if(-not [ShotKitCanvasSmoke.N]::IsWindow($d.H)){throw "INVALID_INPUT_CLOSED_CANVAS: $($case.Name)"}
   # MessageBox captions are localized by Windows; assert class/ID/ownership instead.
   # Enumerating a visible dialog does not synchronize with creation of its children.
-  # Wait only for the real IDOK; never replace it with WM_CLOSE or a synthetic command.
+  # CI 42134301891 proves this MB_OK has one visible Button with native ID 2.
+  # Wait for that exact child; never replace it with WM_CLOSE or a synthetic command.
   $readyWatch=[Diagnostics.Stopwatch]::StartNew()
   Write-Host "VALIDATION_CHILDREN_INITIAL: case='$($case.Name)' timeoutSeconds=$ActionTimeoutSeconds; $([ShotKitCanvasSmoke.N]::DialogChildrenSnapshot($errorDialog.H))"
-  Write-Host "VALIDATION_DIALOG: case='$($case.Name)'; $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
+  Write-Host "VALIDATION_DIALOG: case='$($case.Name)'; $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,2))"
   try {
    $ok=Wait-For {
     if(-not [ShotKitCanvasSmoke.N]::IsWindow($d.H)){throw "INVALID_INPUT_CLOSED_CANVAS: $($case.Name)"}
     $sameDialog=@(Owned-Dialogs|Where-Object{$_.H -eq $errorDialog.H -and $_.Title -ceq 'Leinwandgröße' -and [ShotKitCanvasSmoke.N]::GetWindow($_.H,4) -eq $d.H})
     if($sameDialog.Count -ne 1){throw "VALIDATION_DIALOG_IDENTITY_CHANGED: $($case.Name)"}
-    $candidate=[ShotKitCanvasSmoke.N]::ReadyControl($errorDialog.H,1,'Button',$process.Id)
+    $candidate=[ShotKitCanvasSmoke.N]::ReadyValidationOk($errorDialog.H,$process.Id)
     if($candidate -ne [IntPtr]::Zero){return $candidate}
-   } "validation IDOK: $($case.Name)" $ActionTimeoutSeconds
+   } "validation OK button ID=2: $($case.Name)" $ActionTimeoutSeconds
   } catch {
    Write-Host "VALIDATION_CHILDREN_FAILED: case='$($case.Name)' elapsedMs=$($readyWatch.ElapsedMilliseconds); $([ShotKitCanvasSmoke.N]::DialogChildrenSnapshot($errorDialog.H))"
-   throw "VALIDATION_IDOK_FAILED case='$($case.Name)': $($_.Exception.Message); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
+   throw "VALIDATION_OK_FAILED case='$($case.Name)': $($_.Exception.Message); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,2))"
   }
-  Write-Host "VALIDATION_IDOK_READY: case='$($case.Name)' elapsedMs=$($readyWatch.ElapsedMilliseconds); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,1))"
+  Write-Host "VALIDATION_OK_READY: case='$($case.Name)' elapsedMs=$($readyWatch.ElapsedMilliseconds); $([ShotKitCanvasSmoke.N]::ControlSnapshot($errorDialog.H,2))"
   if(-not [ShotKitCanvasSmoke.N]::PostMessageW($ok,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'VALIDATION_ERROR_CLOSE_FAILED'}
   [void](Wait-For {if(-not [ShotKitCanvasSmoke.N]::IsWindow($errorDialog.H)){return $true}} 'validation message close' $ActionTimeoutSeconds)
   Close-Canvas $d 2 'Abbrechen'
