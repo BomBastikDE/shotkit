@@ -38,8 +38,17 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         .map_err(|e| e.to_string())?;
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
+    limits.max_image_width = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
+    limits.max_image_height = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
     reader.limits(limits.clone());
-    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let mut decoder = reader.into_decoder().map_err(|error| match error {
+        image::ImageError::Limits(ref limit)
+            if limit.kind() == image::error::LimitErrorKind::DimensionError =>
+        {
+            format!("Das Bild ist zu groß: maximal {MAX_EDITABLE_IMAGE_DIMENSION} Pixel je Seite.")
+        }
+        _ => error.to_string(),
+    })?;
     let (width, height) = decoder.dimensions();
     validate_import_dimensions(width, height)?;
     // Mirror ImageReader::decode's allocation reservation before decoding.
