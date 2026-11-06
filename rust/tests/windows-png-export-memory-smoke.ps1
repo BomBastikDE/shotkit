@@ -40,7 +40,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 namespace ShotKitPngExportMemorySmoke {
- public sealed class Win { public IntPtr H; public int Id; public string ClassName, Title; public bool Visible; }
+ public sealed class Win { public IntPtr H; public int Id, Pid; public string ClassName, Title; public bool Visible, Enabled; }
  [StructLayout(LayoutKind.Sequential)] struct CountersEx {
   public uint cb, PageFaultCount;
   public UIntPtr PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage;
@@ -62,17 +62,28 @@ namespace ShotKitPngExportMemorySmoke {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, string text);
+  [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)]
+  static extern IntPtr ReadTimeoutText(IntPtr h, uint m, IntPtr w, System.Text.StringBuilder text, uint flags, uint timeout, out IntPtr result);
   [DllImport("psapi.dll", SetLastError=true)] static extern bool GetProcessMemoryInfo(IntPtr process, ref CountersEx counters, uint size);
   static string Read(IntPtr h, bool cls) { var s=new System.Text.StringBuilder(32768); if(cls)GetClassNameW(h,s,s.Capacity);else GetWindowTextW(h,s,s.Capacity);return s.ToString(); }
   public static int OwnerPid(IntPtr h) { uint p; GetWindowThreadProcessId(h,out p);return (int)p; }
-  static Win Describe(IntPtr h) { return new Win{H=h,Id=GetDlgCtrlID(h),ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h)}; }
+  static Win Describe(IntPtr h) { return new Win{H=h,Id=GetDlgCtrlID(h),Pid=OwnerPid(h),ClassName=Read(h,true),Title=Read(h,false),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h)}; }
   public static Win[] Windows(int pid) {
    var a=new List<Win>();EnumProc cb=(h,d)=>{if(OwnerPid(h)==pid)a.Add(Describe(h));return true;};
    EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray();
   }
   public static Win[] Children(IntPtr parent) {
-   var a=new List<Win>();EnumProc cb=(h,d)=>{a.Add(Describe(h));return true;};
+   int pid=OwnerPid(parent);var a=new List<Win>();EnumProc cb=(h,d)=>{if(OwnerPid(h)==pid)a.Add(Describe(h));return true;};
    EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray();
+  }
+  public static string DiagnosticText(IntPtr h,int pid) {
+   if(OwnerPid(h)!=pid)return "[window no longer owned by the launched process]";
+   var text=new System.Text.StringBuilder(32768);IntPtr result;
+   // WM_GETTEXT is read-only. ABORTIFHUNG | ERRORONEXIT bounds each request
+   // to 100 ms; diagnostics must not block cleanup on an unresponsive UI.
+   if(ReadTimeoutText(h,0x000D,(IntPtr)text.Capacity,text,0x22,100,out result)==IntPtr.Zero)
+    return "[WM_GETTEXT failed/timed out; win32_error="+Marshal.GetLastWin32Error()+"]";
+   return text.ToString();
   }
   public static bool SetEditText(IntPtr h,string text) { return SendMessageW(h,0x000C,IntPtr.Zero,text)!=IntPtr.Zero; }
   public static ulong PrivateBytes(Process process) {
@@ -139,6 +150,27 @@ function Get-OwnedWindows {
     if ($null -eq $process -or $process.HasExited) { return @() }
     @([ShotKitPngExportMemorySmoke.Native]::Windows($process.Id))
 }
+function Protect-DiagnosticText([string] $Value) {
+    $Value.Replace($root,'[temporary fixture]').Replace($ExePath,'[ShotKit executable]')
+}
+function Write-OwnedWindowDiagnostics([string] $Description) {
+    if ($null -eq $process -or $process.HasExited) { Write-Host 'OWNED_WINDOW_DIAGNOSTICS: launched process is unavailable.'; return }
+    $ownedPid = $process.Id
+    $windows = @(Get-OwnedWindows)
+    $foreground = [ShotKitPngExportMemorySmoke.Native]::GetForegroundWindow()
+    Write-Host ("OWNED_WINDOW_DIAGNOSTICS: timeout waiting for {0}; pid={1}; top_level_count={2}; foreground_hwnd={3}; WM_GETTEXT timeout=100ms/control; all visibility states included." -f (Protect-DiagnosticText $Description),$ownedPid,$windows.Count,$foreground.ToInt64())
+    foreach ($window in $windows) {
+        Write-Host ('OWNED_WINDOW ' + ([ordered]@{pid=$window.Pid;hwnd=$window.H.ToInt64();class=$window.ClassName;title=(Protect-DiagnosticText $window.Title);visible=$window.Visible;enabled=$window.Enabled} | ConvertTo-Json -Compress))
+        # EnumChildWindows includes descendants. Recheck each PID before any
+        # text request, and never enumerate an unrelated process's windows.
+        if ([ShotKitPngExportMemorySmoke.Native]::OwnerPid($window.H) -ne $ownedPid) { continue }
+        foreach ($child in [ShotKitPngExportMemorySmoke.Native]::Children($window.H)) {
+            if ($child.Pid -ne $ownedPid -or [ShotKitPngExportMemorySmoke.Native]::OwnerPid($child.H) -ne $ownedPid) { continue }
+            $text = [ShotKitPngExportMemorySmoke.Native]::DiagnosticText($child.H,$ownedPid)
+            Write-Host ('OWNED_CHILD ' + ([ordered]@{pid=$child.Pid;top_level_hwnd=$window.H.ToInt64();hwnd=$child.H.ToInt64();id=$child.Id;class=$child.ClassName;title=(Protect-DiagnosticText $child.Title);text=(Protect-DiagnosticText $text);visible=$child.Visible;enabled=$child.Enabled} | ConvertTo-Json -Compress))
+        }
+    }
+}
 function Wait-For([scriptblock] $Probe, [string] $Description, [int] $Seconds = $TimeoutSeconds) {
     $end = [DateTime]::UtcNow.AddSeconds($Seconds)
     while ([DateTime]::UtcNow -lt $end) {
@@ -147,6 +179,8 @@ function Wait-For([scriptblock] $Probe, [string] $Description, [int] $Seconds = 
         if ($null -ne $value -and $value) { return $value }
         Start-Sleep -Milliseconds 100
     }
+    try { Write-OwnedWindowDiagnostics $Description }
+    catch { Write-Host ("OWNED_WINDOW_DIAGNOSTICS_FAILED: {0}" -f (Protect-DiagnosticText $_.Exception.Message)) }
     throw "TIMEOUT waiting for $Description; owned window count=$(@(Get-OwnedWindows).Count)."
 }
 function Require-Owner([IntPtr] $Handle) {
