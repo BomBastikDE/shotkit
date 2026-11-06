@@ -49,7 +49,8 @@ namespace ShotKitCalloutSmoke {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);
-  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetWindowLongPtrW(IntPtr h,int i);
   static string Read(IntPtr h,bool cls){var s=new StringBuilder(512);if(cls)GetClassNameW(h,s,s.Capacity);else GetWindowTextW(h,s,s.Capacity);return s.ToString();}
@@ -215,7 +216,11 @@ try {
     [void][ShotKitCalloutSmoke.N]::ShowWindow($main.H,3);[void][ShotKitCalloutSmoke.N]::SetForegroundWindow($main.H)
     $welcome=Wait-For {Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 12 'startup notice'
     $ok=@([ShotKitCalloutSmoke.N]::Children($welcome.H)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and $_.Title -eq 'OK'}|Select-Object -First 1)
-    if($ok.Count -ne 1){throw 'STARTUP_NOTICE_OK_MISSING.'};[ShotKitCalloutSmoke.N]::Click($ok[0].H)
+    if($ok.Count -ne 1){throw 'STARTUP_NOTICE_OK_MISSING.'}
+    [void][ShotKitCalloutSmoke.N]::SetForegroundWindow($welcome.H)
+    [void](Wait-For {[ShotKitCalloutSmoke.N]::GetForegroundWindow() -eq $welcome.H} 5 'startup notice foreground')
+    [ShotKitCalloutSmoke.N]::Click($ok[0].H)
+    [void](Wait-For {-not [ShotKitCalloutSmoke.N]::IsWindow($welcome.H)} 5 'startup notice destruction')
     $main=Wait-For {Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 10 'loaded editor'
     $calloutButton=Child-ById $main.H 0x510F
     if($calloutButton.ClassName -ne 'Button'){throw "CALLOUT_TOOL_CONTROL_NOT_BUTTON: $($calloutButton.ClassName)."}
