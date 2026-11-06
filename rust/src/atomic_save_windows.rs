@@ -193,6 +193,41 @@ pub fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), Stri
     Err("Kein freier temporärer Dateiname gefunden.".to_owned())
 }
 
+/// Prepare an image or other payload directly in a held sibling temporary file,
+/// synchronize it, and atomically publish it with the requested replace policy.
+/// On a preparation or sync error, cleanup targets only the held temporary
+/// file; cleanup failures are reported. A rename error retains the complete
+/// temporary file and reports its path.
+pub fn write_atomic_with(
+    path: &Path,
+    replace: bool,
+    prepare: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), String> {
+    let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let dir = absolute.parent().ok_or("Ungültiger Speicherordner.")?;
+    for _ in 0..128 {
+        let temp = candidate(dir);
+        match create_temp(&temp) {
+            Ok(file) => {
+                return write_prepared(
+                    &absolute,
+                    replace,
+                    &temp,
+                    file,
+                    |_| {},
+                    |file| {
+                        prepare(file)?;
+                        file.sync_all()
+                    },
+                );
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Kein freier temporärer Dateiname gefunden.".to_owned())
+}
+
 /// Write once to a held sibling file, then try up to `attempts` distinct
 /// destinations without replacing existing files. On an ambiguous rename
 /// error the prepared file is retained and its path is reported.
@@ -207,6 +242,29 @@ pub fn write_new_unique(
         attempts,
         next_path,
         |file| file.write_all(bytes).and_then(|_| file.sync_all()),
+        |_| {},
+    )
+}
+
+/// Prepare payload data once in a held sibling temporary file, synchronize it,
+/// then publish it under the first available destination without replacement.
+/// Preparation or sync failures attempt to remove the held temporary file and
+/// report cleanup failures. Rename failures retain it and report its path,
+/// matching [`write_new_unique`].
+pub fn write_new_unique_with(
+    folder: &Path,
+    attempts: usize,
+    next_path: impl FnMut() -> PathBuf,
+    prepare: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<PathBuf> {
+    write_unique_prepared(
+        folder,
+        attempts,
+        next_path,
+        |file| {
+            prepare(file)?;
+            file.sync_all()
+        },
         |_| {},
     )
 }
@@ -495,6 +553,36 @@ mod tests {
     }
 
     #[test]
+    fn public_atomic_prepare_failure_cleans_partial_temp_and_preserves_target() {
+        let dir = directory();
+        let target = dir.join("image.png");
+        fs::write(&target, b"old image").unwrap();
+        let result = write_atomic_with(&target, true, |file| {
+            file.write_all(b"partial image")?;
+            Err(io::Error::other("injected encoder failure"))
+        });
+        assert!(result.unwrap_err().contains("injected encoder failure"));
+        assert_eq!(fs::read(&target).unwrap(), b"old image");
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().map(Result::unwrap).collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path(), target);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn public_atomic_prepare_syncs_and_publishes_complete_output() {
+        let dir = directory();
+        let target = dir.join("image.png");
+        write_atomic_with(&target, false, |file| {
+            file.write_all(b"complete encoded image")
+        })
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"complete encoded image");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn replace_fails_safely_when_destination_disallows_delete_sharing() {
         let dir = directory();
         let temp = dir.join("temp");
@@ -623,6 +711,45 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert!(!target.exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn public_unique_prepare_failure_cleans_partial_temp_and_preserves_collision() {
+        let dir = directory();
+        let target = dir.join("capture.png");
+        fs::write(&target, b"foreign image").unwrap();
+        let error = write_new_unique_with(
+            &dir,
+            2,
+            || target.clone(),
+            |file| {
+                file.write_all(b"partial image")?;
+                Err(io::Error::other("injected encoder failure"))
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("injected encoder failure"));
+        assert_eq!(fs::read(&target).unwrap(), b"foreign image");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn public_unique_prepare_syncs_once_before_publishing_complete_output() {
+        let dir = directory();
+        let target = dir.join("capture.png");
+        let mut names = [target.clone()].into_iter();
+        let published = write_new_unique_with(
+            &dir,
+            1,
+            || names.next().unwrap(),
+            |file| file.write_all(b"complete capture"),
+        )
+        .unwrap();
+        assert_eq!(published, target);
+        assert_eq!(fs::read(&target).unwrap(), b"complete capture");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
 

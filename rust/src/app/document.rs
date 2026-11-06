@@ -1,6 +1,22 @@
 use super::*;
 
-use shotkit::atomic_save_windows::write_atomic;
+use shotkit::atomic_save_windows::{write_atomic, write_atomic_with};
+
+fn write_image_atomic(
+    path: &Path,
+    image: &Image,
+    format: image::ImageFormat,
+    replace: bool,
+) -> Result<(), String> {
+    if format == image::ImageFormat::Png {
+        write_atomic_with(path, replace, |file| {
+            image_io::write_png_file(image, file).map_err(std::io::Error::other)
+        })
+    } else {
+        let bytes = image_io::encode(image, format)?;
+        write_atomic(path, &bytes, replace)
+    }
+}
 
 /// Avoid replacing an opened original when the export path cannot preserve its
 /// source format faithfully. Unknown and currently unsupported formats fail
@@ -168,8 +184,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     let result = (|| -> Result<(), String> {
         let format = image_io::format_from_path(&path)?;
         let image = bitmap_image(h)?;
-        let bytes = image_io::encode(&image, format)?;
-        write_atomic(&path, &bytes, replace_existing)
+        write_image_atomic(&path, &image, format, replace_existing)
     })();
     // The original remains protected until the synchronous rename returns.
     drop(protected_guard);
@@ -235,8 +250,7 @@ fn save_scroll_recovery(
         return Ok(());
     };
     let format = image_io::format_from_path(path)?;
-    let bytes = image_io::encode(&recovery.image, format)?;
-    write_atomic(path, &bytes, replace_existing)?;
+    write_image_atomic(path, &recovery.image, format, replace_existing)?;
     pending.take();
     Ok(())
 }
@@ -315,8 +329,7 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
                 continue;
             };
             image_io::format_from_path(&path)
-                .and_then(|format| image_io::encode(image, format))
-                .and_then(|bytes| write_atomic(&path, &bytes, replace_existing))
+                .and_then(|format| write_image_atomic(&path, image, format, replace_existing))
         };
         match result {
             Ok(()) => {

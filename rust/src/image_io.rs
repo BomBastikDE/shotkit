@@ -5,7 +5,7 @@ use image::{
     RgbImage, RgbaImage,
 };
 use std::{
-    io::{BufRead, BufReader, Cursor, Read, Seek, Write},
+    io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -244,7 +244,7 @@ fn png_stored_size_bound(pixel_bytes: usize, height: usize) -> Option<usize> {
 }
 
 fn write_png_stream(
-    output: &mut Cursor<Vec<u8>>,
+    output: &mut impl Write,
     width: u32,
     height: u32,
     bgra: &[u8],
@@ -283,6 +283,39 @@ fn write_png_stream(
         stream.finish().map_err(|e| e.to_string())?;
     }
     writer.finish().map_err(|e| e.to_string())
+}
+
+/// Encode PNG into a caller-owned temporary file. The caller must publish the
+/// file only after this function and its own durability checks succeed.
+/// The file is truncated before use and again if the bounded stored fallback
+/// is needed, so a previous attempt cannot leave trailing bytes.
+pub fn write_png_file(image: &Image, file: &mut std::fs::File) -> Result<(), String> {
+    let width = u32::try_from(image.width).map_err(|_| "Bildbreite zu groß")?;
+    let height = u32::try_from(image.height).map_err(|_| "Bildhöhe zu groß")?;
+    let expected = image
+        .width
+        .checked_mul(image.height)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("Ungültige Bildgröße")?;
+    if image.pixels.len() != expected {
+        return Err("Ungültige Bildgröße".into());
+    }
+    let bound = png_stored_size_bound(expected, image.height).ok_or("Ungültige Bildgröße")?;
+    file.set_len(0).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    write_png_stream(file, width, height, &image.pixels, png::Compression::Fast)?;
+    if file.stream_position().map_err(|e| e.to_string())? > bound as u64 {
+        file.set_len(0).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+        write_png_stream(
+            file,
+            width,
+            height,
+            &image.pixels,
+            png::Compression::NoCompression,
+        )?;
+    }
+    Ok(())
 }
 
 /// Flatten borrowed BGRA pixels directly into RGB on white for JPEG.
@@ -582,6 +615,57 @@ mod tests {
         output.into_inner()
     }
 
+    fn png_via_file(source: &Image) -> Vec<u8> {
+        let path = stream_test_path("encode.png");
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        // A longer previous payload makes failure to truncate observable.
+        file.write_all(&vec![0xaa; source.pixels.len() + 4096])
+            .unwrap();
+        write_png_file(source, &mut file).unwrap();
+        drop(file);
+        let output = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        output
+    }
+
+    #[test]
+    fn png_stream_reports_mid_write_failure_without_changing_source() {
+        struct FailingSink {
+            remaining: usize,
+            written: usize,
+        }
+        impl Write for FailingSink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(std::io::Error::other("injected PNG write failure"));
+                }
+                let count = data.len().min(self.remaining);
+                self.remaining -= count;
+                self.written += count;
+                Ok(count)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let source = sample();
+        let original = source.clone();
+        let mut sink = FailingSink {
+            remaining: 40,
+            written: 0,
+        };
+        let error =
+            write_png_stream(&mut sink, 2, 2, &source.pixels, png::Compression::Fast).unwrap_err();
+        assert!(error.contains("injected PNG write failure"));
+        assert_eq!(sink.written, 40);
+        assert_eq!(source, original);
+    }
+
     #[test]
     fn png_stream_retries_incompressible_noise_with_bounded_stored_output() {
         let (width, height) = (1024, 256);
@@ -606,6 +690,7 @@ mod tests {
             output,
             png_with_compression(&source, png::Compression::NoCompression)
         );
+        assert_eq!(png_via_file(&source), output);
         assert_png_pixels(&source);
     }
 
@@ -637,6 +722,7 @@ mod tests {
                 "compressible images must retain the fast path"
             );
             assert_eq!(decode(&output).unwrap(), source);
+            assert_eq!(png_via_file(&source), output);
         }
     }
 

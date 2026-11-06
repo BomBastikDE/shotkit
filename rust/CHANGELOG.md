@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- PNG-Dateien werden direkt in eine geschützte temporäre Datei kodiert und erst nach erfolgreichem Schreiben und Synchronisieren veröffentlicht. Das vermeidet beim Datei-Export einen vollständigen kodierten PNG-Puffer im Arbeitsspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Der Edge-Scrolltest protokolliert begrenzt Scrollposition und Ereigniszähler; beim Aufräumen seines eigenen Testprofils werden vorübergehende Dateisperren mit begrenzten Wiederholungen behandelt ([#58](https://github.com/BomBastikDE/shotkit/issues/58)).
 
 - Bilddateien werden beim Öffnen direkt aus einem größenbegrenzten Dateileser dekodiert, statt die vollständige Eingabedatei gleichzeitig mit dem Bildpuffer im Speicher zu halten. Unter Windows schützt der geöffnete Lesehandle die Datei während des Imports vor gleichzeitigen Schreib- und Ersetzungsvorgängen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

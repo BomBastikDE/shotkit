@@ -8,14 +8,16 @@ use crate::{
 };
 #[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(any(test, not(windows)))]
+use std::fs::OpenOptions;
+#[cfg(test)]
+use std::io::Write;
 use std::{
     fs, io,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(any(test, not(windows)))]
-use std::{fs::OpenOptions, io::Write};
 
 static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -116,8 +118,6 @@ pub fn execute_action(
 
 fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
     fs::create_dir_all(folder)?;
-    let png = image_io::encode(image, image::ImageFormat::Png)
-        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -125,10 +125,18 @@ fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
 
     #[cfg(windows)]
     {
-        crate::atomic_save_windows::write_new_unique(folder, &png, 256, || {
-            let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            folder.join(format!("ShotKit-{stamp}-{sequence}.png"))
-        })
+        crate::atomic_save_windows::write_new_unique_with(
+            folder,
+            256,
+            || {
+                let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                folder.join(format!("ShotKit-{stamp}-{sequence}.png"))
+            },
+            |file| {
+                image_io::write_png_file(image, file)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))
+            },
+        )
     }
 
     // Create the sibling temp exclusively. Publish the final name without
@@ -152,7 +160,8 @@ fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
                 Err(error) => return Err(error),
             };
             let result = write_and_publish(&temp_path, &path, file, |file| {
-                file.write_all(&png)?;
+                image_io::write_png_file(image, file)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
                 file.sync_all()
             });
             match result {
