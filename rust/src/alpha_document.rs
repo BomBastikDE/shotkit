@@ -110,10 +110,18 @@ fn render_document_over(
     output_pixels.extend_from_slice(&initial.pixels);
 
     // A later blur must not spread redacted source pixels outside the black
-    // rectangle through averaging. Sanitize the sampling source.
+    // rectangle through averaging. Sanitize the sampling source unless every
+    // shape is a redaction: that branch only writes the output at the end and
+    // never samples pixels. Keep the existing path for all mixed contents,
+    // including any future shape kinds.
+    let redactions_only = !shapes.is_empty()
+        && shapes
+            .iter()
+            .all(|shape| matches!(shape.kind, ShapeKind::Redact { .. }));
     let sanitized_source = if shapes
         .iter()
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
+        && !redactions_only
     {
         let mut pixels = Vec::new();
         pixels.try_reserve_exact(source.pixels.len()).map_err(|_| {
@@ -647,6 +655,81 @@ mod tests {
                 assert_eq!(&result.pixels[i..i + 4], &expected);
             }
         }
+    }
+
+    #[test]
+    fn redactions_only_preserve_alpha_outside_their_union() {
+        use crate::shapes::Point;
+        let source = Arc::new(
+            Image::new(
+                5,
+                4,
+                (0..20)
+                    .flat_map(|i| [10 + i as u8, 80, 120, [0, 64, 128, 255][i % 4]])
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let original = (*source).clone();
+        let shapes = [
+            Shape::new(ShapeKind::Redact {
+                start: Point::new(-2.0, -1.0),
+                end: Point::new(1.2, 1.2),
+            }),
+            // Reversed fractional endpoints overlap the first rectangle and
+            // extend past the right edge of the image.
+            Shape::new(ShapeKind::Redact {
+                start: Point::new(6.0, 2.2),
+                end: Point::new(1.2, 1.2),
+            }),
+            Shape::new(ShapeKind::Redact {
+                start: Point::new(8.0, -3.0),
+                end: Point::new(9.0, -1.0),
+            }),
+        ];
+        // Explicit union after outward rounding and clipping:
+        // XX... / XXXXX / .XXXX / .....
+        let covered = [
+            true, true, false, false, false, true, true, true, true, true, false, true, true, true,
+            true, false, false, false, false, false,
+        ];
+        let mut expected = original.clone();
+        for (pixel, covered) in expected
+            .pixels
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(covered)
+        {
+            if covered {
+                *pixel = [0, 0, 0, 255];
+            }
+        }
+        assert_eq!(render_document(&source, &shapes).unwrap(), expected);
+        let mut cache = None;
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(3.0, 3.0),
+        });
+        render_preview(&source, &[blur], 1, &mut cache).unwrap();
+        assert!(cache.is_some());
+        for split in 0..=shapes.len() {
+            assert_eq!(
+                render_preview(&source, &shapes, split, &mut cache).unwrap(),
+                expected
+            );
+            assert!(cache.is_none());
+        }
+        for bad in [f32::NAN, f32::INFINITY] {
+            let invalid = Shape::new(ShapeKind::Redact {
+                start: Point::new(bad, 0.0),
+                end: Point::new(1.0, 1.0),
+            });
+            assert!(render_document(&source, std::slice::from_ref(&invalid)).is_err());
+            assert!(render_preview(&source, &[invalid], 0, &mut cache).is_err());
+            assert!(cache.is_none());
+        }
+        assert_eq!(*source, original);
     }
 
     #[test]
