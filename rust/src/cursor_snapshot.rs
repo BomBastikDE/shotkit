@@ -235,7 +235,8 @@ mod native {
     extern "system" {
         fn GetCursorInfo(info: *mut CursorInfo) -> i32;
         fn GetPhysicalCursorPos(point: *mut Point) -> i32;
-        fn CopyIcon(icon: Handle) -> Handle;
+        fn CopyImage(image: Handle, image_type: u32, width: i32, height: i32, flags: u32)
+            -> Handle;
         fn DestroyCursor(cursor: Handle) -> i32;
         fn GetIconInfo(icon: Handle, info: *mut IconInfo) -> i32;
         fn GetDC(window: Handle) -> Handle;
@@ -259,8 +260,8 @@ mod native {
     struct OwnedCursor(Handle);
     impl Drop for OwnedCursor {
         fn drop(&mut self) {
-            // SAFETY CONTRACT: CopyIcon (the CopyCursor macro implementation)
-            // returned this unique non-null owned HCURSOR. It remains live until
+            // SAFETY CONTRACT: CopyImage without LR_COPYRETURNORG returned
+            // this unique non-null owned HCURSOR. It remains live until
             // this sole owner drops; no borrowed
             // GetCursorInfo handle is destroyed. No messages/callbacks installed.
             if !self.0.is_null() {
@@ -321,12 +322,12 @@ mod native {
             return Err(SnapshotError::Invalid("null visible cursor"));
         }
         // SAFETY CONTRACT: GetCursorInfo supplies a borrowed system HCURSOR.
-        // CopyIcon accepts cursors and produces an independent owned handle;
+        // CopyImage with IMAGE_CURSOR and no flags makes an independent copy;
         // failure/races are reported. Never destroy the system's borrowed handle.
         // This synchronous API does not require dispatching application messages.
-        let icon = OwnedCursor(unsafe { CopyIcon(cursor.cursor) });
+        let icon = OwnedCursor(unsafe { CopyImage(cursor.cursor, 2, 0, 0, 0) });
         if icon.0.is_null() {
-            return Err(SnapshotError::Native("CopyCursor"));
+            return Err(SnapshotError::Native("CopyImage(IMAGE_CURSOR)"));
         }
         let mut position = Point::default();
         // SAFETY CONTRACT: valid writable POINT; synchronous call, no callbacks
@@ -374,7 +375,7 @@ mod native {
             mask: null_mut(),
             color: null_mut(),
         };
-        // SAFETY CONTRACT: icon is the live owned CopyIcon result; correctly
+        // SAFETY CONTRACT: icon is the live owned CopyImage result; correctly
         // sized writable ICONINFO remains valid. On success the documented
         // output HBITMAPs transfer to the cleanup guard.
         // Synchronous GetIconInfo needs no application message dispatch.

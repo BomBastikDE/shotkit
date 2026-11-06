@@ -1,5 +1,4 @@
 //! Composite an owned cursor over the current document without native handles.
-use crate::alpha_composite::source_over;
 use crate::cursor_snapshot::CursorPixels;
 use crate::shapes::CursorSprite;
 use crate::stitch::Image;
@@ -38,18 +37,20 @@ pub(super) fn cursor(
             match sprite.pixels.as_ref() {
                 CursorPixels::PremultipliedRgba(rgba) => {
                     let p = &rgba[src * 4..src * 4 + 4];
-                    let alpha = u32::from(p[3]);
+                    let alpha = u64::from(p[3]);
                     if alpha == 0 {
                         continue;
                     }
-                    let straight = |channel: u8| {
-                        ((u32::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8
-                    };
-                    let layer = [straight(p[2]), straight(p[1]), straight(p[0]), p[3]];
-                    let original: [u8; 4] = pixels[dst..dst + 4]
-                        .try_into()
-                        .expect("validated destination pixel");
-                    pixels[dst..dst + 4].copy_from_slice(&source_over(original, layer, 255));
+                    let dst_alpha = u64::from(pixels[dst + 3]);
+                    let remaining = 255 - alpha;
+                    let divisor = alpha * 255 + dst_alpha * remaining;
+                    for channel in 0..3 {
+                        let premul = u64::from(p[2 - channel]);
+                        let background = u64::from(pixels[dst + channel]);
+                        let numerator = premul * 255 * 255 + background * dst_alpha * remaining;
+                        pixels[dst + channel] = ((numerator + divisor / 2) / divisor) as u8;
+                    }
+                    pixels[dst + 3] = ((divisor + 127) / 255) as u8;
                 }
                 CursorPixels::Raster { and_mask, xor_rgb } => {
                     let mask = and_mask[src];
@@ -111,11 +112,37 @@ mod tests {
         .unwrap();
         let mut dest = source.pixels.clone();
         cursor(&mut dest, &source, &sprite).unwrap();
-        let straight = ((100u32 * 255 + 64) / 128) as u8;
-        assert_eq!(
-            &dest[0..4],
-            &source_over([10, 20, 30, 255], [0, 0, straight, 128], 255)
-        );
+        assert_eq!(&dest[0..4], &[5, 10, 115, 255]);
         assert_eq!(&dest[4..], &source.pixels[4..]);
+    }
+
+    #[test]
+    fn premultiplied_alpha_does_not_round_twice() {
+        let source = Image::new(1, 1, vec![64, 64, 64, 255]).unwrap();
+        let sprite = CursorSprite::new(
+            Point::new(0.0, 0.0),
+            1,
+            1,
+            CursorPixels::PremultipliedRgba(vec![1, 1, 1, 2]),
+        )
+        .unwrap();
+        let mut dest = source.pixels.clone();
+        cursor(&mut dest, &source, &sprite).unwrap();
+        assert_eq!(dest, [64, 64, 64, 255]);
+    }
+
+    #[test]
+    fn premultiplied_alpha_over_partial_destination() {
+        let source = Image::new(1, 1, vec![80, 40, 20, 128]).unwrap();
+        let sprite = CursorSprite::new(
+            Point::new(0.0, 0.0),
+            1,
+            1,
+            CursorPixels::PremultipliedRgba(vec![32, 0, 0, 64]),
+        )
+        .unwrap();
+        let mut dest = source.pixels.clone();
+        cursor(&mut dest, &source, &sprite).unwrap();
+        assert_eq!(dest, [48, 24, 63, 160]);
     }
 }
