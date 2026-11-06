@@ -30,6 +30,7 @@ pub enum DocumentError {
     InvalidShapeIndex,
     AllocationFailed,
     HistoryEvictionNotApproved,
+    IrreversibleEditNotApproved,
     StaleHistoryPlan,
 }
 impl std::fmt::Display for DocumentError {
@@ -51,6 +52,9 @@ impl std::fmt::Display for DocumentError {
             Self::AllocationFailed => f.write_str("Es steht nicht genügend Speicher zur Verfügung"),
             Self::HistoryEvictionNotApproved => f.write_str(
                 "Das Entfernen von Rückgängig- oder Wiederherstellen-Schritten wurde nicht bestätigt",
+            ),
+            Self::IrreversibleEditNotApproved => f.write_str(
+                "Diese Bearbeitung kann nicht rückgängig gemacht werden. Dafür fehlt die ausdrückliche Bestätigung.",
             ),
             Self::StaleHistoryPlan => f.write_str(
                 "Das Dokument wurde seit der Speicherprüfung verändert. Bitte erneut prüfen.",
@@ -91,12 +95,8 @@ impl NavigationPlan {
             undo: VecDeque::new(),
             redo: Vec::new(),
         };
-        plan.undo
-            .try_reserve_exact(undo_len)
-            .map_err(|_| DocumentError::AllocationFailed)?;
-        plan.redo
-            .try_reserve_exact(redo_len)
-            .map_err(|_| DocumentError::AllocationFailed)?;
+        reserve_history(|| plan.undo.try_reserve_exact(undo_len))?;
+        reserve_history(|| plan.redo.try_reserve_exact(redo_len))?;
         Ok(plan)
     }
 
@@ -106,13 +106,29 @@ impl NavigationPlan {
     }
 }
 
+/// Whether a prepared edit can retain its newest undo step under the budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryCommitMode {
+    Undoable,
+    WithoutUndo,
+}
+
+/// Explicit upper bound on history loss authorized by the caller. Approval of
+/// ordinary eviction never authorizes an edit that cannot be undone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitApproval {
+    PreserveHistory,
+    DiscardOldHistory,
+    CommitWithoutUndo,
+}
+
 /// Prepared transaction commit. Planning never changes the document or grants
 /// permission to discard undo steps. Consume this exact plan to use the
 /// replacement container whose actual capacity was checked against the budget.
 #[derive(Debug)]
 pub struct HistorySnapshotPlan {
     generation: Arc<()>,
-    snapshot: State,
+    snapshot: Option<State>,
     suspended_after: Option<State>,
     undo: VecDeque<State>,
     undo_entries_to_evict: usize,
@@ -122,6 +138,13 @@ pub struct HistorySnapshotPlan {
 }
 
 impl HistorySnapshotPlan {
+    pub fn mode(&self) -> HistoryCommitMode {
+        if self.snapshot.is_some() {
+            HistoryCommitMode::Undoable
+        } else {
+            HistoryCommitMode::WithoutUndo
+        }
+    }
     pub fn undo_entries_to_evict(&self) -> usize {
         self.undo_entries_to_evict
     }
@@ -320,6 +343,24 @@ impl Document {
     /// This API is opt-in: legacy `commit_edit` and direct edits retain their
     /// existing automatic-eviction behavior until callers integrate this plan.
     pub fn plan_commit_edit(&self) -> Result<Option<HistorySnapshotPlan>, DocumentError> {
+        self.plan_commit_edit_internal(false)
+    }
+
+    /// Additionally offer a separately approved irreversible commit when even
+    /// the newest undo step and its immediate inverse cannot fit after all old
+    /// entries are removed. Allocation failures are propagated unchanged; only
+    /// an exhausted, successfully allocated budget check permits this fallback.
+    /// A `WithoutUndo` plan requires confirmation even with no old history.
+    pub fn plan_commit_edit_with_fallback(
+        &self,
+    ) -> Result<Option<HistorySnapshotPlan>, DocumentError> {
+        self.plan_commit_edit_internal(true)
+    }
+
+    fn plan_commit_edit_internal(
+        &self,
+        allow_without_undo_plan: bool,
+    ) -> Result<Option<HistorySnapshotPlan>, DocumentError> {
         let before = self
             .staged_before
             .as_ref()
@@ -341,8 +382,7 @@ impl Document {
         let mut evictions = 0;
         loop {
             let mut undo = VecDeque::new();
-            undo.try_reserve_exact(self.undo.len() - evictions + 1)
-                .map_err(|_| DocumentError::AllocationFailed)?;
+            reserve_history(|| undo.try_reserve_exact(self.undo.len() - evictions + 1))?;
             let history_bytes = committed
                 .bytes
                 .checked_add(container_bytes(undo.capacity(), size_of::<State>()))
@@ -365,7 +405,7 @@ impl Document {
             if history_bytes.max(inverse_bytes).max(replay_bytes) <= self.history_budget {
                 return Ok(Some(HistorySnapshotPlan {
                     generation: Arc::clone(&self.history_generation),
-                    snapshot,
+                    snapshot: Some(snapshot),
                     suspended_after: None,
                     undo,
                     undo_entries_to_evict: evictions,
@@ -375,6 +415,22 @@ impl Document {
                 }));
             }
             let Some(oldest) = self.undo.get(evictions) else {
+                if allow_without_undo_plan {
+                    // This branch is reached only after every old undo state
+                    // was considered for eviction and the actual minimum
+                    // commit/undo/redo storage still exceeded the budget.
+                    // Keep neither the cloned snapshot nor any container.
+                    return Ok(Some(HistorySnapshotPlan {
+                        generation: Arc::clone(&self.history_generation),
+                        snapshot: None,
+                        suspended_after: None,
+                        undo: VecDeque::new(),
+                        undo_entries_to_evict: self.undo.len(),
+                        redo_entries_to_discard: self.redo.len(),
+                        history_bytes: 0,
+                        history_budget: self.history_budget,
+                    }));
+                }
                 return Err(DocumentError::HistoryBudgetExceeded);
             };
             committed.remove(oldest);
@@ -411,25 +467,54 @@ impl Document {
     /// The preallocated container is used without reallocation.
     pub fn commit_edit_with_plan(
         &mut self,
-        mut plan: HistorySnapshotPlan,
+        plan: HistorySnapshotPlan,
         allow_history_discard: bool,
+    ) -> Result<bool, DocumentError> {
+        self.commit_edit_with_approval(
+            plan,
+            if allow_history_discard {
+                CommitApproval::DiscardOldHistory
+            } else {
+                CommitApproval::PreserveHistory
+            },
+        )
+    }
+
+    /// Apply a checked edit with explicit scope of consent. An irreversible
+    /// plan requires `CommitWithoutUndo`, independently of its discard counts.
+    /// On success it clears both histories including their allocated capacity;
+    /// future edits may start a new history from this irreversible baseline.
+    /// `CommitWithoutUndo` does not force history loss for an undoable plan.
+    pub fn commit_edit_with_approval(
+        &mut self,
+        mut plan: HistorySnapshotPlan,
+        approval: CommitApproval,
     ) -> Result<bool, DocumentError> {
         if !Arc::ptr_eq(&plan.generation, &self.history_generation) {
             return Err(DocumentError::StaleHistoryPlan);
         }
+        if plan.mode() == HistoryCommitMode::WithoutUndo
+            && approval != CommitApproval::CommitWithoutUndo
+        {
+            return Err(DocumentError::IrreversibleEditNotApproved);
+        }
         if (plan.undo_entries_to_evict > 0 || plan.redo_entries_to_discard > 0)
-            && !allow_history_discard
+            && approval == CommitApproval::PreserveHistory
         {
             return Err(DocumentError::HistoryEvictionNotApproved);
         }
         let revision = Arc::new(());
         self.invalidate_history_plans();
-        for _ in 0..plan.undo_entries_to_evict {
-            self.undo.pop_front();
+        if let Some(snapshot) = plan.snapshot {
+            for _ in 0..plan.undo_entries_to_evict {
+                self.undo.pop_front();
+            }
+            plan.undo.extend(self.undo.drain(..));
+            plan.undo.push_back(snapshot);
+            self.undo = plan.undo;
+        } else {
+            self.undo = VecDeque::new();
         }
-        plan.undo.extend(self.undo.drain(..));
-        plan.undo.push_back(plan.snapshot);
-        self.undo = plan.undo;
         self.redo = Vec::new();
         if let Some(after) = plan.suspended_after {
             self.current = after;
@@ -774,6 +859,35 @@ impl Document {
 
 const ALLOCATION_OVERHEAD: usize = 4 * size_of::<usize>();
 
+#[cfg(test)]
+thread_local! {
+    static HISTORY_RESERVATION_FAILURE_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static HISTORY_RESERVATION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// Keep allocation failures on their own Result path. The test hook exercises
+// propagation at every reservation, including the last minimum-budget check.
+fn reserve_history<T>(
+    reserve: impl FnOnce() -> Result<T, std::collections::TryReserveError>,
+) -> Result<T, DocumentError> {
+    #[cfg(test)]
+    {
+        HISTORY_RESERVATION_COUNT.with(|count| count.set(count.get() + 1));
+        let fail = HISTORY_RESERVATION_FAILURE_AFTER.with(|after| match after.get() {
+            Some(0) => true,
+            Some(remaining) => {
+                after.set(Some(remaining - 1));
+                false
+            }
+            None => false,
+        });
+        if fail {
+            return Err(DocumentError::AllocationFailed);
+        }
+    }
+    reserve().map_err(|_| DocumentError::AllocationFailed)
+}
+
 fn snapshot_storage_bytes(state: &State) -> usize {
     size_of::<State>()
         .saturating_add(revision_allocation_bytes())
@@ -799,10 +913,11 @@ impl HistoryStorage {
             images: HashMap::new(),
             bytes: 0,
         };
-        storage
-            .images
-            .try_reserve(states.size_hint().1.unwrap_or(states.size_hint().0))
-            .map_err(|_| DocumentError::AllocationFailed)?;
+        reserve_history(|| {
+            storage
+                .images
+                .try_reserve(states.size_hint().1.unwrap_or(states.size_hint().0))
+        })?;
         for state in states {
             storage.bytes = storage
                 .bytes

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ExePath,
-    [ValidateRange(30, 120)][int] $TimeoutSeconds = 60
+    [ValidateRange(30, 120)][int] $TimeoutSeconds = 60,
+    [switch] $WithoutUndo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,7 +71,7 @@ namespace ShotKitHistorySmoke {
     // Large images publish CF_DIBV5 only; legacy CF_DIB/PNG are optional
     // and capped at 16 MiB by ShotKit's actual clipboard output path.
     IntPtr h=GetClipboardData(17); if(h==IntPtr.Zero)return null;
-    ulong size=GlobalSize(h).ToUInt64();if(size<124 || size>100000124)throw new InvalidOperationException("CLIPBOARD_DIBV5_SIZE_INVALID.");
+    ulong size=GlobalSize(h).ToUInt64();if(size<124 || size>200000124)throw new InvalidOperationException("CLIPBOARD_DIBV5_SIZE_INVALID.");
     IntPtr p=GlobalLock(h);if(p==IntPtr.Zero)return null;
     try {
      int header=Marshal.ReadInt32(p),w=Marshal.ReadInt32(p,4),height=Marshal.ReadInt32(p,8);
@@ -106,7 +107,8 @@ namespace ShotKitHistorySmoke {
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-History-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $appData=Join-Path $root 'appdata'; $localAppData=Join-Path $root 'localappdata'
-$settingsDir=Join-Path $appData 'ShotKitRust'; $fixturePath=Join-Path $root '6000x4000.bmp'
+$fixtureWidth=if($WithoutUndo){8000}else{6000}; $fixtureHeight=if($WithoutUndo){5000}else{4000}
+$settingsDir=Join-Path $appData 'ShotKitRust'; $fixturePath=Join-Path $root ("${fixtureWidth}x${fixtureHeight}.bmp")
 $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA
 $process=$null; $processStopped=$true; $mouseDown=$false; $failure=$null; $cleanupFailure=$null
 $editorHandle=[IntPtr]::Zero
@@ -125,9 +127,9 @@ function Wait-For([scriptblock] $Probe, [string] $Description, [int] $Seconds = 
     }
     throw "TIMEOUT waiting for $Description; owned window count=$(@(Get-OwnedWindows).Count)."
 }
-function Write-LargeBmp([string] $Path) {
-    # 24-bit uncompressed BMP: 6000 * 4000 * 3 = 72,000,000 pixel bytes.
-    $width=6000; $height=4000; $rowBytes=$width*3; $pixelBytes=$rowBytes*$height
+function Write-LargeBmp([string] $Path,[int] $Width = 6000,[int] $Height = 4000) {
+    # Both fixture widths have 4-byte aligned 24bpp rows; no BMP padding is needed.
+    $rowBytes=$Width*3; $pixelBytes=$rowBytes*$Height
     $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try {
         $writer=[IO.BinaryWriter]::new($stream)
@@ -141,7 +143,7 @@ function Write-LargeBmp([string] $Path) {
             $writer.Flush()
         } finally { $writer.Dispose() }
     } finally { $stream.Dispose() }
-    if((Get-Item -LiteralPath $Path).Length -ne 72000054){throw 'FIXTURE_INVALID: generated BMP length was unexpected.'}
+    if((Get-Item -LiteralPath $Path).Length -ne (54+$pixelBytes)){throw 'FIXTURE_INVALID: generated BMP length was unexpected.'}
 }
 function Drag-Crop([IntPtr] $Editor,[int] $ShotKitProcessId,[int] $Width,[int] $Height) {
     Send-Command 0x510B
@@ -192,7 +194,7 @@ function Assert-Same([string] $Expected,[string] $Phase) {
 function Get-Prompt {
     @(Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'Rückgängig-Verlauf' })
 }
-function Answer-Prompt([int] $ButtonId,[int] $ExpectedUndo = 1,[int] $ExpectedRedo = 0) {
+function Answer-Prompt([int] $ButtonId,[int] $ExpectedUndo = 1,[int] $ExpectedRedo = 0,[switch] $ExpectWithoutUndo) {
     $dialogs=@(Wait-For { Get-Prompt } 'history eviction confirmation')
     if ($dialogs.Count -ne 1) { throw 'HISTORY_PROMPT_AMBIGUOUS.' }
     $dialog=$dialogs[0]
@@ -200,6 +202,9 @@ function Answer-Prompt([int] $ButtonId,[int] $ExpectedUndo = 1,[int] $ExpectedRe
     if ([ShotKitHistorySmoke.Native]::OwnerPid($dialog.H) -ne $process.Id -or [ShotKitHistorySmoke.Native]::GetWindow($dialog.H,4) -ne $editorHandle -or [ShotKitHistorySmoke.Native]::IsWindowEnabled($editorHandle)) { throw 'HISTORY_PROMPT_OWNER_OR_MODALITY_MISMATCH.' }
     $children=@([ShotKitHistorySmoke.Native]::Children($dialog.H))
     $expectedText="Für diese Bearbeitung werden $ExpectedUndo ältere Rückgängig-Schritte und $ExpectedRedo Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"
+    if ($ExpectWithoutUndo) {
+        $expectedText="Das Speicherlimit reicht für diese Bearbeitung nicht aus. Der gesamte Rückgängig- und Wiederholen-Verlauf ($ExpectedUndo und $ExpectedRedo Schritte) wird gelöscht. Diese Bearbeitung kann nicht rückgängig gemacht werden. Möchten Sie fortfahren?"
+    }
     if (@($children | Where-Object { $_.ClassName -eq 'Static' -and $_.Title -eq $expectedText }).Count -ne 1) { throw 'HISTORY_PROMPT_EVICTION_COUNT_MISMATCH.' }
     $buttons=@($children | Where-Object { $_.Visible -and $_.ClassName -eq 'Button' -and [ShotKitHistorySmoke.Native]::GetDlgCtrlID($_.H) -eq $ButtonId })
     if ($buttons.Count -ne 1) { throw 'HISTORY_PROMPT_BUTTON_MISSING.' }
@@ -221,7 +226,7 @@ try {
     New-Item -ItemType Directory -Path $root,$appData,$localAppData,$settingsDir -Force | Out-Null
     $settings=@{version=1;save_folder=$null;open_editor=$true;copy_to_clipboard=$false;auto_save=$false;scroll_direction='down'}|ConvertTo-Json -Compress
     [IO.File]::WriteAllText((Join-Path $settingsDir 'settings.json'),$settings,[Text.UTF8Encoding]::new($false))
-    Write-LargeBmp $fixturePath
+    Write-LargeBmp $fixturePath $fixtureWidth $fixtureHeight
     $env:APPDATA=$appData; $env:LOCALAPPDATA=$localAppData
     try { $process=Start-Process -FilePath $ExePath -ArgumentList ('"'+$fixturePath+'"') -WorkingDirectory $root -PassThru; $processStopped=$false }
     finally { $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData }
@@ -231,6 +236,44 @@ try {
     $editor=Wait-For { Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ') } | Select-Object -First 1 } 'loaded fixture editor'
     $editorHandle=$editor.H
     $original=Read-Fingerprint
+    if ($WithoutUndo) {
+        if (-not $original.StartsWith('8000x5000:')) { throw 'WITHOUT_UNDO_ORIGINAL_DIMENSIONS_INVALID.' }
+        # The first 160 MB RGBA snapshot cannot fit the default 128 MiB budget.
+        # Even with no old Undo or Redo entries this requires explicit approval.
+        Drag-Crop $editorHandle $process.Id 8000 5000
+        Answer-Prompt -ButtonId 7 -ExpectedUndo 0 -ExpectedRedo 0 -ExpectWithoutUndo
+        Assert-Same $original 'WithoutUndo No preserves all original pixels and dimensions'
+        Send-Command 0x5112
+        Assert-Same $original 'WithoutUndo No preserves empty Undo history'
+        Send-Command 0x5113
+        Assert-Same $original 'WithoutUndo No preserves empty Redo history'
+
+        Drag-Crop $editorHandle $process.Id 8000 5000
+        Answer-Prompt -ButtonId 6 -ExpectedUndo 0 -ExpectedRedo 0 -ExpectWithoutUndo
+        $first=Read-Fingerprint
+        $firstSize=($first.Split(':')[0]).Split('x'); $firstWidth=[int]$firstSize[0]; $firstHeight=[int]$firstSize[1]
+        if ($firstWidth -lt 6200 -or $firstWidth -gt 6600 -or $firstHeight -lt 3800 -or $firstHeight -gt 4200 -or $first -eq $original) { throw 'WITHOUT_UNDO_CROP_DIMENSIONS_INVALID.' }
+        if ([long]$firstWidth*$firstHeight*4 -ge 128*1024*1024) { throw 'WITHOUT_UNDO_NEXT_SNAPSHOT_MUST_FIT_BUDGET.' }
+        Send-Command 0x5112
+        Assert-Same $first 'WithoutUndo Yes leaves Undo without effect'
+        Send-Command 0x5113
+        Assert-Same $first 'WithoutUndo Yes leaves Redo without effect'
+
+        # This predecessor is now approximately 102 MB, so a subsequent crop
+        # must retain its normal Undo step without a history-loss prompt.
+        Drag-Crop $editorHandle $process.Id $firstWidth $firstHeight
+        [void](Wait-For { Get-OwnedWindows | Where-Object { $_.H -eq $editorHandle -and $_.Title -like '*Werkzeug Select*' } } 'normal undoable crop after WithoutUndo')
+        $second=Read-Fingerprint
+        $secondSize=($second.Split(':')[0]).Split('x')
+        if ([int]$secondSize[0] -ge $firstWidth -or [int]$secondSize[1] -ge $firstHeight -or $second -eq $first) { throw 'CROP_AFTER_WITHOUT_UNDO_DID_NOT_COMMIT.' }
+        if (@(Get-Prompt).Count -ne 0) { throw 'CROP_AFTER_WITHOUT_UNDO_UNEXPECTED_PROMPT.' }
+        Send-Command 0x5112
+        Assert-Same $first 'normal crop after WithoutUndo restores predecessor through Undo'
+        Send-Command 0x5112
+        Assert-Same $first 'WithoutUndo original remains absent after later normal Undo'
+        Send-Command 0x5113
+        Assert-Same $second 'normal crop after WithoutUndo remains redoable'
+    } else {
     if (-not $original.StartsWith('6000x4000:')) { throw 'ORIGINAL_DIMENSIONS_INVALID.' }
 
     # Original RGBA allocation is 96 MB and fits the 128 MiB history budget.
@@ -278,6 +321,7 @@ try {
     Assert-Same $first 'No retains pixels and dimensions when only Redo would be discarded'
     Send-Command 0x5113
     Assert-Same $second 'No preserves the existing Redo branch for actual replay'
+    }
 } catch { $failure=$_ }
 finally {
     $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData
@@ -296,4 +340,8 @@ if ($failure) {
     throw "SMOKE_FAILED: $message"
 }
 if ($cleanupFailure) { throw "CLEANUP_FAILED: $cleanupFailure" }
-Write-Host 'PASS: crop confirmation No preserves pixels, dimensions and Undo history; Yes commits, evicts the oldest original, and keeps the immediate predecessor undoable and the accepted crop redoable; declining a new crop also preserves the existing Redo branch.'
+if ($WithoutUndo) {
+    Write-Host 'PASS: WithoutUndo warning with 0/0 counts; No preserves all pixels and dimensions, Yes crops with no effective Undo/Redo, and a later smaller crop is normally undoable and redoable.'
+} else {
+    Write-Host 'PASS: crop confirmation No preserves pixels, dimensions and Undo history; Yes commits, evicts the oldest original, and keeps the immediate predecessor undoable and the accepted crop redoable; declining a new crop also preserves the existing Redo branch.'
+}

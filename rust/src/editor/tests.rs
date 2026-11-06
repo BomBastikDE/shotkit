@@ -1370,14 +1370,51 @@ fn failed_preparation_restores_step_defaults_selection_and_cancels_gesture() {
     let result = e.prepare_annotation_edit(|e| {
         e.mouse_up(p(25.0, 25.0));
         e.set_current_color(Color::MARKER_YELLOW);
+        assert!(!e.edit_shape(99, |_| {}));
     });
-    assert!(matches!(result, Err(DocumentError::HistoryBudgetExceeded)));
+    assert!(matches!(result, Err(DocumentError::InvalidShapeIndex)));
     assert_eq!(AnnotationState::capture(&e), before);
     assert!(e.shapes().is_empty());
     assert!(e.preview().is_none());
     assert!(e.last_position.is_none());
     e.mouse_up(p(30.0, 30.0));
     assert!(e.shapes().is_empty());
+}
+
+#[test]
+fn oversized_annotation_requires_specific_irreversible_approval() {
+    let mut e = editor();
+    e.document_mut().set_history_budget(0);
+    e.set_tool(Tool::Step);
+    let before = AnnotationState::capture(&e);
+    e.mouse_down(p(25.0, 25.0));
+    let plan = e
+        .prepare_annotation_edit(|e| e.mouse_up(p(25.0, 25.0)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    assert_eq!(
+        e.commit_annotation_edit(plan, true),
+        Err(DocumentError::IrreversibleEditNotApproved)
+    );
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert!(e.shapes().is_empty());
+    assert!(e.preview().is_none());
+    e.mouse_down(p(25.0, 25.0));
+    let plan = e
+        .prepare_annotation_edit(|e| e.mouse_up(p(25.0, 25.0)))
+        .unwrap()
+        .unwrap();
+    assert!(e
+        .commit_annotation_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
+        .unwrap());
+    assert_eq!(e.shapes().len(), 1);
+    assert!(matches!(
+        e.shapes()[0].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+    assert!(!e.undo());
+    assert!(!e.redo());
 }
 
 #[test]

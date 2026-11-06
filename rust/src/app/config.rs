@@ -9,31 +9,27 @@ use super::*;
 pub(super) unsafe fn confirm_and_commit_staged_edit(
     h: H,
 ) -> Result<Option<bool>, shotkit::document::DocumentError> {
-    let plan = editor(h).document_mut().plan_commit_edit()?;
+    let plan = editor(h).document_mut().plan_commit_edit_with_fallback()?;
     let Some(mut plan) = plan else {
         return editor(h).document_mut().commit_edit().map(Some);
     };
     let evictions = plan.undo_entries_to_evict();
     let redo_discarded = plan.redo_entries_to_discard();
-    if evictions > 0 || redo_discarded > 0 {
+    let mode = plan.mode();
+    if mode == shotkit::document::HistoryCommitMode::WithoutUndo
+        || evictions > 0
+        || redo_discarded > 0
+    {
         // Restore the old document while the modal loop may repaint; the
         // prepared new state stays owned by the plan until approval.
         plan = editor(h).document_mut().suspend_edit_with_plan(plan)?;
-        let _modal = ModalGuard::new(h);
-        let message = format!("Für diese Bearbeitung werden {evictions} ältere Rückgängig-Schritte und {redo_discarded} Wiederholen-Schritte entfernt. Möchten Sie fortfahren?");
-        if MessageBoxW(
-            h,
-            wide(&message).as_ptr(),
-            wide("Rückgängig-Verlauf").as_ptr(),
-            0x124,
-        ) != 6
-        {
-            return Ok(None);
-        }
     }
+    let Some(approval) = prompt_history_approval(h, mode, evictions, redo_discarded) else {
+        return Ok(None);
+    };
     editor(h)
         .document_mut()
-        .commit_edit_with_plan(plan, evictions > 0 || redo_discarded > 0)
+        .commit_edit_with_approval(plan, approval)
         .map(Some)
 }
 
@@ -67,20 +63,10 @@ pub(super) unsafe fn apply_annotation_edit(
     };
     let undo = plan.undo_entries_to_evict();
     let redo = plan.redo_entries_to_discard();
-    if undo > 0 || redo > 0 {
-        let _modal = ModalGuard::new(h);
-        let message = format!("Für diese Bearbeitung werden {undo} ältere Rückgängig-Schritte und {redo} Wiederholen-Schritte entfernt. Möchten Sie fortfahren?");
-        if MessageBoxW(
-            h,
-            wide(&message).as_ptr(),
-            wide("Rückgängig-Verlauf").as_ptr(),
-            0x124,
-        ) != 6
-        {
-            return false;
-        }
-    }
-    match editor(h).commit_annotation_edit(plan, undo > 0 || redo > 0) {
+    let Some(approval) = prompt_history_approval(h, plan.mode(), undo, redo) else {
+        return false;
+    };
+    match editor(h).commit_annotation_edit_with_approval(plan, approval) {
         Ok(_) => true,
         Err(error) => {
             MessageBoxW(
@@ -95,6 +81,35 @@ pub(super) unsafe fn apply_annotation_edit(
             false
         }
     }
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster und es wird kein
+// Editor-Borrow gehalten. Warum erfüllt: beide Aufrufer besitzen nur Plandaten.
+// Nachrichten: MessageBoxW kann reentrieren; ModalGuard schützt das Fenster.
+unsafe fn prompt_history_approval(
+    h: H,
+    mode: shotkit::document::HistoryCommitMode,
+    undo: usize,
+    redo: usize,
+) -> Option<shotkit::document::CommitApproval> {
+    use shotkit::document::{CommitApproval, HistoryCommitMode};
+    if mode == HistoryCommitMode::Undoable && undo == 0 && redo == 0 {
+        return Some(CommitApproval::PreserveHistory);
+    }
+    let (message, approval) = if mode == HistoryCommitMode::WithoutUndo {
+        (format!("Das Speicherlimit reicht für diese Bearbeitung nicht aus. Der gesamte Rückgängig- und Wiederholen-Verlauf ({undo} und {redo} Schritte) wird gelöscht. Diese Bearbeitung kann nicht rückgängig gemacht werden. Möchten Sie fortfahren?"), CommitApproval::CommitWithoutUndo)
+    } else {
+        (format!("Für diese Bearbeitung werden {undo} ältere Rückgängig-Schritte und {redo} Wiederholen-Schritte entfernt. Möchten Sie fortfahren?"), CommitApproval::DiscardOldHistory)
+    };
+    let _modal = ModalGuard::new(h);
+    (MessageBoxW(
+        h,
+        wide(&message).as_ptr(),
+        wide("Rückgängig-Verlauf").as_ptr(),
+        0x124,
+    ) == 6)
+        .then_some(approval)
 }
 
 pub(super) fn active_settings() -> Settings {

@@ -671,7 +671,7 @@ fn prepared_snapshot_accounts_actual_capacities_and_preserves_shared_images() {
     assert_eq!(plan.undo_entries_to_evict(), 0);
     assert_eq!(plan.redo_entries_to_discard(), 0);
     let expected = d.undo.iter().map(snapshot_storage_bytes).sum::<usize>()
-        + snapshot_storage_bytes(&plan.snapshot)
+        + snapshot_storage_bytes(plan.snapshot.as_ref().unwrap())
         + container_bytes(plan.undo.capacity(), size_of::<State>());
     assert_eq!(plan.history_bytes(), expected); // No duplicate 64 KiB image.
     assert_eq!(plan.history_budget(), d.history_budget());
@@ -737,7 +737,7 @@ fn undo_eviction_requires_explicit_approval_and_consumes_exact_plan() {
         .skip(evictions - 1)
         .map(snapshot_storage_bytes)
         .sum::<usize>()
-        + snapshot_storage_bytes(&plan.snapshot)
+        + snapshot_storage_bytes(plan.snapshot.as_ref().unwrap())
         + container_bytes(one_more.capacity(), size_of::<State>());
     let one_more_inverse = NavigationPlan::reserve(old_count + 1 - evictions, 1).unwrap();
     let one_more_inverse_bytes = d
@@ -787,11 +787,11 @@ fn shared_old_image_is_charged_once_across_retained_snapshots() {
         .unwrap();
     let plan = d.plan_commit_edit().unwrap().unwrap();
     let expected = d.undo.iter().map(snapshot_storage_bytes).sum::<usize>()
-        + snapshot_storage_bytes(&plan.snapshot)
-        + image_allocation_bytes(&plan.snapshot.image)
+        + snapshot_storage_bytes(plan.snapshot.as_ref().unwrap())
+        + image_allocation_bytes(&plan.snapshot.as_ref().unwrap().image)
         + container_bytes(plan.undo.capacity(), size_of::<State>());
     assert_eq!(plan.history_bytes(), expected);
-    assert!(image_allocation_bytes(&plan.snapshot.image) > 4096);
+    assert!(image_allocation_bytes(&plan.snapshot.as_ref().unwrap().image) > 4096);
     d.commit_edit_with_plan(plan, false).unwrap();
     assert_eq!(d.history_bytes(), expected);
 }
@@ -1093,8 +1093,8 @@ fn eviction_releases_shared_image_only_after_its_last_snapshot_is_removed() {
     let plan = d.plan_commit_edit().unwrap().unwrap();
     assert_eq!(plan.undo_entries_to_evict(), old_count);
     assert_eq!(plan_observation(&d), before);
-    let expected = snapshot_storage_bytes(&plan.snapshot)
-        + image_allocation_bytes(&plan.snapshot.image)
+    let expected = snapshot_storage_bytes(plan.snapshot.as_ref().unwrap())
+        + image_allocation_bytes(&plan.snapshot.as_ref().unwrap().image)
         + container_bytes(plan.undo.capacity(), size_of::<State>());
     assert_eq!(plan.history_bytes(), expected);
     d.commit_edit_with_plan(plan, true).unwrap();
@@ -1187,4 +1187,338 @@ fn planned_image_edit_preserves_all_approved_steps_through_undo_and_redo() {
     assert_eq!(d.undo.len(), retained);
     assert_eq!(d.redo.len(), 0);
     assert!(d.history_bytes() <= d.history_budget());
+}
+
+fn fallback_document_with_both_histories() -> Document {
+    let mut d = Document::with_history_budget(image(), 8192).unwrap();
+    for _ in 0..3 {
+        d.add_shape(shape()).unwrap();
+    }
+    assert!(d.undo());
+    assert!(d.mark_saved());
+    d
+}
+
+fn stage_oversized_inverse(d: &mut Document) {
+    d.begin_edit().unwrap();
+    d.replace_image(Image::new(128, 128, vec![9; 128 * 128 * 4]).unwrap())
+        .unwrap();
+}
+
+// Suspend intentionally invalidates old plans but must restore everything else.
+fn observation_without_generation(d: &Document) -> (String, Vec<usize>) {
+    let mut observation = plan_observation(d);
+    observation.1[0] = 0;
+    observation
+}
+
+#[test]
+fn fallback_planning_preserves_no_transaction_no_op_and_undoable_branch_behavior() {
+    let mut d = fallback_document_with_both_histories();
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit_with_fallback(),
+        Err(DocumentError::NoTransaction)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    d.begin_edit().unwrap();
+    let before = plan_observation(&d);
+    assert!(d.plan_commit_edit_with_fallback().unwrap().is_none());
+    assert_eq!(plan_observation(&d), before);
+    d.add_shape(shape()).unwrap();
+    let before = plan_observation(&d);
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::Undoable);
+    assert_eq!(plan.redo_entries_to_discard(), 1);
+    assert_eq!(
+        d.commit_edit_with_approval(plan, CommitApproval::PreserveHistory),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(plan_observation(&d), before);
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    d.commit_edit_with_approval(plan, CommitApproval::DiscardOldHistory)
+        .unwrap();
+    assert!(d.try_undo().unwrap());
+    assert!(d.try_redo().unwrap());
+}
+
+#[test]
+fn fallback_reports_all_history_loss_and_keeps_strict_planning_unchanged() {
+    let mut d = fallback_document_with_both_histories();
+    let undo_count = d.undo.len();
+    let redo_count = d.redo.len();
+    stage_oversized_inverse(&mut d);
+    let before = plan_observation(&d);
+    assert!(matches!(
+        d.plan_commit_edit(),
+        Err(DocumentError::HistoryBudgetExceeded)
+    ));
+    assert_eq!(plan_observation(&d), before);
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    assert_eq!(plan_observation(&d), before);
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    assert_eq!(plan.undo_entries_to_evict(), undo_count);
+    assert_eq!(plan.redo_entries_to_discard(), redo_count);
+    assert_eq!(plan.history_bytes(), 0);
+    assert_eq!(plan.history_budget(), 8192);
+    assert!(plan.snapshot.is_none());
+    assert_eq!(plan.undo.capacity(), 0);
+}
+
+#[test]
+fn fallback_requires_distinct_consent_even_with_empty_history() {
+    for with_history in [false, true] {
+        let mut d = if with_history {
+            fallback_document_with_both_histories()
+        } else {
+            Document::with_history_budget(image(), 8192).unwrap()
+        };
+        stage_oversized_inverse(&mut d);
+        for approval in [
+            CommitApproval::PreserveHistory,
+            CommitApproval::DiscardOldHistory,
+        ] {
+            let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+            let before = plan_observation(&d);
+            assert_eq!(
+                d.commit_edit_with_approval(plan, approval),
+                Err(DocumentError::IrreversibleEditNotApproved)
+            );
+            assert_eq!(plan_observation(&d), before);
+        }
+        for allow_history_discard in [false, true] {
+            let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+            let before = plan_observation(&d);
+            assert_eq!(
+                d.commit_edit_with_plan(plan, allow_history_discard),
+                Err(DocumentError::IrreversibleEditNotApproved)
+            );
+            assert_eq!(plan_observation(&d), before);
+        }
+        d.abort_edit().unwrap();
+    }
+}
+
+#[test]
+fn dropping_or_declining_suspended_fallback_restores_exact_original_document() {
+    for decline in [false, true] {
+        let mut d = fallback_document_with_both_histories();
+        let original = observation_without_generation(&d);
+        stage_oversized_inverse(&mut d);
+        let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+        let plan = d.suspend_edit_with_plan(plan).unwrap();
+        assert_eq!(observation_without_generation(&d), original);
+        let before = plan_observation(&d);
+        if decline {
+            assert_eq!(
+                d.commit_edit_with_approval(plan, CommitApproval::DiscardOldHistory),
+                Err(DocumentError::IrreversibleEditNotApproved)
+            );
+        } else {
+            drop(plan);
+        }
+        assert_eq!(plan_observation(&d), before);
+        assert!(!d.is_dirty());
+        assert!(d.can_redo());
+        assert!(d.staged_before.is_none());
+    }
+}
+
+#[test]
+fn approved_fallback_installs_new_baseline_without_undo_or_redo_allocations() {
+    for suspend in [false, true] {
+        let mut d = fallback_document_with_both_histories();
+        let saved = Arc::clone(d.saved_revision.as_ref().unwrap());
+        stage_oversized_inverse(&mut d);
+        let expected_image = d.image_arc();
+        let expected_shapes = d.shapes().to_vec();
+        let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+        let plan = if suspend {
+            d.suspend_edit_with_plan(plan).unwrap()
+        } else {
+            plan
+        };
+        assert!(d
+            .commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
+            .unwrap());
+        assert!(Arc::ptr_eq(&expected_image, &d.image_arc()));
+        assert_eq!(d.shapes(), expected_shapes);
+        assert!(Arc::ptr_eq(&saved, d.saved_revision.as_ref().unwrap()));
+        assert!(!Arc::ptr_eq(&saved, &d.current.revision));
+        assert!(d.is_dirty());
+        assert!(d.staged_before.is_none());
+        assert_eq!(d.history_budget(), 8192);
+        assert_eq!(d.history_bytes(), 0);
+        assert_eq!(d.undo.capacity(), 0);
+        assert_eq!(d.redo.capacity(), 0);
+        let before = plan_observation(&d);
+        assert_eq!(d.check_undo(), Ok(false));
+        assert_eq!(d.check_redo(), Ok(false));
+        assert_eq!(d.try_undo(), Ok(false));
+        assert_eq!(d.try_redo(), Ok(false));
+        assert_eq!(plan_observation(&d), before);
+        d.begin_edit().unwrap();
+        d.add_shape(shape()).unwrap();
+        let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+        assert_eq!(plan.mode(), HistoryCommitMode::Undoable);
+        d.commit_edit_with_approval(plan, CommitApproval::PreserveHistory)
+            .unwrap();
+        assert!(d.try_undo().unwrap());
+        assert_eq!(d.shapes(), expected_shapes);
+        assert!(!d.try_undo().unwrap()); // Cannot cross the irreversible baseline.
+        assert!(d.try_redo().unwrap());
+    }
+}
+
+#[test]
+fn fallback_applies_to_oversized_old_snapshot_as_well_as_oversized_inverse() {
+    let mut d =
+        Document::with_history_budget(Image::new(128, 128, vec![7; 128 * 128 * 4]).unwrap(), 8192)
+            .unwrap();
+    d.begin_edit().unwrap();
+    d.replace_image(image()).unwrap();
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    d.commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
+        .unwrap();
+    assert_eq!(d.image(), &image());
+    assert!(!d.try_undo().unwrap());
+    assert!(!d.try_redo().unwrap());
+}
+
+#[test]
+fn fallback_preserves_budget_boundary_and_prefers_undoable_eviction() {
+    let mut d = Document::new(image()).unwrap();
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let snapshot = d.staged_before.as_ref().unwrap().clone();
+    let committed = snapshot_storage_bytes(&snapshot)
+        + NavigationPlan::reserve(1, 0).unwrap().container_bytes();
+    let inverse = snapshot_storage_bytes(&d.current)
+        + NavigationPlan::reserve(0, 1).unwrap().container_bytes();
+    let minimum = committed.max(inverse);
+    for (budget, mode) in [
+        (minimum - 1, HistoryCommitMode::WithoutUndo),
+        (minimum, HistoryCommitMode::Undoable),
+        (minimum + 1, HistoryCommitMode::Undoable),
+    ] {
+        d.set_history_budget(budget);
+        let before = plan_observation(&d);
+        let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+        assert_eq!(plan.mode(), mode);
+        assert_eq!(plan_observation(&d), before);
+    }
+    d.abort_edit().unwrap();
+    d.set_history_budget(DEFAULT_HISTORY_BUDGET);
+    for _ in 0..12 {
+        d.add_shape(shape()).unwrap();
+    }
+    d.set_history_budget(d.history_bytes());
+    d.begin_edit().unwrap();
+    d.add_shape(shape()).unwrap();
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::Undoable);
+    assert!(plan.undo_entries_to_evict() > 0);
+    d.commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
+        .unwrap();
+    assert!(d.try_undo().unwrap()); // Stronger approval must not force fallback.
+    assert!(d.try_redo().unwrap());
+}
+
+#[test]
+fn fallback_rejects_stale_edits_budget_changes_clones_and_new_transactions() {
+    let mutations: &[fn(&mut Document)] = &[
+        |d| {
+            d.add_shape(shape()).unwrap();
+        },
+        |d| {
+            d.set_history_budget(d.history_budget());
+        },
+        |d| {
+            d.abort_edit().unwrap();
+            d.begin_edit().unwrap();
+            d.add_shape(shape()).unwrap();
+        },
+        |d| {
+            let p = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+            d.commit_edit_with_approval(p, CommitApproval::CommitWithoutUndo)
+                .unwrap();
+        },
+    ];
+    for mutate in mutations {
+        let mut d = fallback_document_with_both_histories();
+        stage_oversized_inverse(&mut d);
+        let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+        mutate(&mut d);
+        let before = plan_observation(&d);
+        assert_eq!(
+            d.commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo),
+            Err(DocumentError::StaleHistoryPlan)
+        );
+        assert_eq!(plan_observation(&d), before);
+    }
+    let mut d = fallback_document_with_both_histories();
+    stage_oversized_inverse(&mut d);
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    let mut cloned = d.clone();
+    let before = plan_observation(&cloned);
+    assert_eq!(
+        cloned.commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo),
+        Err(DocumentError::StaleHistoryPlan)
+    );
+    assert_eq!(plan_observation(&cloned), before);
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    let plan = d.suspend_edit_with_plan(plan).unwrap();
+    assert!(d.mark_saved());
+    let before = plan_observation(&d);
+    assert_eq!(
+        d.commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo),
+        Err(DocumentError::StaleHistoryPlan)
+    );
+    assert_eq!(plan_observation(&d), before);
+}
+
+struct HistoryReservationFailureGuard;
+impl HistoryReservationFailureGuard {
+    fn after(successful_reservations: usize) -> Self {
+        HISTORY_RESERVATION_FAILURE_AFTER.with(|after| after.set(Some(successful_reservations)));
+        Self
+    }
+}
+impl Drop for HistoryReservationFailureGuard {
+    fn drop(&mut self) {
+        HISTORY_RESERVATION_FAILURE_AFTER.with(|after| after.set(None));
+    }
+}
+
+#[test]
+fn allocation_failure_at_every_fallback_reservation_is_propagated_atomically() {
+    let mut d = fallback_document_with_both_histories();
+    stage_oversized_inverse(&mut d);
+    HISTORY_RESERVATION_COUNT.with(|count| count.set(0));
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    let reservations = HISTORY_RESERVATION_COUNT.with(|count| count.get());
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    assert!(reservations > 5); // Includes the final minimum-budget attempt.
+    drop(plan);
+    let before = plan_observation(&d);
+    for fail_after in 0..reservations {
+        let _guard = HistoryReservationFailureGuard::after(fail_after);
+        assert!(
+            matches!(
+                d.plan_commit_edit_with_fallback(),
+                Err(DocumentError::AllocationFailed)
+            ),
+            "reservation {fail_after}"
+        );
+        assert_eq!(plan_observation(&d), before);
+    }
+    let plan = d.plan_commit_edit_with_fallback().unwrap().unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    assert_eq!(plan_observation(&d), before);
+    let mut impossible: Vec<u8> = Vec::new();
+    assert_eq!(
+        reserve_history(|| impossible.try_reserve(usize::MAX)),
+        Err(DocumentError::AllocationFailed)
+    );
 }

@@ -11,7 +11,7 @@ mod effects;
 mod history;
 
 use crate::{
-    document::{Document, DocumentError, HistorySnapshotPlan},
+    document::{CommitApproval, Document, DocumentError, HistoryCommitMode, HistorySnapshotPlan},
     image_edit::{CropRect, FrameOptions},
     shapes::{Color, Point, Shape, ShapeKind, StampKind, Style, Tool},
     stitch::Image,
@@ -158,6 +158,9 @@ pub struct PreparedAnnotationEdit {
 }
 
 impl PreparedAnnotationEdit {
+    pub fn mode(&self) -> HistoryCommitMode {
+        self.history.mode()
+    }
     pub fn undo_entries_to_evict(&self) -> usize {
         self.history.undo_entries_to_evict()
     }
@@ -266,7 +269,7 @@ impl EditorController {
             return Err(error);
         }
         self.last_error = before.last_error.clone();
-        let history = match self.document.plan_commit_edit() {
+        let history = match self.document.plan_commit_edit_with_fallback() {
             Ok(Some(history)) => history,
             Ok(None) => {
                 self.document.abort_edit()?;
@@ -303,6 +306,20 @@ impl EditorController {
         plan: PreparedAnnotationEdit,
         allow_history_discard: bool,
     ) -> Result<bool, DocumentError> {
+        let approval = if allow_history_discard {
+            CommitApproval::DiscardOldHistory
+        } else {
+            CommitApproval::PreserveHistory
+        };
+        self.commit_annotation_edit_with_approval(plan, approval)
+    }
+
+    /// Commit a prepared action using a specific, explicit history approval.
+    pub fn commit_annotation_edit_with_approval(
+        &mut self,
+        plan: PreparedAnnotationEdit,
+        approval: CommitApproval,
+    ) -> Result<bool, DocumentError> {
         if self.drag.is_some()
             || self.last_position.is_some()
             || AnnotationState::capture(self) != plan.before
@@ -311,7 +328,7 @@ impl EditorController {
         }
         let changed = self
             .document
-            .commit_edit_with_plan(plan.history, allow_history_discard)?;
+            .commit_edit_with_approval(plan.history, approval)?;
         plan.after.restore(self);
         Ok(changed)
     }
