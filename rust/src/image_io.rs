@@ -1,8 +1,10 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
 use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
+#[cfg(test)]
+use image::RgbImage;
 use image::{
-    codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits,
-    RgbImage, RgbaImage,
+    codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageDecoder, ImageFormat,
+    ImageReader, Limits, Rgb, RgbaImage,
 };
 use std::{
     io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
@@ -175,9 +177,11 @@ pub fn encode(image: &Image, format: ImageFormat) -> Result<Vec<u8>, String> {
             .ok_or("Ungültige Bildgröße")?;
         // Match ImageBuffer::from_raw: ignore surplus bytes after the image.
         let bgra = image.pixels.get(..expected).ok_or("Ungültige Bildgröße")?;
-        let output = DynamicImage::ImageRgb8(
-            RgbImage::from_raw(w, h, jpeg_rgb_on_white(bgra)?).ok_or("Ungültige Bildgröße")?,
-        );
+        let output = JpegRgbView {
+            bgra,
+            width: w,
+            height: h,
+        };
         JpegEncoder::new_with_quality(&mut bytes, 92)
             .encode_image(&output)
             .map_err(|e| e.to_string())?;
@@ -318,9 +322,35 @@ pub fn write_png_file(image: &Image, file: &mut std::fs::File) -> Result<(), Str
     Ok(())
 }
 
+/// Borrow BGRA and flatten one pixel at a time as the JPEG encoder reads it.
+#[derive(Clone, Copy)]
+struct JpegRgbView<'a> {
+    bgra: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+impl GenericImageView for JpegRgbView<'_> {
+    type Pixel = Rgb<u8>;
+
+    fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
+        let offset = ((y as usize * self.width as usize) + x as usize) * 4;
+        let pixel = &self.bgra[offset..offset + 4];
+        let alpha = u16::from(pixel[3]);
+        let flatten =
+            |channel: u8| ((u16::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        Rgb([flatten(pixel[2]), flatten(pixel[1]), flatten(pixel[0])])
+    }
+}
+
 /// Flatten borrowed BGRA pixels directly into RGB on white for JPEG.
 /// This avoids an intermediate full-size RGBA copy of the source image.
 /// Channels are rounded to the nearest integer to match ordinary source-over.
+#[cfg(test)]
 fn jpeg_rgb_on_white(bgra: &[u8]) -> Result<Vec<u8>, String> {
     let mut rgb = Vec::new();
     rgb.try_reserve_exact(bgra.len() / 4 * 3)
@@ -1005,7 +1035,41 @@ mod tests {
             })
             .collect();
         assert_eq!(jpeg_rgb_on_white(&bgra).unwrap(), previous);
+        let view = JpegRgbView {
+            bgra: &bgra,
+            width: 256,
+            height: 256,
+        };
+        let adapter: Vec<u8> = (0..256)
+            .flat_map(|y| (0..256).flat_map(move |x| view.get_pixel(x, y).0))
+            .collect();
+        assert_eq!(adapter, previous);
         assert_eq!(bgra, original);
+    }
+
+    #[test]
+    fn jpeg_borrowed_view_matches_previous_encoding_at_block_edges() {
+        for (width, height) in [
+            (1, 1),
+            (1, 17),
+            (17, 1),
+            (7, 9),
+            (8, 8),
+            (9, 9),
+            (64, 64),
+            (65535, 1),
+            (65536, 1),
+        ] {
+            let pixels = (0..width * height * 4)
+                .map(|n| ((n * 73 + n / 7 + 19) % 256) as u8)
+                .collect();
+            let source = Image::new(width, height, pixels).unwrap();
+            assert_eq!(
+                encode(&source, ImageFormat::Jpeg),
+                previous_jpeg_encode(&source),
+                "{width}x{height}"
+            );
+        }
     }
 
     #[test]
