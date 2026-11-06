@@ -439,6 +439,13 @@ try {
     if((@($stampEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5160,0x5161,0x5162,0x5163,0x5164) -join ',')){throw 'RESPONSIVE_STAMP_ACTIONS_INCOMPLETE'}
     $reachable+=0x510e
    }
+   if(0x5128 -notin $visibleIds) {
+    $styleEntry=@($entries|Where-Object{$_.Text -ceq 'Formstil…' -and $_.Submenu -ne [IntPtr]::Zero})
+    if($styleEntry.Count -ne 1){throw 'RESPONSIVE_FORM_STYLE_SUBMENU_MISSING'}
+    $styleEntries=@([ShotKitToolbarVisual.Native]::MenuItems($styleEntry[0].Submenu))
+    if((@($styleEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5170,0x5171,0x5172,0x5173,0x5174,0x5175,0x5176,0x5177,0x5178,0x5179,0x517a) -join ',')){throw 'RESPONSIVE_FORM_STYLE_ACTIONS_INCOMPLETE'}
+    $reachable+=0x5128
+   }
    foreach($id in $allOriginalIds){if($id -notin $reachable){throw "RESPONSIVE_ACTION_UNREACHABLE: $id at $logicalWidth"}}
    if($logicalWidth -eq 430) {
     # Crop is hidden here. Click the real native item verified by HMENU and ID.
