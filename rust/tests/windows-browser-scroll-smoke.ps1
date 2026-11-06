@@ -305,6 +305,28 @@ function Stop-ProfileEdgeProcess {
     }
     if (-not $process.WaitForExit(3000) -and -not $process.HasExited) { throw "Owned Edge PID $ProcessId did not exit." }
 }
+function Write-ProfileEdgeCleanupDiagnostics {
+    # Read-only snapshot: do not discover more kill targets or widen cleanup ownership.
+    try {
+        $escapedProfile = [Regex]::Escape($edgeProfile)
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $related = @($processes | Where-Object {
+            $candidate = $_
+            ($candidate.CommandLine -and $candidate.CommandLine -match $escapedProfile) -or
+                @($edgeOwnedHandles | Where-Object {
+                    $_.ProcessId -eq [int]$candidate.ProcessId -and $_.CreationDate -eq $candidate.CreationDate
+                }).Count -gt 0
+        } | Select-Object Name, ProcessId, ParentProcessId, CreationDate, ExecutablePath, CommandLine)
+        $known = @($edgeOwnedHandles | Select-Object ProcessId, CreationDate)
+        Write-Output "DIAGNOSTIC: Edge cleanup snapshot for test-owned profile '$edgeProfile'; related processes match the exact profile path or a previously verified PID/creation date."
+        Write-Output ([pscustomobject]@{
+            CapturedAtUtc = [DateTime]::UtcNow.ToString('o')
+            RemainingProfileRelatedProcesses = $related
+            PreviouslyVerifiedProcessIdentities = $known
+        } | ConvertTo-Json -Depth 4)
+    }
+    catch { Write-Output "DIAGNOSTIC: Could not inspect remaining profile-related processes: $($_.Exception.ToString())" }
+}
 
 try {
     New-Item -ItemType Directory -Path $testRoot, $edgeProfile, $appData, $localAppData, $saveFolder -Force | Out-Null
@@ -569,6 +591,24 @@ try {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitBrowserScrollSmoke.Native]::WindowText($completion.Handle)
+    try {
+        # Re-enumerate the live profile-owned window rather than reuse its startup title.
+        $escapedProfile = [Regex]::Escape($edgeProfile)
+        $completionBrowserWindows = @(
+            foreach ($process in (Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
+                Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })) {
+                [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$process.ProcessId) |
+                    Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' }
+            }
+        )
+        if ($completionBrowserWindows.Count -eq 0) {
+            Write-Output 'DIAGNOSTIC: No live profile-owned Edge browser window found after scroll completion.'
+        }
+        foreach ($window in $completionBrowserWindows) {
+            Write-Output "DIAGNOSTIC: Edge after scroll completion: HWND=0x$($window.Handle.ToInt64().ToString('X')) PID=$($window.ProcessId) Title='$($window.Title)'"
+        }
+    }
+    catch { Write-Output "DIAGNOSTIC: Could not read live Edge DOM-offset title after scroll completion: $($_.Exception.ToString())" }
     if ($completionText -notlike '*Ende des scrollbaren Bereichs erreicht.*') {
         throw "Scroll did not report reaching the actual end of the browser page. Dialog='$completionText'"
     }
@@ -651,8 +691,13 @@ finally {
     if ($null -ne $edge) { $edge.Dispose() }
     if (Test-Path -LiteralPath $testRoot) {
         try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
-        catch { $cleanupFailures += "Could not remove test-owned files/profile '$testRoot': $($_.Exception.Message)" }
+        catch {
+            $cleanupFailures += "Could not remove test-owned files/profile '$testRoot': $($_.Exception.Message)"
+            Write-Output "DIAGNOSTIC: Profile removal exception: $($_.Exception.ToString())"
+            Write-Output ($_ | Format-List * -Force | Out-String -Width 4096)
+        }
     }
+    if ($cleanupFailures.Count -gt 0) { Write-ProfileEdgeCleanupDiagnostics }
     [ShotKitBrowserScrollSmoke.Native]::RestoreDpiContext($previousDpiContext)
 }
 if ($null -ne $testFailure -or $cleanupFailures.Count -gt 0) {
