@@ -163,7 +163,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Output-Matrix-' + [Guid]::N
 $surfaceScript=Join-Path $root 'surface.ps1'; $readyFile=Join-Path $root 'surface-ready.txt'
 $surfaceStdout=Join-Path $root 'surface-stdout.txt'; $surfaceStderr=Join-Path $root 'surface-stderr.txt'
 $compilerTemp=Join-Path $root 'surface-compiler'
-$shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $failure=$null; $mouseDown=$false; $allExited=$true
+$shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $oldTrayDiagnosticsPath=$env:SHOTKIT_UIA_DIAGNOSTICS_PATH; $failure=$null; $mouseDown=$false; $allExited=$true
 
 function Get-OwnWindows([Diagnostics.Process] $p) { [ShotKitOutputMatrixSmoke.Native]::Windows($p.Id) }
 function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Description,[Diagnostics.Process] $OwnedProcess) {
@@ -202,7 +202,13 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
         if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
         Start-Sleep -Milliseconds 100
     } while([DateTime]::UtcNow -lt $deadline)
-    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic"
+    $appDiagnostic=''
+    if($script:trayDiagnosticsPath -and (Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf)) {
+        $appDiagnostic=(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {
+            $_ -match '^tray_track_popup_choice=\d+$' -or $_ -match '^settings_save=(success|failed)$'
+        }) -join '; '
+    }
+    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
@@ -394,6 +400,7 @@ Write-Stage 'constructing surface and entering message loop'
     $appData=Join-Path $caseRoot 'appdata'; $localAppData=Join-Path $caseRoot 'localappdata'; $saveFolder=Join-Path $caseRoot 'captures'
     New-Item -ItemType Directory -Path $appData,$localAppData,$saveFolder -Force | Out-Null
     $settingsPath=Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
+    $script:trayDiagnosticsPath=Join-Path $caseRoot 'tray-diagnostics.txt'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
     # One matrix case derives every output option from actual native tray clicks.
     # Local opt-in matrix runs remain unchanged; the tray path is CI-only.
@@ -403,8 +410,8 @@ Write-Stage 'constructing surface and entering message loop'
     $initialSave=if($trayCase){-not $save}else{$save}
     $settings=@{version=1;save_folder=$saveFolder;open_editor=$initialEditor;copy_to_clipboard=$initialCopy;auto_save=$initialSave;scroll_direction='down'} | ConvertTo-Json
     [IO.File]::WriteAllText($settingsPath,$settings,[Text.UTF8Encoding]::new($false))
-    try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
-    finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+    try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$script:trayDiagnosticsPath;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
+    finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath}
     [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
     $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
@@ -421,8 +428,8 @@ Write-Stage 'constructing surface and entering message loop'
         $shotKit.Kill()
         if(-not $shotKit.WaitForExit(5000) -or -not $shotKit.HasExited){throw 'ShotKit did not exit before persistence restart.'}
         $shotKit.Dispose(); $shotKit=$null
-        try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
-        finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+        try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$script:trayDiagnosticsPath;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
+        finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath}
         [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
         $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
         if(-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close restarted startup dialog.'}
@@ -520,7 +527,7 @@ Write-Stage 'constructing surface and entering message loop'
 catch {$failure=$_}
 finally {
     if($mouseDown){[ShotKitOutputMatrixSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero);$mouseDown=$false}
-    $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData
+    $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath
     foreach($owned in @($shotKit,$surface)) {
         if($null -ne $owned) {
             try {if (-not $owned.HasExited){$owned.Kill();if (-not $owned.WaitForExit(5000) -or -not $owned.HasExited){throw 'Owned process did not exit after termination request.'}}}
