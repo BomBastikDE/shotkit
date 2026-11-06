@@ -54,7 +54,7 @@ fn candidate(dir: &Path) -> PathBuf {
     ))
 }
 
-pub(super) fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
+pub fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
     // FileRenameInfo requires a fully qualified destination; resolve relative
     // configured save folders once, before creating the sibling temporary file.
     let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
@@ -69,6 +69,101 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(
         }
     }
     Err("Kein freier temporärer Dateiname gefunden.".to_owned())
+}
+
+/// Write once to a held sibling file, then try up to `attempts` distinct
+/// destinations without replacing existing files. On an ambiguous rename
+/// error the prepared file is retained and its path is reported.
+pub fn write_new_unique(
+    folder: &Path,
+    bytes: &[u8],
+    attempts: usize,
+    next_path: impl FnMut() -> PathBuf,
+) -> io::Result<PathBuf> {
+    write_unique_prepared(
+        folder,
+        attempts,
+        next_path,
+        |file| file.write_all(bytes).and_then(|_| file.sync_all()),
+        |_| {},
+    )
+}
+
+fn write_unique_prepared(
+    folder: &Path,
+    attempts: usize,
+    mut next_path: impl FnMut() -> PathBuf,
+    prepare: impl FnOnce(&mut File) -> io::Result<()>,
+    before_attempt: impl Fn(&Path),
+) -> io::Result<PathBuf> {
+    let absolute_folder = std::path::absolute(folder)?;
+    let mut created = None;
+    for _ in 0..128 {
+        let temp = candidate(&absolute_folder);
+        match create_temp(&temp) {
+            Ok(file) => {
+                created = Some((temp, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (temp, mut file) = created.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Kein freier temporärer Dateiname",
+        )
+    })?;
+    if let Err(error) = prepare(&mut file) {
+        return match delete_held(&file) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; temporäre Datei konnte nicht entfernt werden ({}): {cleanup}",
+                    temp.display()
+                ),
+            )),
+        };
+    }
+    for _ in 0..attempts {
+        before_attempt(&temp);
+        let path = next_path();
+        let absolute_path = std::path::absolute(&path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{error}; temporäre Datei: {}", temp.display()),
+            )
+        })?;
+        if absolute_path.parent() != Some(absolute_folder.as_path()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Ziel liegt nicht im Speicherordner; temporäre Datei: {}",
+                    temp.display()
+                ),
+            ));
+        }
+        match rename_held(&file, &absolute_path, false) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{error}; Speicherzustand prüfen: Ziel {} und temporäre Datei {}",
+                        path.display(),
+                        temp.display()
+                    ),
+                ))
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("Kein freier Dateiname; temporäre Datei: {}", temp.display()),
+    ))
 }
 
 fn write_created<F: FnOnce(&Path)>(
@@ -320,5 +415,118 @@ mod tests {
         write_atomic(&target, b"image", false).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"image");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_output_retries_collision_without_replacing_or_leaking_temps() {
+        let dir = directory();
+        let first = dir.join("existing.png");
+        let second = dir.join("fresh.png");
+        fs::write(&first, b"foreign").unwrap();
+        let mut names = [first.clone(), second.clone()].into_iter();
+        let published = write_new_unique(&dir, b"capture", 2, || names.next().unwrap()).unwrap();
+        assert_eq!(published, second);
+        assert_eq!(fs::read(first).unwrap(), b"foreign");
+        assert_eq!(fs::read(&published).unwrap(), b"capture");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exhausted_unique_output_retains_only_one_complete_temporary_file() {
+        let dir = directory();
+        let target = dir.join("existing.png");
+        fs::write(&target, b"foreign").unwrap();
+        let error = write_new_unique(&dir, b"capture", 3, || target.clone()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"foreign");
+        let files: Vec<_> = fs::read_dir(&dir).unwrap().map(Result::unwrap).collect();
+        assert_eq!(files.len(), 2);
+        let temp = files
+            .iter()
+            .find(|entry| entry.path() != target)
+            .unwrap()
+            .path();
+        assert_eq!(fs::read(&temp).unwrap(), b"capture");
+        assert!(error.to_string().contains(&temp.display().to_string()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_output_is_complete_and_temp_is_protected_during_retry() {
+        let dir = directory();
+        let first = dir.join("existing.png");
+        let second = dir.join("fresh.png");
+        fs::write(&first, b"foreign").unwrap();
+        let mut names = [first.clone(), second.clone()].into_iter();
+        let path = write_unique_prepared(
+            &dir,
+            2,
+            || names.next().unwrap(),
+            |file| {
+                file.write_all(b"complete capture")?;
+                file.sync_all()
+            },
+            |temp| {
+                assert!(!second.exists());
+                assert_eq!(fs::read(temp).unwrap(), b"complete capture");
+                assert!(fs::remove_file(temp).is_err());
+                assert!(fs::rename(temp, temp.with_extension("other")).is_err());
+                assert!(fs::write(temp, b"foreign").is_err());
+            },
+        )
+        .unwrap();
+        assert_eq!(path, second);
+        assert_eq!(fs::read(first).unwrap(), b"foreign");
+        assert_eq!(fs::read(second).unwrap(), b"complete capture");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_output_partial_write_failure_removes_held_temp_without_publish() {
+        let dir = directory();
+        let target = dir.join("capture.png");
+        let error = write_unique_prepared(
+            &dir,
+            1,
+            || target.clone(),
+            |file| {
+                file.write_all(b"partial")?;
+                Err(io::Error::other("injected write failure"))
+            },
+            |_| panic!("partial output must not be published"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_output_supports_relative_folder() {
+        let dir = candidate(Path::new("."));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("capture.png");
+        let path = write_new_unique(&dir, b"capture", 1, || target.clone()).unwrap();
+        assert_eq!(path, target);
+        assert_eq!(fs::read(&path).unwrap(), b"capture");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_output_rejects_foreign_directory_and_retains_complete_temp() {
+        let dir = directory();
+        let other = directory();
+        let foreign = other.join("capture.png");
+        let error = write_new_unique(&dir, b"capture", 1, || foreign.clone()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!foreign.exists());
+        let files: Vec<_> = fs::read_dir(&dir).unwrap().map(Result::unwrap).collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(fs::read(files[0].path()).unwrap(), b"capture");
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(other).unwrap();
     }
 }

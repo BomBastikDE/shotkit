@@ -1,6 +1,6 @@
 use super::*;
 
-use super::atomic_save::write_atomic;
+use shotkit::atomic_save_windows::write_atomic;
 
 /// Avoid replacing an opened original when the export path cannot preserve its
 /// source format faithfully. Unknown and currently unsupported formats fail

@@ -15,7 +15,6 @@ mod capture;
 use capture::*;
 mod rendering;
 use rendering::*;
-mod atomic_save;
 mod document;
 use document::*;
 mod actions;

@@ -9,12 +9,13 @@ use crate::{
 #[cfg(windows)]
 use std::ffi::c_void;
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs, io,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(any(test, not(windows)))]
+use std::{fs::OpenOptions, io::Write};
 
 static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -122,40 +123,52 @@ fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
         .unwrap_or_default()
         .as_millis();
 
+    #[cfg(windows)]
+    {
+        crate::atomic_save_windows::write_new_unique(folder, &png, 256, || {
+            let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            folder.join(format!("ShotKit-{stamp}-{sequence}.png"))
+        })
+    }
+
     // Create the sibling temp exclusively. Publish the final name without
     // replacement only after the complete PNG has been written and synced.
-    for _ in 0..256 {
-        let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = folder.join(format!("ShotKit-{stamp}-{sequence}.png"));
-        let temp_path = folder.join(format!(
-            ".ShotKit-{}-{stamp}-{sequence}.tmp",
-            std::process::id()
-        ));
-        let file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        let result = write_and_publish(&temp_path, &path, file, |file| {
-            file.write_all(&png)?;
-            file.sync_all()
-        });
-        match result {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+    #[cfg(not(windows))]
+    {
+        for _ in 0..256 {
+            let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = folder.join(format!("ShotKit-{stamp}-{sequence}.png"));
+            let temp_path = folder.join(format!(
+                ".ShotKit-{}-{stamp}-{sequence}.tmp",
+                std::process::id()
+            ));
+            let file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            };
+            let result = write_and_publish(&temp_path, &path, file, |file| {
+                file.write_all(&png)?;
+                file.sync_all()
+            });
+            match result {
+                Ok(()) => return Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
         }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique PNG filename",
+        ))
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique PNG filename",
-    ))
 }
 
+#[cfg(any(test, not(windows)))]
 fn write_and_publish(
     temp_path: &std::path::Path,
     final_path: &std::path::Path,
@@ -197,7 +210,7 @@ fn write_and_publish(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn publish_no_replace(source: &std::path::Path, destination: &std::path::Path) -> io::Result<bool> {
     use std::os::windows::ffi::OsStrExt;
 

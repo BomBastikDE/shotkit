@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Die automatische PNG-Ausgabe hält ihre temporäre Datei während des Schreibens und der Suche nach einem freien Dateinamen geöffnet. Bereits vorhandene Aufnahmen werden dabei weiterhin nicht ersetzt ([#63](https://github.com/BomBastikDE/shotkit/issues/63)).
+
 - Beim Speichern hält ShotKit die temporäre Bilddatei bis zur Veröffentlichung geöffnet. Bei einem Fehler der Veröffentlichung bleibt die vorbereitete Datei zur Prüfung erhalten; ihre Position wird gemeldet ([#61](https://github.com/BomBastikDE/shotkit/issues/61)).
 
 - Bearbeitbares Spotlight und Bildlupe mit einstellbarer Stärke beziehungsweise Vergrößerung ergänzt ([#29](https://github.com/BomBastikDE/shotkit/issues/29)); die Lupe verwendet eine durch sämtliche Schwärzungen bereinigte Bildquelle.
