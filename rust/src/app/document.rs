@@ -48,13 +48,12 @@ struct FileInformation {
     index_low: u32,
 }
 
-fn file_identity(path: &Path) -> Result<(u32, u32, u32), String> {
+fn file_identity(file: &std::fs::File) -> Result<(u32, u32, u32), String> {
     use std::os::windows::io::AsRawHandle;
     #[link(name = "kernel32")]
     extern "system" {
         fn GetFileInformationByHandle(handle: H, information: *mut FileInformation) -> i32;
     }
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut info = FileInformation::default();
     // SAFETY: file owns a valid handle and info is writable for the duration
     // of this synchronous filesystem call, which does not dispatch UI messages.
@@ -64,23 +63,28 @@ fn file_identity(path: &Path) -> Result<(u32, u32, u32), String> {
     Ok((info.volume_serial, info.index_high, info.index_low))
 }
 
-fn same_existing_path(left: &Path, right: &Path) -> Result<bool, String> {
-    let original = std::fs::canonicalize(left)
-        .map_err(|e| format!("Originalpfad konnte nicht geprüft werden: {e}"))?;
+fn protect_original(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Share reads but deny writes and deletes while the protected export runs.
+    // If another incompatible handle already exists, fail closed.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ
+        .open(path)
+        .map_err(|e| format!("Originaldatei konnte nicht geschützt werden: {e}"))
+}
+
+fn same_existing_path(original: &std::fs::File, right: &Path) -> Result<bool, String> {
     let target = match std::fs::canonicalize(right) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("Zielpfad konnte nicht geprüft werden: {error}")),
     };
-    if original
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&target.to_string_lossy())
-    {
-        return Ok(true);
-    }
-    let left_id = file_identity(&original)
+    let left_id = file_identity(original)
         .map_err(|e| format!("Originaldatei konnte nicht geprüft werden: {e}"))?;
-    let right_id = file_identity(&target)
+    let target_file = std::fs::File::open(&target)
+        .map_err(|e| format!("Zieldatei konnte nicht geprüft werden: {e}"))?;
+    let right_id = file_identity(&target_file)
         .map_err(|e| format!("Zieldatei konnte nicht geprüft werden: {e}"))?;
     Ok(left_id == right_id)
 }
@@ -123,11 +127,23 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             }
         }
     };
-    if force_save_as {
+    let protected_guard = if force_save_as {
         let Some(original) = previous.as_deref() else {
             return false;
         };
-        let result = same_existing_path(original, &path);
+        let guard = match protect_original(original) {
+            Ok(guard) => guard,
+            Err(error) => {
+                MessageBoxW(
+                    h,
+                    wide(&error).as_ptr(),
+                    wide("Original geschützt").as_ptr(),
+                    0x30,
+                );
+                return false;
+            }
+        };
+        let result = same_existing_path(&guard, &path);
         let message = match result {
             Ok(false) => None,
             Ok(true) => Some(
@@ -145,13 +161,18 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             );
             return false;
         }
-    }
+        Some(guard)
+    } else {
+        None
+    };
     let result = (|| -> Result<(), String> {
         let format = image_io::format_from_path(&path)?;
         let image = bitmap_image(h)?;
         let bytes = image_io::encode(&image, format)?;
         write_atomic(&path, &bytes, replace_existing)
     })();
+    // The original remains protected until the synchronous rename returns.
+    drop(protected_guard);
     match result {
         Ok(()) => {
             editor(h).document_mut().mark_saved();
@@ -535,7 +556,8 @@ pub(super) unsafe fn history(h: H, redo: bool) {
 #[cfg(test)]
 mod save_safety_tests {
     use super::{
-        opened_original_requires_save_as, requires_save_as, same_existing_path, write_atomic,
+        opened_original_requires_save_as, protect_original, requires_save_as, same_existing_path,
+        write_atomic,
     };
     use std::path::Path;
 
@@ -590,18 +612,117 @@ mod save_safety_tests {
                 .as_nanos()
         ));
         std::fs::write(&path, b"fixture").unwrap();
-        assert!(same_existing_path(&path, &path).unwrap());
         let alias = path.with_extension("hardlink.jpg");
         std::fs::hard_link(&path, &alias).unwrap();
-        assert!(same_existing_path(&path, &alias).unwrap());
-        std::fs::remove_file(&alias).unwrap();
+        let guard = protect_original(&path).unwrap();
+        assert!(same_existing_path(&guard, &path).unwrap());
+        assert!(same_existing_path(&guard, &alias).unwrap());
         assert!(!same_existing_path(
-            &path,
+            &guard,
             &path.with_file_name("shotkit-save-safety-different.jpg")
         )
         .unwrap());
+        drop(guard);
+        std::fs::remove_file(&alias).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert!(same_existing_path(&path, &path).is_err());
+        assert!(protect_original(&path).is_err());
+    }
+
+    #[test]
+    fn protected_original_handle_blocks_replacement_until_released() {
+        let dir = std::env::temp_dir().join(format!(
+            "shotkit-protected-original-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let original = dir.join("original.jpg");
+        let independent = dir.join("other.jpg");
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&independent, b"existing").unwrap();
+        let guard = protect_original(&original).unwrap();
+        assert!(write_atomic(&original, b"replacement", true).is_err());
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        write_atomic(&independent, b"replacement", true).unwrap();
+        assert_eq!(std::fs::read(&independent).unwrap(), b"replacement");
+        drop(guard);
+        write_atomic(&original, b"after release", true).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"after release");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn protected_original_guard_refuses_an_existing_writer() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "shotkit-protected-writer-{}-{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"original").unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(7) // read, write and delete sharing for the existing writer
+            .open(&path)
+            .unwrap();
+        assert!(protect_original(&path).is_err());
+        drop(writer);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_original_survives_target_junction_switch_after_identity_check() {
+        fn junction(link: &Path, target: &Path) {
+            let status = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:SHOTKIT_TEST_LINK -Target $env:SHOTKIT_TEST_TARGET | Out-Null",
+                ])
+                .env("SHOTKIT_TEST_LINK", link)
+                .env("SHOTKIT_TEST_TARGET", target)
+                .status()
+                .unwrap();
+            assert!(status.success(), "junction creation failed: {status}");
+        }
+        let root = std::env::temp_dir().join(format!(
+            "shotkit-junction-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let original_dir = root.join("original");
+        let safe_dir = root.join("safe");
+        let link = root.join("link");
+        std::fs::create_dir_all(&original_dir).unwrap();
+        std::fs::create_dir_all(&safe_dir).unwrap();
+        let original = original_dir.join("image.jpg");
+        let safe = safe_dir.join("image.jpg");
+        let selected = link.join("image.jpg");
+        std::fs::write(&original, b"protected original").unwrap();
+        std::fs::write(&safe, b"other target").unwrap();
+        junction(&link, &safe_dir);
+        let guard = protect_original(&original).unwrap();
+        assert!(!same_existing_path(&guard, &selected).unwrap());
+        std::fs::remove_dir(&link).unwrap();
+        junction(&link, &original_dir);
+        assert!(same_existing_path(&guard, &selected).unwrap());
+        assert!(write_atomic(&selected, b"new image", true).is_err());
+        assert_eq!(std::fs::read(&original).unwrap(), b"protected original");
+        assert_eq!(std::fs::read(&safe).unwrap(), b"other target");
+        drop(guard);
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

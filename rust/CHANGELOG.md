@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Beim erzwungenen „Speichern unter“ für ein geschütztes Original bleibt die geprüfte Originaldatei bis zum Ende des Speichervorgangs gegen Schreiben und Ersetzen geöffnet ([#62](https://github.com/BomBastikDE/shotkit/issues/62)).
+
 - Die automatische PNG-Ausgabe hält ihre temporäre Datei während des Schreibens und der Suche nach einem freien Dateinamen geöffnet. Bereits vorhandene Aufnahmen werden dabei weiterhin nicht ersetzt ([#63](https://github.com/BomBastikDE/shotkit/issues/63)).
 
 - Beim Speichern hält ShotKit die temporäre Bilddatei bis zur Veröffentlichung geöffnet. Bei einem Fehler der Veröffentlichung bleibt die vorbereitete Datei zur Prüfung erhalten; ihre Position wird gemeldet ([#61](https://github.com/BomBastikDE/shotkit/issues/61)).
