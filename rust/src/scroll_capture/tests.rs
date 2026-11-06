@@ -407,6 +407,80 @@ fn static_page_is_detected_as_end_after_two_attempts() {
 }
 
 #[test]
+fn moving_irregular_content_only_at_outer_edge_is_not_reported_as_end() {
+    const WIDTH: usize = 120;
+    const HEIGHT: usize = 220;
+    const PAGE_LEN: usize = 700;
+
+    struct EdgeOnlyPage {
+        offset: usize,
+    }
+    impl EdgeOnlyPage {
+        fn frame(&self) -> Image {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                // A deterministic, irregular pattern moves with the page in
+                // the leftmost eight pixels; the entire interior is uniform.
+                let row = y + self.offset;
+                let value = if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                    0
+                } else {
+                    255
+                };
+                for x in 0..8 {
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+            }
+            Image::new(WIDTH, HEIGHT, pixels).unwrap()
+        }
+    }
+    impl ScrollIo for EdgeOnlyPage {
+        fn capture(&mut self) -> Result<Image, String> {
+            Ok(self.frame())
+        }
+        fn scroll(&mut self, direction: Direction, notches: i32) -> Result<(), String> {
+            if direction != Direction::Down {
+                return Err("unexpected fake scroll direction".into());
+            }
+            let max_offset = PAGE_LEN - HEIGHT;
+            self.offset = (self.offset as isize + notches.saturating_mul(50) as isize)
+                .clamp(0, max_offset as isize) as usize;
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+
+    let mut io = EdgeOnlyPage { offset: 0 };
+    let initial = io.frame();
+    let out = run(&mut io, Direction::Down).unwrap();
+
+    assert_eq!(io.offset, 50, "the initial scroll must move the fake page");
+    assert!(
+        !out.reason.contains("Ende des scrollbaren Bereichs"),
+        "moving edge content must not be reported as a successful end: {}",
+        out.reason
+    );
+    assert!(
+        out.reason.contains("Aufnahme bis hierhin übernommen"),
+        "{}",
+        out.reason
+    );
+    assert_eq!((out.image.width, out.image.height), (WIDTH, HEIGHT));
+    assert_eq!(
+        out.image, initial,
+        "an unmatched frame must not corrupt the saved prefix"
+    );
+}
+
+#[test]
 fn animated_page_end_bounds_fallbacks_and_keeps_the_pixel_exact_prefix() {
     const VIEW_H: usize = 220;
     const COMMITTED_PREFIX: usize = 485;
