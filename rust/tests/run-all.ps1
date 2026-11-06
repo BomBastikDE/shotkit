@@ -83,6 +83,7 @@ $cases = @(
     @{ Name = 'Interactive Windows PNG export pixels and memory measurement'; Script = 'windows-png-export-memory-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
     @{ Name = 'Windows settings recovery filesystem contract'; Script = 'windows-settings-recovery-contract.ps1'; Extra = @(); TimeoutSeconds = 60; Toolbar = $false },
     @{ Name = 'Interactive Windows mapped network drive warning'; Script = 'windows-mapped-drive-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false },
+    @{ Name = 'Windows Edge profile cleanup contract'; Script = 'windows-edge-cleanup-contract.ps1'; Extra = @(); TimeoutSeconds = 120; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test with fixed header and footer'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-FixedHeaderFooter'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows multi-editor lifecycle smoke test'; Script = 'windows-multi-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false }

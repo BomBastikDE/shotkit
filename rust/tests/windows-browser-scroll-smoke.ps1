@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'edge-profile-cleanup.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the GitHub runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -328,6 +329,27 @@ function Write-ProfileEdgeCleanupDiagnostics {
     catch { Write-Output "DIAGNOSTIC: Could not inspect remaining profile-related processes: $($_.Exception.ToString())" }
 }
 
+$script:edgeTrace = [Collections.Generic.List[string]]::new()
+$script:edgeTraceLast = ''
+$script:edgeTraceReadFailed = $false
+$script:edgeTraceClock = [Diagnostics.Stopwatch]::StartNew()
+function Record-EdgeScrollTrace {
+    # Diagnostic only: read the original profile-owned window's title without
+    # moving focus, changing input, or returning data to Wait-ForCondition.
+    try {
+        $window = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
+            Where-Object { $_.Handle -eq $browserWindow.Handle -and $_.Visible } | Select-Object -First 1
+        if ($null -ne $window -and $window.Title -match 'offset=(-?\d+),(-?\d+) wheel=(\d+) scrollEvents=(\d+)') {
+            $sample = "offset=$($Matches[1]),$($Matches[2]) wheel=$($Matches[3]) scrollEvents=$($Matches[4])"
+            if ($sample -cne $script:edgeTraceLast -and $script:edgeTrace.Count -lt 256) {
+                [void]$script:edgeTrace.Add("t=$($script:edgeTraceClock.ElapsedMilliseconds)ms $sample")
+                $script:edgeTraceLast = $sample
+            }
+        }
+    }
+    catch { $script:edgeTraceReadFailed = $true }
+}
+
 try {
     New-Item -ItemType Directory -Path $testRoot, $edgeProfile, $appData, $localAppData, $saveFolder -Force | Out-Null
     $pageHeight = 2400
@@ -358,11 +380,13 @@ try {
     }
   }
   ctx.putImageData(image, 0, 0);
+  let wheelEvents = 0, scrollEvents = 0;
   const updateTitle = () => {
-    document.title = `ShotKit Browser Scroll Surface READY inner=${innerWidth}x${innerHeight} scroll=${document.scrollingElement.scrollHeight} dpr=${devicePixelRatio} offset=${scrollX},${scrollY}`;
+    document.title = `ShotKit Browser Scroll Surface READY inner=${innerWidth}x${innerHeight} scroll=${document.scrollingElement.scrollHeight} dpr=${devicePixelRatio} offset=${scrollX},${scrollY} wheel=${wheelEvents} scrollEvents=${scrollEvents}`;
   };
   window.addEventListener('resize', updateTitle, { passive: true });
-  window.addEventListener('scroll', updateTitle, { passive: true });
+  window.addEventListener('wheel', () => { wheelEvents++; updateTitle(); }, { passive: true, capture: true });
+  window.addEventListener('scroll', () => { scrollEvents++; updateTitle(); }, { passive: true });
   updateTitle();
 })();
 </script></body></html>
@@ -583,7 +607,9 @@ try {
     [ShotKitBrowserScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $mouseDown = $false
 
+    Record-EdgeScrollTrace
     $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'auto-saved browser scroll PNG' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
+        Record-EdgeScrollTrace
         Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
     }
     Write-Output "MILESTONE: auto-saved capture observed at '$($png.FullName)' ($($png.Length) bytes); checking completion dialog and image geometry."
@@ -591,6 +617,7 @@ try {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitBrowserScrollSmoke.Native]::WindowText($completion.Handle)
+    Record-EdgeScrollTrace
     try {
         # Re-enumerate the live profile-owned window rather than reuse its startup title.
         $escapedProfile = [Regex]::Escape($edgeProfile)
@@ -652,6 +679,9 @@ try {
 }
 catch { $testFailure = $_ }
 finally {
+    if ($script:edgeTrace.Count -eq 0) { Write-Output 'DIAGNOSTIC: Edge scroll trace unavailable.' }
+    else { foreach ($entry in $script:edgeTrace) { Write-Output "DIAGNOSTIC: Edge scroll trace $entry" } }
+    if ($script:edgeTraceReadFailed) { Write-Output 'DIAGNOSTIC: At least one Edge scroll trace read failed.' }
     if ($mouseDown) {
         try { [ShotKitBrowserScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
         catch { $cleanupFailures += "Could not release test-owned mouse button: $($_.Exception.Message)" }
@@ -690,7 +720,7 @@ finally {
     foreach ($ownedHandle in @($edgeOwnedHandles)) { try { $ownedHandle.Handle.Dispose() } catch { $cleanupFailures += "Could not release Edge process handle $($ownedHandle.ProcessId): $($_.Exception.Message)" } }
     if ($null -ne $edge) { $edge.Dispose() }
     if (Test-Path -LiteralPath $testRoot) {
-        try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }
+        try { Remove-EdgeTestTree -Path $testRoot }
         catch {
             $cleanupFailures += "Could not remove test-owned files/profile '$testRoot': $($_.Exception.Message)"
             Write-Output "DIAGNOSTIC: Profile removal exception: $($_.Exception.ToString())"
