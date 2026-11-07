@@ -21,6 +21,8 @@ pub(super) fn validate_v1_source(actual: &[u8]) -> io::Result<()> {
     {
         return Err(invalid("source must be a JSON object with a version field"));
     }
+    std::str::from_utf8(actual)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let header: VersionHeader = serde_json::from_slice(actual)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if header.version != 1 {

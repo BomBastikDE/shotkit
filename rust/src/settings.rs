@@ -749,7 +749,7 @@ mod tests {
             match load_outcome(&path).unwrap() {
                 SettingsLoadOutcome::Rejected(rejected) => {
                     assert_eq!(rejected.bytes(), bytes);
-                    assert_eq!(rejected.recovery_eligibility, expected);
+                    assert_eq!(rejected.recovery_eligibility, expected, "input: {bytes:?}");
                     assert_eq!(
                         expected == RecoveryEligibility::UnambiguousVersion1,
                         recovery_version::validate_v1_source(bytes).is_ok()
