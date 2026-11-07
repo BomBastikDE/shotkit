@@ -374,3 +374,7 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
 #[cfg(test)]
 #[path = "window_paint_tests.rs"]
 mod paint_tests;
+
+#[cfg(test)]
+#[path = "window_paint_hwnd_tests.rs"]
+mod paint_hwnd_tests;

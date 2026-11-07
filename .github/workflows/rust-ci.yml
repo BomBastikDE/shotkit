@@ -64,6 +64,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Required native capture acceptance failed (exit $LASTEXITCODE)."
           }
+      - name: Require real HWND preview failure neutralization and recovery
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Dedicated process: never exhaust shared admission beside other tests.
+          # Own HWND only; this test sends no mouse/keyboard input.
+          $testName = 'app::window_mouse::paint_hwnd_tests::real_beginpaint_neutralizes_failed_redaction_preview_and_recovers'
+          $listed = @(& cargo test --locked --bin shotkit $testName -- --ignored --exact --list)
+          if ($LASTEXITCODE -ne 0 -or $listed -notcontains "$($testName): test") {
+            throw "Required real HWND preview test was not discovered: $testName"
+          }
+          & cargo test --locked --bin shotkit $testName -- --ignored --exact --test-threads=1 --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Real HWND preview neutralization or recovery failed (exit $LASTEXITCODE)."
+          }
       - name: Verify real atomic-save abort boundary and normal controls
         timeout-minutes: 15
         if: runner.os == 'Windows'
