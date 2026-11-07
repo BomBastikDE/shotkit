@@ -140,12 +140,18 @@ try {
     $fit=[Math]::Min($vw/160.0,$vh/120.0);$displayW=[int][Math]::Round(160*$fit);$displayH=[int][Math]::Round(120*$fit)
     $viewX=[int][Math]::Floor(($vw-$displayW)/2.0);$viewY=$tr.Bottom+[int][Math]::Floor(($vh-$displayH)/2.0)
     Click-Button $main.H 'Verpixeln (B) – keine sichere Schwärzung'
-    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug Blur*'}} 'Blur tool activation')
+    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug: Verpixeln*'}} 'Blur tool activation')
     Drag-Image 24 20 120 90
     Save-Image 'pixelation export'
-    Assert-Pixelated (Read-Image) 'pixelation export'
+    $pixelated=Read-Image
+    Assert-Pixelated $pixelated 'pixelation export'
     Click-Button $main.H 'Zurück';Save-Image 'undo export';Assert-Original (Read-Image) 'undo export'
-    Click-Button $main.H 'Wiederholen';Save-Image 'redo export';Assert-Pixelated (Read-Image) 'redo export'
+    Click-Button $main.H 'Wiederholen';Save-Image 'redo export';$redone=Read-Image;Assert-Pixelated $redone 'redo export'
+    for($i=0;$i -lt $pixelated.Pixels.Length;$i++) {
+        if($redone.Pixels[$i].ToArgb() -ne $pixelated.Pixels[$i].ToArgb()) {
+            throw "Redo changed pixelation output at pixel ($($i%160),$([int]($i/160)))."
+        }
+    }
     Write-Output 'PASS: interactive Verpixeln changed sampled pixels inside the selected region, preserved pixels outside it, and undo/redo restored the corresponding PNG output.'
 }
 catch { $failure=$_ }

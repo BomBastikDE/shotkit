@@ -220,7 +220,7 @@ try {
     $calloutButton=Child-ById $main.H 0x510F
     if($calloutButton.ClassName -ne 'Button'){throw "CALLOUT_TOOL_CONTROL_NOT_BUTTON: $($calloutButton.ClassName)."}
     [ShotKitCalloutSmoke.N]::Click($calloutButton.H)
-    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug Callout*'}|Select-Object -First 1} 5 'Callout tool selected')
+    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug: Sprechblase*'}|Select-Object -First 1} 5 'Callout tool selected')
     $original="Sprechblase Zeile eins`r`nZeile zwei"
     Canvas-Click 48 42
     Confirm-Callout $original
@@ -228,7 +228,7 @@ try {
     if($createdHash -ceq $initialHash){throw 'CALLOUT_CREATION_NOT_SAVED: export still matches the blank fixture.'}
 
     Click-Id $main.H 0x5101
-    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug Select*'}|Select-Object -First 1} 5 'Select tool for callout double-click edit')
+    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug: Auswahl*'}|Select-Object -First 1} 5 'Select tool for callout double-click edit')
     Canvas-Click 75 65 -Double
     $d=Text-Dialog 'double-click edit dialog'
     $e=Edit-Control $d
@@ -248,7 +248,7 @@ try {
     if($redoHash -cne $editedHash){throw 'CALLOUT_REDO_DID_NOT_RESTORE_EDITED_STATE.'}
     # Select the callout again before applying its shape-specific style actions.
     Click-Id $main.H 0x5101
-    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug Select*'}|Select-Object -First 1} 5 'Select tool for callout styles')
+    [void](Wait-For {Owned-Windows|Where-Object {$_.H -eq $main.H -and $_.Title -like '*Werkzeug: Auswahl*'}|Select-Object -First 1} 5 'Select tool for callout styles')
     Canvas-Click 75 65
     $styleBase=Read-ExportPixels
 

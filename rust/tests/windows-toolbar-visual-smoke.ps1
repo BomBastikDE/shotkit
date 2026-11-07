@@ -441,7 +441,7 @@ try {
    if($logicalWidth -eq 430) {
     # Crop is hidden here. Click the real native item verified by HMENU and ID.
     Click-ToolbarMenuItem 0x510b
-    Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.H -eq $main.H -and $_.Title -like '*Werkzeug Crop*'}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_CROP_DID_NOT_EXECUTE'
+    Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.H -eq $main.H -and $_.Title -like '*Werkzeug: Zuschneiden*'}).Count -eq 1 } 'RESPONSIVE_OVERFLOW_CROP_DID_NOT_EXECUTE'
    } else { Press-ToolbarKey 0x1b }
    Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'RESPONSIVE_OVERFLOW_MENU_STILL_OPEN'
    # Datei must be usable at every narrow width, including a real Open workflow.
@@ -560,10 +560,10 @@ try {
  $lp=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);$lp.X=[int](($lr.Left+$lr.Right)/2);$lp.Y=[int](($lr.Top+$lr.Bottom)/2)
  if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($lp.X,$lp.Y)){throw 'MOUSE_TOOL_CURSOR_FAILED'};$actual=[Activator]::CreateInstance([ShotKitToolbarVisual.Point]);if(-not [ShotKitToolbarVisual.Native]::GetCursorPos([ref]$actual) -or [ShotKitToolbarVisual.Native]::Owner([ShotKitToolbarVisual.Native]::WindowFromPoint($actual)) -ne [uint32]$p.Id){throw 'MOUSE_TOOL_TARGET_MISMATCH'}
  [ShotKitToolbarVisual.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$mouse=$true;Start-Sleep -Milliseconds 80;[ShotKitToolbarVisual.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$mouse=$false;Start-Sleep -Milliseconds 250
- $state=Owned-Windows|Where-Object{$_.H -eq $main.H}|Select-Object -First 1;if($state.Title -notlike '*Werkzeug Line*'){throw "MOUSE_TOOL_SELECTION_FAILED: title='$($state.Title)'"}
+ $state=Owned-Windows|Where-Object{$_.H -eq $main.H}|Select-Object -First 1;if($state.Title -notlike '*Werkzeug: Linie*'){throw "MOUSE_TOOL_SELECTION_FAILED: title='$($state.Title)'"}
  # Send keyboard shortcut V while editor has focus; verify title reports Select.
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H);[ShotKitToolbarVisual.Native]::keybd_event(0x56,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 40;[ShotKitToolbarVisual.Native]::keybd_event(0x56,0,2,[UIntPtr]::Zero);Start-Sleep -Milliseconds 250
- $state=Owned-Windows|Where-Object{$_.H -eq $main.H}|Select-Object -First 1;if($state.Title -notlike '*Werkzeug Select*'){throw "KEYBOARD_TOOL_SELECTION_FAILED: title='$($state.Title)'"}
+ $state=Owned-Windows|Where-Object{$_.H -eq $main.H}|Select-Object -First 1;if($state.Title -notlike '*Werkzeug: Auswahl*'){throw "KEYBOARD_TOOL_SELECTION_FAILED: title='$($state.Title)'"}
  # Resource tray icon must be registered for the test process, and the editor window must carry an icon.
  $icon=[ShotKitToolbarVisual.Native]::Icon($main.H);if($icon -eq [IntPtr]::Zero){throw 'WINDOW_ICON_MISSING: WM_GETICON returned no icon.'}
  $trayHost=Owned-Windows|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1
