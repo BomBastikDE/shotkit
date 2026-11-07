@@ -8,6 +8,7 @@ param(
 # writes. Native tray selection uses the existing output-matrix pattern, so this
 # fixture deliberately has NO owner/local-session opt-in.
 $ErrorActionPreference = 'Stop'
+$fixtureClock = [Diagnostics.Stopwatch]::StartNew()
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'EPHEMERAL_CI_ONLY: settings reset UI smoke requires an interactive GitHub Actions Windows runner.'
@@ -164,14 +165,55 @@ namespace ShotKitSettingsResetSmoke {
             if(!SetFileInformationByHandle(root,4,ref remove,1))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Cannot delete exact held root");
         }
-        public sealed class Button { public IntPtr Handle; public int Id; public string Text; }
+        public sealed class ControlInfo {
+            public IntPtr Handle, Parent;
+            public uint Pid;
+            public int Id;
+            public string ClassName, Text;
+            public bool Exists, Visible, Enabled;
+        }
         [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr hwnd);
-        public static Button[] Buttons(IntPtr dialog) {
-            var list=new List<Button>(); EnumChildProc cb=delegate(IntPtr h,IntPtr d){
-                var c=new StringBuilder(256); GetClassNameW(h,c,c.Capacity);
-                if(IsWindowVisible(h) && c.ToString()=="Button") list.Add(new Button{Handle=h,Id=GetDlgCtrlID(h),Text=Text(h)});
-                return true;
-            }; EnumChildWindows(dialog,cb,IntPtr.Zero); GC.KeepAlive(cb); return list.ToArray();
+        [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
+        public static ControlInfo InspectControl(IntPtr hwnd) {
+            uint pid; GetWindowThreadProcessId(hwnd,out pid);
+            var cls=new StringBuilder(256); GetClassNameW(hwnd,cls,cls.Capacity);
+            return new ControlInfo {
+                Handle=hwnd, Parent=GetParent(hwnd), Pid=pid, Id=GetDlgCtrlID(hwnd),
+                ClassName=cls.ToString(), Text=Text(hwnd), Exists=IsWindow(hwnd),
+                Visible=IsWindowVisible(hwnd), Enabled=IsWindowEnabled(hwnd)
+            };
+        }
+        public static ControlInfo[] Children(IntPtr dialog) {
+            // Include hidden controls and every class for failure diagnostics.
+            var list=new List<ControlInfo>(); EnumChildProc cb=delegate(IntPtr h,IntPtr d){
+                list.Add(InspectControl(h)); return true;
+            };
+            EnumChildWindows(dialog,cb,IntPtr.Zero); GC.KeepAlive(cb); return list.ToArray();
+        }
+        public static void ClickOwnedButton(IntPtr dialog, IntPtr button, int id, uint expectedPid, string expectedTitle) {
+            // Revalidate the exact native ID and HWND immediately before BM_CLICK.
+            // Never substitute another ID, caption match, WM_COMMAND or WM_CLOSE.
+            var parent=InspectControl(dialog); var child=InspectControl(button);
+            if(!parent.Exists || !parent.Visible || !parent.Enabled || parent.Pid!=expectedPid ||
+               parent.ClassName!="#32770" || parent.Text!=expectedTitle ||
+               !child.Exists || !child.Visible || !child.Enabled || child.Pid!=expectedPid ||
+               child.ClassName!="Button" || child.Id!=id || !IsChild(dialog,button))
+                throw new InvalidOperationException("Expected owned visible enabled native dialog/button changed before BM_CLICK.");
+            int matchingVisibleButtons=0; IntPtr uniqueHandle=IntPtr.Zero;
+            foreach(var candidate in Children(dialog)) {
+                if(candidate.Visible && candidate.ClassName=="Button" && candidate.Id==id) {
+                    matchingVisibleButtons++; uniqueHandle=candidate.Handle;
+                }
+            }
+            if(matchingVisibleButtons!=1 || uniqueHandle!=button)
+                throw new InvalidOperationException("Expected exactly one matching visible native button with the selected HWND immediately before BM_CLICK; count="+matchingVisibleButtons);
+            // Final enumeration and BM_CLICK are separate Win32 operations.
+            // The UI thread can still change controls between these calls;
+            // this guard does not make observation and input atomic. The app's
+            // dialog result and filesystem/state postconditions remain required.
+            Click(button);
         }
         public static void Click(IntPtr button) {
             UIntPtr result;
@@ -202,6 +244,9 @@ $ownedProcessId = 0
 $process = $null
 $failure = $null
 $cleanupFailure = $null
+$uiCase = '<not-started>'
+$uiRun = '<not-started>'
+$interactionSequence = 0
 # Unknown member makes a complete, unambiguous-v1 JSON snapshot rejected.
 # Retain whitespace/UTF-8 bytes to catch parse-and-reserialize "backups".
 $rejected = [Text.Encoding]::UTF8.GetBytes("{`r`n  `"version`": 1, `"unknown_reset_probe`": `"original-ä`"`r`n}`r`n")
@@ -209,6 +254,31 @@ $pending = [Text.Encoding]::UTF8.GetBytes('interrupted-reset-smoke-marker')
 
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "ASSERTION_FAILED: $Message" }
+}
+function Convert-ControlDiagnostic($Control) {
+    return [ordered]@{
+        hwnd = ('0x{0:X}' -f $Control.Handle.ToInt64())
+        parent = ('0x{0:X}' -f $Control.Parent.ToInt64())
+        pid = $Control.Pid; class = $Control.ClassName; id = $Control.Id
+        exists = $Control.Exists; visible = $Control.Visible; enabled = $Control.Enabled
+        text = $Control.Text
+    }
+}
+function Write-UiSnapshot([string] $Stage, $Dialog = $null, [int] $ExpectedId = 0, $Details = $null) {
+    $entry = [ordered]@{
+        utc = [DateTime]::UtcNow.ToString('o'); elapsedMs = $fixtureClock.ElapsedMilliseconds
+        case = $script:uiCase; run = $script:uiRun; interaction = $script:interactionSequence
+        stage = $Stage; ownedPid = $script:ownedProcessId; processStartTicks = $script:processStartTicks
+        expectedButtonId = $ExpectedId; details = $Details
+    }
+    if ($null -ne $Dialog) {
+        try {
+            $entry.dialog = Convert-ControlDiagnostic ([ShotKitSettingsResetSmoke.Native]::InspectControl($Dialog.Handle))
+            $entry.children = @([ShotKitSettingsResetSmoke.Native]::Children($Dialog.Handle) | ForEach-Object { Convert-ControlDiagnostic $_ })
+        } catch { $entry.snapshotError = $_.Exception.Message }
+    }
+    # Host output stays out of helper return values and survives temp cleanup.
+    Write-Host ('SETTINGS_RESET_UI_DIAGNOSTIC: ' + ($entry | ConvertTo-Json -Depth 6 -Compress))
 }
 function Assert-CleanRunner {
     $names = @([IO.Path]::GetFileNameWithoutExtension($ExePath), 'ShotKit', 'shotkit-rust-prototype') | Select-Object -Unique
@@ -236,15 +306,52 @@ function Get-Dialog([string] $Title) {
     } | Select-Object -First 1
 }
 function Wait-Dialog([string] $Title, [string] $Body) {
+    Write-UiSnapshot 'dialog_wait_begin' -Details @{ expectedTitle = $Title; expectedBody = $Body }
     $dialog = Wait-Value { Get-Dialog $Title } "dialog '$Title'"
+    Write-UiSnapshot 'dialog_observed' $dialog -Details @{ expectedTitle = $Title; expectedBody = $Body }
     Assert-True ([ShotKitSettingsResetSmoke.Native]::WindowText($dialog.Handle).Contains($Body)) "Expected dialog body '$Body'"
+    $dialog | Add-Member -NotePropertyName ExpectedBody -NotePropertyValue $Body
     return $dialog
 }
 function Click-DialogButton($Dialog, [int] $Id) {
-    $button = @([ShotKitSettingsResetSmoke.Native]::Buttons($Dialog.Handle) | Where-Object { $_.Id -eq $Id })
-    Assert-True ($button.Count -eq 1) "Exactly one button with native ID $Id required"
-    [ShotKitSettingsResetSmoke.Native]::Click($button[0].Handle)
-    [void](Wait-Value { -not [ShotKitSettingsResetSmoke.Native]::IsWindow($Dialog.Handle) } 'dialog dismissal')
+    $script:interactionSequence++
+    $readyClock = [Diagnostics.Stopwatch]::StartNew()
+    $attempt = 0
+    $button = $null
+    $stableHandle = [IntPtr]::Zero
+    $matches = @()
+    Write-UiSnapshot 'button_wait_begin' $Dialog $Id -Details @{ readyLimitMs = 5000; pollMs = 50 }
+    try {
+        # A visible message box and its text do not establish that its expected
+        # button is visible/enabled yet. Poll the SAME dialog and exact native
+        # ID for at most five seconds; require a stable handle on two samples.
+        while ($readyClock.ElapsedMilliseconds -lt 5000) {
+            Assert-OwnedProcess
+            Assert-True (-not $process.HasExited) 'Owned app exited before button readiness'
+            $attempt++
+            $dialogInfo = [ShotKitSettingsResetSmoke.Native]::InspectControl($Dialog.Handle)
+            Assert-True ($dialogInfo.Exists -and $dialogInfo.Pid -eq $ownedProcessId -and
+                $dialogInfo.ClassName -ceq '#32770' -and $dialogInfo.Text -ceq $Dialog.Title) 'Expected dialog identity changed during button readiness'
+            $children = @([ShotKitSettingsResetSmoke.Native]::Children($Dialog.Handle))
+            $matches = @($children | Where-Object { $_.Visible -and $_.ClassName -ceq 'Button' -and $_.Id -eq $Id })
+            $ready = $dialogInfo.Visible -and $dialogInfo.Enabled -and $matches.Count -eq 1 -and
+                $matches[0].Exists -and $matches[0].Enabled -and $matches[0].Pid -eq $ownedProcessId
+            if ($ready) {
+                if ($stableHandle -eq $matches[0].Handle) { $button = $matches[0]; break }
+                $stableHandle = $matches[0].Handle
+            } else { $stableHandle = [IntPtr]::Zero }
+            Start-Sleep -Milliseconds 50
+        }
+        Assert-True ($null -ne $button -and $matches.Count -eq 1) "BUTTON_READY_TIMEOUT: Exactly one visible enabled Button with native ID $Id required; attempts=$attempt elapsedMs=$($readyClock.ElapsedMilliseconds) visibleMatches=$($matches.Count)"
+        Assert-True ([ShotKitSettingsResetSmoke.Native]::WindowText($Dialog.Handle).Contains($Dialog.ExpectedBody)) 'Expected dialog body changed before button click'
+        Write-UiSnapshot 'button_click_begin' $Dialog $Id -Details @{ attempts = $attempt; readyElapsedMs = $readyClock.ElapsedMilliseconds; selectedHwnd = ('0x{0:X}' -f $button.Handle.ToInt64()) }
+        [ShotKitSettingsResetSmoke.Native]::ClickOwnedButton($Dialog.Handle, $button.Handle, $Id, $ownedProcessId, $Dialog.Title)
+        [void](Wait-Value { -not [ShotKitSettingsResetSmoke.Native]::IsWindow($Dialog.Handle) } 'dialog dismissal')
+        Write-UiSnapshot 'button_click_complete' -ExpectedId $Id -Details @{ title = $Dialog.Title; attempts = $attempt; interactionElapsedMs = $readyClock.ElapsedMilliseconds }
+    } catch {
+        Write-UiSnapshot 'button_interaction_failed' $Dialog $Id -Details @{ attempts = $attempt; interactionElapsedMs = $readyClock.ElapsedMilliseconds; error = $_.Exception.Message; scriptStack = $_.ScriptStackTrace }
+        throw
+    }
 }
 function Assert-Bytes([string] $Path, [byte[]] $Expected) {
     Assert-True ([IO.File]::Exists($Path)) "Expected file '$([IO.Path]::GetFileName($Path))'"
@@ -264,6 +371,11 @@ function Assert-Event([string] $Event) {
     Assert-True ((Read-Events) -ccontains $Event) "Missing app diagnostic '$Event'"
 }
 function Start-CaseProcess([string] $CaseRoot, [string] $RunName) {
+    $script:uiCase = [IO.Path]::GetFileName($CaseRoot)
+    $script:uiRun = $RunName
+    $script:ownedProcessId = 0
+    $script:processStartTicks = 0
+    Write-UiSnapshot 'process_start_begin'
     Assert-CleanRunner
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $ExePath
@@ -287,6 +399,7 @@ function Start-CaseProcess([string] $CaseRoot, [string] $RunName) {
     $script:processHandle = $script:process.SafeHandle
     $script:ownedProcessId = $script:process.Id
     $script:processStartTicks = $script:process.StartTime.ToUniversalTime().Ticks
+    Write-UiSnapshot 'process_started'
 }
 function Complete-Startup {
     $notice = Wait-Dialog 'ShotKit Rust – Prototyp' 'Prototyp gestartet.'
@@ -304,6 +417,7 @@ function Assert-OwnedProcess {
     Assert-True ($process.Id -eq $ownedProcessId -and $process.StartTime.ToUniversalTime().Ticks -eq $processStartTicks) 'Process PID/start identity changed'
 }
 function Close-CaseProcess {
+    Write-UiSnapshot 'process_close_begin'
     Assert-OwnedProcess
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($primary.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) 'App close post failed'
     Assert-True ($process.WaitForExit($TimeoutSeconds * 1000)) 'App did not exit normally'
@@ -313,6 +427,7 @@ function Close-CaseProcess {
     $script:processHandle = $null
 }
 function Open-SettingsMenu {
+    Write-UiSnapshot 'tray_menu_open_begin'
     Assert-OwnedProcess
     # Reuse the output-matrix smoke's validated real tray menu path. Menu
     # construction reads CI autostart status; callers select only preference ID
@@ -335,6 +450,7 @@ function Toggle-OpenEditor {
     $popup = $settingsMenu.Root
     $child = $settingsMenu.Child
     $submenu = $settingsMenu.Menu
+    Write-UiSnapshot 'tray_setting_click_begin' -ExpectedId 101
     [void][ShotKitSettingsResetSmoke.Native]::ClickSetting($child.Handle, $submenu, 101, 'Nach Aufnahme Editor öffnen', $true, $process.Id)
     [void](Wait-Value { -not [ShotKitSettingsResetSmoke.Native]::WindowVisible($popup.Handle) } 'tray dismissal')
 }
@@ -342,8 +458,10 @@ function Assert-LoadedOpenEditor([bool] $Expected) {
     # Read the app's newly constructed, visible native submenu. Its checkmark
     # comes from active_settings(), so unchanged disk bytes alone cannot pass.
     $settingsMenu = Open-SettingsMenu
+    Write-UiSnapshot 'tray_setting_inspect_begin' -ExpectedId 101 -Details @{ expectedChecked = $Expected }
     [ShotKitSettingsResetSmoke.Native]::AssertSettingChecked($settingsMenu.Child.Handle, $settingsMenu.Menu, 101, 'Nach Aufnahme Editor öffnen', $Expected, $process.Id)
     # Cancel only the owned menu; no preference command is selected or toggled.
+    Write-UiSnapshot 'tray_menu_cancel_begin'
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($primary.Handle, 0x001F, [IntPtr]::Zero, [IntPtr]::Zero)) 'Owned menu cancellation post failed'
     [void](Wait-Value {
         -not [ShotKitSettingsResetSmoke.Native]::WindowVisible($settingsMenu.Root.Handle) -and
@@ -414,9 +532,12 @@ try {
     [IO.File]::WriteAllBytes($settingsPath, $rejected)
     Start-CaseProcess $caseRoot 'first'
     $prompt = Wait-Dialog 'Einstellungen zurücksetzen?' 'Bei Nein bleiben die Datei unverändert'
+    Write-UiSnapshot 'default_no_inspect_begin' $prompt 7
     Assert-True ([ShotKitSettingsResetSmoke.Native]::DefaultButton($prompt.Handle) -eq 7) 'Native default button must be No (IDNO)'
     # Enter is delivered only to this PID-owned real message box. Do not click
     # No explicitly: this must exercise the Windows default-button behavior.
+    $script:interactionSequence++
+    Write-UiSnapshot 'default_no_enter_begin' $prompt 7
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0100, [IntPtr]13, [IntPtr]0)) 'Enter keydown post failed'
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0101, [IntPtr]13, [IntPtr]0)) 'Enter keyup post failed'
     $warning = Wait-Dialog 'ShotKit Rust' 'Speichern der Einstellungen ist deaktiviert'
@@ -485,7 +606,10 @@ try {
     Assert-Bytes ($settingsPath + '.reset-pending') $pending
     Assert-True (@([IO.Directory]::GetFileSystemEntries($settingsDir)).Count -eq 1) 'Interrupted state created unexpected settings artifacts'
     Write-Output 'PASS: real default-No Enter cancellation preserved exact rejected bytes and blocked saving; explicit Yes retained exact backup and receipt, loaded usable defaults, saved and restarted with the live preference checkmark preserved; missing target with pending reset stayed read-only.'
-} catch { $failure = $_ }
+} catch {
+    $failure = $_
+    Write-UiSnapshot 'fixture_failed' -Details @{ error = $_.Exception.Message; scriptStack = $_.ScriptStackTrace }
+}
 finally {
     $allExited = $true
     if ($null -ne $process) {
