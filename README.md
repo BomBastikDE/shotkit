@@ -3,22 +3,22 @@
 Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
 Geschrieben in Rust, eine einzige EXE, keine Installation nötig. Die Entwicklung erfolgt auf `main`.
 
-> **Status: Beta.** ShotKit wird in Rust neu entwickelt; der Code liegt in [`rust/`](rust/).
-> Funktionsumfang und Windows-Verhalten sind noch nicht vollständig geprüft – siehe
-> [Paritätstabelle](rust/PARITY.md) und [Roadmap](rust/ROADMAP.md). Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
+> **Status: stabil – Version 2.0.0.** Erste stabile Rust-Version; der Code liegt in [`rust/`](rust/).
+> Was neu ist und welche Grenzen bekannt sind, steht im [Änderungsprotokoll](rust/CHANGELOG.md); der Ausblick in der
+> [Roadmap](rust/ROADMAP.md). Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 > Sicherheitslücken bitte vertraulich melden, siehe [SECURITY.md](SECURITY.md).
 
 ## Download
 
-Die neueste Rust-Vorabversion (z. B. `shotkit-v2.0.0-beta.1-windows-x64.exe`) von der
-[Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und mit der zugehörigen `.sha256`-Datei prüfen:
+Die neueste Version (z. B. `shotkit-v2.0.0-windows-x64.exe`) von der
+[Releases-Seite](https://github.com/BomBastikDE/shotkit/releases/latest) laden und mit der zugehörigen `.sha256`-Datei prüfen:
 
 ```powershell
 Get-FileHash .\shotkit-*.exe -Algorithm SHA256
 ```
 
-Die EXE ist noch unsigniert; Windows SmartScreen kann warnen („Weitere Informationen → Trotzdem ausführen“).
-Signierung und Herkunftsnachweis sind nicht geplant.
+Die EXE ist nicht signiert; Windows SmartScreen kann warnen („Weitere Informationen → Trotzdem ausführen“).
+Eine Signierung ist derzeit nicht geplant.
 
 ## Dokumentation
 
@@ -27,8 +27,8 @@ Signierung und Herkunftsnachweis sind nicht geplant.
 
 ## Bisherige C#-Version (1.2.0)
 
-Die C#-Version **1.2.0** ist die letzte als stabil freigegebene Version
-(Release [`v1.2.0`](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0)). Ihr Quellcode liegt auf dem Branch
+Die C#-Version **1.2.0** war die letzte C#-Version
+(Release [`v1.2.0`](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0)); ShotKit 2.0.0 löst sie ab. Ihr Quellcode liegt auf dem Branch
 [`csharp/1.x`](https://github.com/BomBastikDE/shotkit/tree/csharp/1.x); dort gibt es nur noch Sicherheitskorrekturen.
 
 Umstieg: C#-ShotKit über das Tray-Menü beenden, dann die Rust-EXE starten. Rust verwendet eigene Einstellungen unter

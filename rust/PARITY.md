@@ -7,7 +7,7 @@ Referenz: C#-Commit `cd5fff3a6ec32cb4521edae003dc3a85dd269cd5`, insbesondere `RE
 - **fertig:** Der genannte Funktionsumfang ist implementiert und für die ausdrücklich genannte Testkonstellation nachgewiesen. Das belegt keine vollständige Gleichheit außerhalb dieser Konstellation.
 - **implementiert, nicht belegt:** Der Quellcode enthält das Verhalten; der angegebene Test belegt den vollständigen beschriebenen Umfang noch nicht.
 - **fehlt:** Das beschriebene Verhalten ist nicht oder nicht vollständig implementiert. Unklarer Umfang wird im Text konkret benannt.
-- **bewusst anders:** Eine dokumentierte Abweichung ist bereits im Rust-Stand vorhanden. Ob sie für Beta-Parität akzeptiert wird, wird hier nicht vorausgesetzt; bestehende Nutzeranforderungen und die Referenz sind weiter maßgeblich.
+- **bewusst anders:** Eine dokumentierte Abweichung ist bereits im Rust-Stand vorhanden. Ob sie für Version 2.0.0 akzeptiert wird, wird hier nicht vorausgesetzt; bestehende Nutzeranforderungen und die Referenz sind weiter maßgeblich.
 
 Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebener Lauf belegt nur den im Test geprüften Fall. Der erfolgreiche [Windows-/Linux-Lauf für Alpha 9](https://github.com/BomBastikDE/shotkit/actions/runs/41475395472) prüfte den Commit `7fba242`; spätere Änderungen müssen erneut auf dem jeweiligen Commit grün sein. Der [vollständige Windows-/Linux-Lauf für Commit `1877362`](https://github.com/BomBastikDE/shotkit/actions/runs/41516470659) bestand einschließlich des damals verbindlichen Toolbar-Tests. Die spätere vorübergehende Ausnahme ist nach den erfolgreichen CI-Läufen [42004167628](https://github.com/BomBastikDE/shotkit/actions/runs/42004167628), [42006367024](https://github.com/BomBastikDE/shotkit/actions/runs/42006367024), [42007837556](https://github.com/BomBastikDE/shotkit/actions/runs/42007837556), [42015861642](https://github.com/BomBastikDE/shotkit/actions/runs/42015861642) und [42017257158](https://github.com/BomBastikDE/shotkit/actions/runs/42017257158) entfernt; der Toolbar-Test ist damit wieder ein verbindliches CI-Gate. Der verbindliche Aufruf bestand im [CI-Lauf 42018716579](https://github.com/BomBastikDE/shotkit/actions/runs/42018716579) auf Linux und Windows.
 
@@ -83,7 +83,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Letzten Bereich derselben Sitzung wiederholen | fertig | `windows-last-region-smoke.ps1`, `windows-last-region-clipboard-smoke.ps1`; Alpha-6-Lauf | Datei-/Editor- und Clipboard-Weg getestet; echte Monitoränderung bleibt Owner-Praxistest. |
 | Browserbereich unter Maus vorschlagen | fertig | `windows-browser-hover-smoke.ps1`; [Edge-/Chrome-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41461190364) | Kontrollierte lokale Testseite; Accessibility-/Browsergrenzen gelten. |
 
-OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Beta-Ziel. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
+OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Umfang von 2.0.0. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
 **Bestand:** 30 fertig, 14 implementiert, nicht belegt, 0 fehlt, 3 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
