@@ -6,6 +6,13 @@ use crate::stitch::{Image, Rotation, RotationFailure, Stitcher};
 
 const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
 
+// Screen pixels prove motion or a lack of motion, never the document boundary.
+// Keep this warning on every usable result, including cancellation/error paths.
+const UNCONFIRMED_END: &str = "Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt. Die bisherige Aufnahme bleibt erhalten. Bitte das Ende und die Übergänge im Bild prüfen.";
+fn unconfirmed_reason(reason: &str) -> String {
+    format!("{UNCONFIRMED_END}\n\n{reason}")
+}
+
 fn reconcile_matches(
     regular: Option<MatchResult>,
     exact: Option<MatchResult>,
@@ -198,7 +205,7 @@ fn run_with_rotation(
             }
             return Ok(Outcome {
                 image: error.image,
-                reason: format!("Scrollaufnahme konnte nicht gestartet werden: {}. Die erste Aufnahme bleibt erhalten.", error.error),
+                reason: unconfirmed_reason(&format!("Scrollaufnahme konnte nicht gestartet werden: {}. Die erste Aufnahme bleibt erhalten.", error.error)),
                 fallback_count: 0,
                 pending_rotation: None,
             });
@@ -380,7 +387,7 @@ fn run_with_rotation(
                 }
                 still += 1;
                 if still >= 2 {
-                    reason = "Ende des scrollbaren Bereichs erreicht.".into();
+                    reason = "Keine weitere Scrollbewegung erkennbar.".into();
                     break;
                 }
                 io.wait_ms(400);
@@ -432,7 +439,7 @@ fn run_with_rotation(
     };
     Ok(Outcome {
         image,
-        reason,
+        reason: unconfirmed_reason(&reason),
         fallback_count: fallbacks,
         pending_rotation,
     })
