@@ -32,7 +32,7 @@ Die Rust-EXE läuft ohne Installer und kann in einem selbst gewählten Ordner li
 
 ## Bekannte Grenzen
 
-Wenn beim Neuzeichnen der Vorschau auch beide Windows-Grafikfüllungen fehlschlagen, können alte Bildpunkte sichtbar bleiben. In diesem seltenen Fall die Vorschau nicht als Beleg für eine Schwärzung verwenden; das Fenster schließen und das gespeicherte Bild gesondert prüfen.
+Wenn beim Neuzeichnen der Vorschau auch beide Windows-Grafikfüllungen fehlschlagen, können alte Bildpunkte sichtbar bleiben. In diesem seltenen Fall die Vorschau nicht als Beleg für eine Schwärzung verwenden; das gespeicherte Bild vor der Weitergabe in einer anderen Anwendung kontrollieren.
 
 Auf einem interaktiven Windows-CI-Runner wurden Bereichsaufnahme, vertikale und horizontale Scrollbilder, lokale Testseiten in Edge und Chrome für Elementvorschläge, ein Editorablauf mit Transparenz, das Kopieren und Einfügen transparenter Bilder, das Infofenster und die unabhängige Bearbeitung mehrerer Bilder geprüft. Weitere Windows-Praxistests stehen aus. Die Fenster-/Browser-Erkennung hängt von den Windows-Bedienungshilfen und der jeweiligen Anwendung ab; nicht jedes Seitenelement lässt sich erkennen. Scrollen, DPI-Skalierung, mehrere Monitore, Clipboard und Editor sind auf realen Windows-Systemen zu prüfen. Transparente Bilder können bearbeitet und in passenden Formaten gespeichert werden; die neuen Bild- und Editorfunktionen benötigen weitere Windows-Praxistests. Die vollständige Übereinstimmung mit dem Original ist noch nicht bestätigt. Siehe [ROADMAP.md](ROADMAP.md).
 
