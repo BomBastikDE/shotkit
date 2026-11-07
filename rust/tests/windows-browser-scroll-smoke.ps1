@@ -261,37 +261,6 @@ function Wait-ForDialogClosed {
         @((Get-ProcessDialogs $OwnedProcess | Where-Object { $_.Handle -eq $DialogHandle })).Count -eq 0
     } | Out-Null
 }
-function Get-ProfileEdgeProcesses {
-    $escapedProfile = [Regex]::Escape($edgeProfile)
-    $candidates = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
-        Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
-    foreach ($candidate in $candidates) {
-        $known = $edgeOwnedHandles | Where-Object {
-            $_.ProcessId -eq [int]$candidate.ProcessId -and $_.CreationDate -eq $candidate.CreationDate
-        } | Select-Object -First 1
-        if ($null -ne $known) { continue }
-        $handle = $null
-        try { $handle = [Diagnostics.Process]::GetProcessById([int]$candidate.ProcessId) }
-        catch {
-            $latest = Get-CimInstance Win32_Process -Filter "ProcessId=$($candidate.ProcessId)" -ErrorAction Stop
-            if ($null -eq $latest -or $latest.CreationDate -ne $candidate.CreationDate) { continue }
-            throw
-        }
-        try {
-            $confirmed = Get-CimInstance Win32_Process -Filter "ProcessId=$($candidate.ProcessId)" -ErrorAction Stop
-            if ($null -eq $confirmed -or $confirmed.CreationDate -ne $candidate.CreationDate -or
-                $confirmed.Name -ne 'msedge.exe' -or -not $confirmed.CommandLine -or
-                $confirmed.CommandLine -notmatch $escapedProfile) { continue }
-            if ($handle.ProcessName -ne 'msedge') { throw "Owned Edge process identity mismatch for PID $($candidate.ProcessId)." }
-            [void]$edgeOwnedHandles.Add([pscustomobject]@{
-                ProcessId=[int]$candidate.ProcessId; CreationDate=$candidate.CreationDate; Handle=$handle
-            })
-            $handle = $null
-        }
-        finally { if ($null -ne $handle) { $handle.Dispose() } }
-    }
-    return $candidates
-}
 function Stop-ProfileEdgeProcess {
     param($OwnedHandle)
     $process = $OwnedHandle.Handle
@@ -633,8 +602,16 @@ try {
         }
     }
     catch { Write-Output "DIAGNOSTIC: Could not read live Edge DOM-offset title after scroll completion: $($_.Exception.ToString())" }
-    if ($completionText -notlike '*Ende des scrollbaren Bereichs erreicht.*') {
-        throw "Scroll did not report reaching the actual end of the browser page. Dialog='$completionText'"
+    if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
+        throw "Scroll did not warn that the document end is unconfirmed. Dialog='$completionText'"
+    }
+    $finalWindow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
+        Where-Object { $_.Handle -eq $browserWindow.Handle -and $_.Visible } | Select-Object -First 1
+    if ($null -eq $finalWindow -or $finalWindow.Title -notmatch 'offset=0,(-?\d+) wheel=') {
+        throw 'SCROLL_END_UNCONFIRMED: original profile-owned browser window did not expose its final DOM offset.'
+    }
+    if ([int]$Matches[1] -ne $scrollHeight - $innerHeight) {
+        throw "SCROLL_END_MISMATCH: browser offset $($Matches[1]); expected $($scrollHeight - $innerHeight)."
     }
     $pngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)
     if ($pngs.Count -ne 1) { throw "Expected one auto-saved PNG, found $($pngs.Count)." }
@@ -708,9 +685,10 @@ finally {
                 catch { $cleanupFailures += "Could not stop owned Edge PID $($ownedHandle.ProcessId): $($_.Exception.Message)" }
             }
             Start-Sleep -Milliseconds 200
-            [void](Get-ProfileEdgeProcesses)
+            $remainingCandidates = @(Get-ProfileEdgeProcesses -IncludeUnverifiedSnapshots)
             $remaining = @($edgeOwnedHandles | Where-Object { -not $_.Handle.HasExited })
-        } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
+        } while (($remaining.Count -gt 0 -or $remainingCandidates.Count -gt 0) -and [DateTime]::UtcNow -lt $deadline)
+        if ($remainingCandidates.Count -gt 0) { $cleanupFailures += "Profile-scoped Edge processes remain in the final CIM scan; cleanup is not confirmed." }
         if ($remaining.Count -gt 0) { $cleanupFailures += "Owned Edge profile processes remain: $(@($remaining | ForEach-Object ProcessId) -join ', ')." }
     }
     catch { $cleanupFailures += "Could not verify owned Edge process cleanup: $($_.Exception.Message)" }

@@ -568,8 +568,8 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
             Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
         }
         $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
-        if ($completionText -notlike '*Ende des scrollbaren Bereichs erreicht.*') {
-            throw "Horizontal scroll ($($case.Name)) did not report reaching the real page edge. Dialog='$completionText'"
+        if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
+            throw "Horizontal scroll ($($case.Name)) did not warn that the document edge is unconfirmed. Dialog='$completionText'"
         }
 
         $bitmap = [System.Drawing.Bitmap]::new($png.FullName)
