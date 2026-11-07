@@ -66,6 +66,7 @@ fn import_budget_error(error: BudgetError) -> String {
 
 mod bounded_reader;
 mod jpeg_budget_reader;
+mod tiff_constructor_guard;
 
 /// Enforce the limit on bytes actually read, even if the file changes after opening.
 pub fn read_image_file(path: &Path) -> Result<Vec<u8>, String> {
@@ -270,26 +271,36 @@ fn decode_reader_admitted<R: BufRead + Seek>(
         ),
         _ => None,
     };
-    let decoder: Result<Box<dyn ImageDecoder + '_>, image::ImageError> =
-        if let Some(encoded_lease) = encoded_lease.as_mut() {
-            let length = encoded_admission
-                .expect("JPEG admission has a source length")
-                .1;
-            let input = jpeg_budget_reader::JpegBudgetReader::new(
-                reader.into_inner(),
-                length,
-                encoded_lease,
-            );
-            let mut admitted = ImageReader::with_format(input, ImageFormat::Jpeg);
-            admitted.limits(limits.clone());
-            admitted
-                .into_decoder()
-                .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
-        } else {
-            reader
-                .into_decoder()
-                .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
-        };
+    let decoder: Result<Box<dyn ImageDecoder + '_>, image::ImageError> = if reader.format()
+        == Some(ImageFormat::Tiff)
+    {
+        match tiff_constructor_guard::admit(reader.into_inner()) {
+            Err(error) => Err(image::ImageError::IoError(error)),
+            Ok(input) => {
+                let mut admitted =
+                    ImageReader::with_format(BufReader::new(input), ImageFormat::Tiff);
+                admitted.limits(limits.clone());
+                admitted
+                    .into_decoder()
+                    .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
+            }
+        }
+    } else if let Some(encoded_lease) = encoded_lease.as_mut() {
+        let length = encoded_admission
+            .expect("JPEG admission has a source length")
+            .1;
+        let input =
+            jpeg_budget_reader::JpegBudgetReader::new(reader.into_inner(), length, encoded_lease);
+        let mut admitted = ImageReader::with_format(input, ImageFormat::Jpeg);
+        admitted.limits(limits.clone());
+        admitted
+            .into_decoder()
+            .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
+    } else {
+        reader
+            .into_decoder()
+            .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
+    };
     let mut decoder = decoder.map_err(|error| match error {
         image::ImageError::Limits(ref limit)
             if limit.kind() == image::error::LimitErrorKind::DimensionError =>

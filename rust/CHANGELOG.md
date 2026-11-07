@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Beim TIFF-Import werden Größe und Anzahl der Einträge im ersten Verzeichnis vor dem Start des Decoders begrenzt. Dadurch können auch gültige Spezialdateien mit sehr großen Metadaten oder vielen Strips/Kacheln abgelehnt werden; eine vollständige Prozessspeichergrenze ist damit nicht verbunden ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Das gemeinsame Bildbudget berücksichtigt zusätzlich Zwischenablageimporte, gewöhnliche Bildschirmaufnahmen sowie neue Bildpuffer für Zuschnitt, Rahmen, Schatten und Leinwandänderungen. Bei nicht ausreichendem Budget bleibt der bisherige Dokumentzustand erhalten. GDI, weitere Bearbeitungen, Codec-Hilfsspeicher und der gesamte Prozessspeicher bleiben außerhalb einer festen Gesamtgrenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Bei JPEG-Importen wird die vom Decoder benötigte Eingabekopie zusätzlich im Bildbudget berücksichtigt. PNG begrenzt interne Decoderbuchungen auf 16 MiB; dadurch können auch gültige PNG-Dateien mit umfangreichen Metadaten oder anderen großen internen Decoderbuchungen abgewiesen werden. Dies ist keine feste Speicherobergrenze für den Decoderprozess ([#65](https://github.com/BomBastikDE/shotkit/issues/65), [#52](https://github.com/BomBastikDE/shotkit/issues/52)).
