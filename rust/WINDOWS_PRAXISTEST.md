@@ -25,6 +25,7 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | 10 | Bei mehreren Monitoren mit **unterschiedlicher Skalierung**: Schritt 8 auf jedem Monitor | Aufnahme läuft ohne Mausberührung bis zum Ende (#6). Bricht sie mit „Maus bewegt“ ab, Monitoranordnung und Skalierungen notieren. |
 | 11 | Editor auf einen anderen Monitor ziehen, zeichnen, speichern | Darstellung und Ergebnis stimmen. |
 | 12 | Tray → Einstellungen → „Mit Windows starten“ einschalten, abmelden und wieder anmelden | ShotKit startet ohne Hinweisfenster. |
+| 13 | Tray → Einstellungen → **„Mauszeiger mit aufnehmen“** einschalten, mit `F9` aufnehmen; im Editor den Zeiger verschieben und löschen; mit automatischem Speichern wiederholen | Zeiger an der richtigen Stelle, als Objekt verschieb- und löschbar; „Rückgängig“ entfernt ihn nicht; die gespeicherte PNG enthält ihn. Ohne Option: kein Zeiger. *(Der CI-Runner hat keine Maus und kann das nicht prüfen, #36.)* |
 
 ## Ausführliche Prüfungen (optional)
 
