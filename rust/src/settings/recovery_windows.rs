@@ -238,7 +238,7 @@ fn recover_with_temp_name(
             source,
         ))
     })?;
-    let backup_path = move_to_unique_backup(&held, path).map_err(&with_prepared)?;
+    let backup_path = move_to_unique_backup(&held, path).map_err(with_prepared)?;
     before_publication(&temp_path, &backup_path);
     rename_without_replace(&prepared, path).map_err(|source| {
         with_prepared(failure(
