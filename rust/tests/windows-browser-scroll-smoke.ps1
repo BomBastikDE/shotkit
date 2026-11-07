@@ -719,6 +719,38 @@ finally {
     catch { $cleanupFailures += "Could not verify owned Edge process cleanup: $($_.Exception.Message)" }
     foreach ($ownedHandle in @($edgeOwnedHandles)) { try { $ownedHandle.Handle.Dispose() } catch { $cleanupFailures += "Could not release Edge process handle $($ownedHandle.ProcessId): $($_.Exception.Message)" } }
     if ($null -ne $edge) { $edge.Dispose() }
+    # Preserve only this synthetic fixture's output before its owned directory
+    # is cleaned up. The manual workflow supplies the destination explicitly.
+    if ($null -ne $testFailure -and -not [string]::IsNullOrWhiteSpace($env:SHOTKIT_SCENARIO_ARTIFACT_DIR)) {
+        try {
+            $artifact = Join-Path $env:SHOTKIT_SCENARIO_ARTIFACT_DIR ('edge-' + [Guid]::NewGuid().ToString('N'))
+            [void][IO.Directory]::CreateDirectory($artifact)
+            if ([IO.Directory]::Exists($saveFolder)) {
+                Get-ChildItem -LiteralPath $saveFolder -File -Filter '*.png' | ForEach-Object {
+                    if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture PNG is a reparse point.' }
+                    Copy-Item -LiteralPath $_.FullName -Destination $artifact -ErrorAction Stop
+                }
+                $diagnostics = Join-Path $saveFolder 'Diagnose'
+                if ([IO.Directory]::Exists($diagnostics)) {
+                    $rootInfo = [IO.DirectoryInfo]::new($diagnostics)
+                    if (($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture diagnostic root is a reparse point.' }
+                    foreach ($folder in @(Get-ChildItem -LiteralPath $diagnostics -Directory)) {
+                        if (($folder.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture diagnostic directory is a reparse point.' }
+                        $destination = Join-Path $artifact $folder.Name
+                        [void][IO.Directory]::CreateDirectory($destination)
+                        foreach ($name in @('vorher.png', 'nachher.png', 'info.txt')) {
+                            $file = Join-Path $folder.FullName $name
+                            if ([IO.File]::Exists($file)) {
+                                $info = [IO.FileInfo]::new($file)
+                                if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Fixture diagnostic file is a reparse point.' }
+                                Copy-Item -LiteralPath $file -Destination $destination -ErrorAction Stop
+                            }
+                        }
+                    }
+                }
+            }
+        } catch { $cleanupFailures += "Could not preserve fixture diagnostics: $($_.Exception.Message)" }
+    }
     if (Test-Path -LiteralPath $testRoot) {
         try { Remove-EdgeTestTree -Path $testRoot }
         catch {
