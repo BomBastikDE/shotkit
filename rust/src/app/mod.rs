@@ -4,6 +4,7 @@ mod mouse_history;
 mod preview_scaling;
 mod region;
 mod scroll_completion;
+mod temp_recovery;
 mod window_commands;
 mod window_mouse;
 use region::*;
@@ -855,6 +856,7 @@ unsafe fn run_application() {
     }
     PRIMARY = h;
     load_settings(h);
+    temp_recovery::check(h);
     if !tray::install(h, inst) {
         DestroyWindow(h);
         return;

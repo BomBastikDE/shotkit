@@ -8,7 +8,7 @@
 
 /// Numeric fields from a name matching ShotKit's temporary-file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TempRecoveryName {
+pub struct TempRecoveryName {
     pub(crate) pid: u32,
     pub(crate) unix_nanos: u128,
     pub(crate) sequence: u64,
@@ -20,8 +20,11 @@ pub(crate) struct TempRecoveryName {
 /// the generator (`u32`, `u128`, and `u64`). No path component is accepted.
 /// Because the input is `&str`, callers must reject non-UTF-8 names before
 /// calling. A successful parse does not establish that ShotKit created a file.
-pub(crate) fn parse_temp_recovery_name(name: &str) -> Option<TempRecoveryName> {
-    let body = name.strip_prefix(".shotkit-")?.strip_suffix(".tmp")?;
+pub fn parse_temp_recovery_name(name: &str) -> Option<TempRecoveryName> {
+    let body = name
+        .strip_prefix(".shotkit-")
+        .or_else(|| name.strip_prefix(".ShotKit-"))?
+        .strip_suffix(".tmp")?;
     let (pid, rest) = body.split_once('-')?;
     let (unix_nanos, sequence) = rest.split_once('-')?;
 
@@ -42,6 +45,23 @@ fn is_ascii_decimal(field: &str) -> bool {
     !field.is_empty()
         && (field.len() == 1 || !field.starts_with('0'))
         && field.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Settings-only legacy format; never accepted in an image-only directory.
+pub fn is_settings_temp_name(name: &str) -> bool {
+    let Some(body) = name
+        .strip_prefix(".shotkit-settings-")
+        .and_then(|n| n.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((pid, sequence)) = body.split_once('-') else {
+        return false;
+    };
+    is_ascii_decimal(pid)
+        && is_ascii_decimal(sequence)
+        && pid.parse::<u32>().is_ok()
+        && sequence.parse::<u64>().is_ok()
 }
 
 #[cfg(test)]
@@ -115,18 +135,41 @@ mod tests {
 
     #[test]
     fn rejects_fields_outside_generator_integer_ranges() {
-        assert_eq!(parse_temp_recovery_name(".shotkit-4294967296-1-1.tmp"), None);
         assert_eq!(
-            parse_temp_recovery_name(
-                ".shotkit-1-340282366920938463463374607431768211456-1.tmp"
-            ),
+            parse_temp_recovery_name(".shotkit-4294967296-1-1.tmp"),
             None
         );
-        assert_eq!(parse_temp_recovery_name(".shotkit-1-1-18446744073709551616.tmp"), None);
+        assert_eq!(
+            parse_temp_recovery_name(".shotkit-1-340282366920938463463374607431768211456-1.tmp"),
+            None
+        );
+        assert_eq!(
+            parse_temp_recovery_name(".shotkit-1-1-18446744073709551616.tmp"),
+            None
+        );
 
         // Parsing a very long field remains bounded and fallible, without
         // allocating a copy of the candidate name.
         let huge = format!(".shotkit-{}-1-1.tmp", "9".repeat(100_000));
         assert_eq!(parse_temp_recovery_name(&huge), None);
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+    #[test]
+    fn legacy_formats_remain_exact() {
+        assert!(parse_temp_recovery_name(".ShotKit-1-2-3.tmp").is_some());
+        assert!(is_settings_temp_name(".shotkit-settings-1-2.tmp"));
+        for name in [
+            ".shotkit-abc.tmp",
+            "x.shotkit-1-2-3.tmp",
+            ".shotkit-settings-1-2-3.tmp",
+            ".shotkit-settings-01-2.tmp",
+        ] {
+            assert!(parse_temp_recovery_name(name).is_none());
+            assert!(!is_settings_temp_name(name));
+        }
     }
 }

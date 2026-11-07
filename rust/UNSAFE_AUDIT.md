@@ -167,3 +167,19 @@ Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe
 | `src/toolbar.rs:454` | `create` | bewusst zurückgestellt | Parent und Tooltiptext-Lebensdauer sind im Normalpfad sichtbar; Klassenkollision und vollständige HWND-Lebensdauer bei verschachtelter Erstellung sind nicht belegt. |
 | `src/uia_picker.rs:286` | `create_automation` | Beleg fehlt | Nachzuweisen: COM ist im passenden Apartment initialisiert; die Referenz wird dort verwendet und freigegeben. |
 | `src/uia_picker.rs:305` | `inspect` | belegt | Enger COM-Apartment-Vertrag: MTA-Initialisierung, Interface-Nutzung und Freigabe bleiben im Worker; der UIA-Auswahlpfad mit Tastaturkorrektur bestand im [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41523039080); Providerqualität und Handle-Identität sind nicht damit belegt. |
+
+## Temporäre Dateien: bestätigte Wiederherstellung (#67)
+
+- `src/temp_recovery_windows.rs`: `GetFileInformationByHandle` erhält einen lebenden eigenen Handle und eine
+  `repr(C)`-Struktur des SDK-Layouts. Der Handle hat DELETE-Zugriff, Share-Modus 0 und OPEN_REPARSE_POINT;
+  regulärer Dateityp, Attribute, Linkzahl und Alter werden am selben Handle geprüft. `SetFileInformationByHandle`
+  Klasse 4 erhält genau ein BOOLEAN; nur eine ausdrückliche Löschentscheidung führt dorthin. Der Handle bleibt
+  bis danach offen. Abbruch-/Später-Fälle schließen ohne Disposition. Keine erneute Pfadauflösung zur Löschung.
+  Grenze: stabile Vorfahren, kein Schutz gegen privilegierten Austausch oder schon vorhandene Mappings.
+- `src/app/temp_recovery.rs`: `TaskDialogIndirect` erhält SDK-pack(1)-Strukturen und UTF-16-Puffer, die bis zur
+  synchronen Rückkehr leben. Keine Callbackpointer; kein geliehener Appzustand über den modalen Aufruf.
+  Owner ist das gerade erzeugte Hauptfenster. Fehler, Escape und Schließen sind Später. `MessageBoxW` und
+  `ShellExecuteW` verwenden lebende Puffer und denselben Owner. Common-Controls-v6-Manifest ist eingebettet.
+- Nachweis: Windows-Release-Probe `atomic_save_abort_probe` prüft echte Abort-Reste, jung/gesperrt, Später,
+  exklusiv verhinderte Umbenennung und bestätigte Löschung bei unveränderten Ziel-/Fremddateikontrollen.
+  Die UI-Prüfung erfolgt im Windows-Smoke; CI-Resultate separat berichten.

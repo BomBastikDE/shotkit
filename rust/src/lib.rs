@@ -43,3 +43,7 @@ pub mod shapes;
 pub mod stitch;
 pub mod toolbar_layout;
 pub mod view;
+
+pub mod temp_recovery_names;
+#[cfg(windows)]
+pub mod temp_recovery_windows;

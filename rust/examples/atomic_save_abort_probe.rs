@@ -329,7 +329,7 @@ mod probe {
         Err(io::Error::other("child returned instead of aborting"))
     }
 
-    fn abort_case(mode: &str) -> io::Result<()> {
+    fn abort_case(mode: &str, retain_for_ui: bool) -> io::Result<()> {
         let fixture = Fixture::new(mode != "atomic-new")?;
         let child = Command::new(std::env::current_exe()?)
             .arg("--child")
@@ -410,8 +410,58 @@ mod probe {
                 "incomplete target published",
             )?;
         }
-        // Existing files were checked above; remove only the verified owned remnant.
-        cleanup_output(fixture, temp, id)?;
+        use shotkit::temp_recovery_windows::{complete, scan, Choice};
+        check(
+            scan(&fixture.root, false, SystemTime::now())?.is_empty(),
+            "young temp offered",
+        )?;
+        let aged = SystemTime::now() - Duration::from_secs(601);
+        let file = OpenOptions::new()
+            .write(true)
+            .share_mode(SHARE_ALL)
+            .open(temp)?;
+        file.set_times(fs::FileTimes::new().set_modified(aged))?;
+        // A live writer must exclude the file from recovery.
+        check(
+            scan(&fixture.root, false, SystemTime::now())?.is_empty(),
+            "locked temp offered",
+        )?;
+        drop(file);
+        let offered = scan(&fixture.root, false, SystemTime::now())?;
+        check(
+            offered.len() == 1 && offered[0].path == *temp,
+            "wrong recovery candidate",
+        )?;
+        check(
+            fs::rename(temp, fixture.root.join("moved")).is_err(),
+            "held candidate replaced",
+        )?;
+        check(
+            complete(offered, Choice::Later).is_empty(),
+            "later returned errors",
+        )?;
+        let file = open(temp, SHARE_READ, false)?;
+        check(
+            identity(&file)? == id && bytes(&file)? == PAYLOAD,
+            "later changed remnant",
+        )?;
+        drop(file);
+        if retain_for_ui {
+            println!("RECOVERY_UI_FIXTURE={}", fixture.root.display());
+            // The ephemeral CI runner expires this root. The GUI test receives
+            // the real aborted writer's remnant plus target/foreign controls.
+            return Ok(());
+        }
+        let offered = scan(&fixture.root, false, SystemTime::now())?;
+        check(offered.len() == 1, "later did not offer again")?;
+        check(
+            complete(offered, Choice::Delete).is_empty(),
+            "recovery deletion failed",
+        )?;
+        check(!temp.exists(), "confirmed remnant survived")?;
+        fixture.verify_known()?;
+        fixture.cleanup()?;
+        println!("TEMP_RECOVERY_OK {mode}: young/locked skipped; later retained; confirmed deletion preserved controls");
         println!("ABORT_BOUNDARY_OK {mode}: owned temp retained; target and decoys preserved");
         Ok(())
     }
@@ -542,6 +592,9 @@ mod probe {
                     .ok_or_else(|| io::Error::other("invalid mode"))?,
             );
         }
+        if args.len() == 2 && args[1] == "--ui-fixture" {
+            return abort_case("atomic-old", true);
+        }
         check(args.len() == 1, "unexpected arguments")?;
         for mode in [
             "atomic-old",
@@ -549,7 +602,7 @@ mod probe {
             "unique-prepare",
             "unique-publish",
         ] {
-            abort_case(mode)?;
+            abort_case(mode, false)?;
         }
         for unique in [false, true] {
             for success in [false, true] {
