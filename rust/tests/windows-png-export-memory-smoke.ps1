@@ -272,7 +272,7 @@ function Draw-LargeAnnotation([byte] $Key,[string] $Tool,[int] $Low,[int] $High)
     [void](Wait-For {[ShotKitPngExportMemorySmoke.Native]::GetForegroundWindow() -eq $editor.H} 'editor foreground')
     [ShotKitPngExportMemorySmoke.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
     [ShotKitPngExportMemorySmoke.Native]::keybd_event($Key,0,2,[UIntPtr]::Zero)
-    [void](Wait-For {Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title -like "*Werkzeug $Tool*"}} 'annotation tool')
+    [void](Wait-For {Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title -like "*Werkzeug: $Tool*"}} 'annotation tool')
     $client=[ShotKitPngExportMemorySmoke.Rect]::new()
     if (-not [ShotKitPngExportMemorySmoke.Native]::GetClientRect($editor.H,[ref]$client)) { throw 'CLIENT_RECT_FAILED.' }
     $toolbar=@([ShotKitPngExportMemorySmoke.Native]::Children($editor.H) | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'})
@@ -365,13 +365,13 @@ try {
     if ($LargeAnnotated) {
         if ($stage -in @('BlurOnly','RestoreBoth') -and -not $combinedRejected) { continue }
         [void][ShotKitPngExportMemorySmoke.Native]::ShowWindow($editor.H,3)
-        if ($stage -eq 'Redact') { Draw-LargeAnnotation 0x53 'Redact' 1024 2048 }
-        elseif ($stage -eq 'Both') { Draw-LargeAnnotation 0x57 'GaussianBlur' 1536 2560 }
+        if ($stage -eq 'Redact') { Draw-LargeAnnotation 0x53 'Schwärzen' 1024 2048 }
+        elseif ($stage -eq 'Both') { Draw-LargeAnnotation 0x57 'Weichzeichnen' 1536 2560 }
         elseif ($stage -eq 'BlurOnly') {
             # Inspect the actual post-failure document, not a previous export:
             # temporarily remove only its non-overlapping redaction object.
             # The remaining existing Gaussian object must survive and export.
-            Draw-LargeAnnotation 0x56 'Select' 1280 1280
+            Draw-LargeAnnotation 0x56 'Auswahl' 1280 1280
             [ShotKitPngExportMemorySmoke.Native]::keybd_event(0x2E,0,0,[UIntPtr]::Zero)
             [ShotKitPngExportMemorySmoke.Native]::keybd_event(0x2E,0,2,[UIntPtr]::Zero)
             Start-Sleep -Milliseconds 250
