@@ -2,6 +2,8 @@
 
 ## Version 2.0.0 – Änderungen seit Beta 1
 
+- Verpixeln verwendet mindestens 48 px große Blöcke und Rauschen. Für vertrauliche Inhalte weiterhin Schwärzen (S) verwenden ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).
+
 Die C#-Version v1.2.0 ist historisch abgeschlossen; Rust ist die maßgebliche Weiterentwicklung. Die EXE ist unsigniert. Echte Windows-Praxistests mit gemischter DPI und mehreren Monitoren sowie Teile der Sicherheitsprüfung stehen noch aus. Verpixelung ist keine sichere Schwärzung. Bei abruptem Abbruch während des Speicherns können temporäre Dateien mit Bilddaten zurückbleiben; Hinweise stehen in der [Rust-Anleitung](README.md).
 
 - Die Scrollaufnahme berücksichtigt die von Windows tatsächlich gesetzte Mausposition. Kann der Zeiger nicht im Aufnahmebereich positioniert werden, endet sie mit verständlichem Grund und erhält das Teilbild. Bei Monitoren unterschiedlicher Skalierung sind vorzeitige Abbrüche weiterhin eine bekannte Grenze ([#6](https://github.com/BomBastikDE/shotkit/issues/6)).

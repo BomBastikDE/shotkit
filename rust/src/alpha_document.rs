@@ -14,7 +14,7 @@ use crate::{
     gaussian_blur::gaussian_blur_layer,
     image_handle::ImageHandle,
     import_admission::TrackedImage,
-    pixelate::{pixelate_into, PixelateRect},
+    pixelate::{pixelate_into_seeded, PixelateRect},
     resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget},
     shapes::{Shape, ShapeKind},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
@@ -419,9 +419,18 @@ fn render_document_over_typed(
                 if !shape.style.width.is_finite() || shape.style.width <= 0.0 {
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
-                let block_size = ((shape.style.width * 3.0) as usize).clamp(12, 4096);
-                pixelate_into(sampling_source, &mut output_pixels, region, block_size)
-                    .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
+                let block_size = ((shape.style.width * 6.0) as usize).clamp(48, 4096);
+                let seed = shape
+                    .pixelation_seed
+                    .ok_or("Zufallswert der Verpixelung fehlt.")?;
+                pixelate_into_seeded(
+                    sampling_source,
+                    &mut output_pixels,
+                    region,
+                    block_size,
+                    seed.0,
+                )
+                .map_err(|error| format!("Pixelation fehlgeschlagen: {error:?}"))?;
             }
             ShapeKind::GaussianBlur { start, end } => {
                 let Some(region) =
@@ -720,7 +729,7 @@ fn clipped_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pixelate::pixelate_region;
+    use crate::pixelate::pixelate_region_seeded;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
     use std::sync::Arc;
@@ -950,7 +959,8 @@ mod tests {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(0.0, 0.0),
             end: Point::new(4.0, 1.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         for shapes in [[redact.clone(), blur.clone()], [blur, redact]] {
             let small = ResourceBudget::new(bytes, 0).unwrap();
             let error = render_document_shared_budgeted(&source, &shapes, &small)
@@ -1146,7 +1156,8 @@ mod tests {
             Shape::new(ShapeKind::Blur {
                 start: Point::new(0.0, 0.0),
                 end: Point::new(30.0, 20.0),
-            }),
+            })
+            .with_pixelation_seed(0x74_5afe_1234_5678),
         ];
         let redact = Shape::new(ShapeKind::Redact {
             start: Point::new(9.2, 8.2),
@@ -1239,7 +1250,8 @@ mod tests {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(0.0, 0.0),
             end: Point::new(30.0, 20.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         for shapes in [
             vec![redact.clone(), blur.clone()],
             vec![blur.clone(), redact.clone()],
@@ -1339,7 +1351,8 @@ mod tests {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(0.0, 0.0),
             end: Point::new(3.0, 3.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         render_preview(&source, &[blur], 1, &mut cache).unwrap();
         assert!(cache.is_some());
         for split in 0..=shapes.len() {
@@ -1377,7 +1390,8 @@ mod tests {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(2.0, 2.0),
             end: Point::new(28.0, 20.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         let mut cache = None;
         render_preview(&source, std::slice::from_ref(&blur), 1, &mut cache).unwrap();
         assert!(cache.is_some());
@@ -1423,7 +1437,8 @@ mod tests {
             Shape::new(ShapeKind::Blur {
                 start: Point::new(2.0, 2.0),
                 end: Point::new(28.0, 20.0),
-            }),
+            })
+            .with_pixelation_seed(0x74_5afe_1234_5678),
             Shape::new(ShapeKind::GaussianBlur {
                 start: Point::new(8.0, 5.0),
                 end: Point::new(31.0, 23.0),
@@ -1611,7 +1626,8 @@ mod tests {
             Shape::new(ShapeKind::Blur {
                 start: Point::new(0.0, 0.0),
                 end: Point::new(32.0, 24.0),
-            }),
+            })
+            .with_pixelation_seed(0x74_5afe_1234_5678),
         );
         shapes.push(Shape::new(ShapeKind::Redact {
             start: Point::new(0.0, 0.0),
@@ -1706,7 +1722,8 @@ mod tests {
             Shape::new(ShapeKind::Blur {
                 start: Point::new(0.0, 0.0),
                 end: Point::new(6.0, 4.0),
-            }),
+            })
+            .with_pixelation_seed(0x74_5afe_1234_5678),
             Shape::new(ShapeKind::GaussianBlur {
                 start: Point::new(0.0, 0.0),
                 end: Point::new(6.0, 4.0),
@@ -2511,7 +2528,8 @@ mod tests {
         let shapes = [Shape::new(ShapeKind::Blur {
             start: Point::new(1.0, 1.0),
             end: Point::new(23.0, 11.0),
-        })];
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678)];
         let expected = render_document(&source, &shapes).unwrap();
         let mut cache = None;
         assert_eq!(
@@ -2558,12 +2576,14 @@ mod tests {
         let mut first = Shape::new(ShapeKind::Blur {
             start: Point::new(2.0, 2.0),
             end: Point::new(40.0, 30.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         first.style.width = 3.0;
         let mut second = Shape::new(ShapeKind::Blur {
             start: Point::new(20.0, 10.0),
             end: Point::new(62.0, 42.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         second.style.width = 5.0;
         let mut cache = None;
         let shapes = vec![first.clone(), second.clone()];
@@ -2608,7 +2628,8 @@ mod tests {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(10.0, 8.0),
             end: Point::new(50.0, 35.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         let shapes = vec![arrow, blur];
         let mut cache = None;
         for split in 0..=shapes.len() {
@@ -2736,7 +2757,7 @@ mod tests {
     }
 
     #[test]
-    fn pixelation_uses_at_least_twelve_pixel_blocks() {
+    fn pixelation_uses_at_least_forty_eight_pixel_blocks() {
         use crate::shapes::Point;
         let mut pixels = Vec::new();
         for y in 0..24 {
@@ -2751,12 +2772,13 @@ mod tests {
             width: 24,
             height: 24,
         };
-        let expected = pixelate_region(&original, region, 12).unwrap();
+        let expected = pixelate_region_seeded(&original, region, 48, 0x74_5afe_1234_5678).unwrap();
         for width in [1.0, 2.0, 3.0, 4.0] {
             let mut blur = Shape::new(ShapeKind::Blur {
                 start: Point::new(0.0, 0.0),
                 end: Point::new(24.0, 24.0),
-            });
+            })
+            .with_pixelation_seed(0x74_5afe_1234_5678);
             blur.style.width = width;
             assert_eq!(render_document(&original, &[blur]).unwrap(), expected);
         }
@@ -2775,10 +2797,11 @@ mod tests {
         let mut blur = Shape::new(ShapeKind::Blur {
             start: Point::new(0.0, 0.0),
             end: Point::new(24.0, 24.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         blur.style.width = 2.0;
         let small = render_document(&original, &[blur.clone()]).unwrap();
-        blur.style.width = 8.0;
+        blur.style.width = 12.0;
         let large = render_document(&original, &[blur]).unwrap();
         assert_ne!(small, large);
     }
@@ -2859,9 +2882,10 @@ mod tests {
         let pixelate = Shape::new(ShapeKind::Blur {
             start: point(0.0, 0.0),
             end: point(12.0, 12.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         let result = render_document(&original, &[marker, pixelate]).unwrap();
-        let pixelated = pixelate_region(
+        let pixelated = pixelate_region_seeded(
             &original,
             PixelateRect {
                 x: 0,
@@ -2870,6 +2894,7 @@ mod tests {
                 height: 12,
             },
             PIXELATE_BLOCK_SIZE,
+            0x74_5afe_1234_5678,
         )
         .unwrap();
         let replaced = (5 * 24 + 5) * 4;

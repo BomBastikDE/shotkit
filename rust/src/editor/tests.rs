@@ -1437,3 +1437,61 @@ fn new_pointer_gesture_makes_prepared_annotation_stale_without_canceling_new_ges
     assert!(e.preview().is_some());
     assert_eq!(e.shapes().len(), 1);
 }
+
+#[test]
+fn pixelation_seed_is_stable_through_preview_commit_and_history() {
+    fn fixed_seed() -> Result<u64, crate::pixelation_random::EntropyUnavailable> {
+        Ok(0x1234_5678_9abc_def0)
+    }
+    let mut editor = EditorController::new();
+    editor.pixelation_seed_source = fixed_seed;
+    editor.set_tool(Tool::Blur);
+    editor.mouse_down(p(1.0, 1.0));
+    editor.mouse_move(p(20.0, 20.0));
+    let preview = editor.preview().expect("preview");
+    assert_eq!(
+        preview.pixelation_seed,
+        Some(crate::shapes::PixelationSeed(0x1234_5678_9abc_def0))
+    );
+    editor.mouse_up(p(20.0, 20.0));
+    assert_eq!(editor.shapes()[0].pixelation_seed, preview.pixelation_seed);
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert_eq!(editor.shapes()[0].pixelation_seed, preview.pixelation_seed);
+    assert!(!format!("{:?}", editor.shapes()[0]).contains("1311768467463790320"));
+}
+
+#[test]
+fn missing_entropy_does_not_create_a_pixelation_shape() {
+    fn no_entropy() -> Result<u64, crate::pixelation_random::EntropyUnavailable> {
+        Err(crate::pixelation_random::EntropyUnavailable)
+    }
+    let mut editor = EditorController::new();
+    editor.pixelation_seed_source = no_entropy;
+    editor.set_tool(Tool::Blur);
+    editor.mouse_down(p(1.0, 1.0));
+    assert!(editor.preview().is_none());
+    assert_eq!(editor.take_error(), Some(DocumentError::RandomUnavailable));
+    editor.mouse_up(p(20.0, 20.0));
+    assert!(editor.shapes().is_empty());
+}
+
+#[test]
+fn separate_pixelation_shapes_receive_separate_seed_values() {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(101);
+    fn next_seed() -> Result<u64, crate::pixelation_random::EntropyUnavailable> {
+        Ok(NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+    let mut editor = EditorController::new();
+    editor.pixelation_seed_source = next_seed;
+    editor.set_tool(Tool::Blur);
+    editor.mouse_down(p(1.0, 1.0));
+    editor.mouse_up(p(20.0, 20.0));
+    editor.mouse_down(p(30.0, 30.0));
+    editor.mouse_up(p(60.0, 60.0));
+    assert_eq!(editor.shapes().len(), 2);
+    assert_ne!(
+        editor.shapes()[0].pixelation_seed,
+        editor.shapes()[1].pixelation_seed
+    );
+}
