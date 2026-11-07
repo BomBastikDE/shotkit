@@ -92,7 +92,6 @@ extern "system" {
     fn GetStockObject(index: i32) -> Hgdiobj;
     fn CreateCompatibleDC(dc: Hdc) -> Hdc;
     fn DeleteDC(dc: Hdc) -> i32;
-    fn CreateCompatibleBitmap(dc: Hdc, width: i32, height: i32) -> Hgdiobj;
     fn CreateDIBSection(
         dc: Hdc,
         info: *const BitmapInfo,
@@ -103,19 +102,6 @@ extern "system" {
     ) -> Hgdiobj;
     #[cfg(test)]
     fn GdiFlush() -> i32;
-    fn StretchBlt(
-        dst: Hdc,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-        src: Hdc,
-        sx: i32,
-        sy: i32,
-        sw: i32,
-        sh: i32,
-        rop: u32,
-    ) -> i32;
 }
 #[link(name = "msimg32")]
 extern "system" {
@@ -138,7 +124,6 @@ const PS_SOLID: i32 = 0;
 const NULL_BRUSH: i32 = 5;
 const OPAQUE: i32 = 2;
 const TRANSPARENT: i32 = 1;
-const SRCCOPY: u32 = 0x00CC0020;
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -347,14 +332,14 @@ unsafe fn translucent_highlight(dc: Hdc, rect: WinRect, color: Color) -> bool {
 /// `dc` and any supplied `source` must be valid GDI device contexts with their
 /// selected bitmaps and other resources alive throughout this call. The caller
 /// must prevent concurrent use, deletion, or changes to those resources. For
-/// Blur, `source` must contain the original image in the shape's coordinates.
+/// Pixelation must use the shared alpha document renderer, not this legacy GDI path.
 /// Flush pending GDI work with `GdiFlush` before accessing DIB pixels directly
 /// after this function returns.
 // SAFETY CONTRACT:
 // Voraussetzung: dc und optionaler source-DC sind gültig und deren Ressourcen bleiben während aller Operationen lebendig.
 // Warum erfüllt bzw. offen: Interne Ressourcen haben Guards; externe Handlelebensdauer und GDI-Synchronisation bleiben Aufruferpflicht.
 // Nachrichten: GDI-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
-pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
+pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, _source: Option<Hdc>) -> bool {
     if dc.is_null() {
         return false;
     }
@@ -396,39 +381,9 @@ pub unsafe fn draw_shape(dc: Hdc, shape: &Shape, source: Option<Hdc>) -> bool {
         | ShapeKind::Spotlight { .. }
         | ShapeKind::Magnifier { .. }
         | ShapeKind::Cursor { .. } => false,
-        ShapeKind::Blur { start, end } => {
-            let r = bounds(*start, *end);
-            let Some(src) = source else {
-                let r = bounds(*start, *end);
-                let _ = line(
-                    dc,
-                    Point::new(r.left as f32, r.top as f32),
-                    Point::new(r.right as f32, r.bottom as f32),
-                );
-                return false;
-            };
-            let (w, h) = (r.right - r.left, r.bottom - r.top);
-            if w < 1 || h < 1 {
-                return true;
-            }
-            let block = (shape.style.width * 3.0).max(6.0) as i32;
-            let (sw, sh) = ((w / block).max(1), (h / block).max(1));
-            let temp = OwnedDc(CreateCompatibleDC(src));
-            if temp.0.is_null() {
-                return false;
-            }
-            let bmp = OwnedObject(CreateCompatibleBitmap(src, sw, sh));
-            if bmp.0.is_null() {
-                return false;
-            }
-            let Some(_selected) = select(temp.0, bmp.0) else {
-                return false;
-            };
-            if StretchBlt(temp.0, 0, 0, sw, sh, src, r.left, r.top, w, h, SRCCOPY) == 0 {
-                return false;
-            }
-            StretchBlt(dc, r.left, r.top, w, h, temp.0, 0, 0, sw, sh, SRCCOPY) != 0
-        }
+        // The old StretchBlt approximation bypasses the hardened pixelation
+        // path. Refuse it so no caller can silently render weaker output.
+        ShapeKind::Blur { .. } => false,
         ShapeKind::Freehand { points } => {
             if points.len() < 2 {
                 return true;

@@ -105,7 +105,7 @@ impl Drop for DibCanvas {
 
 #[cfg(windows)]
 #[test]
-fn gdi_shapes_and_blur_change_dib_pixels_without_a_window_or_display() {
+fn gdi_shapes_draw_and_legacy_pixelation_is_rejected() {
     let background = [24, 32, 48, 255];
     unsafe {
         let cases = [
@@ -155,12 +155,13 @@ fn gdi_shapes_and_blur_change_dib_pixels_without_a_window_or_display() {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(8.0, 8.0),
             end: Point::new(56.0, 56.0),
-        });
-        assert!(draw_shape(destination.dc, &blur, Some(source.dc)));
-        assert_ne!(GdiFlush(), 0, "GdiFlush after blur failed");
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
+        assert!(!draw_shape(destination.dc, &blur, Some(source.dc)));
+        assert_ne!(GdiFlush(), 0, "GdiFlush after rejected blur failed");
         assert!(
-            destination.changed_from(background),
-            "blur did not change destination pixels"
+            !destination.changed_from(background),
+            "unsupported legacy pixelation must leave pixels unchanged"
         );
     }
 }
@@ -189,7 +190,8 @@ fn gdi_marker_alpha_blends_and_missing_blur_source_returns_false() {
         let blur = Shape::new(ShapeKind::Blur {
             start: Point::new(4.0, 4.0),
             end: Point::new(36.0, 36.0),
-        });
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
         assert!(!draw_shape(missing_source.dc, &blur, None));
     }
 }
