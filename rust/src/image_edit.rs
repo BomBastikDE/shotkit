@@ -7,6 +7,7 @@
 //! not a photo-realistic Gaussian blur.
 
 use crate::{
+    alpha_composite::source_over,
     image_handle::ImageHandle,
     import_admission::TrackedImage,
     resource_budget::{AdmissionClass, BudgetError, ResourceBudget},
@@ -76,6 +77,7 @@ pub enum ImageEditError {
     Budget(BudgetError),
     InvalidCrop,
     InvalidShadow,
+    InvalidTornEdge,
     ImageTooLarge,
     AllocationFailed,
 }
@@ -87,6 +89,9 @@ impl fmt::Display for ImageEditError {
                 f.write_str("Der Ausschnitt liegt außerhalb des Bildes oder ist leer")
             }
             Self::InvalidShadow => f.write_str("Ungültige Schlagschatten-Einstellungen"),
+            Self::InvalidTornEdge => f.write_str(
+                "Rissrand nicht möglich: keine Seite gewählt oder das Bild ist dafür zu klein",
+            ),
             Self::ImageTooLarge => f.write_str("Das bearbeitete Bild ist zu groß"),
             Self::AllocationFailed => {
                 f.write_str("Nicht genügend Speicher für das bearbeitete Bild")
@@ -401,6 +406,292 @@ fn render_frame(
 /// Reserve the complete output before writing any pixels. The caller must not
 /// grow beyond `byte_len`, so allocation failure stays on the Result path even
 /// when release builds abort on panic. The source image is never modified.
+/// Image sides that receive a torn edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TornSides {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
+}
+
+impl TornSides {
+    pub const BOTTOM: Self = Self {
+        top: false,
+        right: false,
+        bottom: true,
+        left: false,
+    };
+    pub const TOP_AND_BOTTOM: Self = Self {
+        top: true,
+        right: false,
+        bottom: true,
+        left: false,
+    };
+    pub const LEFT_AND_RIGHT: Self = Self {
+        top: false,
+        right: true,
+        bottom: false,
+        left: true,
+    };
+    pub const ALL: Self = Self {
+        top: true,
+        right: true,
+        bottom: true,
+        left: true,
+    };
+
+    fn any(self) -> bool {
+        self.top || self.right || self.bottom || self.left
+    }
+}
+
+/// A "torn paper" edge on selected sides, optionally with a shadow that
+/// follows the torn outline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TornEdgeOptions {
+    pub sides: TornSides,
+    /// Maximum depth of the tear, in pixels.
+    pub depth: usize,
+    pub shadow: Option<ShadowOptions>,
+}
+
+/// Maximum tear depth; deeper tears would remove meaningful content.
+pub const MAX_TORN_DEPTH: usize = 64;
+/// Distance between the random knots of the torn outline, in pixels.
+const TORN_KNOT_SPACING: usize = 9;
+
+/// Apply a torn edge without modifying `source`. The torn band becomes
+/// transparent with an anti-aliased outline; the result is deterministic, so
+/// preview, undo and export always agree. Pixels deeper than `depth` from a
+/// torn side keep their exact BGRA values.
+pub fn add_torn_edge(source: &Image, options: TornEdgeOptions) -> Result<Image, ImageEditError> {
+    let layout = torn_layout(source, options)?;
+    let pixels = reserve_pixels(layout.byte_len)?;
+    render_torn_edge(source, options, layout, pixels)
+}
+
+/// Budgeted variant of [`add_torn_edge`]; same admission rules as
+/// [`add_frame_with_budget`].
+pub fn add_torn_edge_with_budget(
+    source: &Image,
+    options: TornEdgeOptions,
+    budget: &ResourceBudget,
+) -> Result<ImageHandle, ImageEditError> {
+    add_torn_edge_with_budget_using(source, options, budget, reserve_pixels)
+}
+
+fn add_torn_edge_with_budget_using(
+    source: &Image,
+    options: TornEdgeOptions,
+    budget: &ResourceBudget,
+    allocate: impl FnOnce(usize) -> Result<Vec<u8>, ImageEditError>,
+) -> Result<ImageHandle, ImageEditError> {
+    let layout = torn_layout(source, options)?;
+    let mut lease = budget
+        .try_acquire(layout.byte_len, AdmissionClass::Reserved)
+        .map_err(ImageEditError::Budget)?;
+    let pixels = allocate(layout.byte_len)?;
+    lease
+        .try_resize(pixels.capacity())
+        .map_err(ImageEditError::Budget)?;
+    let image = render_torn_edge(source, options, layout, pixels)?;
+    Ok(ImageHandle::from_imported(Arc::new(
+        TrackedImage::from_reserved(image, lease),
+    )))
+}
+
+/// The frame options with the same output geometry as a torn edge: no frame,
+/// the torn edge's shadow. Documents use it to move annotations consistently.
+pub fn torn_edge_frame_equivalent(options: TornEdgeOptions) -> FrameOptions {
+    FrameOptions {
+        width: 0,
+        color: Color::rgba(0, 0, 0, 0),
+        shadow: options.shadow,
+    }
+}
+
+fn torn_layout(source: &Image, options: TornEdgeOptions) -> Result<FrameLayout, ImageEditError> {
+    validate_source(source)?;
+    let minimum = options
+        .depth
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(1))
+        .ok_or(ImageEditError::InvalidTornEdge)?;
+    let vertical = options.sides.top || options.sides.bottom;
+    let horizontal = options.sides.left || options.sides.right;
+    if !options.sides.any()
+        || options.depth == 0
+        || options.depth > MAX_TORN_DEPTH
+        || (vertical && source.height < minimum)
+        || (horizontal && source.width < minimum)
+    {
+        return Err(ImageEditError::InvalidTornEdge);
+    }
+    frame_layout(source, torn_edge_frame_equivalent(options))
+}
+
+fn splitmix(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+/// Depth of the tear at position `t` along one side: linear between
+/// pseudo-random knots, always between 35 % and 100 % of `depth`.
+fn tear_depth(side: u64, t: f32, depth: usize) -> f32 {
+    let knot = |k: u64| -> f32 {
+        let unit =
+            (splitmix(side.wrapping_mul(0x1000_0001) ^ k) >> 40) as f32 / (1u64 << 24) as f32;
+        depth as f32 * (0.35 + 0.65 * unit)
+    };
+    let position = t.max(0.0) / TORN_KNOT_SPACING as f32;
+    let k = position.floor();
+    let fraction = position - k;
+    let k = k as u64;
+    knot(k) * (1.0 - fraction) + knot(k + 1) * fraction
+}
+
+/// Coverage (0..=1) of the pixel centre (x, y) inside the torn outline.
+fn torn_coverage(x: usize, y: usize, width: usize, height: usize, options: TornEdgeOptions) -> f32 {
+    let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+    let reach = options.depth as f32 + 1.0;
+    let mut coverage = 1.0_f32;
+    let mut side = |enabled: bool, id: u64, distance: f32, along: f32| {
+        if enabled && distance < reach {
+            let inside = distance - tear_depth(id, along, options.depth) + 0.5;
+            coverage = coverage.min(inside.clamp(0.0, 1.0));
+        }
+    };
+    side(options.sides.top, 1, cy, cx);
+    side(options.sides.right, 2, width as f32 - cx, cy);
+    side(options.sides.bottom, 3, height as f32 - cy, cx);
+    side(options.sides.left, 4, cx, cy);
+    coverage
+}
+
+/// One straight-alpha source pixel after the torn mask.
+fn torn_pixel(source: &Image, x: usize, y: usize, options: TornEdgeOptions) -> [u8; 4] {
+    let offset = (y * source.width + x) * 4;
+    let mut pixel: [u8; 4] = source.pixels[offset..offset + 4]
+        .try_into()
+        .expect("four-byte pixel");
+    let coverage = torn_coverage(x, y, source.width, source.height, options);
+    if coverage < 1.0 {
+        pixel[3] = (f32::from(pixel[3]) * coverage).round() as u8;
+    }
+    pixel
+}
+
+// Geometry and byte products were checked by torn_layout. Besides the admitted
+// output, only one row/column of blur sums is allocated.
+fn render_torn_edge(
+    source: &Image,
+    options: TornEdgeOptions,
+    layout: FrameLayout,
+    mut pixels: Vec<u8>,
+) -> Result<Image, ImageEditError> {
+    let FrameLayout {
+        radius,
+        content_x,
+        content_y,
+        out_width,
+        out_height,
+        byte_len,
+        ..
+    } = layout;
+    if !pixels.is_empty() || pixels.capacity() < byte_len {
+        return Err(ImageEditError::AllocationFailed);
+    }
+    pixels.resize(byte_len, 0);
+    if let Some(shadow) = options.shadow.filter(|s| s.opacity > 0) {
+        // 1. Shadow silhouette: the torn alpha, shifted by the shadow offset,
+        //    written into the (still empty) output alpha channel.
+        let sx = content_x as i64 + i64::from(shadow.offset_x);
+        let sy = content_y as i64 + i64::from(shadow.offset_y);
+        for y in 0..source.height {
+            for x in 0..source.width {
+                let alpha = torn_pixel(source, x, y, options)[3];
+                let (ox, oy) = (sx + x as i64, sy + y as i64);
+                // frame_layout reserved room for offset and radius on all sides.
+                let offset = (oy as usize * out_width + ox as usize) * 4;
+                pixels[offset + 3] = alpha;
+            }
+        }
+        // 2. Separable box blur of the alpha channel, then shadow opacity.
+        if radius > 0 {
+            let mut line = vec![0u32; out_width.max(out_height)];
+            box_blur_alpha(&mut pixels, out_width, out_height, radius, &mut line, true);
+            box_blur_alpha(&mut pixels, out_width, out_height, radius, &mut line, false);
+        }
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            pixel[3] = ((u32::from(pixel[3]) * u32::from(shadow.opacity) + 127) / 255) as u8;
+        }
+    }
+    // 3. The torn image over the (black) shadow.
+    for y in 0..source.height {
+        for x in 0..source.width {
+            let pixel = torn_pixel(source, x, y, options);
+            let offset = ((content_y + y) * out_width + content_x + x) * 4;
+            let below: [u8; 4] = pixels[offset..offset + 4]
+                .try_into()
+                .expect("four-byte pixel");
+            let result = if below[3] == 0 {
+                pixel
+            } else {
+                source_over(below, pixel, 255)
+            };
+            pixels[offset..offset + 4].copy_from_slice(&result);
+        }
+    }
+    Ok(Image {
+        width: out_width,
+        height: out_height,
+        pixels,
+    })
+}
+
+/// Box blur of the alpha channel along rows (`horizontal`) or columns, with
+/// zero outside the image. `line` must hold at least one row or column.
+fn box_blur_alpha(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    radius: usize,
+    line: &mut [u32],
+    horizontal: bool,
+) {
+    let (lines, length) = if horizontal {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let index = |line_no: usize, i: usize| -> usize {
+        if horizontal {
+            (line_no * width + i) * 4 + 3
+        } else {
+            (i * width + line_no) * 4 + 3
+        }
+    };
+    let kernel = (2 * radius + 1) as u32;
+    for line_no in 0..lines {
+        for (i, value) in line.iter_mut().take(length).enumerate() {
+            *value = u32::from(pixels[index(line_no, i)]);
+        }
+        let mut sum: u32 = line[..length.min(radius + 1)].iter().sum();
+        for i in 0..length {
+            pixels[index(line_no, i)] = ((sum + kernel / 2) / kernel) as u8;
+            if i + radius + 1 < length {
+                sum += line[i + radius + 1];
+            }
+            if i >= radius {
+                sum -= line[i - radius];
+            }
+        }
+    }
+}
+
 fn reserve_pixels(byte_len: usize) -> Result<Vec<u8>, ImageEditError> {
     let mut pixels = Vec::new();
     pixels
@@ -867,5 +1158,173 @@ mod tests {
             ),
             Err(ImageEditError::InvalidShadow)
         );
+    }
+
+    fn torn_fixture(width: usize, height: usize) -> Image {
+        let mut pixels = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            for x in 0..width {
+                pixels.extend_from_slice(&[(x * 7) as u8, (y * 5) as u8, ((x + y) * 3) as u8, 255]);
+            }
+        }
+        Image::new(width, height, pixels).unwrap()
+    }
+
+    fn torn(sides: TornSides, shadow: Option<ShadowOptions>) -> TornEdgeOptions {
+        TornEdgeOptions {
+            sides,
+            depth: 12,
+            shadow,
+        }
+    }
+
+    fn px(image: &Image, x: usize, y: usize) -> [u8; 4] {
+        let o = (y * image.width + x) * 4;
+        image.pixels[o..o + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn torn_bottom_edge_changes_only_the_bottom_band() {
+        let source = torn_fixture(60, 50);
+        let output = add_torn_edge(&source, torn(TornSides::BOTTOM, None)).unwrap();
+        assert_eq!((output.width, output.height), (60, 50));
+        // Everything more than `depth` above the bottom keeps its exact bytes.
+        let band_start = 50 - 13;
+        assert_eq!(
+            &output.pixels[..band_start * 60 * 4],
+            &source.pixels[..band_start * 60 * 4]
+        );
+        // The bottom row lies outside every tear (minimum depth 35 %).
+        for x in 0..60 {
+            assert_eq!(px(&output, x, 49)[3], 0, "bottom row x={x}");
+        }
+        // Colour channels are never altered, only alpha.
+        for y in band_start..50 {
+            for x in 0..60 {
+                assert_eq!(&px(&output, x, y)[..3], &px(&source, x, y)[..3]);
+            }
+        }
+        // The outline is irregular: opaque and transparent pixels share rows.
+        let alphas: Vec<u8> = (0..60).map(|x| px(&output, x, 50 - 6)[3]).collect();
+        assert!(alphas.contains(&255) || alphas.contains(&0));
+        let band: Vec<u8> = (band_start..50)
+            .flat_map(|y| (0..60).map(move |x| (x, y)))
+            .map(|(x, y)| px(&output, x, y)[3])
+            .collect();
+        assert!(band.contains(&255) && band.contains(&0));
+        assert!(
+            band.iter().any(|a| *a > 0 && *a < 255),
+            "anti-aliased outline"
+        );
+    }
+
+    #[test]
+    fn torn_edge_is_deterministic_and_respects_the_chosen_sides() {
+        let source = torn_fixture(48, 48);
+        for sides in [
+            TornSides::BOTTOM,
+            TornSides::TOP_AND_BOTTOM,
+            TornSides::LEFT_AND_RIGHT,
+            TornSides::ALL,
+        ] {
+            let first = add_torn_edge(&source, torn(sides, None)).unwrap();
+            assert_eq!(first, add_torn_edge(&source, torn(sides, None)).unwrap());
+            // Centre untouched; a torn side's outermost line is transparent,
+            // an untouched side's outermost line keeps its pixels.
+            assert_eq!(px(&first, 24, 24), px(&source, 24, 24));
+            let edge = |x: usize, y: usize| px(&first, x, y)[3];
+            assert_eq!(edge(24, 0) == 0, sides.top);
+            assert_eq!(edge(24, 47) == 0, sides.bottom);
+            assert_eq!(edge(0, 24) == 0, sides.left);
+            assert_eq!(edge(47, 24) == 0, sides.right);
+        }
+    }
+
+    #[test]
+    fn torn_edge_rejects_no_side_bad_depth_and_too_small_images() {
+        let source = torn_fixture(30, 30);
+        let no_side = TornEdgeOptions {
+            sides: TornSides::default(),
+            depth: 12,
+            shadow: None,
+        };
+        assert_eq!(
+            add_torn_edge(&source, no_side),
+            Err(ImageEditError::InvalidTornEdge)
+        );
+        for depth in [0, MAX_TORN_DEPTH + 1] {
+            let options = TornEdgeOptions {
+                depth,
+                ..torn(TornSides::BOTTOM, None)
+            };
+            assert_eq!(
+                add_torn_edge(&source, options),
+                Err(ImageEditError::InvalidTornEdge)
+            );
+        }
+        // 2 * depth + 1 = 25 rows are needed for a top/bottom tear.
+        let short = torn_fixture(100, 24);
+        assert_eq!(
+            add_torn_edge(&short, torn(TornSides::BOTTOM, None)),
+            Err(ImageEditError::InvalidTornEdge)
+        );
+        // A left/right tear only needs the width.
+        assert!(add_torn_edge(&short, torn(TornSides::LEFT_AND_RIGHT, None)).is_ok());
+        assert!(add_torn_edge(&torn_fixture(25, 3), torn(TornSides::LEFT_AND_RIGHT, None)).is_ok());
+    }
+
+    #[test]
+    fn torn_edge_shadow_follows_the_outline_and_keeps_the_content() {
+        let source = torn_fixture(60, 50);
+        let shadow = ShadowOptions {
+            offset_x: 6,
+            offset_y: 6,
+            blur_radius: 10,
+            opacity: 112,
+        };
+        let plain = add_torn_edge(&source, torn(TornSides::BOTTOM, None)).unwrap();
+        let output = add_torn_edge(&source, torn(TornSides::BOTTOM, Some(shadow))).unwrap();
+        // Same geometry as a frame of width zero with this shadow.
+        let frame = add_frame(
+            &source,
+            torn_edge_frame_equivalent(torn(TornSides::BOTTOM, Some(shadow))),
+        )
+        .unwrap();
+        assert_eq!((output.width, output.height), (frame.width, frame.height));
+        assert_eq!((output.width, output.height), (60 + 10 + 16, 50 + 10 + 16));
+        // Opaque content is unchanged at the content offset (10, 10).
+        for (x, y) in [(0, 0), (30, 20), (59, 30)] {
+            assert_eq!(px(&output, 10 + x, 10 + y), px(&plain, x, y));
+        }
+        // The shadow is black and visible right of the image, but not far
+        // above-left of it.
+        let right = px(&output, 10 + 60 + 3, 10 + 25);
+        assert_eq!(&right[..3], &[0, 0, 0]);
+        assert!(right[3] > 0 && right[3] <= 112);
+        assert_eq!(px(&output, 0, 0)[3], 0);
+        // Below the torn bottom the shadow is torn too: along the bottom
+        // shadow band some columns are darker than others.
+        let row = 10 + 50 + 2;
+        let alphas: Vec<u8> = (15..60).map(|x| px(&output, x, row)[3]).collect();
+        let (min, max) = (alphas.iter().min().unwrap(), alphas.iter().max().unwrap());
+        assert!(max > min, "shadow follows the irregular outline");
+    }
+
+    #[test]
+    fn budgeted_torn_edge_matches_legacy_and_releases_on_drop() {
+        let source = torn_fixture(40, 40);
+        let options = torn(TornSides::ALL, None);
+        let expected = add_torn_edge(&source, options).unwrap();
+        let bytes = expected.pixels.len();
+        let budget = ResourceBudget::new(bytes, 0).unwrap();
+        let output = add_torn_edge_with_budget(&source, options, &budget).unwrap();
+        assert_eq!(output.image(), &expected);
+        assert!(budget.snapshot().used_bytes >= bytes);
+        assert!(matches!(
+            add_torn_edge_with_budget(&source, options, &budget),
+            Err(ImageEditError::Budget(_))
+        ));
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, 0);
     }
 }

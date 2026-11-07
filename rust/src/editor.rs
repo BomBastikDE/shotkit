@@ -372,6 +372,14 @@ impl EditorController {
         self.cancel_drag();
         self.document.add_frame_with_budget(options, budget)
     }
+    pub fn add_torn_edge_with_budget(
+        &mut self,
+        options: crate::image_edit::TornEdgeOptions,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.add_torn_edge_with_budget(options, budget)
+    }
     pub fn stamp_kind(&self) -> StampKind {
         self.stamp_kind
     }

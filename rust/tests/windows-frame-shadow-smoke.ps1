@@ -160,6 +160,39 @@ try{
  $restored=Wait-Png {param($im)$im.Width -eq $fixture.Width -and $im.Height -eq $fixture.Height} 'Undo restoring fixture dimensions'
  Assert-Fixture $restored 'Undo-restored PNG'
  Write-Host 'PASS: native combined frame/shadow menus applied and saved; Undo restored every fixture pixel.'
+
+ # Torn edge (#98), left and right without shadow. The fixture's semitransparent
+ # pixel at (31,23) lies on the right edge and must become fully transparent.
+ Click-EditorButtonAsync 0x5123 'Rahmen / Schatten / Leinwand…'
+ $frameMenu=Popup 'frame menu for torn edge';Menu-Item $frameMenu 5 'Rissrand…' 'torn edge action'
+ $sideMenu=Popup 'torn edge side menu';Menu-Item $sideMenu 3 'Rissrand links und rechts' 'left and right torn edge'
+ $shadowMenu=Popup 'torn edge shadow menu';Menu-Item $shadowMenu 2 'Ohne Schatten' 'torn edge without shadow'
+ Start-Sleep -Milliseconds 150
+ Save-Editor
+ $torn=Wait-Png {param($im)$im.Width -eq 32 -and $im.Height -eq 24 -and $im.Pixels[23*32+31].A -eq 0} 'torn left/right edge output'
+ for($y=0;$y -lt 24;$y++){foreach($x in @(0,31)){if($torn.Pixels[$y*32+$x].A -ne 0){throw "TORN_EDGE_NOT_TRANSPARENT at ($x,$y): $($torn.Pixels[$y*32+$x])"}}}
+ for($i=0;$i -lt $fixture.Pixels.Length;$i++){if($fixture.Pixels[$i].A -eq 0 -and $torn.Pixels[$i].A -ne 0){throw "TORN_EDGE_ADDED_ALPHA at index $i."}}
+ Write-Host 'OBSERVED: torn left/right edge made both outer columns transparent, including the semitransparent edge pixel.'
+ Click-EditorButton 0x5112 'Zurück';Save-Editor
+ $restored=Wait-Png {param($im)$im.Width -eq $fixture.Width -and $im.Pixels[23*32+31].A -ne 0} 'Undo after torn edge'
+ Assert-Fixture $restored 'Undo-restored PNG after torn edge'
+
+ # A bottom tear needs 2*12+1 rows; the 24-row fixture must be refused with a
+ # German message and an unchanged document.
+ Click-EditorButtonAsync 0x5123 'Rahmen / Schatten / Leinwand…'
+ $frameMenu=Popup 'frame menu for refused torn edge';Menu-Item $frameMenu 5 'Rissrand…' 'torn edge action (refused)'
+ $sideMenu=Popup 'torn edge side menu (refused)';Menu-Item $sideMenu 1 'Rissrand unten' 'bottom torn edge on a 24-row image'
+ $shadowMenu=Popup 'torn edge shadow menu (refused)';Menu-Item $shadowMenu 1 'Mit Schatten' 'torn edge with shadow (refused)'
+ $refusal=Wait-For {Owned-Dialogs|Select-Object -First 1} 'torn edge refusal message' 10
+ $text=([ShotKitFrameShadowSmoke.N]::Buttons($refusal.H)|ForEach-Object{$_.Text}) -join ' '
+ $close=@([ShotKitFrameShadowSmoke.N]::Buttons($refusal.H)|Where-Object{$_.Visible}) | Select-Object -First 1
+ if($null -eq $close){throw 'TORN_REFUSAL_BUTTON_MISSING.'}
+ [ShotKitFrameShadowSmoke.N]::ClickButton($close.H)
+ [void](Wait-For {if(-not [ShotKitFrameShadowSmoke.N]::IsWindow($refusal.H)){return $true};return $null} 'refusal message close' 8)
+ Save-Editor
+ Start-Sleep -Milliseconds 300
+ Assert-Fixture (Read-Png $fixturePath) 'PNG after refused torn edge'
+ Write-Host 'PASS: torn edge applied left/right without shadow, Undo restored the fixture, and a too-small bottom tear was refused without changing the image.'
 }catch{$failure=$_}
 finally{
  if($null -ne $process -and -not $process.HasExited){try{foreach($w in [ShotKitFrameShadowSmoke.N]::Windows($process.Id)){[void][ShotKitFrameShadowSmoke.N]::PostMessageW($w.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)};if(-not $process.WaitForExit(5000)){$process.Kill();[void]$process.WaitForExit(5000)}}catch{$cleanupFailure=$_.Exception.Message}}

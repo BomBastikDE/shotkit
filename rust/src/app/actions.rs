@@ -106,17 +106,29 @@ pub(super) unsafe fn choose_number(h: H, values: &[u32]) -> Option<f32> {
 // Warum erfüllt bzw. offen: Das Menü ist lokal und das Ergebnis wird auf gültige IDs begrenzt.
 // Nachrichten: SetForegroundWindow und TrackPopupMenu können Nachrichten auslösen.
 pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
+    choose_from_menu(
+        h,
+        &[
+            (1, "Rahmen hinzufügen"),
+            (2, "Schlagschatten hinzufügen"),
+            (3, "Rahmen und Schlagschatten hinzufügen"),
+            (4, "Leinwandgröße ändern…"),
+            (5, "Rissrand…"),
+        ],
+    )
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h bleibt als Menübesitzer gültig.
+// Warum erfüllt bzw. offen: Das Menü ist lokal und das Ergebnis wird auf die übergebenen IDs begrenzt.
+// Nachrichten: SetForegroundWindow und TrackPopupMenu können Nachrichten auslösen.
+unsafe fn choose_from_menu(h: H, items: &[(u32, &str)]) -> Option<u32> {
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return None;
     }
-    for (id, label) in [
-        (1, "Rahmen hinzufügen"),
-        (2, "Schlagschatten hinzufügen"),
-        (3, "Rahmen und Schlagschatten hinzufügen"),
-        (4, "Leinwandgröße ändern…"),
-    ] {
-        AppendMenuW(menu, 0, id, wide(label).as_ptr());
+    for (id, label) in items {
+        AppendMenuW(menu, 0, *id as usize, wide(label).as_ptr());
     }
     let mut p = Point { x: 0, y: 0 };
     if GetCursorPos(&mut p) == 0 {
@@ -126,7 +138,10 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
     SetForegroundWindow(h);
     let selected = TrackPopupMenu(menu, 0x0100 | 0x0002, p.x, p.y, 0, h, std::ptr::null());
     DestroyMenu(menu);
-    (1..=4).contains(&selected).then_some(selected)
+    items
+        .iter()
+        .any(|(id, _)| *id == selected)
+        .then_some(selected)
 }
 
 // SAFETY CONTRACT:
@@ -160,15 +175,73 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
             opacity: 112,
         }),
     };
+    apply_base_image_edit(h, "Rahmen/Schlagschatten fehlgeschlagen", |h| {
+        editor(h)
+            .add_frame_with_budget(options, &shared_image_budget())
+            .map_err(|error| error.to_string())
+    });
+}
+
+/// Rissrand (#98): choose sides and shadow, then apply as one undoable edit.
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes Editorfenster mit Bild auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Menüergebnisse sind Werte; der Editorzugriff erfolgt erst danach.
+// Nachrichten: Menüs und die gemeinsame Übernahme können Nachrichten auslösen.
+pub(super) unsafe fn apply_torn_edge(h: H) {
+    use shotkit::image_edit::{TornEdgeOptions, TornSides};
+    let Some(side) = choose_from_menu(
+        h,
+        &[
+            (1, "Rissrand unten"),
+            (2, "Rissrand oben und unten"),
+            (3, "Rissrand links und rechts"),
+            (4, "Rissrand ringsum"),
+        ],
+    ) else {
+        return;
+    };
+    let sides = match side {
+        1 => TornSides::BOTTOM,
+        2 => TornSides::TOP_AND_BOTTOM,
+        3 => TornSides::LEFT_AND_RIGHT,
+        _ => TornSides::ALL,
+    };
+    let Some(shadow) = choose_from_menu(h, &[(1, "Mit Schatten"), (2, "Ohne Schatten")]) else {
+        return;
+    };
+    let options = TornEdgeOptions {
+        sides,
+        depth: 12,
+        shadow: (shadow == 1).then_some(ShadowOptions {
+            offset_x: 6,
+            offset_y: 6,
+            blur_radius: 10,
+            opacity: 112,
+        }),
+    };
+    apply_base_image_edit(h, "Rissrand fehlgeschlagen", |h| {
+        editor(h)
+            .add_torn_edge_with_budget(options, &shared_image_budget())
+            .map_err(|error| error.to_string())
+    });
+}
+
+/// Stage a base-image edit (frame, shadow, torn edge), confirm history
+/// trimming, swap the bitmap and reset the view; report failures in German.
+// SAFETY CONTRACT:
+// Voraussetzung: h und der Editor erfüllen den Zustandsvertrag auch nach Dialogen.
+// Warum erfüllt bzw. offen: Bild-Arc ist eigenständig; Bitmapfehler werden behandelt.
+// Nachrichten: Dialoge und ReleaseCapture können Nachrichten auslösen.
+unsafe fn apply_base_image_edit(h: H, failure: &str, edit: impl FnOnce(H) -> Result<(), String>) {
     cancel_gesture(h);
     let result = (|| -> Result<(), String> {
         editor(h)
             .document_mut()
             .begin_edit()
             .map_err(|e| e.to_string())?;
-        if let Err(error) = editor(h).add_frame_with_budget(options, &shared_image_budget()) {
+        if let Err(error) = edit(h) {
             let _ = editor(h).document_mut().abort_edit();
-            return Err(error.to_string());
+            return Err(error);
         }
         let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
@@ -200,7 +273,7 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
     if let Err(error) = result {
         MessageBoxW(
             h,
-            wide(&format!("Rahmen/Schlagschatten fehlgeschlagen: {error}")).as_ptr(),
+            wide(&format!("{failure}: {error}")).as_ptr(),
             wide("ShotKit").as_ptr(),
             0x10,
         );
@@ -543,10 +616,10 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                         0x30,
                     );
                 } else if let Some(action) = choose_frame_action(h) {
-                    if action == 4 {
-                        canvas::resize(h);
-                    } else {
-                        apply_frame(h, action);
+                    match action {
+                        4 => canvas::resize(h),
+                        5 => apply_torn_edge(h),
+                        _ => apply_frame(h, action),
                     }
                 }
             }
