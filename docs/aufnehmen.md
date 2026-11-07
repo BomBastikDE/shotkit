@@ -53,6 +53,18 @@ kehrt ShotKit zur normalen Auswahl zurück.
   einer Monitoränderung nicht mehr vollständig auf einem Bildschirm, meldet ShotKit das.
 - **Alle Bildschirme aufnehmen** und **Aktives Fenster aufnehmen** – wie die entsprechenden Tastenkürzel.
 
+## Mauszeiger mit aufnehmen
+
+Ist im Tray-Menü unter **Einstellungen** die Option **Mauszeiger mit aufnehmen** eingeschaltet, übernimmt ShotKit den
+Mauszeiger in jede Aufnahme (alle Aufnahmearten außer der Scroll-Aufnahme), zum Beispiel für Anleitungen, die zeigen,
+wohin geklickt wird.
+
+- Im Editor ist der Zeiger ein **eigenes Objekt**: Mit dem Auswahlwerkzeug lässt er sich verschieben oder mit
+  <kbd>Entf</kbd> löschen. Er gehört zur Aufnahme selbst; „Rückgängig“ entfernt ihn deshalb nicht.
+- Automatisch gespeicherte und kopierte Bilder enthalten den Zeiger bereits.
+- Liegt der Zeiger außerhalb des aufgenommenen Bereichs oder zeigt Windows gerade keinen an, enthält die Aufnahme keinen.
+- Standardmäßig ist die Option **aus**.
+
 ## Scroll-Aufnahme
 
 Für Webseiten und Dokumente, die länger oder breiter als der Bildschirm sind.
