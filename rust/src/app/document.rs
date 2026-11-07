@@ -393,16 +393,13 @@ pub(super) unsafe fn confirm_replace(h: H) -> bool {
 // Warum erfüllt: Aufruf aus der eigenen Ereignisbehandlung; Clipboard-Ressourcen werden im Clipboard-Modul verwaltet.
 // Nachrichten: GetClipboardData und Fensteranlage können reentrieren; das eingelesene Bild ist besitzend und kein Editor-Borrow wird gehalten.
 pub(super) unsafe fn paste_image(h: H) {
+    let _modal = ModalGuard::new(h);
     let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
     };
-    match clipboard::read_image(h) {
-        Ok(Some(image)) => {
-            if let Err(e) = display_image(h, image) {
-                MessageBoxW(h, wide(&e).as_ptr(), wide("Zwischenablage").as_ptr(), 0x10);
-            }
-        }
-        Ok(None) => {
+    match paste_budgeted_image(h) {
+        Ok(true) => {}
+        Ok(false) => {
             MessageBoxW(
                 h,
                 wide("Die Zwischenablage enthält kein Bild.").as_ptr(),

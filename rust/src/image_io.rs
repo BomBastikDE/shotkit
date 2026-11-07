@@ -16,6 +16,44 @@ const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 // Policy allowance, not a measured or enforced bound on external codec memory.
 const IMPORT_WORKSPACE_ALLOWANCE: usize = 16 * 1024 * 1024;
 
+/// A successful decode owns its pixels even if final capacity accounting fails.
+/// Callers must retain this value through admission/recovery instead of turning
+/// `post_decode_error` into an error that drops the image. Image is declared
+/// before lease so pixels are destroyed before their accounting is released.
+#[derive(Debug)]
+#[must_use = "retain the decoded image and lease through handoff or explicit recovery"]
+pub struct BudgetedImage {
+    pub image: Image,
+    pub lease: BudgetLease,
+    pub post_decode_error: Option<String>,
+}
+
+impl BudgetedImage {
+    /// The caller has already reserved before decoding/allocation. Finalize
+    /// against actual retained capacity, preserving both values on rejection.
+    /// An exceptional rejected growth keeps the original, insufficient lease;
+    /// it must go to recovery, not be described as fully accounted pixels.
+    pub fn from_decoded(image: Image, mut lease: BudgetLease) -> Self {
+        let post_decode_error = lease
+            .try_resize(image.pixels.capacity())
+            .err()
+            .map(|error| format!("Bildspeicher konnte nicht vollständig verbucht werden: {error}"));
+        Self {
+            image,
+            lease,
+            post_decode_error,
+        }
+    }
+
+    /// Record a cleanup failure without giving up a successful decode.
+    pub fn retain_error(&mut self, message: String) {
+        self.post_decode_error = Some(match self.post_decode_error.take() {
+            Some(previous) => format!("{previous}; {message}"),
+            None => message,
+        });
+    }
+}
+
 fn import_budget_error(error: BudgetError) -> String {
     format!("Das Bild kann mit dem verfügbaren Importbudget nicht geöffnet werden. Schließen Sie andere importierte Bilder und versuchen Sie es erneut. Bereits geöffnete Bilder bleiben erhalten. ({error})")
 }
@@ -72,6 +110,21 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     decode_reader(reader)
+}
+
+/// Decode borrowed encoded bytes using the same peak policy as file imports.
+/// No complete encoded-data copy is made. The caller keeps the source stable
+/// until return (for clipboard memory, hold its native lock). An error means
+/// no successful Image was produced; post-decode errors travel with ownership.
+pub fn decode_with_budget(data: &[u8], budget: &ResourceBudget) -> Result<BudgetedImage, String> {
+    let mut lease = budget
+        .try_acquire(IMPORT_WORKSPACE_ALLOWANCE, AdmissionClass::Normal)
+        .map_err(import_budget_error)?;
+    let reader = ImageReader::new(BufReader::new(Cursor::new(data)))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let image = decode_reader_admitted(reader, Some(&mut lease))?;
+    Ok(BudgetedImage::from_decoded(image, lease))
 }
 
 /// Decode a file without retaining a second, complete copy of its encoded bytes.
@@ -755,6 +808,51 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), bytes.into_inner());
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn borrowed_budgeted_decode_preserves_png_pixels_alpha_and_retained_capacity() {
+        let original = Image::new(2, 1, vec![17, 31, 53, 0, 71, 97, 127, 128]).unwrap();
+        let bytes = encode(&original, ImageFormat::Png).unwrap();
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 1024).unwrap();
+        let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+        let decoded = decode_with_budget(&bytes, &budget).unwrap();
+        assert_eq!(decoded.image, original);
+        assert!(decoded.post_decode_error.is_none());
+        assert_eq!(decoded.lease.class(), AdmissionClass::Normal);
+        assert_eq!(decoded.lease.bytes(), decoded.image.pixels.capacity());
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            37 + decoded.image.pixels.capacity()
+        );
+        drop(decoded);
+        assert_eq!(budget.snapshot().used_bytes, 37);
+        drop(existing);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        assert_eq!(decode(&bytes).unwrap(), original); // borrowed input stayed intact
+    }
+
+    #[test]
+    fn borrowed_budgeted_decode_rejects_initial_and_peak_admission_without_touching_existing_lease() {
+        let bytes = encode(&sample(), ImageFormat::Png).unwrap();
+        for ceiling in [IMPORT_WORKSPACE_ALLOWANCE - 1, IMPORT_WORKSPACE_ALLOWANCE] {
+            let budget = ResourceBudget::new(ceiling + 37, 0).unwrap();
+            let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+            let error = decode_with_budget(&bytes, &budget).unwrap_err();
+            assert!(error.contains("cannot reserve"), "{error}");
+            assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+        }
+    }
+
+    #[test]
+    fn borrowed_budgeted_decode_errors_release_workspace() {
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        assert!(decode_with_budget(b"invalid header", &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        let mut bytes = encode(&sample(), ImageFormat::Png).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        assert!(decode_with_budget(&bytes, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, 0);
     }
 
     #[test]

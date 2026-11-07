@@ -382,6 +382,29 @@ pub fn encode_legacy_dib(image: &Image) -> Result<Vec<u8>, String> {
 /// Supports 24-bit BI_RGB and 32-bit BI_RGB/BI_BITFIELDS/BI_ALPHABITFIELDS;
 /// unsupported compression or profiles are rejected for the caller's fallback.
 pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
+    decode_dib_admitted(bytes, require_v5, None)
+}
+
+/// Budget the output before allocation, including actual Vec capacity before
+/// converting source pixels. A pre-conversion refusal leaves no acquired image.
+/// Existing unbudgeted callers retain the same layout/alpha/fallback behavior.
+pub fn decode_dib_with_budget(
+    bytes: &[u8],
+    require_v5: bool,
+    budget: &crate::resource_budget::ResourceBudget,
+) -> Result<image_io::BudgetedImage, String> {
+    let mut lease = budget
+        .try_acquire(0, crate::resource_budget::AdmissionClass::Normal)
+        .map_err(|error| error.to_string())?;
+    let image = decode_dib_admitted(bytes, require_v5, Some(&mut lease))?;
+    Ok(image_io::BudgetedImage::from_decoded(image, lease))
+}
+
+fn decode_dib_admitted(
+    bytes: &[u8],
+    require_v5: bool,
+    mut lease: Option<&mut crate::resource_budget::BudgetLease>,
+) -> Result<Image, String> {
     const BI_RGB: u32 = 0;
     const BI_BITFIELDS: u32 = 3;
     const BI_ALPHABITFIELDS: u32 = 6;
@@ -523,10 +546,20 @@ pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
         let value = (pixel & mask) >> shift;
         ((u64::from(value) * 255 + u64::from(max) / 2) / u64::from(max)) as u8
     }
+    if let Some(lease) = lease.as_mut() {
+        lease
+            .try_resize(output_bytes)
+            .map_err(|error| format!("Kein freies Bildbudget für DIB-Pixel: {error}"))?;
+    }
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(output_bytes)
         .map_err(|e| format!("DIB-Bildspeicher konnte nicht reserviert werden: {e}"))?;
+    if let Some(lease) = lease.as_mut() {
+        lease
+            .try_resize(pixels.capacity())
+            .map_err(|error| format!("DIB-Puffer überschreitet das freie Bildbudget: {error}"))?;
+    }
     pixels.resize(output_bytes, 255);
     for y in 0..height {
         let source_y = if height_i < 0 { y } else { height - 1 - y };
@@ -551,7 +584,13 @@ pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
             }
         }
     }
-    Image::new(width, height, pixels).map_err(str::to_owned)
+    // Layout, initialized length and capacity were checked before conversion.
+    // No fallible operation after successful acquisition may discard pixels.
+    Ok(Image {
+        width,
+        height,
+        pixels,
+    })
 }
 
 #[cfg(any(windows, test))]

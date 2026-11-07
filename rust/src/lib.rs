@@ -7,6 +7,7 @@ pub mod atomic_save_windows;
 pub mod capture_admission;
 pub mod capture_buffer;
 pub mod capture_output;
+pub mod clipboard_admission;
 pub mod clipboard_retry;
 pub mod cursor_snapshot;
 pub mod delayed_capture;

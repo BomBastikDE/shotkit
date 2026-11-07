@@ -1,5 +1,9 @@
 //! Win32 clipboard interop. Alpha-capable PNG/CF_DIBV5 formats are preferred;
 //! CF_DIB and CF_BITMAP remain opaque compatibility fallbacks.
+use shotkit::{
+    image_io::BudgetedImage,
+    resource_budget::{AdmissionClass, ResourceBudget},
+};
 use std::{ffi::c_void, ptr::null_mut};
 
 type H = *mut c_void;
@@ -256,7 +260,7 @@ impl Drop for ClipboardGuard {
     }
 }
 
-/// Reads clipboard images, preferring alpha-preserving registered PNG and
+/// Reads budgeted clipboard images, preferring alpha-preserving registered PNG and
 /// CF_DIBV5, then legacy CF_DIB and CF_BITMAP (which is necessarily opaque).
 /// DIB paths accept only 24/32-bit uncompressed layouts within 30000 pixels per
 /// dimension and 512 MiB decoded size. The clipboard remains open while its
@@ -265,7 +269,10 @@ impl Drop for ClipboardGuard {
 // Voraussetzung: owner ist null oder ein gültiges Fenster; Clipboard bleibt beim Lesen geöffnet.
 // Warum erfüllt bzw. offen: Ein Guard verwaltet die Sitzung; Formate und Decoderergebnisse werden geprüft.
 // Nachrichten: GetClipboardData kann verzögertes Rendering und Nachrichten auslösen.
-pub unsafe fn read_image(owner: *mut c_void) -> Result<Option<shotkit::stitch::Image>, String> {
+pub unsafe fn read_image_with_budget(
+    owner: *mut c_void,
+    budget: &ResourceBudget,
+) -> Result<Option<BudgetedImage>, String> {
     let mut clipboard = ClipboardGuard::open(owner)?;
     let png_name: Vec<u16> = "PNG".encode_utf16().chain(Some(0)).collect();
     let png_format = RegisterClipboardFormatW(png_name.as_ptr());
@@ -275,56 +282,25 @@ pub unsafe fn read_image(owner: *mut c_void) -> Result<Option<shotkit::stitch::I
         (CF_DIB, "CF_DIB"),
         (CF_BITMAP, "CF_BITMAP"),
     ];
-    let available = formats
-        .iter()
-        .any(|(format, _)| *format != 0 && IsClipboardFormatAvailable(*format) != 0);
-    if !available {
-        clipboard.close()?;
-        return Ok(None);
-    }
-
-    let mut failures = Vec::new();
-    if png_format != 0 && IsClipboardFormatAvailable(png_format) != 0 {
-        match read_png_format(png_format) {
-            Ok(image) => {
-                clipboard.close()?;
-                return Ok(Some(image));
+    // The admission/recovery tickets are owned by the caller, with no mutex
+    // guard spanning GetClipboardData's delayed-render callbacks. Successful
+    // pixels leave this loop exactly once, even on CloseClipboard failure.
+    shotkit::clipboard_admission::read_formats(
+        &formats,
+        |format| format != 0 && IsClipboardFormatAvailable(format) != 0,
+        |format| {
+            if format == png_format {
+                read_png_format(format, budget)
+            } else if format == CF_DIBV5 {
+                read_dib_format(format, true, budget)
+            } else if format == CF_DIB {
+                read_dib_format(format, false, budget)
+            } else {
+                read_bitmap(GetClipboardData(CF_BITMAP), budget)
             }
-            Err(e) => failures.push(format!("PNG: {e}")),
-        }
-    }
-    if IsClipboardFormatAvailable(CF_DIBV5) != 0 {
-        match read_dib_format(CF_DIBV5, true) {
-            Ok(image) => {
-                clipboard.close()?;
-                return Ok(Some(image));
-            }
-            Err(e) => failures.push(format!("CF_DIBV5: {e}")),
-        }
-    }
-    if IsClipboardFormatAvailable(CF_DIB) != 0 {
-        match read_dib_format(CF_DIB, false) {
-            Ok(image) => {
-                clipboard.close()?;
-                return Ok(Some(image));
-            }
-            Err(e) => failures.push(format!("CF_DIB: {e}")),
-        }
-    }
-    if IsClipboardFormatAvailable(CF_BITMAP) != 0 {
-        match read_bitmap(GetClipboardData(CF_BITMAP)) {
-            Ok(image) => {
-                clipboard.close()?;
-                return Ok(Some(image));
-            }
-            Err(e) => failures.push(format!("CF_BITMAP: {e}")),
-        }
-    }
-    clipboard.close()?;
-    Err(format!(
-        "Clipboard image formats were present but unreadable: {}",
-        failures.join("; ")
-    ))
+        },
+        || clipboard.close(),
+    )
 }
 
 struct LockedGlobal(H);
@@ -364,9 +340,10 @@ unsafe fn with_global_bytes<T>(
 // Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-Speicher.
 // Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
 // Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
-unsafe fn read_png_format(format: u32) -> Result<shotkit::stitch::Image, String> {
+unsafe fn read_png_format(format: u32, budget: &ResourceBudget) -> Result<BudgetedImage, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
-        shotkit::image_io::decode(bytes).map_err(|e| format!("PNG decode failed: {e}"))
+        shotkit::image_io::decode_with_budget(bytes, budget)
+            .map_err(|e| format!("PNG decode failed: {e}"))
     })
 }
 
@@ -374,9 +351,13 @@ unsafe fn read_png_format(format: u32) -> Result<shotkit::stitch::Image, String>
 // Voraussetzung: Clipboard ist offen und das Format liefert gültigen HGLOBAL-DIB-Speicher.
 // Warum erfüllt bzw. offen: Der Aufruf erfolgt unter dem Clipboard-Guard; Dekodierung bleibt innerhalb des Locks.
 // Nachrichten: GetClipboardData kann verzögertes Rendering auslösen.
-unsafe fn read_dib_format(format: u32, require_v5: bool) -> Result<shotkit::stitch::Image, String> {
+unsafe fn read_dib_format(
+    format: u32,
+    require_v5: bool,
+    budget: &ResourceBudget,
+) -> Result<BudgetedImage, String> {
     with_global_bytes(GetClipboardData(format), |bytes| {
-        shotkit::output_windows::decode_dib(bytes, require_v5)
+        shotkit::output_windows::decode_dib_with_budget(bytes, require_v5, budget)
     })
 }
 
@@ -384,7 +365,7 @@ unsafe fn read_dib_format(format: u32, require_v5: bool) -> Result<shotkit::stit
 // Voraussetzung: bitmap bleibt gültig und ist für GetDIBits geeignet.
 // Warum erfüllt bzw. offen: Das Handle stammt aus dem geöffneten Clipboard; der DC-Auswahlzustand ist nicht vollständig geprüft.
 // Nachrichten: Kein expliziter Fensternachrichtenversand im Funktionskörper.
-unsafe fn read_bitmap(bitmap: H) -> Result<shotkit::stitch::Image, String> {
+unsafe fn read_bitmap(bitmap: H, budget: &ResourceBudget) -> Result<BudgetedImage, String> {
     if bitmap.is_null() {
         return Err("GetClipboardData(CF_BITMAP) returned null".into());
     }
@@ -410,10 +391,18 @@ unsafe fn read_bitmap(bitmap: H) -> Result<shotkit::stitch::Image, String> {
     if pixel_bytes > MAX_IMAGE_BYTES || pixel_bytes > u32::MAX as usize {
         return Err("CF_BITMAP exceeds the 512 MiB image limit".into());
     }
+    let mut lease = budget
+        .try_acquire(pixel_bytes, AdmissionClass::Normal)
+        .map_err(|error| format!("Kein freies Bildbudget für CF_BITMAP: {error}"))?;
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(pixel_bytes)
         .map_err(|e| format!("Could not allocate CF_BITMAP pixels: {e}"))?;
+    // Reject allocator spare capacity before acquiring image pixels. No
+    // application mutex is held when GetDC/GetDIBits run below.
+    lease
+        .try_resize(pixels.capacity())
+        .map_err(|error| format!("CF_BITMAP-Puffer überschreitet das freie Bildbudget: {error}"))?;
     pixels.resize(pixel_bytes, 0);
     let mut header = BitmapInfoHeader {
         size: std::mem::size_of::<BitmapInfoHeader>() as u32,
@@ -448,5 +437,12 @@ unsafe fn read_bitmap(bitmap: H) -> Result<shotkit::stitch::Image, String> {
         pixel[3] = 255;
     }
     drop(dc);
-    shotkit::stitch::Image::new(width, height, pixels).map_err(str::to_owned)
+    Ok(BudgetedImage::from_decoded(
+        shotkit::stitch::Image {
+            width,
+            height,
+            pixels,
+        },
+        lease,
+    ))
 }

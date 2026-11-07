@@ -1,4 +1,4 @@
-//! Opt-in Windows file imports. This shared budget accounts for decoder-known
+//! Windows file and clipboard imports. This shared budget accounts for decoder-known
 //! import buffers and retained imported/ordinary screenshot pixels, not GDI, edits,
 //! allocator overhead or process RSS. Nothing here replaces an existing editor.
 use super::*;
@@ -24,7 +24,7 @@ fn imports() -> &'static ImportAdmission {
     })
 }
 
-/// Imports and ordinary screenshots share one accounting pool.
+/// File/clipboard imports and ordinary screenshots share one accounting pool.
 pub(super) fn shared_image_budget() -> ResourceBudget {
     imports().budget().clone()
 }
@@ -113,6 +113,30 @@ pub(super) unsafe fn open_budgeted_image(owner: H, path: PathBuf) -> Result<(), 
     Ok(())
 }
 
+/// SAFETY: the caller owns the source gate and owner is a live UI-thread HWND.
+/// The modal owner and both recovery reservations cover delayed rendering and
+/// the full protected editor handoff; no mutex crosses a Windows callback.
+pub(super) unsafe fn paste_budgeted_image(owner: H) -> Result<bool, String> {
+    let _modal = ModalGuard::new(owner);
+    if QUITTING.load(Ordering::SeqCst) {
+        return Err("ShotKit wird gerade beendet.".into());
+    }
+    let Some(initialization) = shotkit::clipboard_admission::acquire(
+        imports(),
+        &REJECTED_IMPORT,
+        |budget| clipboard::read_image_with_budget(owner, budget),
+    )? else {
+        return Ok(false);
+    };
+    let (_window, protected) = display_shared_image(
+        ImageHandle::from_imported(Arc::clone(initialization.image())),
+        None,
+    )?;
+    drop(initialization.complete());
+    drop(protected);
+    Ok(true)
+}
+
 /// Create a protected editor without taking the caller's recovery owner.
 /// That owner must remain live until this full handoff returns successfully.
 /// No mutex or WindowState borrow crosses Windows callbacks.
@@ -188,12 +212,12 @@ pub(super) unsafe fn recovery_decision(owner: H, image: &Image, capture: bool) -
     let message = if capture {
         "Eine Aufnahme ist noch im Speicher.\n\nJa = als neue Datei speichern\nNein = Bild verwerfen\nAbbrechen = im Speicher behalten"
     } else {
-        "Ein importiertes Bild konnte nicht im Editor geöffnet werden und ist noch im Speicher.\n\nJa = als neue Datei speichern\nNein = Bild verwerfen\nAbbrechen = im Speicher behalten"
+        "Ein importiertes Bild ist noch im Speicher.\n\nJa = als neue Datei speichern\nNein = Bild verwerfen\nAbbrechen = im Speicher behalten"
     };
     let title = if capture {
         "Ungesicherte Aufnahme"
     } else {
-        "Ungesicherter Dateiimport"
+        "Ungesicherter Bildimport"
     };
     match MessageBoxW(owner, wide(message).as_ptr(), wide(title).as_ptr(), 0x23) {
         7 => RecoveryDecision::Discard,
