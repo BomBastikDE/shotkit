@@ -40,12 +40,16 @@ namespace ShotKitCursorCaptureSmoke {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-  public static bool CursorShowing(out int x, out int y) {
+  public static bool CursorShowing(out int flags, out long cursor) {
    var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
    if (!GetCursorInfo(ref info)) throw new InvalidOperationException("GetCursorInfo failed.");
-   x = info.Position.X; y = info.Position.Y;
+   flags = info.Flags; cursor = info.Cursor.ToInt64();
    return (info.Flags & 1) != 0 && info.Cursor != IntPtr.Zero;
   }
+  [StructLayout(LayoutKind.Sequential)] public struct MouseKeys { public uint Size, Flags, MaxSpeed, TimeToMaxSpeed, CtrlSpeed, Reserved1, Reserved2; }
+  [DllImport("user32.dll", SetLastError=true)] static extern bool SystemParametersInfoW(uint action, uint param, ref MouseKeys value, uint winIni);
+  public static MouseKeys GetMouseKeys() { var m = new MouseKeys { Size = (uint)Marshal.SizeOf<MouseKeys>() }; if (!SystemParametersInfoW(0x0036, m.Size, ref m, 0)) throw new InvalidOperationException("SPI_GETMOUSEKEYS failed."); return m; }
+  public static void SetMouseKeys(MouseKeys m) { m.Size = (uint)Marshal.SizeOf<MouseKeys>(); if (!SystemParametersInfoW(0x0037, m.Size, ref m, 0)) throw new InvalidOperationException("SPI_SETMOUSEKEYS failed."); }
   static string Text(IntPtr h, bool cls) { var b=new StringBuilder(1024); if(cls)GetClassNameW(h,b,b.Capacity);else GetWindowTextW(h,b,b.Capacity); return b.ToString(); }
   public static Win[] Windows(int pid) { var a=new List<Win>(); EnumProc cb=(h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==(uint)pid)a.Add(new Win{H=h,ClassName=Text(h,true),Title=Text(h,false),Visible=IsWindowVisible(h)});return true;}; EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
   public static Win[] Children(IntPtr parent) { var a=new List<Win>(); EnumProc cb=(h,p)=>{a.Add(new Win{H=h,ClassName=Text(h,true),Title=Text(h,false),Visible=IsWindowVisible(h)});return true;}; EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
@@ -55,7 +59,7 @@ namespace ShotKitCursorCaptureSmoke {
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Cursor-Capture-' + [Guid]::NewGuid().ToString('N'))
 $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
-$form = $null; $failure = $null; $cleanupErrors = @()
+$form = $null; $failure = $null; $cleanupErrors = @(); $script:mouseKeysChanged = $false; $script:mouseKeysBefore = $null
 
 function Pump { [System.Windows.Forms.Application]::DoEvents() }
 function Wait-Value([scriptblock]$Probe, [string]$What) {
@@ -132,9 +136,24 @@ try {
     Write-Output "EVIDENCE: fixture thread cursor display counter=$counter."
     if (-not [ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx, $script:cy)) { throw 'SetCursorPos failed.' }
     Start-Sleep -Milliseconds 300; Pump
-    $x = 0; $y = 0
-    if (-not [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$x, [ref]$y)) {
-        throw 'NO_VISIBLE_CURSOR: Windows reports no visible mouse cursor on this desktop; the capture cannot contain one.'
+    $flags = 0; $handle = 0
+    if (-not [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$flags, [ref]$handle)) {
+        # Hosted runners have no pointing device and suppress the cursor.
+        # Mouse Keys makes Windows show it without a mouse (session setting,
+        # restored in the cleanup below; the runner is ephemeral).
+        $script:mouseKeysBefore = [ShotKitCursorCaptureSmoke.N]::GetMouseKeys()
+        $on = $script:mouseKeysBefore; $on.Flags = $on.Flags -bor 0x3
+        [ShotKitCursorCaptureSmoke.N]::SetMouseKeys($on)
+        $script:mouseKeysChanged = $true
+        Start-Sleep -Milliseconds 500
+        [void][ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx + 1, $script:cy); Pump
+        [void][ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx, $script:cy); Pump
+        Start-Sleep -Milliseconds 300
+        $shown = [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$flags, [ref]$handle)
+        Write-Output "EVIDENCE: Mouse Keys enabled for the test; GetCursorInfo flags=$flags cursor=$handle visible=$shown."
+        if (-not $shown) {
+            throw "NO_VISIBLE_CURSOR: Windows reports no visible mouse cursor (flags=$flags) even with Mouse Keys; the capture cannot contain one."
+        }
     }
 
     $with = Dark-Pixels (Capture-Png $true 'with')
@@ -148,6 +167,7 @@ finally {
         try { if (-not $p.HasExited) { $p.Kill() }; [void]$p.WaitForExit(5000) } catch { $cleanupErrors += "Process $($p.Id): $_" } finally { $p.Dispose() }
     }
     if ($form) { try { $form.Close(); $form.Dispose() } catch { $cleanupErrors += "Form: $_" } }
+    if ($script:mouseKeysChanged) { try { [ShotKitCursorCaptureSmoke.N]::SetMouseKeys($script:mouseKeysBefore) } catch { $cleanupErrors += "Mouse Keys restore: $_" } }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($cleanupErrors.Count -gt 0) { throw "CLEANUP_FAILED: $($cleanupErrors -join '; '). Test failure: $failure" }
