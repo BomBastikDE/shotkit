@@ -37,8 +37,10 @@ namespace ShotKitPinSmoke {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out Rect r);
-  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref Point p);
+  public static int[] ClientSize(IntPtr h) { Rect r; if (!GetClientRect(h, out r)) throw new InvalidOperationException("GetClientRect failed."); return new[] { r.Right - r.Left, r.Bottom - r.Top }; }
+  public static int[] ScreenPoint(IntPtr h, int x, int y) { var p = new Point { X = x, Y = y }; if (!ClientToScreen(h, ref p)) throw new InvalidOperationException("ClientToScreen failed."); return new[] { p.X, p.Y }; }
   [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -66,12 +68,11 @@ function Wait-Value([scriptblock]$Probe, [string]$What) {
 }
 function Owned { [ShotKitPinSmoke.N]::Windows($process.Id) }
 function Pinned { Owned | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitPinnedImage' } | Select-Object -First 1 }
-function Client-Size($Window) { $r = New-Object ShotKitPinSmoke.Rect; [void][ShotKitPinSmoke.N]::GetClientRect($Window.H, [ref]$r); return @($r.Right - $r.Left, $r.Bottom - $r.Top) }
+function Client-Size($Window) { return [ShotKitPinSmoke.N]::ClientSize($Window.H) }
 function Screen-Pixel($Window, [int]$X, [int]$Y) {
-    $p = New-Object ShotKitPinSmoke.Point; $p.X = $X; $p.Y = $Y
-    [void][ShotKitPinSmoke.N]::ClientToScreen($Window.H, [ref]$p)
+    $p = [ShotKitPinSmoke.N]::ScreenPoint($Window.H, $X, $Y)
     $b = [Drawing.Bitmap]::new(1, 1)
-    try { $g = [Drawing.Graphics]::FromImage($b); try { $g.CopyFromScreen($p.X, $p.Y, 0, 0, [Drawing.Size]::new(1, 1)) } finally { $g.Dispose() }; return $b.GetPixel(0, 0) }
+    try { $g = [Drawing.Graphics]::FromImage($b); try { $g.CopyFromScreen($p[0], $p[1], 0, 0, [Drawing.Size]::new(1, 1)) } finally { $g.Dispose() }; return $b.GetPixel(0, 0) }
     finally { $b.Dispose() }
 }
 function Key([byte]$Code, [bool]$Down) { [ShotKitPinSmoke.N]::keybd_event($Code, 0, $(if ($Down) { 0 } else { 2 }), [UIntPtr]::Zero) }

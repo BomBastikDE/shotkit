@@ -449,7 +449,7 @@ try {
    Click-ToolbarButton $file
    Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'RESPONSIVE_FILE_MENU_DID_NOT_OPEN'
    $fileEntries=@(Read-ToolbarPopup)
-   if((@($fileEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5110,0x5140,0x5141,0x5142,0x5143) -join ',')){throw 'RESPONSIVE_FILE_ACTIONS_INCOMPLETE'}
+   if((@($fileEntries|ForEach-Object{$_.Id}) -join ',') -ne (@(0x5110,0x5140,0x5141,0x5142,0x5143,0x5144) -join ',')){throw 'RESPONSIVE_FILE_ACTIONS_INCOMPLETE'}
    if($logicalWidth -eq 430) {
     Click-ToolbarMenuItem 0x5141
     Wait-ToolbarCondition { @(Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770'}).Count -eq 1 } 'RESPONSIVE_FILE_OPEN_DID_NOT_EXECUTE'
