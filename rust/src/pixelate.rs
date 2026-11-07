@@ -105,7 +105,7 @@ pub fn pixelate_into_seeded(
     if target.len() != source.pixels.len() {
         return Err(PixelateError::InvalidImage);
     }
-    let block_size = block_size.max(24);
+    let block_size = block_size.max(48);
     let (phase_x, phase_y) = pixelate_phase(block_size, seed);
     let mut by = region.y;
     let mut row = 0_u64;

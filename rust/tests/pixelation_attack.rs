@@ -5,6 +5,10 @@
 //! The attacker additionally knows the actual grid phase, but not the seed or
 //! block noise. Fixed fixtures/seeds are specified below, never searched for a
 //! passing result. Observations come from the real production byte renderer.
+//! The likelihood attack knows the four output levels, uniform integer noise
+//! in [-96,96], the shared noise across RGB, and the exactly-black exception.
+//! It models independent block noise, not recovery of the deterministic PRNG
+//! state or correlations between repeated exports or overlapping shapes.
 
 use shotkit::{
     pixelate::{pixelate_phase, pixelate_region_seeded, PixelateRect},
@@ -67,11 +71,15 @@ impl Integral {
         Self { stride, sums }
     }
 
-    fn mean(&self, cell: Cell) -> u8 {
+    fn sum(&self, cell: Cell) -> u64 {
         let at = |x, y| self.sums[y * self.stride + x];
-        let sum = at(cell.right, cell.bottom) + at(cell.x, cell.y)
+        at(cell.right, cell.bottom) + at(cell.x, cell.y)
             - at(cell.x, cell.bottom)
-            - at(cell.right, cell.y);
+            - at(cell.right, cell.y)
+    }
+
+    fn mean(&self, cell: Cell) -> u8 {
+        let sum = self.sum(cell);
         // Historical pixelate.rs used div_round(sum * 255, count * 255)
         // for an opaque grayscale image, exactly equivalent to this rounding.
         ((sum + cell.area() / 2) / cell.area()) as u8
@@ -121,9 +129,16 @@ fn cells(width: usize, height: usize, block: usize, phase: (usize, usize)) -> Ve
 fn legacy_bytes(source: &Image, block: usize) -> Image {
     // Exact historical behavior for these opaque grayscale fixtures: grid
     // anchored at (0,0), clipped final cells, rounded u8 average, alpha 255.
+    legacy_bytes_with_phase(source, block, (0, 0))
+}
+
+fn legacy_bytes_with_phase(source: &Image, block: usize, phase: (usize, usize)) -> Image {
+    // Controlled ablation: historical rounded byte averages with an explicit
+    // grid/phase. For each actual hardened grid this isolates the value of
+    // noise/quantization rather than crediting larger blocks.
     let integral = Integral::new(source);
     let mut result = source.clone();
-    for cell in cells(source.width, source.height, block, (0, 0)) {
+    for cell in cells(source.width, source.height, block, phase) {
         let value = integral.mean(cell);
         for y in cell.y..cell.bottom {
             for x in cell.x..cell.right {
@@ -133,6 +148,81 @@ fn legacy_bytes(source: &Image, block: usize) -> Image {
         }
     }
     result
+}
+
+fn likelihood_table() -> [[f64; 4]; 256] {
+    let mut result = [[f64::NEG_INFINITY; 4]; 256];
+    for (mean, row) in result.iter_mut().enumerate() {
+        let mut counts = [0u32; 4];
+        // Exact finite distribution after clipping and integer quantization.
+        // The production modulo introduces a negligible (<193/2^64) bias;
+        // this attack assumes the requested uniform integer noise model.
+        for noise in -96..=96 {
+            let level = (mean as i32 + noise).clamp(0, 255) as usize / 64;
+            counts[level] += 1;
+        }
+        for (log_probability, count) in row.iter_mut().zip(counts) {
+            if count != 0 {
+                *log_probability = (f64::from(count) / 193.0).ln();
+            }
+        }
+    }
+    result
+}
+
+fn guess_likelihood(
+    observation: &Image,
+    candidates: &[Integral],
+    grid: &[Cell],
+    table: &[[f64; 4]; 256],
+) -> usize {
+    let levels: Vec<_> = grid
+        .iter()
+        .map(|cell| {
+            let offset = (cell.y * observation.width + cell.x) * 4;
+            let color = &observation.pixels[offset..offset + 4];
+            // Grayscale source plus one shared noise value gives equal RGB.
+            assert_eq!(color[0], color[1]);
+            assert_eq!(color[1], color[2]);
+            assert_eq!(color[3], 255);
+            match color[0] {
+                0 => None, // Only a truly black source block bypasses noise.
+                32 | 96 | 160 | 224 => Some(usize::from(color[0] / 64)),
+                value => panic!("unexpected hardened output level {value}"),
+            }
+        })
+        .collect();
+    let mut best = 0;
+    let mut best_score = f64::NEG_INFINITY;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let mut score = 0.0;
+        for (&cell, &level) in grid.iter().zip(&levels) {
+            let sum = candidate.sum(cell);
+            match (sum == 0, level) {
+                (true, None) => {}
+                (false, Some(level)) => {
+                    // A rounded mean of zero is not the exactly-black exception.
+                    let mean = ((sum + cell.area() / 2) / cell.area()) as usize;
+                    score += table[mean][level];
+                }
+                _ => {
+                    score = f64::NEG_INFINITY;
+                    break;
+                }
+            }
+        }
+        // Each block contributes once: the pixels and RGB channels within a
+        // block share the same noise and are not independent observations.
+        if score > best_score {
+            best = index;
+            best_score = score;
+        }
+    }
+    assert!(
+        best_score.is_finite(),
+        "all candidates have zero likelihood"
+    );
+    best
 }
 
 fn guess(observation: &Image, candidates: &[Integral], grid: &[Cell]) -> usize {
@@ -185,6 +275,7 @@ fn fixture_seed(trial: usize, size: usize) -> u64 {
 #[test]
 fn synthetic_digit_candidate_attack_and_historical_counterexample() {
     let mut failures = Vec::new();
+    let likelihood = likelihood_table();
     for height in [12, 16] {
         // Coprime multiplier modulo 1,000,000 gives 400 unique numbers, including
         // leading-zero strings. Candidate order is fixed before any observations.
@@ -199,9 +290,27 @@ fn synthetic_digit_candidate_attack_and_historical_counterexample() {
             width: first.width,
             height: first.height,
         };
+        let mut exact_24_hits = 0;
+        for trial in 0..TRIALS {
+            let target = (trial * 137 + 83) % CANDIDATES;
+            let phase = pixelate_phase(24, fixture_seed(trial, height));
+            let grid = cells(first.width, first.height, 24, phase);
+            let observed = legacy_bytes_with_phase(&candidates[target], 24, phase);
+            exact_24_hits += usize::from(guess(&observed, &integrals, &grid) == target);
+        }
+        eprintln!(
+            "height={height}px historical counterexample: exact-byte-mean block24, known phase={exact_24_hits}/{TRIALS}; chance=1/{CANDIDATES}"
+        );
+        // Require the stronger original >90% counterexample criterion at block
+        // 24 too; do not accept an uninformative near-random ablation.
+        if exact_24_hits * 10 <= TRIALS * 9 {
+            failures.push(format!(
+                "same-grid block24 counterexample <=90%: {height}px: {exact_24_hits}/{TRIALS}"
+            ));
+        }
         for width in WIDTHS {
             let legacy_block = (width * 3).clamp(12, 4_096);
-            let hardened_block = (width * 3).clamp(24, 4_096);
+            let hardened_block = (width * 6).clamp(48, 4_096);
             let legacy_grid = cells(first.width, first.height, legacy_block, (0, 0));
             // All 400 targets occur equally often. This also exposes legacy
             // collisions at large block sizes instead of concealing them.
@@ -211,19 +320,26 @@ fn synthetic_digit_candidate_attack_and_historical_counterexample() {
                 .collect();
             let mut legacy_hits = 0;
             let mut hardened_hits = 0;
+            let mut likelihood_hits = 0;
+            let mut exact_same_grid_hits = 0;
             for trial in 0..TRIALS {
                 let target = (trial * 137 + 83) % CANDIDATES;
                 legacy_hits += usize::from(legacy_guesses[target] == target);
                 let seed = fixture_seed(trial, height);
                 let phase = pixelate_phase(hardened_block, seed);
                 let grid = cells(first.width, first.height, hardened_block, phase);
+                let exact = legacy_bytes_with_phase(&candidates[target], hardened_block, phase);
+                exact_same_grid_hits += usize::from(guess(&exact, &integrals, &grid) == target);
                 let observed =
                     pixelate_region_seeded(&candidates[target], region, hardened_block, seed)
                         .unwrap();
                 hardened_hits += usize::from(guess(&observed, &integrals, &grid) == target);
+                likelihood_hits += usize::from(
+                    guess_likelihood(&observed, &integrals, &grid, &likelihood) == target,
+                );
             }
             eprintln!(
-                "height={height}px width={width}: legacy={legacy_hits}/{TRIALS} (block {legacy_block}), hardened={hardened_hits}/{TRIALS} (block {hardened_block}); chance=1/{CANDIDATES}"
+                "height={height}px width={width}: legacy={legacy_hits}/{TRIALS} (block {legacy_block}), exact-same-grid={exact_same_grid_hits}/{TRIALS}, hardened-MSE={hardened_hits}/{TRIALS}, hardened-ML={likelihood_hits}/{TRIALS} (block {hardened_block}); chance=1/{CANDIDATES}"
             );
             // The old minimum is the demonstrated vulnerable counterexample.
             // Larger legacy grids are reported, not falsely asserted >90%:
@@ -233,9 +349,22 @@ fn synthetic_digit_candidate_attack_and_historical_counterexample() {
                     "legacy counterexample failed: {height}px width {width}"
                 ));
             }
+            // Same-size, same-phase exact averages must discriminate beyond
+            // the hardened acceptance threshold. Report their full rate;
+            // this does not assert >90% recovery at arbitrarily large blocks.
+            if exact_same_grid_hits * CANDIDATES <= 2 * TRIALS {
+                failures.push(format!(
+                    "same-grid exact mean fails to discriminate beyond twice chance: {height}px width {width}: {exact_same_grid_hits}/{TRIALS}"
+                ));
+            }
             if hardened_hits * CANDIDATES > 2 * TRIALS {
                 failures.push(format!(
                     "hardened exceeds twice chance: {height}px width {width}: {hardened_hits}/{TRIALS}"
+                ));
+            }
+            if likelihood_hits * CANDIDATES > 2 * TRIALS {
+                failures.push(format!(
+                    "maximum-likelihood exceeds twice chance: {height}px width {width}: {likelihood_hits}/{TRIALS}"
                 ));
             }
         }

@@ -419,7 +419,7 @@ fn render_document_over_typed(
                 if !shape.style.width.is_finite() || shape.style.width <= 0.0 {
                     return Err("Ungültige Pixelationsstärke.".into());
                 }
-                let block_size = ((shape.style.width * 3.0) as usize).clamp(24, 4096);
+                let block_size = ((shape.style.width * 6.0) as usize).clamp(48, 4096);
                 let seed = shape
                     .pixelation_seed
                     .ok_or("Zufallswert der Verpixelung fehlt.")?;
@@ -2757,7 +2757,7 @@ mod tests {
     }
 
     #[test]
-    fn pixelation_uses_at_least_twenty_four_pixel_blocks() {
+    fn pixelation_uses_at_least_forty_eight_pixel_blocks() {
         use crate::shapes::Point;
         let mut pixels = Vec::new();
         for y in 0..24 {
@@ -2772,7 +2772,7 @@ mod tests {
             width: 24,
             height: 24,
         };
-        let expected = pixelate_region_seeded(&original, region, 24, 0x74_5afe_1234_5678).unwrap();
+        let expected = pixelate_region_seeded(&original, region, 48, 0x74_5afe_1234_5678).unwrap();
         for width in [1.0, 2.0, 3.0, 4.0] {
             let mut blur = Shape::new(ShapeKind::Blur {
                 start: Point::new(0.0, 0.0),
