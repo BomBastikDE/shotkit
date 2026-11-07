@@ -12,7 +12,7 @@
 | Werkzeug | Sicher? |
 |---|---|
 | **Schwärzen** (<kbd>S</kbd>) | **Ja** – deckt den Bereich schwarz ab. Die Schwärzung ist Teil des gespeicherten und kopierten Bildes. |
-| Verpixeln (<kbd>B</kbd>) | **Nein** – kleiner Text bleibt teils lesbar und lässt sich mit speziellen Werkzeugen teilweise zurückrechnen. |
+| Verpixeln (<kbd>B</kbd>) | **Nein** – trotz gröberem Raster und Rauschen können Inhalte erkennbar oder rekonstruierbar bleiben. Für vertrauliche Daten Schwärzen (<kbd>S</kbd>) verwenden. |
 | Weichzeichnen (<kbd>W</kbd>) | **Nein** – Inhalte können erkennbar oder rekonstruierbar bleiben. |
 | Rechteck, Marker | **Nein** – das Rechteck zeichnet nur einen Rahmen, der Marker ist halbtransparent. |
 

@@ -2,6 +2,8 @@
 
 ## Version 2.0.0 – Änderungen seit Beta 1
 
+- Verpixeln verwendet mindestens 48 px große Blöcke und Rauschen. Für vertrauliche Inhalte weiterhin Schwärzen (S) verwenden ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).
+
 Die C#-Version v1.2.0 ist historisch abgeschlossen; Rust ist die maßgebliche Weiterentwicklung. Die EXE ist unsigniert. Echte Windows-Praxistests mit gemischter DPI und mehreren Monitoren sowie Teile der Sicherheitsprüfung stehen noch aus. Verpixelung ist keine sichere Schwärzung. Bei abruptem Abbruch während des Speicherns können temporäre Dateien mit Bilddaten zurückbleiben; Hinweise stehen in der [Rust-Anleitung](README.md).
 
 - Auch das Rendern annotierter Bilder zum Speichern verwendet das gemeinsame Bildbudget; das Ergebnis behält seine Reservierung bis zum Ende der Ausgabe. Bei knappem Budget wird das Speichern vor dem Schreiben mit einer Meldung abgebrochen, das Dokument bleibt erhalten. Bilder ohne Anmerkungen verwenden weiterhin das vorhandene Bild ohne zusätzliche Pixelkopie. Native GDI-/Zwischenablagepuffer, Encoder-Konvertierungen und Hilfsspeicher sowie RSS bleiben außerhalb dieser Grenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

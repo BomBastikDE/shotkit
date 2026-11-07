@@ -346,17 +346,33 @@ pub enum ShapeKind {
         number: i32,
     },
 }
+/// Randomized pixelation state, deliberately omitted from debug output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PixelationSeed(pub u64);
+impl std::fmt::Debug for PixelationSeed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PixelationSeed([redacted])")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
     pub style: Style,
     pub kind: ShapeKind,
+    pub pixelation_seed: Option<PixelationSeed>,
 }
 impl Shape {
     pub fn new(kind: ShapeKind) -> Self {
         Self {
             style: Style::default(),
             kind,
+            pixelation_seed: None,
         }
+    }
+    /// Assign the caller-provided operating-system seed to a pixelation shape.
+    pub fn with_pixelation_seed(mut self, seed: u64) -> Self {
+        self.pixelation_seed = Some(PixelationSeed(seed));
+        self
     }
     pub fn bounds(&self) -> Rect {
         match &self.kind {
