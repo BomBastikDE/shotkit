@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner or an explicitly opted-in local session.'
 }
@@ -214,13 +215,7 @@ try {
     finally{$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-For {Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} $StartupTimeoutSeconds 'editor window'
     [void][ShotKitCalloutSmoke.N]::ShowWindow($main.H,3);[void][ShotKitCalloutSmoke.N]::SetForegroundWindow($main.H)
-    $welcome=Wait-For {Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 12 'startup notice'
-    $ok=@([ShotKitCalloutSmoke.N]::Children($welcome.H)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and $_.Title -eq 'OK'}|Select-Object -First 1)
-    if($ok.Count -ne 1){throw 'STARTUP_NOTICE_OK_MISSING.'}
-    [void][ShotKitCalloutSmoke.N]::SetForegroundWindow($welcome.H)
-    [void](Wait-For {[ShotKitCalloutSmoke.N]::GetForegroundWindow() -eq $welcome.H} 5 'startup notice foreground')
-    [ShotKitCalloutSmoke.N]::Click($ok[0].H)
-    [void](Wait-For {-not [ShotKitCalloutSmoke.N]::IsWindow($welcome.H)} 5 'startup notice destruction')
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
     $main=Wait-For {Owned-Windows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 10 'loaded editor'
     $calloutButton=Child-ById $main.H 0x510F
     if($calloutButton.ClassName -ne 'Button'){throw "CALLOUT_TOOL_CONTROL_NOT_BUTTON: $($calloutButton.ClassName)."}

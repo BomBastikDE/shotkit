@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the Windows runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -129,10 +130,8 @@ try {
     try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-Value {Get-Main} 'owned editor window'
     [void][ShotKitPixelSmoke.N]::ShowWindow($main.H,3);[void][ShotKitPixelSmoke.N]::SetForegroundWindow($main.H)
-    $notice=Wait-Value { [ShotKitPixelSmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
-    $ok=[ShotKitPixelSmoke.N]::Buttons($notice.H)|?{$_.Text.Trim() -eq 'OK'}|select -First 1
-    if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING'};[ShotKitPixelSmoke.N]::Click($ok.H)
-    $main=Wait-Value {Get-Main} 'editor after startup notice'
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitPixelSmoke.N]::Windows($process.Id) }
+    $main=Wait-Value {Get-Main} 'ready editor'
     $client=[Activator]::CreateInstance([ShotKitPixelSmoke.Rect]);[void][ShotKitPixelSmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitPixelSmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
     if($null -eq $toolbar){throw 'EDITOR_TOOLBAR_MISSING'}

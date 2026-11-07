@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -549,10 +550,7 @@ try {
     $main = Wait-ForValue -Seconds $StartupTimeoutSeconds -Description 'the owned ShotKit editor window' -Probe { Get-MainWindow }
     [void][ShotKitEditorSmoke.Native]::ShowWindow($main.Handle, 3) # SW_MAXIMIZE
     if (-not [ShotKitEditorSmoke.Native]::SetForegroundWindow($main.Handle)) { throw 'Could not foreground the owned editor window.' }
-    $welcome = Wait-ForValue -Seconds $StartupTimeoutSeconds -Description 'the expected ShotKit startup notice' -AllowedTitles @('*Prototyp*') -Probe {
-        Get-OwnedDialogs | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    Dismiss-OwnedDialog -Dialog $welcome -ExpectedTexts @('OK') -ExpectedTitlePattern '*Prototyp*' -Description 'startup notice closure'
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnedWindows }
 
     $main = Wait-ForValue -Seconds 5 -Description 'the loaded-image editor title' -Probe {
         Get-MainWindow | Where-Object { $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1

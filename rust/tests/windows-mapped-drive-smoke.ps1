@@ -11,6 +11,7 @@ param(
 # remaps a drive or touches a pre-existing share. Missing prerequisites FAIL.
 # Native UI enumeration and per-child isolated profiles follow windows-instance-smoke.ps1.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7 -or $env:OS -ne 'Windows_NT') {
     throw 'WINDOWS_PWSH_REQUIRED: PowerShell 7 on Windows is required.'
 }
@@ -201,8 +202,7 @@ try {
     Write-Output "EVIDENCE: $drive => $remote; GetDriveTypeW=4 (DRIVE_REMOTE); mapped fixture hash matches local fixture."
 
     $primary = Start-Owned $initialPath
-    $notice = Wait-Value { Dialog $primary '*Prototyp*' } 'startup notice'
-    Click-Dialog $primary $notice 2
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $primary -GetWindows { Windows $primary }
     $null = Wait-Value { Windows $primary | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.Contains($initialPath) } } 'initial editor'
     $baseline = Editor-Snapshot
     # Deny any successful image read during rejection. This does not instrument

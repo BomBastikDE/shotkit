@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -199,13 +200,7 @@ try {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
             Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible } | Select-Object -First 1
     }
-    $welcome = Wait-For -Seconds $TimeoutSeconds -Description 'owned startup notice' -Probe {
-        [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
-            Where-Object { $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' -and $_.Visible } | Select-Object -First 1
-    }
-    if (-not [ShotKitStorageFolderSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
-        throw 'STARTUP_DIALOG_CLOSE_FAILED: could not close the test-owned ShotKit startup notice.'
-    }
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) }
     $main = Wait-For -Seconds 10 -Description 'loaded editor window' -Probe {
         [ShotKitStorageFolderSmoke.Native]::Windows($process.Id) |
             Where-Object { $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible -and $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1

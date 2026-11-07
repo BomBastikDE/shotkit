@@ -250,7 +250,7 @@ pub(super) unsafe fn resize(h: H) {
         MessageBoxW(
             h,
             wide("Der Leinwanddialog konnte nicht geöffnet werden.").as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x10,
         );
         return;
@@ -313,7 +313,7 @@ pub(super) unsafe fn resize(h: H) {
                 "Leinwandgröße konnte nicht geändert werden: {error}"
             ))
             .as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x10,
         );
     }

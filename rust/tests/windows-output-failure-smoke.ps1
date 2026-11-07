@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
@@ -125,7 +126,7 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
     $deadline=[DateTime]::UtcNow.AddSeconds($Seconds)
     while([DateTime]::UtcNow -lt $deadline) {
         if($OwnedProcess.HasExited){throw "Owned process exited before $Description (code $($OwnedProcess.ExitCode))."}
-        $unexpected=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -notlike '*Prototyp*' -and [ShotKitOutputFailureSmoke.Native]::WindowText($_.Handle) -notlike '*Ein Teil der Ausgabe ist fehlgeschlagen:*'} | Select-Object -First 1
+        $unexpected=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and [ShotKitOutputFailureSmoke.Native]::WindowText($_.Handle) -notlike '*Ein Teil der Ausgabe ist fehlgeschlagen:*'} | Select-Object -First 1
         if($null -ne $unexpected){throw "Unexpected dialog '$($unexpected.Title)': $([ShotKitOutputFailureSmoke.Native]::WindowText($unexpected.Handle))"}
         $v=& $Condition; if($null -ne $v -and $v){return $v}; Start-Sleep -Milliseconds 100
     }
@@ -223,9 +224,7 @@ namespace ShotKitOutputFailureSurface {
     try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $root -PassThru}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
-    $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
-    if (-not [ShotKitOutputFailureSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
-    [void](Wait-ForCondition -Seconds 8 -Description 'startup dialog to close' -OwnedProcess $shotKit -Condition {-not [ShotKitOutputFailureSmoke.Native]::IsWindow($welcome.Handle)})
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-OwnWindows $shotKit }
     [void][ShotKitOutputFailureSmoke.Native]::SetForegroundWindow($fixtureWindow.Handle)
     [void](Wait-ForCondition -Seconds 5 -Description 'owned fixture foreground' -OwnedProcess $surface -Condition {[ShotKitOutputFailureSmoke.Native]::GetForegroundWindow() -eq $fixtureWindow.Handle})
 

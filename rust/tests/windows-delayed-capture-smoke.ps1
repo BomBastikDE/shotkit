@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or
     $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
@@ -154,18 +155,6 @@ function Open-OwnedTrayMenu {
         Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32768' } | Select-Object -First 1
     }
 }
-function Dismiss-StartupNotice {
-    $notice=Wait-For -Seconds $StartupTimeoutSeconds -Description 'owned ShotKit startup notice' -Probe {
-        Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    if([ShotKitDelayedCaptureSmoke.Native]::OwnerPid($notice.Handle) -ne $process.Id) { throw 'STARTUP_NOTICE_OWNER_MISMATCH.' }
-    if(-not [ShotKitDelayedCaptureSmoke.Native]::PostMessageW($notice.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
-        throw 'STARTUP_NOTICE_CLOSE_FAILED: could not close the test-owned startup notice.'
-    }
-    $deadline=[DateTime]::UtcNow.AddSeconds(8)
-    while([DateTime]::UtcNow -lt $deadline -and [ShotKitDelayedCaptureSmoke.Native]::IsWindow($notice.Handle)) { Start-Sleep -Milliseconds 50 }
-    if([ShotKitDelayedCaptureSmoke.Native]::IsWindow($notice.Handle)) { throw 'STARTUP_NOTICE_CLOSE_TIMEOUT.' }
-}
 function Invoke-DelayCase($Case) {
     if(@(Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitSelectionOverlay' }).Count -gt 0) {
         throw "STALE_OVERLAY_BEFORE_DELAY: selection overlay already visible before $($Case.Seconds)-second case."
@@ -249,7 +238,7 @@ try {
     if($main.Pid -ne $process.Id -or [ShotKitDelayedCaptureSmoke.Native]::OwnerPid($main.Handle) -ne $process.Id) {
         throw "MAIN_WINDOW_OWNER_MISMATCH: HWND=$($main.Handle), window PID=$($main.Pid), expected $($process.Id)."
     }
-    Dismiss-StartupNotice
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnedWindows }
     foreach($case in $delayCases) { Invoke-DelayCase $case }
     Write-Host "PASS: all 3/5/10-second delayed tray selections opened the owned overlay in the measured interval and were safely cancelled on input desktop '$inputDesktop'."
 } catch { $failure=$_ }

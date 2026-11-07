@@ -3,6 +3,7 @@ param(
     [int] $TimeoutSeconds = 30
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'NO_INTERACTIVE_DESKTOP: multi-editor smoke requires an interactive Windows desktop.'
 }
@@ -185,7 +186,7 @@ try {
     $start.EnvironmentVariables['LOCALAPPDATA'] = Join-Path $testRoot 'localappdata'
     $process = [Diagnostics.Process]::Start($start)
     $startTicks=$process.StartTime.ToUniversalTime().Ticks
-    Answer '*Prototyp*' @('OK')
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { Get-Windows }
     [void](Wait-Value { (Get-Editors).Count -eq 2 } 'both startup paths opened simultaneously')
     $a = Get-Editors | Where-Object { $_.Title.Contains($paths[0]) } | Select-Object -First 1
     $b = Get-Editors | Where-Object { $_.Title.Contains($paths[1]) } | Select-Object -First 1
@@ -211,16 +212,16 @@ try {
     Move-Item -LiteralPath $paths[0] -Destination $backup
     [void](New-Item -ItemType Directory -Path $paths[0])
     Post $a.Handle 0x0010
-    Answer 'ShotKit Rust' @('Yes','Ja')
-    Answer 'ShotKit Rust' @('OK')
+    Answer 'ShotKit' @('Yes','Ja')
+    Answer 'ShotKit' @('OK')
     if (-not [ShotKitMultiSmoke]::IsWindow($a.Handle) -or -not (Dirty $a.Handle)) { throw 'Failed save closed or cleaned dirty A.' }
     Remove-Item -LiteralPath $paths[0] -Force
     Move-Item -LiteralPath $backup -Destination $paths[0]
     Post $a.Handle 0x0010
-    Answer 'ShotKit Rust' @('Cancel','Abbrechen')
+    Answer 'ShotKit' @('Cancel','Abbrechen')
     if ((Get-Editors).Count -ne 2) { throw 'Cancelled close removed an editor.' }
     Post $hostWindow.Handle 0x0010 # application quit must confirm A
-    Answer 'ShotKit Rust' @('Cancel','Abbrechen')
+    Answer 'ShotKit' @('Cancel','Abbrechen')
     if ($process.HasExited -or (Get-Editors).Count -ne 2) { throw 'Cancelled quit removed a document or process.' }
     Post $a.Handle 0x0111 0x5110
     [void](Wait-Value { -not (Dirty $a.Handle) } 'A save after failed/cancelled close')
@@ -229,7 +230,7 @@ try {
     [void](Wait-Value { (Get-Editors).Count -eq 1 } 'clean A close preserved B')
     Draw-Rectangle $b.Handle 1 # B has one undone rectangle, even after saving
     Post $b.Handle 0x0010
-    Answer 'ShotKit Rust' @('No','Nein')
+    Answer 'ShotKit' @('No','Nein')
     [void](Wait-Value { (Get-Editors).Count -eq 0 } 'discard B closed only B')
     if ($process.HasExited) { throw 'Closing last editor terminated tray/IPC host.' }
     Post $hostWindow.Handle 0x8004 # a second launch without files must offer a visible entry

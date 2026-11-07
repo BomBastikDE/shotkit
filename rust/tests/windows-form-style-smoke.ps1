@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner.'
 }
@@ -344,26 +345,7 @@ try {
     try{$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru}finally{$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} $StartupTimeoutSeconds 'editor'
     Maximize-Editor
-    $notice=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 10 'startup notice'
-    # Another MB_OK dialog exposed its sole OK button as native ID 2 in CI
-    # 42138227971. Verify this dialog explicitly and log its children on failure.
-    # The native child ID can differ from the return value. Poll readiness while
-    # still requiring the exact owned, direct child and a single visible button.
-    try {
-        $ok=Wait-For {
-            $buttons=@([ShotKitFormStyleSmoke.Native]::Controls($notice.Handle)|Where-Object {$_.Visible -and $_.ClassName -eq 'Button'})
-            if($buttons.Count -eq 1 -and $buttons[0].Id -eq 2 -and $buttons[0].Parent -eq $notice.Handle -and $buttons[0].Pid -eq $proc.Id -and ($buttons[0].Text -replace '&','').Trim() -ceq 'OK' -and $buttons[0].Enabled){return $buttons[0]}
-        } 5 'owned startup notice OK button (native ID=2)'
-        [void](Wait-For {
-            [void][ShotKitFormStyleSmoke.Native]::SetForegroundWindow($notice.Handle)
-            [ShotKitFormStyleSmoke.Native]::GetForegroundWindow() -eq $notice.Handle
-        } 5 'startup notice foreground')
-        [ShotKitFormStyleSmoke.Native]::Click($ok.Handle)
-    } catch {
-        $children=([ShotKitFormStyleSmoke.Native]::Controls($notice.Handle)|ForEach-Object {"HWND=$($_.Handle) parent=$($_.Parent) PID=$($_.Pid) ID=$($_.Id) class='$($_.ClassName)' text='$($_.Text)' visible=$($_.Visible) enabled=$($_.Enabled)"}) -join '; '
-        throw "NOTICE_OK_FAILED: $($_.Exception.Message) notice HWND=$($notice.Handle) PID=$($notice.Pid); children=[$children]"
-    }
-    [void](Wait-For {-not @(Get-OwnedWindows|Where-Object {$_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}).Count} 5 'notice close')
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Get-OwnedWindows }
     [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Strg+S speichern*'}} 10 'loaded editor')
     # Native menu opens via mouse, validates identity/state, then Escape must
     # preserve pixels on the pristine fixture.

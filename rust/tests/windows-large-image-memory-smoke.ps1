@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'INTERACTIVE_WINDOWS_REQUIRED: an ephemeral Windows runner or dedicated local opt-in is required.'
@@ -254,10 +255,7 @@ try {
     [ShotKitMemorySmoke.Sampler]::Start($process.Id,$SampleIntervalMs)
     if(-not [ShotKitMemorySmoke.Sampler]::MarkAndWaitForSample('import_and_idle',10000)){throw 'NO_MEMORY_SAMPLE: import phase sampler did not return a sample.'}
 
-    $notice=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice'
-    if([ShotKitMemorySmoke.Native]::OwnerPid($notice.H) -ne $process.Id){throw 'STARTUP_NOTICE_OWNER_MISMATCH.'}
-    if(-not [ShotKitMemorySmoke.Native]::PostMessageW($notice.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_FAILED.'}
-    [void](Wait-For {-not [ShotKitMemorySmoke.Native]::IsWindow($notice.H)} 'startup notice close' 10)
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnedWindows }
     # open_image_path sets current_path and refreshes the title only after read, decode, and display_image succeed.
     $editor=Wait-For {Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title.IndexOf($fixturePath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')}|Select-Object -First 1} "loaded $FixtureFormat editor title readback"
     $editorHandle=$editor.H

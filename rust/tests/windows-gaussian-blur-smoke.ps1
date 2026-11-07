@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the Windows runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -162,13 +163,8 @@ try {
     try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-Value {Get-Main} 'owned editor window'
     [void][ShotKitGaussianBlurSmoke.N]::ShowWindow($main.H,3);[void][ShotKitGaussianBlurSmoke.N]::SetForegroundWindow($main.H)
-    $notice=Wait-Value { [ShotKitGaussianBlurSmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
-    $ok=[ShotKitGaussianBlurSmoke.N]::Buttons($notice.H)|?{$_.Text.Trim() -eq 'OK'}|select -First 1
-    if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING'}
-    [void][ShotKitGaussianBlurSmoke.N]::SetForegroundWindow($notice.H)
-    [ShotKitGaussianBlurSmoke.N]::Click($ok.H)
-    [void](Wait-Value { -not @([ShotKitGaussianBlurSmoke.N]::Windows($process.Id) | Where-Object { $_.H -eq $notice.H }).Count } 'startup notice destruction')
-    $main=Wait-Value {Get-Main} 'editor after startup notice'
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitGaussianBlurSmoke.N]::Windows($process.Id) }
+    $main=Wait-Value {Get-Main} 'ready editor'
     $client=[Activator]::CreateInstance([ShotKitGaussianBlurSmoke.Rect]);[void][ShotKitGaussianBlurSmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitGaussianBlurSmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
     if($null -eq $toolbar){throw 'EDITOR_TOOLBAR_MISSING'}
