@@ -1,54 +1,53 @@
-# ShotKit Rust: Windows-Praxistest
+# ShotKit: Windows-Praxistest
 
-Diese Anleitung ergänzt die automatischen Tests. Veröffentlichte Versionen stehen auf der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases); die Windows-x64-EXE ist nicht digital signiert. Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Bei Auffälligkeiten Abbruch, ohne mehrfaches Überschreiben einer vorhandenen Datei.
+Diese Anleitung ergänzt die automatischen Tests (siehe [Testprotokoll](TESTPROTOKOLL.md)). Sie deckt ab, was die CI auf einem einzelnen virtuellen Bildschirm nicht sehen kann: echte Monitore und Skalierungen, echte Webseiten, das sichtbare Erscheinungsbild und das Gefühl bei der Bedienung.
+
+Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE kommt von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) und ist nicht signiert.
 
 ## Ausgangslage notieren
 
-- Windows-Version und -Build; Anzahl und Anordnung der Monitore sowie die jeweilige Skalierung (Windows-Einstellungen → System → Anzeige). Falls nur ein Monitor vorhanden ist, den Mehrmonitor-Teil als nicht geprüft markieren.
-- ShotKit starten; Einstellungen der C#-Version bleiben getrennt. Im Tray-Menü einen Testordner wählen und die gewünschten Ausgabeoptionen (Editor, Zwischenablage, automatisches Speichern) bewusst einstellen.
-- Im Tray „Über ShotKit“ öffnen: Versionsnummer, Oliver Muenk und die Schaltfläche für alleswasbewegt.de prüfen. Beim Anklicken soll die Website im Standardbrowser geöffnet werden.
+- Windows-Version und -Build, Anzahl und Anordnung der Monitore und ihre Skalierung (Einstellungen → System → Anzeige). Bei nur einem Monitor die Mehrmonitor-Punkte als „nicht geprüft“ markieren.
+- Eine eventuell noch laufende ältere ShotKit-Version (auch C#) über das Tray-Menü vollständig beenden. Sonst aktiviert der Start die alte Version.
 
-## Aufnahme und Auswahl
+## Kerntest (etwa 15 Minuten)
 
-1. Mit `Druck` oder `F11` einen Bereich frei aufziehen und prüfen, dass Bildinhalt und Ränder stimmen. Über einem Browserbereich den Vorschlag per Klick übernehmen; falls keine passende Umrandung erscheint, frei auswählen und Browser/Webseite notieren.
-2. Beim Loslassen eines frei aufgezogenen Bereichs `Umschalt` halten. Mit Pfeiltasten verschieben, mit `Umschalt` + Pfeiltasten rechte/untere Kante ändern und mit `Enter` aufnehmen. Prüfen, ob die Auswahl jeweils um ein Bildschirmpixel verändert wird; `Esc` in einem neuen Versuch muss abbrechen.
-3. Im Tray „Letzten Bereich erneut aufnehmen“ wählen und gleiche Grenzen und aktuellen Bildinhalt prüfen. Wenn ein zweiter Monitor vorhanden ist: Einen Bereich darauf aufnehmen, Monitor trennen oder Anzeigeanordnung ändern und Wiederholung versuchen. Liegt der Bereich nicht mehr vollständig auf aktiven Monitoren, muss ShotKit eine Meldung anzeigen statt eine andere Fläche aufzunehmen.
-4. Falls mehrere Monitore mit unterschiedlichen Skalierungen vorhanden sind: Bereichsauswahl auf jedem Monitor und über deren Grenze testen. Grenzen und Bildinhalt visuell kontrollieren; Bildschirm-Anordnung und Skalierungen notieren.
+| # | Schritt | Erwartung |
+|---|---|---|
+| 1 | Neue EXE starten, **ohne** vorhandene Einstellungen (`%APPDATA%\ShotKitRust` vorher umbenennen) | Einmaliger Hinweis „Willkommen bei ShotKit“, danach Symbol im Infobereich. Zweiter Start: **kein** Hinweis. |
+| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.0.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
+| 3 | `Druck` oder `F11`: Bereich aufziehen, dann im Editor ein Fenster per Vorschlag übernehmen | Bildinhalt und Ränder stimmen; Editor öffnet sich. |
+| 4 | Im Editor: Pfeil, Rechteck, Text, Sprechblase, Stempel zeichnen; Werkzeug mehrmals wechseln | Symbole scharf; Fenstertitel zeigt weiter den Dateinamen und **keinen** englischen Werkzeugnamen (#79). |
+| 5 | Verpixeln (`B`) über Text ziehen | Grobe Blöcke (mindestens 48 px), Text nicht lesbar; Hinweis „keine sichere Schwärzung“ im Tooltip. |
+| 6 | Schwärzen (`S`) über Text ziehen, als PNG speichern, PNG in einem anderen Programm öffnen | Bereich vollständig schwarz. |
+| 7 | `Strg+Z` / `Strg+Y` mehrmals | Symbole der Werkzeugleiste bleiben sichtbar (#1). |
+| 8 | `F10`: Scrollaufnahme auf einer langen Webseite bis zum Ende | Keine fehlenden oder doppelten Zeilen an den Übergängen; Ende erreicht. |
+| 9 | `F10` erneut, nach einigen Schritten **Maus bewegen** | Aufnahme endet, Teilbild bleibt erhalten, Meldung nennt den Grund. |
+| 10 | Bei mehreren Monitoren mit **unterschiedlicher Skalierung**: Schritt 8 auf jedem Monitor | Aufnahme läuft ohne Mausberührung bis zum Ende (#6). Bricht sie mit „Maus bewegt“ ab, Monitoranordnung und Skalierungen notieren. |
+| 11 | Editor auf einen anderen Monitor ziehen, zeichnen, speichern | Darstellung und Ergebnis stimmen. |
+| 12 | Tray → Einstellungen → „Mit Windows starten“ einschalten, abmelden und wieder anmelden | ShotKit startet ohne Hinweisfenster. |
 
-## Scrollaufnahme
+## Ausführliche Prüfungen (optional)
 
-1. Mit `F10` eine längere, ruhige Testseite oder ein längeres Dokument aufnehmen. Anfang, Ende und mehrere Übergänge auf fehlende oder doppelte Zeilen prüfen.
-2. Den Vorgang erneut starten und nach mindestens einem sichtbaren Scrollschritt mit `Esc` abbrechen. Das bereits aufgenommene Teilbild muss erhalten bleiben; Abbruchmeldung und Ergebnis prüfen. Eine weitere Aufnahme durch Mausbewegung abbrechen und ebenfalls prüfen.
-3. Wenn eine geeignete Seite vorhanden ist, mit feststehender Kopf-/Fußleiste und einem Bereich, der horizontal gescrollt werden kann wiederholen. Webseite/Anwendung und beobachtete Fehler notieren.
+**Bereichsauswahl:** Beim Loslassen `Umschalt` halten. Pfeiltasten verschieben um 1 px, `Umschalt`+Pfeil ändert die rechte bzw. untere Kante, `Enter` nimmt auf, `Esc` bricht ab. „Letzten Bereich erneut aufnehmen“ liefert dieselben Grenzen. Nach Trennen eines Monitors muss eine Meldung kommen statt einer anderen Fläche.
 
-## Editor und Ausgabe
+**Scrollaufnahme:** Seite mit fester Kopf- und Fußleiste; horizontal scrollbarer Bereich (Richtung „rechts“/„links“). Abbruch mit `Esc` behält das Teilbild.
 
-1. Pfeil, Rechteck, Text, Marker und Verpixeln auf einem Testbild zeichnen. Mit gedrückter `Umschalt`-Taste Formen bzw. Linien ausrichten; ein Textobjekt mit aktivem Textwerkzeug erneut anklicken und ändern. `Strg+Z`/`Strg+Y` prüfen.
-2. Zuschneiden und anschließend eine Form auswählen; danach als PNG speichern und erneut öffnen. Ein Bild in die Zwischenablage kopieren und mit `Strg+V` wieder öffnen; Größen und transparente Bildstellen prüfen, sofern das Testbild solche enthält.
-3. Bei zwei Bildschirmen den Editor zwischen Monitoren verschieben und Darstellung, Werkzeugpositionen und gespeichertes Ergebnis kontrollieren.
+**Editor:** Formstil (Füllung, gestrichelte Linie, abgerundete Ecken, Pfeilenden), Spotlight, Bildlupe, Weichzeichnen, Leinwandgröße, Rahmen und Schatten. Zuschneiden, speichern, wieder öffnen. Kopieren und mit `Strg+V` einfügen, auch mit transparenten Stellen.
+
+**Große Bilder:** Ein sehr großes Bild öffnen (z. B. ein Foto mit über 80 Megapixeln). Erwartung: verständliche Meldung, kein Absturz, andere offene Bilder bleiben erhalten.
+
+**Absturz beim Speichern:** Nicht absichtlich herbeiführen. Falls ShotKit beim Speichern abstürzt: Beim nächsten Start sollte ein Hinweis auf zurückgebliebene `.shotkit-….tmp`-Dateien erscheinen (#67).
 
 ## Ergebnis melden
 
-Für jeden Schritt **bestanden**, **fehlgeschlagen** oder **nicht geprüft** notieren. Bei einem Fehler die Windows-Version, Monitor- und Skalierungskonfiguration, verwendete Anwendung/Webseite, Schritte und erwartetes gegenüber tatsächlichem Verhalten angeben. Screenshots nur dann teilen, wenn sie keine vertraulichen Informationen enthalten. Ein erfolgreicher Durchlauf belegt nur die konkret getestete Konfiguration.
+Für jeden Schritt **bestanden**, **fehlgeschlagen** oder **nicht geprüft** notieren, am einfachsten als Kommentar im Plan-Issue [#72](https://github.com/BomBastikDE/shotkit/issues/72) oder als neues Issue. Bei einem Fehler: Windows-Version, Monitore und Skalierung, Anwendung oder Webseite, Schritte, erwartetes und tatsächliches Verhalten. Screenshots nur ohne vertrauliche Inhalte. Ein erfolgreicher Durchlauf belegt nur die getestete Konfiguration.
 
-## Gemeldeter Fehler: Werkzeugleiste mit Text statt Symbolen
+## Frühere Rückmeldungen aus Praxistests
 
-**Status: für diesen Vorfall geklärt.** Am 2. November 2026 meldete der Owner nach dem Start der Datei `shotkit-v2.0.0-alpha.15-windows-x64.exe` ein leeres Editorfenster mit 19 Textschaltflächen statt der erwarteten Symbole. Der übermittelte Screenshot zeigt diesen Zustand. Der Owner stellte anschließend fest, dass eine ältere EXE noch lief; deren genauer Dateiname wurde nicht genannt.
-
-Das Alpha-15-Release-Artefakt stimmt laut SHA256 mit dem im [Tag-Lauf, Versuch 2](https://github.com/BomBastikDE/shotkit/actions/runs/41532056391/attempts/2) getesteten Windows-Build überein. Die Windows-CI zeigt in ihrem Werkzeugleisten-Screenshot Symbole; das ersetzt den Owner-Test nicht. Alpha 9 und Alpha 15 verwenden dieselbe Einzelinstanz-Sperre; dadurch wurde beim neuen Start die noch laufende alte Version aktiviert. Nach deren vollständigem Beenden und erneutem Start zeigt der neue Screenshot die Symbolleiste und lesbare Nummern 1 bis 8. Das belegt diese Darstellung auf dem gezeigten Bildschirm, nicht die übrigen Windows-Praxistests oder die allgemeine Bedienungsqualität.
-
-## Gemeldeter Fehler: Ruckeln beim Zeichnen und Verschieben
-
-**Status: offen.** Am 2. November 2026 meldete der Owner für Alpha 15 spürbares Ruckeln beim Zeichnen oder Verschieben von Formen. Bildgröße, Bildrate und die genaue Ursache sind nicht gemessen. Im Quellcode wird die Vorschau bei Mausbewegungen neu gerendert; dabei wird für jede Form eine bildgroße Ebene verarbeitet. Dieser Aufwand ist ein möglicher Engpass und muss durch Tests beziehungsweise Messungen überprüft werden. Eine Verbesserung ist erst nach erneuter Rückmeldung des Owners auf seinem Rechner bestätigt.
-
-## Gemeldeter Fehler: Symbolleiste wirkt unscharf
-
-**Status: vom Owner als behoben bestätigt ([Issue #3](https://github.com/BomBastikDE/shotkit/issues/3)).** Am 2. November 2026 meldete der Owner unscharfe Symbole in Alpha 15. Alpha 17 und Alpha 18 enthalten eine Glättung; am 5. November bestätigte der Owner, die Symbolschärfe geprüft zu haben und den Fehler als behoben anzusehen. Die verwendete Version und die Skalierung des erneuten Tests wurden nicht genannt.
-
-## Gemeldeter Fehler: schnelles Freihandzeichnen
-
-**Status: vom Owner als behoben bestätigt ([Issue #2](https://github.com/BomBastikDE/shotkit/issues/2)).** Nach dem Test von Alpha 16 meldete der Owner Ruckeln und fehlende Bewegungen beim schnellen Zeichnen. Alpha 18 enthält eine begrenzte Renderfläche und die Übernahme eindeutig zuordenbarer Zwischenpunkte aus der Windows-Maushistorie. Am 5. November bestätigte der Owner den erneuten Test und dass der Fehler behoben sei; die dabei verwendete Version wurde nicht genannt.
-
-## Gemeldeter Fehler: Symbole verschwinden nach Rückgängig
-
-**Status: offen ([Issue #1](https://github.com/BomBastikDE/shotkit/issues/1)).** Am 4. November 2026 meldete der Owner für Alpha 19, dass nach einem Klick auf Rückgängig die Symbole der Werkzeugleiste nahezu vollständig verschwanden. Der Screenshot zeigt die leeren Schaltflächen und ein weiterhin sichtbares Undo-Symbol. Eine Korrektur ist auf dem Entwicklungszweig im [Windows-CI-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41897317737) nach Undo und Redo getestet; Alpha 20 enthält die Korrektur; der Praxistest des Owners steht noch aus.
+| Datum | Version | Meldung | Status |
+|---|---|---|---|
+| 02.11. | Alpha 15 | Werkzeugleiste mit Text statt Symbolen | Geklärt: Es lief noch eine ältere EXE; die Einzelinstanz-Sperre aktivierte sie. Nach dem Beenden zeigte die neue Version die Symbole. |
+| 02.11. | Alpha 15 | Ruckeln beim Zeichnen und Verschieben | **Offen.** Nicht gemessen; mögliche Ursache: Neuberechnung bildgroßer Ebenen je Mausbewegung. Bitte im Kerntest (Schritt 4) mit beurteilen. |
+| 02.11. | Alpha 15 | Symbolleiste unscharf ([#3](https://github.com/BomBastikDE/shotkit/issues/3)) | Vom Owner am 05.11. als behoben bestätigt. |
+| 03.11. | Alpha 16 | Schnelles Freihandzeichnen ruckelt, Bewegungen fehlen ([#2](https://github.com/BomBastikDE/shotkit/issues/2)) | Vom Owner am 05.11. als behoben bestätigt. |
+| 04.11. | Alpha 19 | Symbole verschwinden nach Rückgängig ([#1](https://github.com/BomBastikDE/shotkit/issues/1)) | Korrektur seit Alpha 20, in der CI nach Undo/Redo getestet; Issue geschlossen. Bitte im Kerntest (Schritt 7) bestätigen. |
