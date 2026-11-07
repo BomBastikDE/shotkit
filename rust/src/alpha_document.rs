@@ -42,8 +42,8 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
 /// A transient UI render: pixels and their shared-pool reservation stay together.
 /// Field order drops the allocation before releasing admission. This accounts
 /// only for the final Rust output buffer. Budgeted rendering also admits its
-/// temporary redaction-sanitized sampling copy; other scratch, cache and GDI
-/// remain outside this pool.
+/// temporary redaction-sanitized sampling copy and current annotation layer;
+/// other scratch, cache and GDI remain outside this pool.
 pub struct BudgetedRender {
     image: Image,
     pixel_lease: BudgetLease,
@@ -61,7 +61,7 @@ impl BudgetedRender {
     }
 }
 
-/// Reserve final document output and any redaction-sanitized sampling copy.
+/// Reserve final document output, redaction-sanitized sampling and shape layers.
 /// Existing-document work may use reserved headroom, but cannot bypass the
 /// caller's shared ceiling.
 pub fn render_document_budgeted(
@@ -150,8 +150,8 @@ pub fn render_preview(
 }
 
 /// Render UI preview with shared admission for its final output and any
-/// redaction-sanitized sampling copy. Prefix cache
-/// admission remains in its independent pool, including uncached fallbacks.
+/// redaction-sanitized sampling copy and shape layers. Prefix cache admission
+/// remains in its independent pool, including uncached fallbacks.
 pub fn render_preview_budgeted(
     source: &ImageHandle,
     shapes: &[Shape],
@@ -194,7 +194,7 @@ fn render_preview_with_output_lease(
     cache: &mut Option<PreviewCache>,
     budget: &ResourceBudget,
     output_lease: Option<&mut BudgetLease>,
-    sampling_budget: Option<&ResourceBudget>,
+    render_budget: Option<&ResourceBudget>,
 ) -> Result<Image, String> {
     let Some(prefix) = shapes.get(..stable_count) else {
         *cache = None;
@@ -212,7 +212,7 @@ fn render_preview_with_output_lease(
             source,
             shapes,
             output_lease,
-            sampling_budget,
+            render_budget,
         );
     }
     // An empty prefix is just the source image. Rendering it into the cache
@@ -224,7 +224,7 @@ fn render_preview_with_output_lease(
             source,
             shapes,
             output_lease,
-            sampling_budget,
+            render_budget,
         );
     }
     let reusable = cache
@@ -242,13 +242,13 @@ fn render_preview_with_output_lease(
                 source,
                 shapes,
                 output_lease,
-                sampling_budget,
+                render_budget,
             );
         };
         // try_acquire has released its mutex. Rendering can dispatch GDI+
         // callbacks and reenter paint; the provisional lease remains owned here.
         let rendered =
-            render_document_over_with_lease(source, source, prefix, None, sampling_budget)?;
+            render_document_over_with_lease(source, source, prefix, None, render_budget)?;
         // Vec::try_reserve_exact may allocate excess capacity. Only retain the
         // buffer after its ACTUAL capacity has been admitted. A rejected growth
         // drops the candidate before releasing its lease and renders uncached.
@@ -259,7 +259,7 @@ fn render_preview_with_output_lease(
                 source,
                 shapes,
                 output_lease,
-                sampling_budget,
+                render_budget,
             );
         }
     }
@@ -270,7 +270,7 @@ fn render_preview_with_output_lease(
         &entry.rendered,
         &shapes[stable_count..],
         output_lease,
-        sampling_budget,
+        render_budget,
     )?;
     // Later pixelation samples the original, so restore redactions from the
     // cached prefix as well as those from the changing suffix.
@@ -291,7 +291,7 @@ fn render_document_over_with_lease(
     initial: &Image,
     shapes: &[Shape],
     output_lease: Option<&mut BudgetLease>,
-    sampling_budget: Option<&ResourceBudget>,
+    render_budget: Option<&ResourceBudget>,
 ) -> Result<Image, String> {
     validate_image(source)?;
     validate_same_dimensions(source, initial)?;
@@ -305,7 +305,7 @@ fn render_document_over_with_lease(
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
         && shapes.iter().any(|shape| samples_source(&shape.kind))
     {
-        Some(allocate_sampling_source(source, shapes, sampling_budget)?)
+        Some(allocate_sampling_source(source, shapes, render_budget)?)
     } else {
         None
     };
@@ -387,12 +387,18 @@ fn render_document_over_with_lease(
                 };
                 let mut local = shape.clone();
                 local.offset(-(region.x as f32), -(region.y as f32));
-                let layer = alpha_render::render_shape(region.width, region.height, &local)
-                    .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
+                let layer = alpha_render::render_shape_layer(
+                    region.width,
+                    region.height,
+                    &local,
+                    render_budget,
+                )
+                .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
+                let image = layer.image();
                 for y in 0..region.height {
                     let start = ((region.y + y) * source.width + region.x) * 4;
                     let output = &mut output_pixels[start..start + region.width * 4];
-                    let input = &layer.pixels[y * region.width * 4..(y + 1) * region.width * 4];
+                    let input = &image.pixels[y * region.width * 4..(y + 1) * region.width * 4];
                     for (dst, src) in output
                         .as_chunks_mut::<4>()
                         .0
@@ -405,14 +411,20 @@ fn render_document_over_with_lease(
                 }
             }
             _ => {
-                let layer = alpha_render::render_shape(source.width, source.height, shape)
-                    .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
-                validate_same_dimensions(source, &layer)?;
+                let layer = alpha_render::render_shape_layer(
+                    source.width,
+                    source.height,
+                    shape,
+                    render_budget,
+                )
+                .map_err(|error| format!("Shape-Rendering fehlgeschlagen: {error:?}"))?;
+                let image = layer.image();
+                validate_same_dimensions(source, image)?;
                 for (dst, src) in output_pixels
                     .as_chunks_mut::<4>()
                     .0
                     .iter_mut()
-                    .zip(layer.pixels.as_chunks::<4>().0.iter())
+                    .zip(image.pixels.as_chunks::<4>().0.iter())
                 {
                     let result = source_over(
                         [dst[0], dst[1], dst[2], dst[3]],
@@ -1166,6 +1178,236 @@ mod tests {
         (source, shapes)
     }
 
+    fn stamp_layers_fixture() -> (ImageHandle, Vec<Shape>) {
+        use crate::shapes::{Point, StampKind};
+        let (source, _) = budget_preview_fixture();
+        let shapes = [Point::new(8.0, 8.0), Point::new(22.0, 16.0)]
+            .into_iter()
+            .map(|center| {
+                let mut shape = Shape::new(ShapeKind::Stamp {
+                    center,
+                    kind: StampKind::Check,
+                });
+                shape.style.font_size = 12.0;
+                shape
+            })
+            .collect();
+        (source, shapes)
+    }
+
+    #[test]
+    fn shape_layers_share_output_pool_across_cache_build_reuse_and_fallback() {
+        let (source, shapes) = stamp_layers_fixture();
+        let original = (*source).clone();
+        let bytes = source.pixels.len();
+        let budget = ResourceBudget::new(bytes * 3, bytes * 2).unwrap();
+        let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let expected = render_document(&source, &shapes).unwrap();
+        // Two sequential layers fit room for ONE layer, not two retained ones.
+        let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
+        assert_eq!(output.image(), &expected);
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            bytes + output.image().pixels.capacity()
+        );
+        drop(output);
+        for cache_bytes in [0, bytes * 8] {
+            let cache_budget = ResourceBudget::new(cache_bytes, 0).unwrap();
+            let mut cache = None;
+            for split in 0..=shapes.len() {
+                for _ in 0..2 {
+                    let mut lease = reserve_output(&source, &budget).unwrap();
+                    let image = render_preview_with_output_lease(
+                        &source,
+                        &shapes,
+                        split,
+                        &mut cache,
+                        &cache_budget,
+                        Some(&mut lease),
+                        Some(&budget),
+                    )
+                    .unwrap();
+                    let output = BudgetedRender {
+                        image,
+                        pixel_lease: lease,
+                    };
+                    assert_eq!(output.image(), &expected);
+                    assert_eq!(cache.is_some(), cache_bytes > 0 && split > 0);
+                    drop(output);
+                    assert_eq!(budget.snapshot().used_bytes, bytes);
+                }
+            }
+            drop(cache);
+            assert_eq!(cache_budget.snapshot().used_bytes, 0);
+        }
+        assert_eq!(*source, original);
+        let mut invalid = shapes;
+        invalid[1].style.font_size = f32::NAN;
+        assert!(render_document_budgeted(&source, &invalid, &budget)
+            .err()
+            .unwrap()
+            .contains("InvalidDimensions"));
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(source_lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn layer_rejection_releases_provisional_cache_and_preserves_complete_cache_hits() {
+        let (source, shapes) = stamp_layers_fixture();
+        let bytes = source.pixels.len();
+        // Source plus output fits; a further full-image layer cannot be admitted.
+        let budget = ResourceBudget::new(bytes * 2, 0).unwrap();
+        let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        assert!(render_document_budgeted(&source, &shapes, &budget)
+            .err()
+            .unwrap()
+            .contains("BudgetRejected"));
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        for cache_bytes in [0, bytes * 8] {
+            let cache_budget = ResourceBudget::new(cache_bytes, 0).unwrap();
+            for split in 0..=shapes.len() {
+                let mut cache = None;
+                let mut lease = reserve_output(&source, &budget).unwrap();
+                assert!(render_preview_with_output_lease(
+                    &source,
+                    &shapes,
+                    split,
+                    &mut cache,
+                    &cache_budget,
+                    Some(&mut lease),
+                    Some(&budget),
+                )
+                .unwrap_err()
+                .contains("BudgetRejected"));
+                assert!(cache.is_none());
+                assert_eq!(cache_budget.snapshot().used_bytes, 0);
+                drop(lease);
+                assert_eq!(budget.snapshot().used_bytes, bytes);
+            }
+        }
+        let mut public_cache = None;
+        assert!(
+            render_preview_budgeted(&source, &shapes, 1, &mut public_cache, &budget)
+                .err()
+                .unwrap()
+                .contains("BudgetRejected")
+        );
+        assert!(public_cache.is_none());
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        // An already complete immutable prefix requires only output, and must
+        // not receive a blanket reservation for a layer that will never render.
+        let cache_budget = ResourceBudget::new(bytes * 8, 0).unwrap();
+        let mut cache = None;
+        render_preview_with_budget(&source, &shapes, shapes.len(), &mut cache, &cache_budget)
+            .unwrap();
+        let mut lease = reserve_output(&source, &budget).unwrap();
+        let image = render_preview_with_output_lease(
+            &source,
+            &shapes,
+            shapes.len(),
+            &mut cache,
+            &cache_budget,
+            Some(&mut lease),
+            Some(&budget),
+        )
+        .unwrap();
+        let output = BudgetedRender {
+            image,
+            pixel_lease: lease,
+        };
+        assert_eq!(output.image(), &render_document(&source, &shapes).unwrap());
+        drop(output);
+        let mut changed = shapes;
+        changed[0].style.font_size += 1.0;
+        let mut lease = reserve_output(&source, &budget).unwrap();
+        assert!(render_preview_with_output_lease(
+            &source,
+            &changed,
+            changed.len(),
+            &mut cache,
+            &cache_budget,
+            Some(&mut lease),
+            Some(&budget),
+        )
+        .unwrap_err()
+        .contains("BudgetRejected"));
+        assert!(cache.is_none());
+        drop(lease);
+        drop(cache);
+        assert_eq!(cache_budget.snapshot().used_bytes, 0);
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(source_lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn sampling_and_shape_layers_coexist_without_privacy_or_error_fallback() {
+        use crate::shapes::Point;
+        let (source, mut shapes) = stamp_layers_fixture();
+        let original = (*source).clone();
+        shapes.insert(
+            0,
+            Shape::new(ShapeKind::Blur {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(32.0, 24.0),
+            }),
+        );
+        shapes.push(Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(3.0, 2.0),
+        }));
+        let mut alternate = original.clone();
+        for y in 0..2 {
+            for x in 0..3 {
+                let offset = (y * source.width + x) * 4;
+                alternate.pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 17]);
+            }
+        }
+        let bytes = source.pixels.len();
+        for shapes in [shapes.clone(), shapes.into_iter().rev().collect()] {
+            let expected = render_document(&source, &shapes).unwrap();
+            assert_eq!(expected, render_document(&alternate, &shapes).unwrap());
+            let budget = ResourceBudget::new(bytes * 4, 0).unwrap();
+            let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+            let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
+            assert_eq!(output.image(), &expected);
+            assert_eq!(
+                budget.snapshot().used_bytes,
+                bytes + output.image().pixels.capacity()
+            );
+            drop(output);
+            let mut cache = None;
+            let preview =
+                render_preview_budgeted(&source, &shapes, 1, &mut cache, &budget).unwrap();
+            assert_eq!(preview.image(), &expected);
+            assert!(cache.is_none());
+            drop(preview);
+            assert_eq!(budget.snapshot().used_bytes, bytes);
+            drop(source_lease);
+            assert_eq!(budget.snapshot().used_bytes, 0);
+            let small = ResourceBudget::new(bytes * 4 - 1, 0).unwrap();
+            let source_lease = small.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+            assert!(render_document_budgeted(&source, &shapes, &small)
+                .err()
+                .unwrap()
+                .contains("BudgetRejected"));
+            assert_eq!(small.snapshot().used_bytes, bytes);
+            let mut cache = None;
+            assert!(
+                render_preview_budgeted(&source, &shapes, 1, &mut cache, &small)
+                    .err()
+                    .unwrap()
+                    .contains("BudgetRejected")
+            );
+            assert!(cache.is_none());
+            assert_eq!(small.snapshot().used_bytes, bytes);
+            drop(source_lease);
+            assert_eq!(small.snapshot().used_bytes, 0);
+        }
+        assert_eq!(*source, original);
+    }
+
     #[test]
     fn budgeted_sampling_preserves_privacy_for_all_sampling_effects_and_preview_splits() {
         use crate::shapes::{Magnifier, MagnifierFrame, Point, Rect};
@@ -1910,12 +2152,65 @@ mod tests {
                 let result = source_over(*dst, *src, 255);
                 dst.copy_from_slice(&result);
             }
+            let budget = ResourceBudget::new(image.pixels.len() * 2, 0).unwrap();
+            let budgeted =
+                render_document_budgeted(&image, std::slice::from_ref(&shape), &budget).unwrap();
+            assert_eq!(budgeted.image(), &expected);
+            drop(budgeted);
+            assert_eq!(budget.snapshot().used_bytes, 0);
             let actual = render_document(&image, &[shape]).unwrap();
             assert!(
                 actual == expected,
                 "bounded freehand changed rendered pixels"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn budgeted_freehand_admits_clipped_region_without_full_image_layer_headroom() {
+        let source = Image::new(512, 512, [20, 70, 150, 128].repeat(512 * 512)).unwrap();
+        let original = source.clone();
+        let mut shape = Shape::new(ShapeKind::Freehand {
+            points: vec![Point::new(50.0, 50.0), Point::new(60.0, 60.0)],
+        });
+        shape.style.width = 1.0;
+        let bounds = shape.bounds();
+        let margin = shape.style.width.clamp(1.0, 256.0) * 12.0 + 16.0;
+        let region = clipped_region(
+            source.width,
+            source.height,
+            bounds.x - margin,
+            bounds.y - margin,
+            bounds.x + bounds.width + margin,
+            bounds.y + bounds.height + margin,
+        )
+        .unwrap()
+        .unwrap();
+        let region_bytes = region.width * region.height * 4;
+        assert!(region_bytes < source.pixels.len());
+        let bytes = source.pixels.len();
+        let budget = ResourceBudget::new(bytes * 2 + region_bytes, 0).unwrap();
+        let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let output =
+            render_document_budgeted(&source, std::slice::from_ref(&shape), &budget).unwrap();
+        assert_eq!(
+            output.image(),
+            &render_document(&source, std::slice::from_ref(&shape)).unwrap()
+        );
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            bytes + output.image().pixels.capacity()
+        );
+        assert!(matches!(
+            alpha_render::render_shape_layer(source.width, source.height, &shape, Some(&budget)),
+            Err(alpha_render::RenderError::BudgetRejected(_))
+        ));
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(source_lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        assert_eq!(source, original);
     }
 
     #[test]

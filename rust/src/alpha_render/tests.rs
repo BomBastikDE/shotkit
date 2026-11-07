@@ -169,3 +169,128 @@ fn styled_arrow_head_matches_existing_single_arrow_geometry() {
         assert_eq!(legacy.shaft_end, styled.shaft_end.map(point));
     }
 }
+
+fn budget_stamp() -> Shape {
+    let mut shape = Shape::new(ShapeKind::Stamp {
+        center: Point::new(16.0, 16.0),
+        kind: crate::shapes::StampKind::Check,
+    });
+    shape.style.font_size = 20.0;
+    shape.style.color = crate::shapes::Color::rgba(200, 30, 80, 128);
+    shape
+}
+
+#[test]
+fn layer_admission_uses_headroom_counts_capacity_and_preserves_legacy_pixels() {
+    let original = budget_stamp();
+    let bytes = 32 * 32 * 4;
+    let budget = ResourceBudget::new(bytes, bytes).unwrap();
+    assert!(budget.try_acquire(1, AdmissionClass::Normal).is_err());
+    let layer = render_shape_layer(32, 32, &original, Some(&budget)).unwrap();
+    assert_eq!(layer.image(), &render_shape(32, 32, &original).unwrap());
+    assert_eq!(
+        budget.snapshot().used_bytes,
+        layer.image().pixels.capacity()
+    );
+    assert_eq!(original, budget_stamp());
+    assert!(matches!(
+        render_shape_layer(32, 32, &original, Some(&budget)),
+        Err(RenderError::BudgetRejected(_))
+    ));
+    drop(layer);
+    assert_eq!(budget.snapshot().used_bytes, 0);
+    let too_small = ResourceBudget::new(bytes - 1, 0).unwrap();
+    assert!(matches!(
+        render_shape_layer(32, 32, &original, Some(&too_small)),
+        Err(RenderError::BudgetRejected(_))
+    ));
+    assert_eq!(too_small.snapshot().used_bytes, 0);
+    // Omitted admission preserves the existing caller's unbudgeted contract.
+    let legacy = render_shape_layer(32, 32, &original, None).unwrap();
+    assert_eq!(legacy.image(), &render_shape(32, 32, &original).unwrap());
+    assert!(legacy.pixel_lease.is_none());
+}
+
+#[test]
+fn invalid_layer_and_backend_failure_release_admission() {
+    let bytes = 32 * 32 * 4;
+    let budget = ResourceBudget::new(bytes, 0).unwrap();
+    let mut shape = budget_stamp();
+    assert!(matches!(
+        render_shape_layer(0, 32, &shape, Some(&budget)),
+        Err(RenderError::InvalidDimensions)
+    ));
+    assert!(matches!(
+        render_shape_layer(usize::MAX, 32, &shape, Some(&budget)),
+        Err(RenderError::InvalidDimensions)
+    ));
+    shape.style.font_size = f32::NAN;
+    // The stamp backend rejects this after allocation/admission, on every OS.
+    assert!(matches!(
+        render_shape_layer(32, 32, &shape, Some(&budget)),
+        Err(RenderError::InvalidDimensions)
+    ));
+    assert_eq!(budget.snapshot().used_bytes, 0);
+    let unsupported = Shape::new(ShapeKind::Blur {
+        start: Point::new(0.0, 0.0),
+        end: Point::new(2.0, 2.0),
+    });
+    let zero = ResourceBudget::new(0, 0).unwrap();
+    assert!(matches!(
+        render_shape_layer(32, 32, &unsupported, Some(&zero)),
+        Err(RenderError::UnsupportedShape(_))
+    ));
+    assert_eq!(zero.snapshot().used_bytes, 0);
+    #[cfg(not(windows))]
+    {
+        let line = Shape::new(ShapeKind::Line {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(2.0, 2.0),
+        });
+        assert!(matches!(
+            render_shape_layer(32, 32, &line, Some(&budget)),
+            Err(RenderError::PlatformUnavailable)
+        ));
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn layer_capacity_is_admitted_before_backend_and_nested_work_cannot_bypass_pool() {
+    let bytes = 32 * 32 * 4;
+    let budget = ResourceBudget::new(bytes * 2, 0).unwrap();
+    let mut lease = budget.try_acquire(bytes, AdmissionClass::Reserved).unwrap();
+    let pixels = allocate_layer_pixels(bytes, Some(&mut lease)).unwrap();
+    assert_eq!(lease.bytes(), pixels.capacity());
+    assert!(pixels.iter().all(|pixel| *pixel == 0));
+    let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
+    let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
+    // Models callback timing after allocation and before/during the backend;
+    // this does not claim to force Windows to dispatch a native callback.
+    let result = std::panic::catch_unwind(|| {
+        let _lease = lease;
+        let _pixels = pixels;
+        let _blocker = blocker;
+        assert!(matches!(
+            render_shape_layer(32, 32, &budget_stamp(), Some(&budget)),
+            Err(RenderError::BudgetRejected(_))
+        ));
+        assert_eq!(budget.snapshot().used_bytes, bytes * 2);
+        panic!("simulate cancelled layer backend callback");
+    });
+    assert!(result.is_err());
+    assert_eq!(budget.snapshot().used_bytes, 0);
+
+    let pixels = Vec::<u8>::with_capacity(32);
+    let small = ResourceBudget::new(pixels.capacity() - 1, 0).unwrap();
+    let mut lease = small.try_acquire(1, AdmissionClass::Reserved).unwrap();
+    assert!(matches!(
+        reconcile_layer_capacity(&pixels, Some(&mut lease)),
+        Err(RenderError::BudgetRejected(_))
+    ));
+    assert_eq!(lease.bytes(), 1);
+    assert_eq!(small.snapshot().used_bytes, 1);
+    drop(pixels);
+    drop(lease);
+    assert_eq!(small.snapshot().used_bytes, 0);
+}

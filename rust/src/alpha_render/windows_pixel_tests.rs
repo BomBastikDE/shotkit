@@ -318,3 +318,78 @@ fn rounded_rectangle_zero_axes_render_pixel_identically_to_square_rectangles() {
         }
     }
 }
+
+#[test]
+fn budgeted_gdi_layers_match_legacy_pixels_and_release_after_backend_error() {
+    use crate::shapes::{CalloutData, Color, FillMode};
+    let callout = CalloutData {
+        origin: Point::new(10.0, 10.0),
+        text: "Budget\nAlpha".into(),
+        fill_color: Color::rgba(20, 40, 80, 100),
+        text_color: Color::rgba(240, 220, 200, 128),
+        tip: Some(Point::new(110.0, 130.0)),
+        layout: measure_callout_text("Budget\nAlpha", 20.0).unwrap(),
+    };
+    let start = Point::new(12.25, 14.5);
+    let end = Point::new(100.0, 85.75);
+    let kinds = [
+        ShapeKind::Line { start, end },
+        ShapeKind::Arrow { start, end },
+        ShapeKind::Rectangle { start, end },
+        ShapeKind::Ellipse { start, end },
+        ShapeKind::Highlight { start, end },
+        ShapeKind::Freehand {
+            points: vec![start, Point::new(55.5, 100.0), end],
+        },
+        ShapeKind::Text {
+            location: start,
+            text: "Alpha 42".into(),
+        },
+        ShapeKind::Step {
+            center: Point::new(70.0, 70.0),
+            number: 42,
+        },
+        ShapeKind::Callout {
+            data: Box::new(callout.clone()),
+        },
+    ];
+    let bytes = 160 * 160 * 4;
+    let budget = ResourceBudget::new(bytes, bytes).unwrap();
+    for kind in kinds {
+        let mut shape = Shape::new(kind);
+        shape.style.width = 4.0;
+        shape.style.color = Color::rgba(200, 100, 50, 128);
+        shape.style.fill = FillMode::Translucent;
+        let original = shape.clone();
+        let legacy = render_shape(160, 160, &shape).unwrap();
+        let layer = render_shape_layer(160, 160, &shape, Some(&budget)).unwrap();
+        assert_eq!(layer.image(), &legacy, "budget changed GDI layer pixels");
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            layer.image().pixels.capacity()
+        );
+        assert_eq!(shape, original);
+        assert!(matches!(
+            render_shape_layer(160, 160, &shape, Some(&budget)),
+            Err(RenderError::BudgetRejected(_))
+        ));
+        drop(layer);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+    // A valid request enters GDI and creates native guards before callout draw
+    // rejects its invalid layout. Admission must survive and unwind with them.
+    let mut invalid = callout;
+    invalid.layout.font_size = f32::NAN;
+    let shape = Shape::new(ShapeKind::Callout {
+        data: Box::new(invalid),
+    });
+    assert_eq!(
+        render_shape(160, 160, &shape),
+        Err(RenderError::InvalidDimensions)
+    );
+    assert!(matches!(
+        render_shape_layer(160, 160, &shape, Some(&budget)),
+        Err(RenderError::InvalidDimensions)
+    ));
+    assert_eq!(budget.snapshot().used_bytes, 0);
+}

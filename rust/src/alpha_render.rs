@@ -4,6 +4,7 @@
 //! transparent. Blur/pixelation is deliberately rejected because it needs the
 //! original image as a sampling source and is a document-level operation.
 
+use crate::resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget};
 use crate::shapes::{Shape, ShapeKind};
 use crate::stitch::Image;
 mod callout;
@@ -28,6 +29,7 @@ pub enum RenderError {
     UnsupportedShape(&'static str),
     InvalidDimensions,
     AllocationFailed,
+    BudgetRejected(BudgetError),
     PlatformUnavailable,
     GdiPlusStatus(i32),
 }
@@ -35,6 +37,50 @@ pub enum RenderError {
 /// Render a shape to a transparent straight-alpha BGRA layer of `width` x `height`.
 /// Shape coordinates are image-space pixels. Output bounds are clipped by GDI+.
 pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image, RenderError> {
+    let bytes = validate_request(width, height, shape)?;
+    render_validated_shape(width, height, shape, bytes, None)
+}
+
+/// A temporary layer keeps its admitted pixel capacity through rendering and
+/// document composition. Fields drop in declaration order: pixels before lease.
+/// No mutable pixels or detached image escape from a budgeted layer.
+pub(crate) struct ShapeLayer {
+    image: Image,
+    pixel_lease: Option<BudgetLease>,
+}
+
+impl ShapeLayer {
+    pub(crate) fn image(&self) -> &Image {
+        if let Some(lease) = &self.pixel_lease {
+            debug_assert_eq!(lease.bytes(), self.image.pixels.capacity());
+        }
+        &self.image
+    }
+}
+
+/// Admission uses the caller's existing pool, including reserved headroom.
+/// The optional pool preserves the unbudgeted document API's existing behavior.
+pub(crate) fn render_shape_layer(
+    width: usize,
+    height: usize,
+    shape: &Shape,
+    budget: Option<&ResourceBudget>,
+) -> Result<ShapeLayer, RenderError> {
+    let bytes = validate_request(width, height, shape)?;
+    // The lease is owned before the inner renderer allocates. It survives GDI
+    // startup, drawing, flush, every native disposer and session shutdown.
+    let mut pixel_lease = budget
+        .map(|budget| {
+            budget
+                .try_acquire(bytes, AdmissionClass::Reserved)
+                .map_err(RenderError::BudgetRejected)
+        })
+        .transpose()?;
+    let image = render_validated_shape(width, height, shape, bytes, pixel_lease.as_mut())?;
+    Ok(ShapeLayer { image, pixel_lease })
+}
+
+fn validate_request(width: usize, height: usize, shape: &Shape) -> Result<usize, RenderError> {
     if matches!(
         shape.kind,
         ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } | ShapeKind::Cursor { .. }
@@ -58,7 +104,7 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
             "Weichzeichnen benötigt das Originalbild als Quelle",
         ));
     }
-    let bytes = width
+    width
         .checked_mul(height)
         .and_then(|n| n.checked_mul(4))
         .filter(|n| {
@@ -68,12 +114,17 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
                 && width <= i32::MAX as usize
                 && height <= i32::MAX as usize
         })
-        .ok_or(RenderError::InvalidDimensions)?;
-    let mut pargb = Vec::new();
-    pargb
-        .try_reserve_exact(bytes)
-        .map_err(|_| RenderError::AllocationFailed)?;
-    pargb.resize(bytes, 0);
+        .ok_or(RenderError::InvalidDimensions)
+}
+
+fn render_validated_shape(
+    width: usize,
+    height: usize,
+    shape: &Shape,
+    bytes: usize,
+    lease: Option<&mut BudgetLease>,
+) -> Result<Image, RenderError> {
+    let mut pargb = allocate_layer_pixels(bytes, lease)?;
 
     if let ShapeKind::Stamp { center, kind } = shape.kind {
         stamps::render(width, height, center, kind, &shape.style, &mut pargb)?;
@@ -102,6 +153,33 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
         let _ = (width, height, shape, pargb);
         Err(RenderError::PlatformUnavailable)
     }
+}
+
+// Reconcile actual capacity BEFORE zeroing or any backend/GDI call. On a
+// rejected growth this local Vec drops while the outer caller still owns lease.
+fn allocate_layer_pixels(
+    bytes: usize,
+    lease: Option<&mut BudgetLease>,
+) -> Result<Vec<u8>, RenderError> {
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(bytes)
+        .map_err(|_| RenderError::AllocationFailed)?;
+    reconcile_layer_capacity(&pixels, lease)?;
+    pixels.resize(bytes, 0);
+    Ok(pixels)
+}
+
+fn reconcile_layer_capacity(
+    pixels: &Vec<u8>,
+    lease: Option<&mut BudgetLease>,
+) -> Result<(), RenderError> {
+    if let Some(lease) = lease {
+        lease
+            .try_resize(pixels.capacity())
+            .map_err(RenderError::BudgetRejected)?;
+    }
+    Ok(())
 }
 
 // Preserve the previous max/min behavior for NaN: use the minimum size.

@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Während der Editor-Komposition werden auch temporäre Formenebenen im gemeinsamen Bildbudget berücksichtigt. Sehr große Bilder können dadurch beim Zeichnen oder Kopieren früher eine Speichermeldung erhalten; die Anleitung nennt Beispiele und verbleibende Grenzen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Die für bestimmte Effekte benötigte bereits geschwärzte Quellkopie wird während der Editor-Komposition im Bildbudget gehalten. Reicht das Budget nicht, wird die Darstellung abgebrochen; es erfolgt kein Rückfall auf eine ungeschwärzte Effektquelle ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Der vorübergehende Ausgabepuffer der Editorvorschau und Bildkomposition wird im gemeinsamen Bildbudget berücksichtigt. Bei fehlendem Budget bleibt der Dokumentzustand erhalten; GDI und andere Render-Zwischenpuffer sind nicht vollständig erfasst ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

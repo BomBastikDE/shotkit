@@ -1,8 +1,9 @@
 //! Windows file and clipboard imports. This shared budget accounts for decoder-known
 //! import buffers and retained imported, clipboard, ordinary screenshot, crop
-//! frame/shadow, canvas-resize and transient UI composition output pixels, not GDI,
-//! renderer scratch, other edits, allocator overhead or process
-//! RSS. Nothing here replaces an existing editor.
+//! frame/shadow, canvas-resize and transient UI composition output, redaction-
+//! sanitized sampling and current shape-layer pixels, not GDI, other renderer
+//! scratch, other edits, allocator overhead or process RSS. Nothing here replaces
+//! an existing editor.
 use super::*;
 use shotkit::{
     image_handle::ImageHandle,
