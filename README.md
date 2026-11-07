@@ -1,7 +1,7 @@
 # ShotKit
 
 Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
-Geschrieben in Rust, eine einzige EXE, keine Installation nötig.
+Geschrieben in Rust, eine einzige EXE, keine Installation nötig. Die Entwicklung erfolgt auf `main`.
 
 > **Status: Beta.** ShotKit wird in Rust neu entwickelt; der Code liegt in [`rust/`](rust/).
 > Funktionsumfang und Windows-Verhalten sind noch nicht vollständig geprüft – siehe
@@ -26,7 +26,7 @@ Funktionen, Tastenkürzel, bekannte Grenzen sowie Bauen und Testen: **[rust/READ
 
 Die C#-Version **1.2.0** ist die letzte als stabil freigegebene Version
 (Release [`v1.2.0`](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0)). Ihr Quellcode liegt auf dem Branch
-[`csharp/1.x`](https://github.com/BomBastikDE/shotkit/tree/csharp/1.x); dort gibt es nur noch Sicherheitskorrekturen.
+[`csharp/1.x`](https://github.com/BomBastikDE/shotkit/tree/csharp/1.x); diese historische Fassung wird nicht weiterentwickelt.
 
 Umstieg: C#-ShotKit über das Tray-Menü beenden, dann die Rust-EXE starten. Rust verwendet eigene Einstellungen unter
 `%APPDATA%\ShotKitRust` und übernimmt oder ändert die C#-Einstellungen (`%APPDATA%\ShotKit`) nicht. Ausgabeoptionen
