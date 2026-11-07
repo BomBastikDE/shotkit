@@ -4,8 +4,8 @@
 
 ## Herunterladen
 
-1. Auf der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) die neueste
-   `shotkit-v2.0.0-alpha.N-windows-x64.exe` und die gleichnamige `.sha256`-Datei laden.
+1. Auf der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) die neueste Version
+   (`shotkit-v2.0.0-windows-x64.exe`) und die gleichnamige `.sha256`-Datei laden.
 2. Optional die Echtheit der Übertragung prüfen (PowerShell im Download-Ordner):
 
    ```powershell
@@ -22,22 +22,22 @@
 Die EXE per Doppelklick starten.
 
 > [!WARNING]
-> Die EXE ist noch nicht digital signiert. Windows SmartScreen zeigt deshalb eine Warnung:
-> „Weitere Informationen“ → „Trotzdem ausführen“. Signierung ist geplant
-> ([#9](https://github.com/BomBastikDE/shotkit/issues/9)).
+> Die EXE ist nicht digital signiert. Windows SmartScreen zeigt deshalb eine Warnung:
+> „Weitere Informationen“ → „Trotzdem ausführen“. Mehr dazu unter
+> [Sicherheit](sicherheit.md#echtheit-der-exe).
 
 ShotKit läuft danach im **Infobereich der Taskleiste** (rotes ShotKit-Symbol, ggf. unter dem Pfeil
 „Ausgeblendete Symbole“):
 
 - **Linksklick** auf das Symbol: Bereich aufnehmen
-- **Rechtsklick**: Menü mit allen Aufnahmearten, Einstellungen, „Über ShotKit“ und „Beenden“
+- **Rechtsklick**: Menü mit allen Aufnahmearten, Editor, Bild öffnen, Einstellungen, „Über ShotKit“ und „Beenden“ (siehe [Einstellungen](einstellungen.md#menü-im-infobereich))
 
 Ist ein Tastenkürzel schon von einem anderen Programm belegt, meldet ShotKit das direkt nach dem Start
 (siehe [Aufnehmen](aufnehmen.md#tastenkürzel)).
 
 ## Automatisch mit Windows starten
 
-Rechtsklick → **Einstellungen** → **Mit Windows starten**.
+Rechtsklick → **Einstellungen** → **Mit Windows starten**. Steht dort „Autostart nicht verfügbar“, lässt sich die Option nicht ändern.
 
 ## Aktualisieren
 

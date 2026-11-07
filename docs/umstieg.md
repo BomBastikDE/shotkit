@@ -2,7 +2,7 @@
 
 [← Handbuch](README.md)
 
-Die C#-Version 1.2.0 ist bis zur ersten Rust-Beta die letzte als stabil freigegebene Version
+Die C#-Version 1.2.0 ist die letzte C#-Version und wird nicht weiterentwickelt
 ([Release v1.2.0](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0), Quellcode auf Branch
 [`csharp/1.x`](https://github.com/BomBastikDE/shotkit/tree/csharp/1.x)).
 
@@ -16,13 +16,16 @@ Die C#-Version 1.2.0 ist bis zur ersten Rust-Beta die letzte als stabil freigege
 
 ## Wichtige Unterschiede
 
-| | C# 1.2.0 | Rust (Alpha) |
+| | C# 1.2.0 | Rust (2.0.0) |
 |---|---|---|
-| Scroll-Aufnahme | <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Druck</kbd> | zusätzlich <kbd>F10</kbd> |
+| Scroll-Aufnahme | <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Druck</kbd> | zusätzlich <kbd>F10</kbd>, <kbd>Strg</kbd>+<kbd>Umschalt</kbd>+<kbd>4</kbd>; Richtung wird vorher abgefragt |
 | Bereich | <kbd>Druck</kbd> | zusätzlich <kbd>F11</kbd> |
 | Bildschirm | <kbd>Strg</kbd>+<kbd>Druck</kbd> | zusätzlich <kbd>F9</kbd> |
 | Automatisch kopieren/speichern | standardmäßig an | standardmäßig aus |
 | <kbd>Strg</kbd>+<kbd>V</kbd> im Editor | ersetzt das Bild | öffnet einen neuen Editor |
+
+Neu in der Rust-Version sind unter anderem Schwärzen, Weichzeichnen, Sprechblasen, Stempel, Spotlight, Bildlupe,
+Formstile, Leinwandgröße und die Option, Aufnahmen vom Zwischenablageverlauf auszunehmen.
 
 Den vollständigen Funktionsvergleich enthält die [Paritätstabelle](../rust/PARITY.md).
 
