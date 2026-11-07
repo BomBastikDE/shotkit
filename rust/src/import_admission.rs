@@ -1,7 +1,10 @@
 //! Portable, opt-in import ownership; this module installs no application hooks.
 //!
-//! Decode with `image_io::decode_file_with_budget` using `budget()`, then pass
-//! the owned Image and its lease to `try_begin`. Rejection returns both intact.
+//! Reserve `try_reserve_decode()` BEFORE calling
+//! `image_io::decode_file_with_budget` using `budget()`, then pass the owned
+//! Image and lease to the ticket's `try_begin`. Decode error drops the ticket;
+//! admission rejection returns both decoded values intact. Existing already-
+//! decoded callers can still use the owner's `try_begin` convenience API.
 //! A private-field `TrackedImage` owns image AND lease, shared through Arc. Its
 //! read-only API cannot extract the pixels or remove the lease: even unwrapping
 //! an Arc moves both together. The last tracked owner releases the reservation
@@ -31,6 +34,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingState {
     Empty,
+    /// An exclusive ticket is decoding; no image has been admitted yet.
+    Decoding,
     Initializing,
     Recoverable,
 }
@@ -72,9 +77,12 @@ impl TrackedImage {
     }
 }
 
-struct Pending {
-    image: Arc<TrackedImage>,
-    state: PendingState,
+enum Pending {
+    Decoding,
+    Image {
+        image: Arc<TrackedImage>,
+        state: PendingState,
+    },
 }
 
 /// Share this owner and its budget; a second owner has a second pending slot.
@@ -105,63 +113,72 @@ impl ImportAdmission {
     pub fn pending_state(&self) -> PendingState {
         self.lock()
             .as_ref()
-            .map_or(PendingState::Empty, |pending| pending.state)
+            .map_or(PendingState::Empty, |pending| match pending {
+                Pending::Decoding => PendingState::Decoding,
+                Pending::Image { state, .. } => *state,
+            })
     }
 
-    /// Accept exclusively owned pixels and a sufficient lease from this pool.
-    /// Validation finishes before the slot changes. Arc allocation follows
-    /// validation and precedes the Initializing transition; there is no ledger
-    /// or later container reservation that could fail during complete/discard.
+    /// Claim the exclusive slot BEFORE decoding. A decoder can use `budget()`
+    /// outside the mutex, then transfer its Image and lease with the ticket's
+    /// `try_begin`. Dropping the ticket (including decode error/unwind) clears
+    /// only its image-free reservation. A forgotten ticket remains Busy.
+    pub fn try_reserve_decode(&self) -> Result<DecodeReservation<'_>, AdmissionError> {
+        let mut pending = self.lock();
+        if pending.is_some() {
+            return Err(AdmissionError::Busy);
+        }
+        *pending = Some(Pending::Decoding);
+        Ok(DecodeReservation {
+            owner: self,
+            active: true,
+        })
+    }
+
+    /// Admit already-decoded owned pixels. Existing callers can keep this API;
+    /// new decode paths should claim `try_reserve_decode` before doing work.
+    /// Any rejection returns Image and lease unchanged to the caller.
     pub fn try_begin(
         &self,
         image: Image,
-        mut lease: BudgetLease,
+        lease: BudgetLease,
     ) -> Result<Initialization<'_>, RejectedImport> {
-        let mut pending = self.lock();
-        let error = if pending.is_some() {
-            Some(AdmissionError::Busy)
-        } else if image.validate().is_err() {
-            Some(AdmissionError::InvalidImage)
-        } else if lease.bytes() < image.pixels.capacity() {
-            Some(AdmissionError::InsufficientLease)
-        } else {
-            // A zero transfer checks budget identity without changing amounts.
-            let mut probe = self
-                .budget
-                .try_acquire(0, AdmissionClass::Normal)
-                .expect("zero-byte reservation cannot fail");
-            lease
-                .transfer_to(&mut probe, 0)
-                .err()
-                .map(|_| AdmissionError::DifferentBudget)
-        };
-        if let Some(error) = error {
-            return Err(RejectedImport {
+        match self.try_reserve_decode() {
+            Ok(ticket) => ticket.try_begin(image, lease),
+            Err(error) => Err(RejectedImport {
                 error,
                 image,
                 lease,
-            });
+            }),
         }
-        let image = Arc::new(TrackedImage { image, lease });
-        *pending = Some(Pending {
-            image: Arc::clone(&image),
-            state: PendingState::Initializing,
-        });
-        Ok(Initialization {
-            owner: self,
-            image,
-            active: true,
-        })
+    }
+
+    fn validate(&self, image: &Image, lease: &mut BudgetLease) -> Option<AdmissionError> {
+        if image.validate().is_err() {
+            return Some(AdmissionError::InvalidImage);
+        }
+        if lease.bytes() < image.pixels.capacity() {
+            return Some(AdmissionError::InsufficientLease);
+        }
+        // A zero transfer checks budget identity without changing amounts.
+        let mut probe = self
+            .budget
+            .try_acquire(0, AdmissionClass::Normal)
+            .expect("zero-byte reservation cannot fail");
+        lease
+            .transfer_to(&mut probe, 0)
+            .err()
+            .map(|_| AdmissionError::DifferentBudget)
     }
 
     pub fn try_recover(&self) -> Result<Initialization<'_>, AdmissionError> {
         let mut slot = self.lock();
         match slot.as_mut() {
-            Some(pending) if pending.state == PendingState::Recoverable => {
-                pending.state = PendingState::Initializing;
+            Some(Pending::Image { image, state }) if *state == PendingState::Recoverable => {
+                *state = PendingState::Initializing;
                 Ok(Initialization {
                     owner: self,
-                    image: Arc::clone(&pending.image),
+                    image: Arc::clone(image),
                     active: true,
                 })
             }
@@ -176,7 +193,10 @@ impl ImportAdmission {
         let discarded = {
             let mut slot = self.lock();
             match slot.as_ref() {
-                Some(pending) if pending.state == PendingState::Recoverable => {}
+                Some(Pending::Image {
+                    state: PendingState::Recoverable,
+                    ..
+                }) => {}
                 Some(_) => return Err(AdmissionError::Busy),
                 None => return Err(AdmissionError::NoRecoverableImport),
             }
@@ -184,6 +204,66 @@ impl ImportAdmission {
         };
         drop(discarded);
         Ok(())
+    }
+}
+
+/// Exclusive image-free decode reservation. Hold across decoding, outside the
+/// mutex. On validation rejection `try_begin` returns the original Image and
+/// lease, and releases this ticket's slot. The caller then explicitly chooses
+/// retry, retention or disposal; no decoded result is silently consumed.
+#[must_use = "hold the ticket across decoding, then admit or drop it"]
+pub struct DecodeReservation<'a> {
+    owner: &'a ImportAdmission,
+    active: bool,
+}
+
+impl<'a> DecodeReservation<'a> {
+    /// Validate before replacing the Decoding slot. Success transitions directly
+    /// to Initializing; dropping its guard subsequently retains it Recoverable.
+    /// Arc allocation precedes the transition. No callback or decoder runs under
+    /// the mutex, and completion/discard need no container allocation.
+    pub fn try_begin(
+        mut self,
+        image: Image,
+        mut lease: BudgetLease,
+    ) -> Result<Initialization<'a>, RejectedImport> {
+        if let Some(error) = self.owner.validate(&image, &mut lease) {
+            return Err(RejectedImport {
+                error,
+                image,
+                lease,
+            });
+        }
+        let mut pending = self.owner.lock();
+        if !matches!(pending.as_ref(), Some(Pending::Decoding)) {
+            return Err(RejectedImport {
+                error: AdmissionError::Busy,
+                image,
+                lease,
+            });
+        }
+        let image = Arc::new(TrackedImage { image, lease });
+        *pending = Some(Pending::Image {
+            image: Arc::clone(&image),
+            state: PendingState::Initializing,
+        });
+        self.active = false;
+        Ok(Initialization {
+            owner: self.owner,
+            image,
+            active: true,
+        })
+    }
+}
+
+impl Drop for DecodeReservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let mut pending = self.owner.lock();
+            if matches!(pending.as_ref(), Some(Pending::Decoding)) {
+                *pending = None;
+            }
+        }
     }
 }
 
@@ -205,9 +285,14 @@ impl Initialization<'_> {
     /// and returning its tracked handle requires no allocation or callback.
     pub fn complete(mut self) -> Arc<TrackedImage> {
         let pending = self.owner.lock().take().expect("guard owns pending import");
-        debug_assert_eq!(pending.state, PendingState::Initializing);
-        self.active = false;
-        pending.image
+        match pending {
+            Pending::Image { image, state } => {
+                debug_assert_eq!(state, PendingState::Initializing);
+                self.active = false;
+                image
+            }
+            Pending::Decoding => unreachable!("initialization guard owns image slot"),
+        }
     }
 
     /// Report an ordinary initialization error; Drop provides the same fallback.
@@ -219,8 +304,8 @@ impl Initialization<'_> {
 impl Drop for Initialization<'_> {
     fn drop(&mut self) {
         if self.active {
-            if let Some(pending) = self.owner.lock().as_mut() {
-                pending.state = PendingState::Recoverable;
+            if let Some(Pending::Image { state, .. }) = self.owner.lock().as_mut() {
+                *state = PendingState::Recoverable;
             }
         }
     }
@@ -241,6 +326,120 @@ mod tests {
     fn begin(owner: &ImportAdmission, byte: u8) -> Initialization<'_> {
         let (image, lease) = image_and_lease(owner.budget(), byte);
         owner.try_begin(image, lease).unwrap()
+    }
+
+    #[test]
+    fn decode_ticket_blocks_concurrent_and_nested_entry_until_drop() {
+        let owner = ImportAdmission::new(ResourceBudget::new(16, 0).unwrap());
+        let ticket = owner.try_reserve_decode().unwrap();
+        assert_eq!(owner.pending_state(), PendingState::Decoding);
+        assert!(matches!(owner.try_recover(), Err(AdmissionError::Busy)));
+        assert_eq!(owner.discard_recoverable(), Err(AdmissionError::Busy));
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    assert!(matches!(
+                        owner.try_reserve_decode(),
+                        Err(AdmissionError::Busy)
+                    ));
+                    let (image, lease) = image_and_lease(owner.budget(), 2);
+                    let rejected = owner.try_begin(image, lease).err().unwrap();
+                    assert_eq!(rejected.error, AdmissionError::Busy);
+                    assert_eq!(rejected.image.pixels, vec![2; 4]);
+                })
+                .join()
+                .unwrap();
+        });
+        assert_eq!(owner.budget().snapshot().used_bytes, 0);
+        drop(ticket); // e.g. a decoder returned Err before producing an image
+        assert_eq!(owner.pending_state(), PendingState::Empty);
+        drop(owner.try_reserve_decode().unwrap());
+    }
+
+    #[test]
+    fn decode_unwind_releases_only_its_empty_reservation() {
+        let owner = ImportAdmission::new(ResourceBudget::new(8, 0).unwrap());
+        let existing = begin(&owner, 11).complete();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ticket = owner.try_reserve_decode().unwrap();
+            let (_temporary, _lease) = image_and_lease(owner.budget(), 3);
+            panic!("decode failed");
+        }));
+        assert!(result.is_err());
+        assert_eq!(owner.pending_state(), PendingState::Empty);
+        assert_eq!(owner.budget().snapshot().used_bytes, 4);
+        assert_eq!(existing.image().pixels, vec![11; 4]);
+    }
+
+    #[test]
+    fn ticket_success_transitions_to_initializing_then_retains_on_abort() {
+        let owner = ImportAdmission::new(ResourceBudget::new(8, 0).unwrap());
+        let ticket = owner.try_reserve_decode().unwrap();
+        let (image, lease) = image_and_lease(owner.budget(), 5);
+        let guard = ticket.try_begin(image, lease).unwrap();
+        assert_eq!(owner.pending_state(), PendingState::Initializing);
+        assert!(matches!(
+            owner.try_reserve_decode(),
+            Err(AdmissionError::Busy)
+        ));
+        drop(guard);
+        assert_eq!(owner.pending_state(), PendingState::Recoverable);
+        assert!(matches!(
+            owner.try_reserve_decode(),
+            Err(AdmissionError::Busy)
+        ));
+        let image = owner.try_recover().unwrap().complete();
+        assert_eq!(image.image().pixels, vec![5; 4]);
+        assert_eq!(owner.pending_state(), PendingState::Empty);
+        drop(image);
+        assert_eq!(owner.budget().snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn ticket_rejections_return_identical_decoded_allocation_and_lease() {
+        let owner = ImportAdmission::new(ResourceBudget::new(16, 0).unwrap());
+        let foreign = ResourceBudget::new(16, 0).unwrap();
+        for expected in [
+            AdmissionError::InvalidImage,
+            AdmissionError::InsufficientLease,
+            AdmissionError::DifferentBudget,
+        ] {
+            let ticket = owner.try_reserve_decode().unwrap();
+            let mut pixels = Vec::with_capacity(8);
+            pixels.extend_from_slice(&[1, 2, 3, 4]);
+            let ptr = pixels.as_ptr();
+            let image = Image {
+                width: if expected == AdmissionError::InvalidImage {
+                    2
+                } else {
+                    1
+                },
+                height: 1,
+                pixels,
+            };
+            let bytes = if expected == AdmissionError::InsufficientLease {
+                3
+            } else {
+                8
+            };
+            let pool = if expected == AdmissionError::DifferentBudget {
+                &foreign
+            } else {
+                owner.budget()
+            };
+            let lease = pool.try_acquire(bytes, AdmissionClass::Reserved).unwrap();
+            let rejected = ticket.try_begin(image, lease).err().unwrap();
+            assert_eq!(rejected.error, expected);
+            assert_eq!(rejected.image.pixels.as_ptr(), ptr);
+            assert_eq!(rejected.image.pixels.capacity(), 8);
+            assert_eq!(rejected.image.pixels, vec![1, 2, 3, 4]);
+            assert_eq!(rejected.lease.bytes(), bytes);
+            assert_eq!(rejected.lease.class(), AdmissionClass::Reserved);
+            assert_eq!(pool.snapshot().used_bytes, bytes);
+            assert_eq!(owner.pending_state(), PendingState::Empty);
+            drop(rejected);
+            assert_eq!(pool.snapshot().used_bytes, 0);
+        }
     }
 
     #[test]
