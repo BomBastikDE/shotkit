@@ -298,24 +298,35 @@ namespace ShotKitScrollSurface {
             File.WriteAllText(readyFile, String.Format("{0},{1},{2},{3}", origin.X, origin.Y, ClientSize.Width, ClientSize.Height));
         }
 
-        protected override void OnActivated(EventArgs e) {
-            base.OnActivated(e);
-            if (clipApplied || String.IsNullOrEmpty(clipArmFile) ||
-                !File.Exists(clipArmFile) || GetForegroundWindow() != Handle) return;
-            string mode = File.ReadAllText(clipArmFile).Trim();
-            if (mode != "Inside" && mode != "Outside") throw new InvalidOperationException("Invalid cursor clip mode.");
-            // Arm only after the selection endpoint is established. Apply here,
-            // after the overlay gives foreground back to this owned surface.
-            // ShotKit's existing activation-message barrier runs before its
-            // capture worker starts, so no timer/poll races are needed here.
-            Point origin = PointToScreen(Point.Empty);
-            ClipRect expected = new ClipRect {
-                Left = origin.X + (mode == "Inside" ? 676 : 680),
-                Top = origin.Y + 60, Right = origin.X + 681, Bottom = origin.Y + 461
-            };
-            clipApplied = true;
-            if (!ClipCursor(ref expected)) throw new InvalidOperationException("Foreground ClipCursor failed.");
-            File.WriteAllText(clipProofFile, ClipEvidence("active") + Environment.NewLine);
+        private void ApplyArmedCursorClip() {
+            if (clipApplied || String.IsNullOrEmpty(clipArmFile) || !File.Exists(clipArmFile)) return;
+            IntPtr foreground = GetForegroundWindow();
+            File.AppendAllText(clipProofFile + ".trace", String.Format(
+                "activation_barrier foreground={0} surface={1}{2}", foreground, Handle, Environment.NewLine));
+            if (foreground != Handle) return;
+            clipApplied = true; // One attempt; a failure must fail the scenario.
+            try {
+                string mode = File.ReadAllText(clipArmFile).Trim();
+                if (mode != "Inside" && mode != "Outside") throw new InvalidOperationException("Invalid cursor clip mode.");
+                // The application sends WM_NULL to this target after requesting
+                // foreground, and waits for its return before creating the
+                // capture worker. Apply here, not in an optional activation event.
+                Point origin = PointToScreen(Point.Empty);
+                ClipRect expected = new ClipRect {
+                    Left = origin.X + (mode == "Inside" ? 676 : 680),
+                    Top = origin.Y + 60, Right = origin.X + 681, Bottom = origin.Y + 461
+                };
+                File.AppendAllText(clipProofFile + ".trace", "clip_begin" + Environment.NewLine);
+                if (!ClipCursor(ref expected))
+                    throw new InvalidOperationException("ClipCursor failed: Win32 " + Marshal.GetLastWin32Error());
+                File.AppendAllText(clipProofFile + ".trace", "clip_returned" + Environment.NewLine);
+                File.WriteAllText(clipProofFile, ClipEvidence("active") + Environment.NewLine);
+            } catch (Exception error) {
+                // WinForms can keep a process alive after a UI callback fails.
+                // Publish the failure explicitly instead of opening a dialog
+                // and leaving the controller waiting for a missing handshake.
+                File.WriteAllText(clipProofFile, "error," + error.ToString() + Environment.NewLine);
+            }
         }
 
         private string ClipEvidence(string stage) {
@@ -328,6 +339,7 @@ namespace ShotKitScrollSurface {
         }
 
         protected override void WndProc(ref Message m) {
+            if (m.Msg == 0) ApplyArmedCursorClip(); // ShotKit's synchronous activation barrier.
             if (m.Msg == WheelMessage) {
                 if (clipApplied)
                     File.AppendAllText(clipProofFile, ClipEvidence("wheel") + Environment.NewLine);
@@ -470,23 +482,35 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $Cl
         if (-not [ShotKitScrollSmoke.Native]::GetClipCursor([ref]$originalClip)) {
             throw 'Could not save the original cursor clip rectangle.'
         }
-        # Let the owned target apply clipping when it regains foreground.
-        # A pre-mouse-up probe did not establish the condition during scrolling:
-        # the previous Outside CI run incorrectly reached the real page end.
+        # Arm the owned target's synchronous WM_NULL activation barrier. It
+        # applies the clip before ShotKit starts its capture worker.
         $clipChanged = $true
         [IO.File]::WriteAllText($clipArmFile, $CursorClip, [System.Text.UTF8Encoding]::new($false))
     }
     [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $selectionButtonDown = $false
     if ($CursorClip -ne 'None') {
-        $activeClip = Wait-ForCondition -TimeoutSeconds 10 -Description 'cursor clipping applied by the foreground test surface' -OwnedProcess $surface -Condition {
-            if (Test-Path -LiteralPath $clipProofFile -PathType Leaf) {
-                $content = Read-SharedText -Path $clipProofFile
-                if ($content.Contains("`n")) {
-                    $lines = @($content.Trim() -split '\r?\n')
-                    if ($lines[0].StartsWith('active,')) { $lines[0] }
+        try {
+            $activeClip = Wait-ForCondition -TimeoutSeconds 10 -Description 'cursor clipping applied at the target activation barrier' -OwnedProcess $surface -Condition {
+                if (Test-Path -LiteralPath $clipProofFile -PathType Leaf) {
+                    $content = Read-SharedText -Path $clipProofFile
+                    if ($content.Contains("`n")) {
+                        $lines = @($content.Trim() -split '\r?\n')
+                        if ($lines[0].StartsWith('error,')) { throw "Target cursor clip setup failed: $content" }
+                        if ($lines[0].StartsWith('active,')) { $lines[0] }
+                    }
                 }
             }
+        }
+        catch {
+            Write-Output "DIAGNOSTIC: cursor clip arm='$CursorClip'; trace=$(Get-ProcessOutput ($clipProofFile + '.trace')); proof=$(Get-ProcessOutput $clipProofFile)"
+            Write-Output "DIAGNOSTIC: surface stdout=$(Get-ProcessOutput $surfaceStdout); stderr=$(Get-ProcessOutput $surfaceStderr)"
+            foreach ($actor in @($shotKit, $surface)) {
+                if ($null -ne $actor -and -not $actor.HasExited) {
+                    Write-Output "DIAGNOSTIC: owned PID=$($actor.Id) windows=$((Get-ProcessWindows $actor | ConvertTo-Json -Compress) -join '')"
+                }
+            }
+            throw
         }
         $clipLeft = if ($CursorClip -eq 'Inside') { $endX - 4 } else { $endX }
         $clipBounds = '{0},{1},{2},{3}' -f $clipLeft, $startY, ($endX + 1), ($endY + 1)
@@ -494,7 +518,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $Cl
         if ($activeClip -cne $expectedActiveClip) {
             throw "Foreground cursor clip mismatch. Expected='$expectedActiveClip' Actual='$activeClip'"
         }
-        Write-Output "MILESTONE: foreground surface established $activeClip."
+        Write-Output "MILESTONE: target activation barrier established $activeClip."
     }
 
     $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'an auto-saved scroll-capture PNG' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
