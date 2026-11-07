@@ -85,6 +85,11 @@ function Click-Button([IntPtr]$Parent,[string]$Text) {
     if($null -eq $b){$all=([ShotKitSaveHistorySmoke.N]::Buttons($Parent)|%{$_.Text}) -join ', '; throw "BUTTON_NOT_FOUND '$Text'; found [$all]"}
     [ShotKitSaveHistorySmoke.N]::Click($b.H)
 }
+function Assert-EditorTitle([string]$Tool,[bool]$Dirty,[string]$Phase) {
+    $prefix=if($Dirty){'* '}else{''}
+    $expected=$prefix+$inputPath+' – ShotKit · Werkzeug: '+$Tool+' · Strg+S speichern'
+    [void](Wait-Value {Get-Main|Where-Object {$_.Title -ceq $expected}} "$Phase; expected title '$expected'")
+}
 function Save-Image([string]$Description) {
     Click-Button $main.H 'Speichern'
     $end=[DateTime]::UtcNow.AddSeconds(15)
@@ -141,6 +146,7 @@ try {
     [void][ShotKitSaveHistorySmoke.N]::ShowWindow($main.H,3);[void][ShotKitSaveHistorySmoke.N]::SetForegroundWindow($main.H)
     Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitSaveHistorySmoke.N]::Windows($process.Id) }
     $main=Wait-Value {Get-Main} 'ready editor'
+    Assert-EditorTitle 'Auswahl' $false 'opened filename and initial German tool'
     $client=[Activator]::CreateInstance([ShotKitSaveHistorySmoke.Rect]);[void][ShotKitSaveHistorySmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitSaveHistorySmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
     if($null -eq $toolbar){throw 'EDITOR_TOOLBAR_MISSING'}
@@ -149,13 +155,21 @@ try {
     $fit=[Math]::Min($vw/160.0,$vh/120.0);$displayW=[int][Math]::Round(160*$fit);$displayH=[int][Math]::Round(120*$fit)
     $viewX=[int][Math]::Floor(($vw-$displayW)/2.0);$viewY=$tr.Bottom+[int][Math]::Floor(($vh-$displayH)/2.0)
     Click-Button $main.H 'Verpixeln (B) – keine sichere Schwärzung'
-    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug Blur*'}} 'Blur tool activation')
+    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug: Verpixeln*'}} 'Blur tool activation')
+    Assert-EditorTitle 'Verpixeln' $false 'filename and clean state after tool change'
     Drag-Image 24 20 120 90
+    Assert-EditorTitle 'Verpixeln' $true 'filename and dirty state after edit'
+    Click-Button $main.H 'Auswahl (V)'
+    Assert-EditorTitle 'Auswahl' $true 'filename and dirty marker retained after tool change'
+    Click-Button $main.H 'Weichzeichnen (W) – keine sichere Schwärzung'
+    Assert-EditorTitle 'Weichzeichnen' $true 'German blur name and dirty marker after second tool change'
     Save-Image 'pixelation export'
     Assert-Pixelated (Read-Image) 'pixelation export'
     $savedHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     if($savedHash -ceq $originalHash){throw 'SAVE_DID_NOT_CHANGE_IMAGE: output hash still matches the untouched fixture.'}
     $main=Wait-Value {Get-Main|Where-Object {-not $_.Title.StartsWith('* ')}} 'clean title after successful save'
+    Click-Button $main.H 'Verpixeln (B) – keine sichere Schwärzung'
+    Assert-EditorTitle 'Verpixeln' $false 'filename and saved clean state retained after tool change'
     Click-Button $main.H 'Zurück'
     [void](Wait-Value {Get-Main|Where-Object {$_.Title.StartsWith('* ')}} 'dirty title after undo')
     Click-Button $main.H 'Wiederholen'
@@ -172,7 +186,7 @@ try {
     if([ShotKitSaveHistorySmoke.N]::IsWindow($editorHandle)){throw 'EDITOR_CLOSE_TIMEOUT: the test-owned editor HWND remained after WM_CLOSE.'}
     $remainingDialogs=@([ShotKitSaveHistorySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
     if($remainingDialogs.Count -gt 0){$startup=@($remainingDialogs|Where-Object {$_.Title -eq 'Willkommen bei ShotKit'});if($startup.Count -gt 0){throw "STARTUP_NOTICE_REAPPEARED_DURING_CLOSE: $($startup.Title -join ', ')"};throw "UNEXPECTED_CLOSE_DIALOG: $($remainingDialogs.Title -join ', ')"}
-    Write-Output "PASS: edit changed and saved the opened image; undo showed the title star; redo returned to the clean saved state without a star; the editor HWND closed without an owned dialog (saved SHA256 $savedHash)."
+    Write-Output "PASS: opened filename, German tool names and clean/dirty marker survived tool changes; edit changed and saved the opened image; undo showed the title star; redo returned to the clean saved state without a star; the editor HWND closed without an owned dialog (saved SHA256 $savedHash)."
 }
 catch { $failure=$_ }
 finally {
