@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 
 if ($TimeoutSeconds -lt 5 -or $TimeoutSeconds -gt 180) {
     throw 'TimeoutSeconds muss zwischen 5 und 180 liegen.'
@@ -249,13 +250,7 @@ try {
     try { $fixture.Save($initialImage, [Drawing.Imaging.ImageFormat]::Png) }
     finally { $fixture.Dispose() }
     $primary = New-ShotKitProcess @($initialImage)
-    $welcomeTitle = '*Prototyp*'
-    Wait-ForCondition {
-        -not $primary.HasExited -and $null -ne (Get-Dialog $primary $welcomeTitle)
-    } $TimeoutSeconds 'STARTUP_DIALOG_TIMEOUT: Startdialog der ersten Instanz wurde nicht gefunden.'
-    $welcome = Get-Dialog $primary $welcomeTitle
-    $welcomeButton = Wait-ForDialogButton $primary $welcome @('OK') 'IDOK'
-    Wait-ForDialogClosed $primary $welcome 'STARTUP_DIALOG_CLOSE_TIMEOUT: Startdialog blieb nach IDOK geöffnet.'
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $primary -GetWindows { Get-ProcessWindows $primary }
 
     Wait-ForCondition {
         -not $primary.HasExited -and @((Get-ProcessWindows $primary | Where-Object {

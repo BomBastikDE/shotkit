@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -194,7 +195,7 @@ function Assert-NoUnexpectedDialog {
         [string[]] $AllowedTitles = @()
     )
     $dialog = Get-ProcessDialogs $OwnedProcess |
-        Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -notlike '*Prototyp*' } |
+        Where-Object { $AllowedTitles -notcontains $_.Title } |
         Select-Object -First 1
     if ($null -ne $dialog) {
         $text = [ShotKitScrollDiagnosticsSmoke.Native]::WindowText($dialog.Handle)
@@ -360,13 +361,7 @@ $surfaceForm = [ShotKitScrollDiagnosticsSurface.Surface]::new($ReadyFile, $Wheel
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
-    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
-        Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    if (-not [ShotKitScrollDiagnosticsSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not close the ShotKit startup dialog.'
-    }
-    Start-Sleep -Milliseconds 250
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-ProcessWindows $shotKit }
     Assert-NoUnexpectedDialog $shotKit
 
     # Place the synthetic form in front and invoke ShotKit's registered F10

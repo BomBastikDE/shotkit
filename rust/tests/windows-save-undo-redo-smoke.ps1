@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) { throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner or an explicitly opted-in local interactive session.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -138,13 +139,8 @@ try {
     try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-Value {Get-Main} 'owned editor window'
     [void][ShotKitSaveHistorySmoke.N]::ShowWindow($main.H,3);[void][ShotKitSaveHistorySmoke.N]::SetForegroundWindow($main.H)
-    $notice=Wait-Value { [ShotKitSaveHistorySmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
-    $noticeHandle=$notice.H
-    if(-not [ShotKitSaveHistorySmoke.N]::PostMessageW($noticeHandle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_POST_FAILED'}
-    $noticeCloseDeadline=[DateTime]::UtcNow.AddSeconds(5)
-    while([DateTime]::UtcNow -lt $noticeCloseDeadline -and [ShotKitSaveHistorySmoke.N]::IsWindow($noticeHandle)){Start-Sleep -Milliseconds 50}
-    if([ShotKitSaveHistorySmoke.N]::IsWindow($noticeHandle)){throw "STARTUP_NOTICE_CLOSE_TIMEOUT: WM_CLOSE was posted but startup dialog '$($notice.Title)' HWND=$noticeHandle was not destroyed."}
-    $main=Wait-Value {Get-Main} 'editor after startup notice'
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitSaveHistorySmoke.N]::Windows($process.Id) }
+    $main=Wait-Value {Get-Main} 'ready editor'
     $client=[Activator]::CreateInstance([ShotKitSaveHistorySmoke.Rect]);[void][ShotKitSaveHistorySmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitSaveHistorySmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
     if($null -eq $toolbar){throw 'EDITOR_TOOLBAR_MISSING'}
@@ -170,12 +166,12 @@ try {
     $exitDeadline=[DateTime]::UtcNow.AddSeconds(8)
     while([DateTime]::UtcNow -lt $exitDeadline -and [ShotKitSaveHistorySmoke.N]::IsWindow($editorHandle)){
         $dialogs=@([ShotKitSaveHistorySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
-        if($dialogs.Count -gt 0){$startup=@($dialogs|Where-Object {$_.Title -eq $notice.Title});if($startup.Count -gt 0){throw "STARTUP_NOTICE_REAPPEARED_DURING_CLOSE: $($startup.Title -join ', ')"};throw "UNEXPECTED_CLOSE_DIALOG: $($dialogs.Title -join ', ')"}
+        if($dialogs.Count -gt 0){$startup=@($dialogs|Where-Object {$_.Title -eq 'Willkommen bei ShotKit'});if($startup.Count -gt 0){throw "STARTUP_NOTICE_REAPPEARED_DURING_CLOSE: $($startup.Title -join ', ')"};throw "UNEXPECTED_CLOSE_DIALOG: $($dialogs.Title -join ', ')"}
         Start-Sleep -Milliseconds 100
     }
     if([ShotKitSaveHistorySmoke.N]::IsWindow($editorHandle)){throw 'EDITOR_CLOSE_TIMEOUT: the test-owned editor HWND remained after WM_CLOSE.'}
     $remainingDialogs=@([ShotKitSaveHistorySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770'})
-    if($remainingDialogs.Count -gt 0){$startup=@($remainingDialogs|Where-Object {$_.Title -eq $notice.Title});if($startup.Count -gt 0){throw "STARTUP_NOTICE_REAPPEARED_DURING_CLOSE: $($startup.Title -join ', ')"};throw "UNEXPECTED_CLOSE_DIALOG: $($remainingDialogs.Title -join ', ')"}
+    if($remainingDialogs.Count -gt 0){$startup=@($remainingDialogs|Where-Object {$_.Title -eq 'Willkommen bei ShotKit'});if($startup.Count -gt 0){throw "STARTUP_NOTICE_REAPPEARED_DURING_CLOSE: $($startup.Title -join ', ')"};throw "UNEXPECTED_CLOSE_DIALOG: $($remainingDialogs.Title -join ', ')"}
     Write-Output "PASS: edit changed and saved the opened image; undo showed the title star; redo returned to the clean saved state without a star; the editor HWND closed without an owned dialog (saved SHA256 $savedHash)."
 }
 catch { $failure=$_ }

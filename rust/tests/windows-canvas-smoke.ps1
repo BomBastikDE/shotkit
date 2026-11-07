@@ -7,6 +7,7 @@ param(
     [ValidateRange(5,60)][int]$ActionTimeoutSeconds=20
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if(($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive runner or dedicated opt-in session required.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -248,9 +249,7 @@ try {
   $process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixturePath) -WorkingDirectory $root -PassThru
  } finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'owned editor' $StartupTimeoutSeconds
- $welcome=Wait-For {Owned-Dialogs|Where-Object{$_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice' $StartupTimeoutSeconds
- if(-not [ShotKitCanvasSmoke.N]::PostMessageW($welcome.H,0x10,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_FAILED'}
- [void](Wait-For {if(-not [ShotKitCanvasSmoke.N]::IsWindow($welcome.H)){return $true}} 'startup notice close' $ActionTimeoutSeconds)
+ Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $process -GetWindows { Owned-Windows }
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 'loaded editor' $ActionTimeoutSeconds
  if(@(Owned-Dialogs).Count){throw 'UNEXPECTED_STARTUP_DIALOG'}
  # The 28-action toolbar needs 985 logical client pixels; the default 1000px
