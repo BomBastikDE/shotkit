@@ -58,6 +58,10 @@ public static class ShotKitInstanceSmokeNative {
     public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetLogicalDrives();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetDriveTypeW(string rootPathName);
 
     public static WindowInfo[] GetWindows(uint wantedProcessId) {
         var found = new List<WindowInfo>();
@@ -107,6 +111,19 @@ public static class ShotKitInstanceSmokeNative {
         EnumChildWindows(dialog, callback, IntPtr.Zero);
         GC.KeepAlive(callback);
         return found.ToArray();
+    }
+
+    public static string GetDialogText(IntPtr dialog) {
+        var found = new List<string>();
+        EnumChildProc callback = delegate(IntPtr child, IntPtr state) {
+            var text = new StringBuilder(2048);
+            GetWindowText(child, text, text.Capacity);
+            if (text.Length > 0) found.Add(text.ToString());
+            return true;
+        };
+        EnumChildWindows(dialog, callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return String.Join("\n", found.ToArray());
     }
 
     public static void ClickButton(IntPtr button) {
@@ -197,6 +214,8 @@ $initialImage = Join-Path $root 'first-editor.png'
 $primary = $null
 $secondActivate = $null
 $secondFile = $null
+$secondNetworkFile = $null
+$secondUnknownDriveFile = $null
 $testFailure = $null
 $cleanupErrors = @()
 
@@ -285,10 +304,107 @@ try {
         throw 'PRIMARY_EXITED: Die erste Instanz wurde während der Ablehnung beendet.'
     }
 
+    # Exercise the warning and rejection using a reserved .invalid hostname.
+    # This UI test does not instrument network traffic.
+    $uncProbe = '\\shotkit-unc-probe.invalid\share\probe.png'
+    $secondNetworkFile = New-ShotKitProcess @($uncProbe)
+    $networkTitle = '*Netzwerkdatei aus zweiter Instanz*'
+    Wait-ForCondition {
+        -not $primary.HasExited -and $null -ne (Get-Dialog $primary $networkTitle)
+    } $TimeoutSeconds 'NETWORK_PROMPT_TIMEOUT: Der Netzwerk-Warnhinweis wurde nicht angezeigt.'
+    $networkConfirmation = Get-Dialog $primary $networkTitle
+    $networkText = [ShotKitInstanceSmokeNative]::GetDialogText($networkConfirmation.Handle)
+    foreach ($requiredText in @('Netzwerkserver', 'Anmeldeinformationen', 'shotkit-unc-probe.invalid')) {
+        if ($networkText.IndexOf($requiredText, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "NETWORK_WARNING_TEXT_MISSING: '$requiredText' fehlt im Netzwerkdialog: $networkText"
+        }
+    }
+    $networkDeclineButton = Wait-ForDialogButton $primary $networkConfirmation @('No', 'Nein') 'IDNO'
+    Wait-ForDialogClosed $primary $networkConfirmation 'NETWORK_PROMPT_CLOSE_TIMEOUT: Netzwerkdialog blieb nach Ablehnung geöffnet.'
+    Wait-ForCondition {
+        -not $secondNetworkFile.HasExited -and $null -ne (Get-Dialog $secondNetworkFile $declinedTitle)
+    } $TimeoutSeconds 'NETWORK_DECLINE_RESULT_TIMEOUT: Zweitprozess meldete die Netzwerkdatei-Ablehnung nicht.'
+    $networkDeclined = Get-Dialog $secondNetworkFile $declinedTitle
+    $networkDeclinedButton = Wait-ForDialogButton $secondNetworkFile $networkDeclined @('OK') 'IDOK'
+    Wait-ForDialogClosed $secondNetworkFile $networkDeclined 'NETWORK_DECLINE_RESULT_CLOSE_TIMEOUT: Ablehnungsdialog blieb geöffnet.'
+    if (-not $secondNetworkFile.WaitForExit($TimeoutSeconds * 1000) -or $secondNetworkFile.ExitCode -ne 0) {
+        throw 'NETWORK_DECLINE_NOT_CONTROLLED: Zweitstart endete nach Ablehnung nicht kontrolliert.'
+    }
+    if ($primary.HasExited) {
+        throw 'PRIMARY_EXITED: Die erste Instanz wurde während der Netzwerkdatei-Ablehnung beendet.'
+    }
+
+    # Select an unmapped DOS drive using the OS logical-drive bitmap and
+    # independently require GetDriveTypeW to report UNKNOWN/NO_ROOT_DIR.
+    # The candidate path is never created or probed with a filesystem API.
+    $unknownDrive = $null
+    $driveMask = [ShotKitInstanceSmokeNative]::GetLogicalDrives()
+    if ($driveMask -eq 0) {
+        throw 'GET_LOGICAL_DRIVES_FAILED: Windows lieferte keine gültige Laufwerksmaske; ein freier Buchstabe wird nicht angenommen.'
+    }
+    for ($code = 90; $code -ge 65; $code--) {
+        $letter = [char]$code
+        $bit = [uint32]1 -shl ($code - 65)
+        if (($driveMask -band $bit) -ne 0) { continue }
+        $rootPath = [string]$letter + ':\'
+        $driveType = [ShotKitInstanceSmokeNative]::GetDriveTypeW($rootPath)
+        if ($driveType -eq 0 -or $driveType -eq 1) {
+            $unknownDrive = [pscustomobject]@{ Letter = [string]$letter; Root = $rootPath; Type = $driveType }
+            break
+        }
+    }
+    if ($null -eq $unknownDrive) {
+        throw 'NO_UNMAPPED_UNKNOWN_DRIVE: Kein Laufwerksbuchstabe war laut GetLogicalDrives frei und laut GetDriveTypeW unbekannt.'
+    }
+    $unknownPath = $unknownDrive.Letter + ':\shotkit-unknown-drive-smoke-' + [Guid]::NewGuid().ToString('N') + '\missing.png'
+    if (-not [IO.Path]::IsPathRooted($unknownPath)) { throw 'UNKNOWN_PATH_NOT_ABSOLUTE' }
+    $editorBefore = @(Get-ProcessWindows $primary | Where-Object {
+        $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible
+    }) | Select-Object -First 1
+    if ($null -eq $editorBefore) { throw 'EDITOR_BASELINE_MISSING: Sichtbares Editorfenster vor unbekanntem Laufwerk nicht gefunden.' }
+
+    # Recheck immediately before launch to avoid using a drive that became mapped.
+    $freshMask = [ShotKitInstanceSmokeNative]::GetLogicalDrives()
+    $freshType = [ShotKitInstanceSmokeNative]::GetDriveTypeW($unknownDrive.Root)
+    $freshBit = [uint32]1 -shl ([int][char]$unknownDrive.Letter - 65)
+    if (($freshMask -band $freshBit) -ne 0 -or ($freshType -ne 0 -and $freshType -ne 1)) {
+        throw "UNKNOWN_DRIVE_CHANGED: $($unknownDrive.Root) ist nicht mehr nachweislich unzugeordnet (GetDriveTypeW=$freshType)."
+    }
+    $secondUnknownDriveFile = New-ShotKitProcess @($unknownPath)
+    $unknownTitle = '*Datei mit unbekanntem Laufwerkstyp*'
+    Wait-ForCondition {
+        -not $primary.HasExited -and $null -ne (Get-Dialog $primary $unknownTitle)
+    } $TimeoutSeconds 'UNKNOWN_DRIVE_PROMPT_TIMEOUT: Dialog für unbekannten Laufwerkstyp wurde nicht angezeigt.'
+    $unknownConfirmation = Get-Dialog $primary $unknownTitle
+    $unknownText = [ShotKitInstanceSmokeNative]::GetDialogText($unknownConfirmation.Handle)
+    foreach ($requiredText in @('nicht sicher bestimmt', 'Netzwerkzugriff', 'Windows-Authentifizierung', $unknownPath)) {
+        if ($unknownText.IndexOf($requiredText, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "UNKNOWN_DRIVE_WARNING_TEXT_MISSING: '$requiredText' fehlt im Unsicherheitsdialog: $unknownText"
+        }
+    }
+    $unknownDeclineButton = Wait-ForDialogButton $primary $unknownConfirmation @('No', 'Nein') 'IDNO'
+    Wait-ForDialogClosed $primary $unknownConfirmation 'UNKNOWN_DRIVE_PROMPT_CLOSE_TIMEOUT: Dialog blieb nach Ablehnung geöffnet.'
+    Wait-ForCondition {
+        -not $secondUnknownDriveFile.HasExited -and $null -ne (Get-Dialog $secondUnknownDriveFile $declinedTitle)
+    } $TimeoutSeconds 'UNKNOWN_DRIVE_DECLINE_RESULT_TIMEOUT: Zweitprozess meldete die Ablehnung nicht.'
+    $unknownDeclined = Get-Dialog $secondUnknownDriveFile $declinedTitle
+    $unknownDeclinedButton = Wait-ForDialogButton $secondUnknownDriveFile $unknownDeclined @('OK') 'IDOK'
+    Wait-ForDialogClosed $secondUnknownDriveFile $unknownDeclined 'UNKNOWN_DRIVE_DECLINE_RESULT_CLOSE_TIMEOUT: Ablehnungsdialog blieb geöffnet.'
+    if (-not $secondUnknownDriveFile.WaitForExit($TimeoutSeconds * 1000) -or $secondUnknownDriveFile.ExitCode -ne 0) {
+        throw 'UNKNOWN_DRIVE_DECLINE_NOT_CONTROLLED: Zweitstart endete nach Ablehnung nicht kontrolliert.'
+    }
+    $editorAfter = @(Get-ProcessWindows $primary | Where-Object {
+        $_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible
+    }) | Where-Object { $_.Handle -eq $editorBefore.Handle } | Select-Object -First 1
+    if ($primary.HasExited -or $null -eq $editorAfter -or $editorAfter.Title -cne $editorBefore.Title) {
+        throw 'UNKNOWN_DRIVE_CHANGED_PRIMARY: Primärprozess oder vorhandenes Editorfenster änderte sich nach Ablehnung.'
+    }
+    Write-Output "EVIDENCE: $($unknownDrive.Root) unzugeordnet (GetLogicalDrives bit unset, GetDriveTypeW=$freshType); absolute path=$unknownPath; warning verified and declined; editor HWND=$($editorBefore.Handle), title='$($editorBefore.Title)' unchanged."
+
 } catch {
     $testFailure = $_.Exception.Message
 } finally {
-    foreach ($owned in @($secondFile, $secondActivate, $primary)) {
+    foreach ($owned in @($secondUnknownDriveFile, $secondNetworkFile, $secondFile, $secondActivate, $primary)) {
         if ($null -ne $owned) {
             try {
                 if (-not $owned.HasExited) {
@@ -326,4 +442,4 @@ if ($cleanupErrors.Count -gt 0) {
 }
 if ($testFailure) { throw $testFailure }
 
-Write-Output 'PASS: Zweitstart aktiviert die primäre Instanz; Dateianfrage wird angezeigt und Ablehnung kontrolliert zurückgemeldet. Cleanup bestätigt.'
+Write-Output 'PASS: Zweitstart aktiviert die primäre Instanz; bekannte, Netzwerk- und unbekannte Laufwerk-Dateianfragen werden angezeigt und Ablehnungen kontrolliert zurückgemeldet. Cleanup bestätigt.'

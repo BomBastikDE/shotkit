@@ -71,7 +71,11 @@ mod win32 {
         fn CommDlgExtendedError() -> u32;
     }
 
-    const OFN_OVERWRITEPROMPT: u32 = 0x0000_0002;
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(owner: Hwnd, text: *const u16, title: *const u16, flags: u32) -> i32;
+    }
+
     const OFN_HIDEREADONLY: u32 = 0x0000_0004;
     const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
     const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
@@ -156,7 +160,7 @@ mod win32 {
         owner: Hwnd,
         initial_name: Option<&Path>,
         save: bool,
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<(PathBuf, bool)>, String> {
         let mut file = vec![0u16; FILE_BUFFER_LEN];
         let mut initial_dir = Vec::new();
         if let Some(path) = initial_name {
@@ -197,7 +201,7 @@ mod win32 {
                 | OFN_NOCHANGEDIR
                 | OFN_PATHMUSTEXIST
                 | if save {
-                    OFN_OVERWRITEPROMPT | OFN_ENABLEHOOK
+                    OFN_ENABLEHOOK
                 } else {
                     OFN_FILEMUSTEXIST
                 },
@@ -229,9 +233,32 @@ mod win32 {
             };
         }
         let end = file.iter().position(|&u| u == 0).unwrap_or(file.len());
-        Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
-            &file[..end],
-        ))))
+        let selected = PathBuf::from(std::ffi::OsString::from_wide(&file[..end]));
+        if !save {
+            return Ok(Some((selected, false)));
+        }
+        let target = shotkit::save_path::with_extension(&selected, ofn.filter_index);
+        let confirmed_existing = match std::fs::symlink_metadata(&target) {
+            Ok(_) => {
+                let message: Vec<u16> = format!(
+                    "Die Datei ist bereits vorhanden:\n\n{}\n\nMöchten Sie sie ersetzen?",
+                    target.display()
+                )
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+                let title: Vec<u16> = "Datei ersetzen".encode_utf16().chain(Some(0)).collect();
+                // SAFETY: owner is supplied by the caller and both UTF-16
+                // strings remain alive during this synchronous dialog call.
+                if unsafe { MessageBoxW(owner, message.as_ptr(), title.as_ptr(), 0x134) } != 6 {
+                    return Ok(None);
+                }
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(format!("Zieldatei konnte nicht geprüft werden: {error}")),
+        };
+        Ok(Some((target, confirmed_existing)))
     }
 }
 
@@ -247,14 +274,14 @@ mod win32 {
 // Warum erfüllt bzw. offen: Puffer leben bis zur Rückkehr; Windows- und Nicht-Windows-Varianten haben getrennte Implementierungen.
 // Nachrichten: Der Windows-Dateidialog verarbeitet Nachrichten; die andere Variante nicht.
 pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
-    win32::dialog(owner, None, false)
+    win32::dialog(owner, None, false).map(|selected| selected.map(|(path, _)| path))
 }
 
 /// Shows the Windows Save dialog and returns the selected image path.
 ///
 /// `initial_name` optionally supplies an initial filename and directory. The
 /// extension follows the selected filter when the user omits one, and
-/// existing files trigger the standard overwrite confirmation for that final
+/// existing files trigger an overwrite confirmation for that final
 /// path. Returns `Ok(None)` on cancel and `Err` on Win32 error.
 #[cfg(windows)]
 // SAFETY CONTRACT:
@@ -264,7 +291,7 @@ pub unsafe fn open(owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 pub unsafe fn save(
     owner: *mut c_void,
     initial_name: Option<&Path>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<(PathBuf, bool)>, String> {
     win32::dialog(owner, initial_name, true)
 }
 
@@ -287,6 +314,6 @@ pub unsafe fn open(_owner: *mut c_void) -> Result<Option<PathBuf>, String> {
 pub unsafe fn save(
     _owner: *mut c_void,
     _initial_name: Option<&Path>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<(PathBuf, bool)>, String> {
     Err("Windows file dialogs are only available on Windows".into())
 }

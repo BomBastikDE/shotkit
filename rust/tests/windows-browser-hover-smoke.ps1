@@ -9,6 +9,8 @@ param(
 
     [switch] $KeyboardAdjustment,
 
+    [switch] $EnterAccept,
+
     [ValidateRange(10, 120)]
     [int] $StartupTimeoutSeconds = 30,
 
@@ -17,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($KeyboardAdjustment -and $EnterAccept) { throw 'INVALID_OPTIONS: -KeyboardAdjustment and -EnterAccept are separate scenarios.' }
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -202,6 +205,7 @@ $localAppData = Join-Path $testRoot 'localappdata'
 $saveFolder = Join-Path $testRoot 'captures'
 $htmlFile = Join-Path $testRoot 'surface.html'
 $uiaProbeFile = Join-Path $testRoot 'uia-probe.ps1'
+$uiaProbeReady = Join-Path $testRoot 'uia-ready.txt'
 $uiaProbeResult = Join-Path $testRoot 'uia-result.json'
 $uiaProbeStdout = Join-Path $testRoot 'uia-probe.stdout.log'
 $uiaProbeStderr = Join-Path $testRoot 'uia-probe.stderr.log'
@@ -255,6 +259,21 @@ function Wait-ForCondition {
         Start-Sleep -Milliseconds 100
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
+}
+function Read-ProbeStderr {
+    # Redirected output handles can remain briefly locked as the child exits,
+    # especially after Kill(). Keep the probe failure primary while allowing
+    # a short, bounded window for Windows to release the stderr file.
+    if (-not (Test-Path -LiteralPath $uiaProbeStderr)) { return '' }
+    $lastReadError = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try { return [IO.File]::ReadAllText($uiaProbeStderr).Trim() }
+        catch [IO.IOException] {
+            $lastReadError = $_.Exception
+            if ($attempt -lt 19) { Start-Sleep -Milliseconds 50 }
+        }
+    }
+    return "Could not read probe stderr after 20 attempts: $($lastReadError.Message)"
 }
 function Test-FullyDecodablePng {
     param([Parameter(Mandatory = $true)][string] $Path)
@@ -392,6 +411,43 @@ function Get-ProfileBrowserProcesses {
     @(Get-CimInstance Win32_Process -Filter "Name='$browserProcessName'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedProfile })
 }
+function Write-BrowserStartupDiagnostics {
+    param([System.Diagnostics.Process] $Launcher, [string] $ProfilePath)
+    Write-Output "DIAGNOSTICS: $Browser startup timed out; collecting test-owned process/window metadata before cleanup."
+    try {
+        $launcherCurrent = Get-BrowserProcessById $Launcher.Id
+        $launcherProfileMatch = [bool]($null -ne $launcherCurrent -and
+            $launcherCurrent.Name -eq $browserProcessName -and $launcherCurrent.CommandLine -and
+            $launcherCurrent.CommandLine -match [Regex]::Escape($ProfilePath))
+        Write-Output "DIAGNOSTICS: launcher PID=$($Launcher.Id) hasExited=$($Launcher.HasExited) currentProfileMatch=$launcherProfileMatch."
+        $processes = @(Get-ProfileBrowserProcesses $ProfilePath)
+        Write-Output "DIAGNOSTICS: profile-owned process count=$($processes.Count)."
+        foreach ($snapshot in $processes) {
+            $current = Get-BrowserProcessById ([int]$snapshot.ProcessId)
+            # Process enumeration and lookup can race with exit/PID reuse.
+            # Only inspect windows after confirming the same owned identity.
+            if ($null -eq $current -or $current.Name -ne $browserProcessName -or
+                -not $current.CommandLine -or $current.CommandLine -notmatch [Regex]::Escape($ProfilePath) -or
+                $null -eq $snapshot.CreationDate -or $snapshot.CreationDate -ne $current.CreationDate) {
+                Write-Output "DIAGNOSTICS: profile-owned PID=$($snapshot.ProcessId) disappeared or changed identity before window inspection."
+                continue
+            }
+            $created = $current.CreationDate.ToUniversalTime().ToString('o')
+            $isLauncher = [int]$current.ProcessId -eq $Launcher.Id
+            Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) parent=$($current.ParentProcessId) session=$($current.SessionId) created=$created profileMatch=True launcher=$isLauncher."
+            $windows = @([ShotKitBrowserHoverSmoke.Native]::WindowsForProcess([int]$current.ProcessId))
+            Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) window count=$($windows.Count)."
+            foreach ($window in $windows) {
+                $class = if ($window.ClassName -match '^[#A-Za-z0-9_.-]{1,80}$') { $window.ClassName } else { '<redacted>' }
+                Write-Output "DIAGNOSTICS: PID=$($current.ProcessId) HWND=$($window.Handle) class=$class visible=$($window.Visible)."
+            }
+        }
+    }
+    catch {
+        # Exception messages can contain profile paths; retain only the type.
+        Write-Output "DIAGNOSTICS: browser startup metadata collection failed ($($_.Exception.GetType().Name))."
+    }
+}
 function Stop-OwnedBrowserProcess {
     param($ProcessSnapshot, [string] $ProfilePath)
     $ProcessId = [int]$ProcessSnapshot.ProcessId
@@ -479,22 +535,35 @@ try {
     $uiaProbeScript = @'
 $ErrorActionPreference = 'Stop'
 try {
+    [Console]::Error.WriteLine('UIA phase: loading UIAutomationClient')
     Add-Type -AssemblyName UIAutomationClient
+    [Console]::Error.WriteLine('UIA phase: loading UIAutomationTypes')
     Add-Type -AssemblyName UIAutomationTypes
+    [Console]::Error.WriteLine('UIA phase: preparing target search')
     $windowHandle = [IntPtr]([Int64]$args[0])
     $condition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::NameProperty,
         'ShotKit UIA hover target'
     )
-    # Accessibility is requested on the browser command line, but its renderer and
-    # UIA provider can become available after the top-level HWND. Retry only
-    # this transient absence; the parent process enforces the hard 15s limit.
+    # Publish readiness atomically so cold PowerShell/assembly startup does not
+    # consume the separate UIA operation budget enforced by the parent.
+    $readyAt = [DateTime]::UtcNow
+    [IO.File]::WriteAllText(($args[2] + '.tmp'), $readyAt.ToString('o'), [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move(($args[2] + '.tmp'), $args[2])
+    [Console]::Error.WriteLine("UIA phase: ready at $($readyAt.ToString('o'))")
+    # The renderer and UIA provider can become available after the top-level
+    # HWND. Retry only this transient absence; the parent enforces a hard 15s
+    # UIA limit from readiness, including property reads and result publication.
     $deadline = [DateTime]::UtcNow.AddSeconds(12)
     $target = $null
     do {
+        [Console]::Error.WriteLine("UIA phase: FromHandle starting at $([DateTime]::UtcNow.ToString('o'))")
         $root = [System.Windows.Automation.AutomationElement]::FromHandle($windowHandle)
+        [Console]::Error.WriteLine("UIA phase: FromHandle completed at $([DateTime]::UtcNow.ToString('o'))")
         if ($null -ne $root) {
+            [Console]::Error.WriteLine("UIA phase: FindFirst starting at $([DateTime]::UtcNow.ToString('o'))")
             $target = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            [Console]::Error.WriteLine("UIA phase: FindFirst completed at $([DateTime]::UtcNow.ToString('o'))")
         }
         if ($null -eq $target -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 200
@@ -502,8 +571,10 @@ try {
     } while ($null -eq $target -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $root) { throw 'UIA ElementFromHandle returned null throughout provider initialization.' }
     if ($null -eq $target) { throw "Named target remained absent from $Browser UIA Control View after provider initialization wait." }
+    [Console]::Error.WriteLine("UIA phase: Current starting at $([DateTime]::UtcNow.ToString('o'))")
     $current = $target.Current
     $bounds = $current.BoundingRectangle
+    [Console]::Error.WriteLine("UIA phase: Current completed at $([DateTime]::UtcNow.ToString('o'))")
     if ($current.IsOffscreen) { throw 'Named target is marked offscreen.' }
     if ($current.ControlType.ProgrammaticName -ne 'ControlType.Button') {
         throw "Named target is not exposed as a UIA button (type '$($current.ControlType.ProgrammaticName)')."
@@ -517,7 +588,10 @@ try {
         Height = $bounds.Height
         IsOffscreen = $current.IsOffscreen
     } | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText($args[1], $result, [Text.UTF8Encoding]::new($false))
+    # Publish only a closed, complete JSON file. Its last-write timestamp is
+    # the completion time used by the parent even if its next poll is delayed.
+    [IO.File]::WriteAllText(($args[1] + '.tmp'), $result, [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move(($args[1] + '.tmp'), $args[1])
 }
 catch {
     [Console]::Error.WriteLine($_.Exception.ToString())
@@ -550,28 +624,70 @@ catch {
     $browserArgs = $browserArgs -join ' '
     $browserProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WorkingDirectory $testRoot -PassThru
 
-    $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description "the owned $Browser app window" -OwnedProcess $browserProcess -Condition {
-        Get-ProcessWindows $browserProcess | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
+    try {
+        $browserWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description "the owned $Browser app window" -OwnedProcess $browserProcess -Condition {
+            Get-ProcessWindows $browserProcess | Where-Object { $_.Visible -and $_.ClassName -eq 'Chrome_WidgetWin_1' } | Select-Object -First 1
+        }
+    }
+    catch {
+        if ($_.Exception.Message -eq "Timed out after $($StartupTimeoutSeconds)s waiting for the owned $Browser app window.") {
+            Write-BrowserStartupDiagnostics -Launcher $browserProcess -ProfilePath $browserProfile
+        }
+        throw
     }
     if (-not [ShotKitBrowserHoverSmoke.Native]::SetForegroundWindow($browserWindow.Handle)) {
         throw "Could not foreground the test-owned $Browser app window."
     }
 
     $targetName = 'ShotKit UIA hover target'
-    $probeArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" "{1}" "{2}"' -f `
-        $uiaProbeFile, $browserWindow.Handle.ToInt64(), $uiaProbeResult
+    $probeArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" "{1}" "{2}" "{3}"' -f `
+        $uiaProbeFile, $browserWindow.Handle.ToInt64(), $uiaProbeResult, $uiaProbeReady
+    $probeStartupDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $uiaProbe = Start-Process -FilePath $windowsPowerShell -ArgumentList $probeArgs -WorkingDirectory $testRoot `
         -WindowStyle Hidden -RedirectStandardOutput $uiaProbeStdout -RedirectStandardError $uiaProbeStderr -PassThru
-    $probeDeadline = [DateTime]::UtcNow.AddSeconds(15)
-    while (-not (Test-Path -LiteralPath $uiaProbeResult)) {
+    $probeDeadline = $null
+    while ($true) {
+        # Check every deadline before accepting an available result, including
+        # when the child has already exited between polls.
+        $probeCompleted = Test-Path -LiteralPath $uiaProbeResult
+        if ($null -eq $probeDeadline -and (Test-Path -LiteralPath $uiaProbeReady)) {
+            $readyAt = [DateTime]::Parse(
+                [IO.File]::ReadAllText($uiaProbeReady),
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            )
+            $probeDeadline = $readyAt.AddSeconds(15)
+        }
+        if ($probeCompleted -and $null -eq $probeDeadline) {
+            throw 'UIA_PRECHECK_FAILED: the probe published a result without a readiness marker.'
+        }
+        $phaseTime = if ($probeCompleted) {
+            [IO.File]::GetLastWriteTimeUtc($uiaProbeResult)
+        } else { [DateTime]::UtcNow }
+        $startupTimedOut = ($null -eq $probeDeadline -and $phaseTime -ge $probeStartupDeadline) -or
+            ($null -ne $probeDeadline -and $readyAt -gt $probeStartupDeadline)
+        $uiaTimedOut = $null -ne $probeDeadline -and $phaseTime -ge $probeDeadline
+        if ($startupTimedOut -or $uiaTimedOut) {
+            # Reobserve publication that raced this poll before rejecting it;
+            # the next iteration validates its recorded completion time.
+            if (-not $probeCompleted -and (Test-Path -LiteralPath $uiaProbeResult)) { continue }
+            if ($null -eq $probeDeadline -and (Test-Path -LiteralPath $uiaProbeReady)) { continue }
+            try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
+            $probeTrace = Read-ProbeStderr
+            if ([string]::IsNullOrWhiteSpace($probeTrace)) { $probeTrace = 'No probe diagnostics available.' }
+            if ($startupTimedOut) {
+                throw "UIA_PROBE_STARTUP_TIMEOUT: $Browser probe did not finish PowerShell/assembly initialization within 15 seconds. Probe trace: $probeTrace"
+            }
+            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds after probe readiness. Probe trace: $probeTrace"
+        }
+        if ($probeCompleted) { break }
         if ($uiaProbe.HasExited) {
-            $probeError = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { '' }
+            # The result may have been published after this iteration's first
+            # observation but before process exit. Recheck it with its deadline.
+            if (Test-Path -LiteralPath $uiaProbeResult) { continue }
+            $probeError = Read-ProbeStderr
             if ([string]::IsNullOrWhiteSpace($probeError)) { $probeError = 'No UIA result was written.' }
             throw "UIA_PRECHECK_FAILED: $probeError"
-        }
-        if ([DateTime]::UtcNow -ge $probeDeadline) {
-            try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
-            throw "UIA_PRECHECK_TIMEOUT: $Browser UI Automation did not return within 15 seconds."
         }
         Start-Sleep -Milliseconds 100
     }
@@ -683,20 +799,28 @@ catch {
         throw "TEST_FOCUS_MISMATCH: foreground PID is $foregroundPid at click time, expected ShotKit PID $($shotKit.Id)."
     }
     Write-Output "MILESTONE: cursor=$actualX,$actualY and foreground PID=$foregroundPid verified before hover click."
-    if ($KeyboardAdjustment) {
-        # Preserve the real browser hover suggestion, then exercise the public
-        # keyboard path: Right translates one pixel, Shift+Down extends the
-        # bottom edge one pixel, and Enter accepts that exact edited rectangle.
+    if ($KeyboardAdjustment -or $EnterAccept) {
+        # Preserve the real browser hover suggestion. The adjustment scenario
+        # edits it with Right and Shift+Down; EnterAccept submits it unchanged.
         Start-Sleep -Milliseconds 900
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0x0002, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0x0002, [UIntPtr]::Zero)
-        [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        if ($KeyboardAdjustment) {
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x27, 0, 0x0002, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x28, 0, 0x0002, [UIntPtr]::Zero)
+            [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x10, 0, 0x0002, [UIntPtr]::Zero)
+        }
         Start-Sleep -Milliseconds 250
         [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero)
         [ShotKitBrowserHoverSmoke.Native]::keybd_event(0x0D, 0, 0x0002, [UIntPtr]::Zero)
+        if ($EnterAccept) {
+            $cursorAfterEnterX = 0; $cursorAfterEnterY = 0
+            if (-not [ShotKitBrowserHoverSmoke.Native]::CursorPosition([ref]$cursorAfterEnterX, [ref]$cursorAfterEnterY) -or
+                $cursorAfterEnterX -ne $actualX -or $cursorAfterEnterY -ne $actualY) {
+                throw "ENTER_MOVED_CURSOR: cursor was ($actualX,$actualY) before Enter and ($cursorAfterEnterX,$cursorAfterEnterY) after Enter."
+            }
+        }
     }
     else {
         [ShotKitBrowserHoverSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -734,12 +858,49 @@ catch {
     $bitmap = [Drawing.Bitmap]::new($png.FullName)
     try {
         $uiaSelection = Get-LoggedSelectionRect -Path $diagnosticsFile -Phase 'uia_response'
-        if ($KeyboardAdjustment) {
-            $expectedLeft = $uiaSelection.Left + 1
-            $expectedTop = $uiaSelection.Top
-            $expectedRight = $uiaSelection.Right + 1
-            $expectedBottom = $uiaSelection.Bottom + 1
-            $keyboardRect = [pscustomobject]@{ Left=$expectedLeft; Top=$expectedTop; Right=$expectedRight; Bottom=$expectedBottom }
+        if ($EnterAccept) {
+            $uiaWidth = $uiaSelection.Right - $uiaSelection.Left
+            $uiaHeight = $uiaSelection.Bottom - $uiaSelection.Top
+            $selectionWidth = $uiaWidth
+            $selectionHeight = $uiaHeight
+            if ([Math]::Abs($uiaWidth - 280) -gt 1 -or [Math]::Abs($uiaHeight - 180) -gt 1 -or
+                [Math]::Abs($uiaSelection.Left - $bounds.X) -gt 1 -or
+                [Math]::Abs($uiaSelection.Top - $bounds.Y) -gt 1 -or
+                [Math]::Abs($uiaSelection.Right - ($bounds.X + $bounds.Width)) -gt 1 -or
+                [Math]::Abs($uiaSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
+                throw "UIA_BASE_BOUNDS_MISMATCH: UIA suggestion $($uiaWidth)x$($uiaHeight) at ($($uiaSelection.Left),$($uiaSelection.Top),$($uiaSelection.Right),$($uiaSelection.Bottom)) does not match fractional bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height)) within one pixel."
+            }
+            $trace = [IO.File]::ReadAllText($diagnosticsFile)
+            if ($trace -match 'selection mouse_(down|up)') {
+                throw 'ENTER_PATH_MOUSE_GESTURE: Enter acceptance unexpectedly recorded a mouse selection gesture.'
+            }
+            if ($bitmap.Width -ne $uiaWidth -or $bitmap.Height -ne $uiaHeight) {
+                throw "ENTER_BOUNDS_MISMATCH: PNG is $($bitmap.Width)x$($bitmap.Height), logged UIA rectangle is ${uiaWidth}x${uiaHeight}."
+            }
+            # Fractional UIA bounds can round at either edge. Check the edge
+            # landmarks at their measured positions inside the logged crop;
+            # there is no following outside pixel when the crop is unchanged.
+            $rightMarkerX = [int][Math]::Floor($bounds.X + $bounds.Width) - 1 - $uiaSelection.Left
+            $bottomMarkerY = [int][Math]::Floor($bounds.Y + $bounds.Height) - 1 - $uiaSelection.Top
+            $sampleX = [int][Math]::Floor($bitmap.Width / 2.0)
+            $sampleY = [int][Math]::Floor($bitmap.Height / 2.0)
+            if ($rightMarkerX -lt 0 -or $rightMarkerX -ge $bitmap.Width -or
+                $bottomMarkerY -lt 0 -or $bottomMarkerY -ge $bitmap.Height) {
+                throw "ENTER_PIXEL_INDEX_MISMATCH: measured UIA edge markers fall outside the logged crop (right=$rightMarkerX, bottom=$bottomMarkerY, PNG=$($bitmap.Width)x$($bitmap.Height))."
+            }
+            $rightMarker = $bitmap.GetPixel($rightMarkerX, $sampleY)
+            $bottomMarker = $bitmap.GetPixel($sampleX, $bottomMarkerY)
+            if ($rightMarker.R -lt 250 -or $rightMarker.G -gt 5 -or $rightMarker.B -lt 250 -or
+                $bottomMarker.R -gt 5 -or $bottomMarker.G -lt 250 -or $bottomMarker.B -lt 250) {
+                throw "ENTER_PIXEL_POSITION_MISMATCH: expected magenta right-edge marker at ($rightMarkerX,$sampleY) and cyan bottom marker at ($sampleX,$bottomMarkerY); got RGB right=$($rightMarker.R),$($rightMarker.G),$($rightMarker.B) bottom=$($bottomMarker.R),$($bottomMarker.G),$($bottomMarker.B)."
+            }
+            $finalRect = [pscustomobject]@{ Left=$uiaSelection.Left; Top=$uiaSelection.Top; Right=$uiaSelection.Right; Bottom=$uiaSelection.Bottom }
+        }
+        elseif ($KeyboardAdjustment) {
+            $keyboardRect = [pscustomobject]@{
+                Left=$uiaSelection.Left + 1; Top=$uiaSelection.Top
+                Right=$uiaSelection.Right + 1; Bottom=$uiaSelection.Bottom + 1
+            }
             $baseWidth = $uiaSelection.Right - $uiaSelection.Left
             $baseHeight = $uiaSelection.Bottom - $uiaSelection.Top
             if ([Math]::Abs($baseWidth - 280) -gt 1 -or [Math]::Abs($baseHeight - 180) -gt 1 -or
@@ -840,8 +1001,9 @@ catch {
     Write-Output 'MILESTONE: capture dimensions and all four expected pixels validated.'
 
     Assert-NoUnexpectedDialog $shotKit
-    $interaction = if ($KeyboardAdjustment) { 'hover + Right + Shift+Down + Enter' } else { 'hover-click' }
-    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), screen=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top)); $interaction captured exact dimensions and four expected pixels."
+    $interaction = if ($KeyboardAdjustment) { 'hover + Right + Shift+Down + Enter' } elseif ($EnterAccept) { 'unchanged hover + Enter, cursor stationary' } else { 'hover-click' }
+    $location = if ($EnterAccept) { "logged UIA rectangle=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top))" } else { "screen=($($finalRect.Left),$($finalRect.Top),$($finalRect.Right - $finalRect.Left)x$($finalRect.Bottom - $finalRect.Top))" }
+    $passMessage = "PASS: $Browser UIA name='$targetName', HWND=$($browserWindow.Handle), $location; $interaction captured matching dimensions and expected pixels."
 }
 catch {
     $testFailure = $_

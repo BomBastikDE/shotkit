@@ -19,8 +19,8 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
                     Ok(window) => {
                         opened = true;
                         if let Some(path) = saved.take() {
+                            editor(window).document_mut().mark_saved();
                             window_state(window).current_path = Some(path);
-                            window_state(window).dirty = false;
                             refresh_title(window);
                         }
                         if was_visible {
@@ -106,13 +106,9 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
 // Warum erfüllt bzw. offen: BusyGuard serialisiert Aufnahmen; die Lebensdauer bei Reentranz ist noch zu belegen.
 // Nachrichten: ShowWindow, MessageBoxW und handle_capture können reentrieren; es wird keine WindowState-Referenz gehalten, die HWND-Lebensdauer bleibt offen.
 pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     let rect = match target {
         Ok(r) => r,
         Err(e) => {
@@ -123,15 +119,14 @@ pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRe
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let image = scroll_windows::WindowsScrollIo::new(
+    match capture_ordinary_rect(
+        h,
         rect.left(),
         rect.top(),
         rect.width(),
         rect.height(),
-        0,
-    )
-    .and_then(|mut io| io.capture());
-    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        was_visible,
+    ) {
         Ok(()) => {}
         Err(e) => {
             if was_visible {
@@ -158,6 +153,10 @@ pub(super) unsafe fn capture(h: H) {
 // Warum erfüllt: Die Nachrichtenbehandlung übergibt das eigene Fenster; der Worker postet nur eine Nachricht.
 // Nachrichten: MessageBoxW kann reentrieren; der DELAYED_CAPTURE_STATE-Guard endet vor dem Dialog, der Worker postet später eine Nachricht.
 pub(super) unsafe fn schedule_capture(h: H, seconds: u64) {
+    if source_recovery_pending() {
+        MessageBoxW(h, wide("Ein Bild wartet noch auf seine Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(), wide("Ungesichertes Bild").as_ptr(), 0x30);
+        return;
+    }
     let request = DELAYED_CAPTURE_STATE
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -225,7 +224,7 @@ pub(super) unsafe fn active_window_target(h: H, window: H) -> Result<ActiveWindo
     }
     let root = GetAncestor(window, 2);
     let root = if root.is_null() { window } else { root };
-    if root == h || editor_windows().iter().any(|editor| *editor == root) {
+    if root == h || editor_windows().contains(&root) {
         return Err("ShotKit war das aktive Fenster. Bitte zuerst das gewünschte Fenster aktivieren und erneut wählen.".into());
     }
     let mut class_name = [0u16; 256];

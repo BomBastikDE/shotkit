@@ -237,14 +237,19 @@ pub(super) unsafe fn poll_uia(state: *mut State) -> bool {
 
 // SAFETY CONTRACT:
 // Voraussetzung: state ist gültig und exklusiv auf dem Overlay-Thread.
-// Warum erfüllt bzw. offen: Der Zustand wird geändert und nur ein kopiertes Handle zurückgegeben.
-// Nachrichten: Kein Fensteraufruf im Funktionskörper.
+// Warum erfüllt bzw. offen: Zustand und HWND werden kopiert, bevor die private
+// Thread-Nachricht eingestellt wird.
+// Nachrichten: PostThreadMessageW stellt WM_NULL ein und kann die Nachrichtenpumpe wecken.
 pub(super) unsafe fn mark_finished(state: *mut State, result: Option<(i32, i32, i32, i32)>) -> H {
-    let s = &mut *state;
-    s.result = result.filter(|rect| valid_rect(*rect));
-    s.done = true;
-    let hwnd = s.hwnd;
-    s.hwnd = null_mut();
+    let hwnd = {
+        let s = &mut *state;
+        s.result = result.filter(|rect| valid_rect(*rect));
+        s.done = true;
+        let hwnd = s.hwnd;
+        s.hwnd = null_mut();
+        hwnd
+    };
+    wake_overlay_message_loop();
     hwnd
 }
 

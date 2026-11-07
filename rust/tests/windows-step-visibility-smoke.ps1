@@ -171,7 +171,7 @@ function New-ExpectedImage([int]$Count) {
     try {
         $g.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $g.TextRenderingHint=[Drawing.Text.TextRenderingHint]::AntiAlias
-        $fill=[Drawing.SolidBrush]::new([Drawing.Color]::Red)
+        $fill=[Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255,230,40,40))
         $ring=[Drawing.Pen]::new([Drawing.Color]::White,[Math]::Max(2.0,$radius/8.0))
         $format=[Drawing.StringFormat]::new();$format.Alignment=[Drawing.StringAlignment]::Center;$format.LineAlignment=[Drawing.StringAlignment]::Center
         try { for($i=0;$i -lt $Count;$i++) {

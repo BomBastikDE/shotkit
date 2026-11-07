@@ -46,10 +46,10 @@ fn quote_windows_argument(argument: &[u16]) -> Vec<u16> {
         }
 
         if unit == b'"' as u16 {
-            quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2 + 1));
+            quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2 + 1));
             quoted.push(unit);
         } else {
-            quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes));
+            quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes));
             quoted.push(unit);
         }
         slashes = 0;
@@ -57,7 +57,7 @@ fn quote_windows_argument(argument: &[u16]) -> Vec<u16> {
 
     // Backslashes immediately before the closing quote must be doubled so
     // CommandLineToArgvW keeps them as part of the argument.
-    quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2));
+    quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
     quoted.push(b'"' as u16);
     quoted
 }
@@ -225,12 +225,12 @@ mod win32 {
         }
     }
 
-    fn open_key(access: u32) -> Result<Key, LStatus> {
+    fn open_key(path: &[u16], access: u32) -> Result<Key, LStatus> {
         let mut key: HKey = ptr::null_mut();
         let result = unsafe {
             RegOpenKeyExW(
                 hkey_current_user(),
-                RUN_KEY.as_ptr(),
+                path.as_ptr(),
                 0,
                 access | KEY_WOW64_64KEY,
                 &mut key,
@@ -244,7 +244,11 @@ mod win32 {
     }
 
     pub(super) fn get() -> Result<bool, String> {
-        let key = match open_key(KEY_QUERY_VALUE) {
+        get_at(RUN_KEY)
+    }
+
+    fn get_at(path: &[u16]) -> Result<bool, String> {
+        let key = match open_key(path, KEY_QUERY_VALUE) {
             Ok(key) => key,
             Err(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => return Ok(false),
             Err(code) => return Err(status("RegOpenKeyExW", code)),
@@ -269,7 +273,7 @@ mod win32 {
         if queried != ERROR_SUCCESS {
             return Err(status("RegQueryValueExW(size)", queried));
         }
-        if value_type != REG_SZ || byte_count as usize % size_of::<u16>() != 0 {
+        if value_type != REG_SZ || !(byte_count as usize).is_multiple_of(size_of::<u16>()) {
             return Err(status(
                 "Invalid ShotKitRust registry value",
                 ERROR_INVALID_DATA,
@@ -293,7 +297,7 @@ mod win32 {
         if read != ERROR_SUCCESS {
             return Err(status("RegQueryValueExW(data)", read));
         }
-        if value_type != REG_SZ || byte_count as usize % size_of::<u16>() != 0 {
+        if value_type != REG_SZ || !(byte_count as usize).is_multiple_of(size_of::<u16>()) {
             return Err(status(
                 "Invalid ShotKitRust registry value",
                 ERROR_INVALID_DATA,
@@ -301,7 +305,9 @@ mod win32 {
         }
         bytes.truncate(byte_count as usize);
         let mut stored: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
             .collect();
         if stored.pop() != Some(0) || stored.contains(&0) {
@@ -315,8 +321,12 @@ mod win32 {
     }
 
     pub(super) fn set(enabled: bool) -> Result<(), String> {
+        set_at(RUN_KEY, enabled)
+    }
+
+    fn set_at(path: &[u16], enabled: bool) -> Result<(), String> {
         if !enabled {
-            let key = match open_key(KEY_SET_VALUE) {
+            let key = match open_key(path, KEY_SET_VALUE) {
                 Ok(key) => key,
                 Err(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => return Ok(()),
                 Err(code) => return Err(status("RegOpenKeyExW", code)),
@@ -343,7 +353,7 @@ mod win32 {
         let created = unsafe {
             RegCreateKeyExW(
                 hkey_current_user(),
-                RUN_KEY.as_ptr(),
+                path.as_ptr(),
                 0,
                 ptr::null_mut(),
                 0,
@@ -375,6 +385,145 @@ mod win32 {
             return Err(status("RegSetValueExW", written));
         }
         Ok(())
+    }
+    #[cfg(test)]
+    mod registry_tests {
+        use super::*;
+
+        #[repr(C)]
+        struct Guid {
+            data1: u32,
+            data2: u16,
+            data3: u16,
+            data4: [u8; 8],
+        }
+
+        #[link(name = "ole32")]
+        extern "system" {
+            fn CoCreateGuid(guid: *mut Guid) -> i32;
+        }
+
+        // Owns only the value in a newly created GUID key. Never deletes the key:
+        // the volatile key disappears when the short-lived runner's hive unloads.
+        struct TestValue(Key);
+        impl Drop for TestValue {
+            fn drop(&mut self) {
+                unsafe { RegDeleteValueW(self.0 .0, value_name().as_ptr()) };
+            }
+        }
+
+        #[test]
+        fn registry_roundtrip_in_hosted_runner() {
+            // Environment variables are an operational guard, not an attestation.
+            if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+                eprintln!("Skipping registry test outside GitHub Actions");
+                return;
+            }
+            assert_eq!(
+                std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+                Ok("github-hosted"),
+                "registry test requires the ephemeral GitHub-hosted runner"
+            );
+
+            let mut guid = Guid {
+                data1: 0,
+                data2: 0,
+                data3: 0,
+                data4: [0; 8],
+            };
+            assert_eq!(unsafe { CoCreateGuid(&mut guid) }, 0, "CoCreateGuid failed");
+            let path: Vec<u16> = format!(
+                "Software\\ShotKitRustTest-{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                guid.data1, guid.data2, guid.data3, guid.data4[0], guid.data4[1],
+                guid.data4[2], guid.data4[3], guid.data4[4], guid.data4[5], guid.data4[6], guid.data4[7]
+            ).encode_utf16().chain(Some(0)).collect();
+            let mut raw = ptr::null_mut();
+            let mut disposition = 0;
+            let code = unsafe {
+                RegCreateKeyExW(
+                    hkey_current_user(),
+                    path.as_ptr(),
+                    0,
+                    ptr::null_mut(),
+                    1,
+                    KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+                    ptr::null_mut(),
+                    &mut raw,
+                    &mut disposition,
+                )
+            };
+            assert_eq!(code, ERROR_SUCCESS, "{}", status("create test key", code));
+            let key = Key(raw);
+            // A collision is never read, modified or cleaned up.
+            assert_eq!(disposition, 1, "test key collision");
+            assert!(!get_at(&path).unwrap());
+            let owned = TestValue(key);
+            set_at(&path, true).unwrap();
+            assert!(get_at(&path).unwrap());
+
+            let mut kind = 0;
+            let mut size = 0;
+            let name = value_name();
+            assert_eq!(
+                unsafe {
+                    RegQueryValueExW(
+                        owned.0 .0,
+                        name.as_ptr(),
+                        ptr::null_mut(),
+                        &mut kind,
+                        ptr::null_mut(),
+                        &mut size,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+            assert_eq!(kind, REG_SZ);
+            let mut data = vec![0u8; size as usize];
+            assert_eq!(
+                unsafe {
+                    RegQueryValueExW(
+                        owned.0 .0,
+                        name.as_ptr(),
+                        ptr::null_mut(),
+                        &mut kind,
+                        data.as_mut_ptr(),
+                        &mut size,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+            let mut expected = current_exe_command().unwrap();
+            assert_eq!(expected.first(), Some(&(b'"' as u16)));
+            assert_eq!(expected.last(), Some(&(b'"' as u16)));
+            expected.push(0);
+            let actual: Vec<u16> = data
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+                .collect();
+            assert_eq!(actual, expected);
+
+            // The product reader rejects a value of the wrong type.
+            let invalid = 1u32;
+            assert_eq!(
+                unsafe {
+                    RegSetValueExW(
+                        owned.0 .0,
+                        name.as_ptr(),
+                        0,
+                        4,
+                        (&invalid as *const u32).cast(),
+                        size_of::<u32>() as u32,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+            assert!(get_at(&path).is_err());
+            set_at(&path, false).unwrap();
+            assert!(!get_at(&path).unwrap());
+            set_at(&path, false).unwrap();
+        }
     }
 }
 

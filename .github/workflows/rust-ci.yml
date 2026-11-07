@@ -19,8 +19,8 @@ jobs:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
         with:
           components: rustfmt, clippy
       - name: Test release safety checks
@@ -30,8 +30,7 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --check
       - name: Run Clippy
-        if: runner.os == 'Linux'
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Install cargo-audit
         if: runner.os == 'Linux'
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -44,6 +43,59 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo test --locked --all-targets
+      - name: Require ordinary and legacy native capture buffer acceptance
+        timeout-minutes: 5
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          # This desktop-dependent test remains ignored for ordinary unit-test
+          # runs, but is mandatory here. Fail if renaming/removal makes Cargo
+          # match zero tests, as well as when capture itself fails.
+          $testName = 'scroll_windows::tests::supplied_and_legacy_capture_buffers_keep_geometry_and_opaque_alpha'
+          $listed = @(& cargo test --locked --bin shotkit $testName -- --ignored --exact --list)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native capture acceptance discovery failed (exit $LASTEXITCODE)."
+          }
+          $listed | ForEach-Object { Write-Host $_ }
+          if ($listed -notcontains "$($testName): test") {
+            throw "Required native capture acceptance test was not discovered: $testName"
+          }
+          & cargo test --locked --bin shotkit $testName -- --ignored --exact --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required native capture acceptance failed (exit $LASTEXITCODE)."
+          }
+      - name: Require real HWND preview failure neutralization and recovery
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Dedicated process: never exhaust shared admission beside other tests.
+          # Own HWND only; this test sends no mouse/keyboard input.
+          $testName = 'app::window_mouse::paint_hwnd_tests::real_beginpaint_neutralizes_failed_redaction_preview_and_recovers'
+          $listed = @(& cargo test --locked --bin shotkit $testName -- --ignored --exact --list)
+          if ($LASTEXITCODE -ne 0 -or $listed -notcontains "$($testName): test") {
+            throw "Required real HWND preview test was not discovered: $testName"
+          }
+          & cargo test --locked --bin shotkit $testName -- --ignored --exact --test-threads=1 --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Real HWND preview neutralization or recovery failed (exit $LASTEXITCODE)."
+          }
+      - name: Verify real atomic-save abort boundary and normal controls
+        timeout-minutes: 15
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Release is mandatory: Cargo's ordinary test harness uses unwind.
+          # Expected aborts run only in children within owned, held fixtures.
+          # Empty fixture roots remain for ephemeral runner expiry; no root deletion.
+          & cargo build --locked --release --example atomic_save_abort_probe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic-save abort probe build failed (exit $LASTEXITCODE)."
+          }
+          & ./target/release/examples/atomic_save_abort_probe.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic-save abort boundary or normal controls failed (exit $LASTEXITCODE)."
+          }
       - name: Measure preview redraw on Windows
         timeout-minutes: 15
         if: runner.os == 'Windows'
@@ -52,22 +104,42 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo build --locked --release
+      - name: Diagnose clipboard history availability
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          # Read-only capability diagnostic, not a privacy or history test.
+          try {
+            $clipboard = [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime]
+            $enabled = $clipboard::IsHistoryEnabled()
+            Write-Host "CLIPBOARD_HISTORY_CAPABILITY: IsHistoryEnabled=$enabled; actual history and exclusion are not tested."
+          } catch {
+            Write-Host "CLIPBOARD_HISTORY_CAPABILITY: unavailable or probe failed: $($_.Exception.Message); actual history and exclusion are not tested."
+          }
+      - name: Verify Windows smoke suite deadline contract
+        timeout-minutes: 2
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-suite-budget-contract.ps1
       - name: Run all interactive Windows smoke tests
         timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
-        run: ./tests/run-all.ps1 -ExePath target/release/shotkit.exe -ScreenshotPath target/shotkit-toolbar-test.png -AllowToolbarFailure
+        run: ./tests/run-all.ps1 -ExePath target/release/shotkit.exe -ScreenshotPath target/shotkit-toolbar-test.png
       - name: Upload toolbar test screenshot
         if: ${{ !cancelled() && runner.os == 'Windows' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shotkit-toolbar-test-screenshot
-          path: rust/target/shotkit-toolbar-test.png
+          path: |
+            rust/target/shotkit-toolbar-test.png
+            rust/target/shotkit-held-preview-*.png
           if-no-files-found: warn
           retention-days: 7
       - name: Upload tested Windows build
         if: ${{ success() && runner.os == 'Windows' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shotkit-windows-x64
           path: rust/target/release/shotkit.exe

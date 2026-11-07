@@ -8,6 +8,10 @@
 
 mod actions;
 use actions::*;
+mod creation;
+pub use creation::create;
+mod menus;
+pub use menus::{form_style_applies, popup, stamp_kind_for_command, style_target};
 mod drawing;
 use drawing::*;
 
@@ -26,6 +30,17 @@ type Lparam = isize;
 type Lresult = isize;
 
 pub const WM_COMMAND: u32 = 0x0111;
+pub const ID_MORE: usize = 0x5130;
+pub const ID_FILE: usize = 0x5131;
+pub const ID_VIEW: usize = 0x5132;
+pub const ID_SAVE_AS: usize = 0x5140;
+pub const ID_OPEN: usize = 0x5141;
+pub const ID_PASTE: usize = 0x5142;
+pub const ID_FOLDER: usize = 0x5143;
+pub const ID_ZOOM_IN: usize = 0x5150;
+pub const ID_ZOOM_OUT: usize = 0x5151;
+pub const ID_ZOOM_ORIGINAL: usize = 0x5152;
+pub const ID_ZOOM_FIT: usize = 0x5153;
 pub const ID_SELECT: usize = 0x5101;
 pub const ID_ARROW: usize = 0x5102;
 pub const ID_LINE: usize = 0x5103;
@@ -37,11 +52,22 @@ pub const ID_BLUR: usize = 0x5108;
 pub const ID_STEP: usize = 0x5109;
 pub const ID_PEN: usize = 0x510A;
 pub const ID_CROP: usize = 0x510B;
+pub const ID_REDACT: usize = 0x510C;
+pub const ID_GAUSSIAN_BLUR: usize = 0x510D;
+pub const ID_STAMP: usize = 0x510E;
+pub const ID_CALLOUT: usize = 0x510F;
+pub const ID_STAMP_CHECK: usize = 0x5160;
+pub const ID_STAMP_CROSS: usize = 0x5161;
+pub const ID_STAMP_WARNING: usize = 0x5162;
+pub const ID_STAMP_INFO: usize = 0x5163;
+pub const ID_STAMP_CURSOR: usize = 0x5164;
 pub const ID_SAVE: usize = 0x5110;
 pub const ID_COPY: usize = 0x5111;
 pub const ID_UNDO: usize = 0x5112;
 pub const ID_REDO: usize = 0x5113;
 pub const ID_CAPTURE: usize = 0x5114;
+pub const ID_SPOTLIGHT: usize = 0x5115;
+pub const ID_MAGNIFIER: usize = 0x5116;
 pub const ID_COLOR: usize = 0x5120;
 pub const ID_LINE_WIDTH: usize = 0x5121;
 pub const ID_FONT_SIZE: usize = 0x5122;
@@ -50,6 +76,31 @@ pub const ID_SWATCH_RED: usize = 0x5124;
 pub const ID_SWATCH_BLACK: usize = 0x5125;
 pub const ID_SWATCH_YELLOW: usize = 0x5126;
 pub const ID_SWATCH_BLUE: usize = 0x5127;
+pub const ID_FORM_STYLE: usize = 0x5128;
+pub const ID_FILL_NONE: usize = 0x5170;
+pub const ID_FILL_SOLID: usize = 0x5171;
+pub const ID_FILL_TRANSLUCENT: usize = 0x5172;
+pub const ID_LINE_SOLID: usize = 0x5173;
+pub const ID_LINE_DASHED: usize = 0x5174;
+pub const ID_LINE_DOTTED: usize = 0x5175;
+pub const ID_CORNERS_SQUARE: usize = 0x5176;
+pub const ID_CORNERS_ROUNDED: usize = 0x5177;
+pub const ID_ARROW_SINGLE: usize = 0x5178;
+pub const ID_ARROW_DOUBLE: usize = 0x5179;
+pub const ID_ARROW_DOT: usize = 0x517A;
+pub const ID_CALLOUT_FILL: usize = 0x517B;
+pub const ID_CALLOUT_TEXT_COLOR: usize = 0x517C;
+pub const ID_CALLOUT_POINTER: usize = 0x517D;
+pub const ID_SPOTLIGHT_25: usize = 0x5180;
+pub const ID_SPOTLIGHT_50: usize = 0x5181;
+pub const ID_SPOTLIGHT_75: usize = 0x5182;
+pub const ID_SPOTLIGHT_90: usize = 0x5183;
+pub const ID_MAGNIFY_150: usize = 0x5184;
+pub const ID_MAGNIFY_200: usize = 0x5185;
+pub const ID_MAGNIFY_300: usize = 0x5186;
+pub const ID_MAGNIFY_400: usize = 0x5187;
+pub const ID_MAGNIFIER_CIRCLE: usize = 0x5188;
+pub const ID_MAGNIFIER_RECT: usize = 0x5189;
 
 const CLASS_NAME: &str = "ShotKitRustEditorToolbar";
 const WM_NCCREATE: u32 = 0x0081;
@@ -60,6 +111,7 @@ const WS_CLIPCHILDREN: u32 = 0x02000000;
 const WS_TABSTOP: u32 = 0x00010000;
 const BS_PUSHBUTTON: u32 = 0x0000000B; // BS_OWNERDRAW
 const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOACTIVATE: u32 = 0x0010;
 const DEFAULT_GUI_FONT: i32 = 17;
 const TTF_IDISHWND: u32 = 0x0001;
 const TTF_SUBCLASS: u32 = 0x0010;
@@ -145,6 +197,7 @@ extern "system" {
     fn DefWindowProcW(hwnd: Hwnd, message: u32, wparam: Wparam, lparam: Lparam) -> Lresult;
     fn DestroyWindow(hwnd: Hwnd) -> i32;
     fn IsWindow(hwnd: Hwnd) -> i32;
+    fn ShowWindow(hwnd: Hwnd, command: i32) -> i32;
     fn GetDlgItem(parent: Hwnd, id: i32) -> Hwnd;
     fn GetClientRect(hwnd: Hwnd, rect: *mut NativeRect) -> i32;
     fn SendMessageW(hwnd: Hwnd, message: u32, wparam: Wparam, lparam: Lparam) -> Lresult;
@@ -214,10 +267,6 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
-fn layout(width: i32) -> (i32, i32, Vec<(i32, i32, i32, i32)>) {
-    shotkit::toolbar_layout::layout(width, ACTIONS.len())
-}
-
 // SAFETY CONTRACT:
 // Voraussetzung: Windows liefert gültiges HWND und nachrichtenspezifisch gültige, ausgerichtete Strukturen; kein Unwind über die ABI.
 // Warum erfüllt bzw. offen: Registrierung verwendet diesen Callback; fremd zugestellte Pointer und Panikfreiheit sind nicht vollständig beweisbar.
@@ -255,6 +304,7 @@ unsafe extern "system" fn toolbar_proc(
     }
     if message == 0x0082 {
         // WM_NCDESTROY
+        menus::remove(hwnd);
         let parent = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
         if let Ok(mut active) = ACTIVE_TOOLS
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -371,6 +421,8 @@ pub struct Toolbar {
     buttons: Vec<Hwnd>,
     height: Cell<i32>,
     _tip_text: Vec<Vec<u16>>,
+    resizing: Cell<bool>,
+    pending_width: Cell<Option<i32>>,
 }
 
 /// Update the highlighted tool to match a tool change made by the editor,
@@ -383,14 +435,20 @@ pub unsafe fn set_active(parent: *mut c_void, id: usize) {
     if !ACTIONS.iter().any(|a| a.id == id && a.tool) {
         return;
     }
-    if let Ok(mut active) = ACTIVE_TOOLS
+    let toolbar = ACTIVE_TOOLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-    {
-        if let Some((toolbar, current)) = active.get_mut(&(parent as usize)) {
-            *current = id;
-            invalidate_tools(*toolbar as Hwnd);
-        }
+        .ok()
+        .and_then(|mut active| {
+            active
+                .get_mut(&(parent as usize))
+                .map(|(toolbar, current)| {
+                    *current = id;
+                    *toolbar
+                })
+        });
+    if let Some(toolbar) = toolbar {
+        invalidate_tools(toolbar as Hwnd);
     }
 }
 
@@ -407,34 +465,71 @@ pub unsafe fn set_color(parent: *mut c_void, red: u8, green: u8, blue: u8) {
     {
         colors.insert(parent as usize, colorref);
     }
-    if let Ok(active) = ACTIVE_TOOLS
+    let toolbar = ACTIVE_TOOLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-    {
-        if let Some((toolbar, _)) = active.get(&(parent as usize)) {
-            let button = GetDlgItem(*toolbar as Hwnd, ID_COLOR as i32);
-            if !button.is_null() {
-                InvalidateRect(button, null(), 1);
-            }
+        .ok()
+        .and_then(|active| active.get(&(parent as usize)).map(|entry| entry.0));
+    if let Some(toolbar) = toolbar {
+        let button = GetDlgItem(toolbar as Hwnd, ID_COLOR as i32);
+        if !button.is_null() {
+            InvalidateRect(button, null(), 1);
         }
     }
 }
 
 impl Toolbar {
-    /// Reflow buttons into as many columns as fit while keeping multiple rows
-    /// when the parent is narrow. The toolbar window's height is updated too.
+    /// Apply the same staged policy on every resize, including growth.
     // SAFETY CONTRACT:
-    // Voraussetzung: self und native Toolbar-/Buttonfenster leben über alle verschachtelten Nachrichten.
-    // Warum erfüllt bzw. offen: Der Fensterhandler klont Rc vor dem Aufruf; die Lebensdauer nativer HWNDs bei Parentabbau bleibt offen.
-    // Nachrichten: SetWindowPos kann synchron Nachrichten auslösen.
+    // The caller retains the toolbar on the UI thread across synchronous
+    // SetWindowPos/ShowWindow callbacks. No global state lock spans these calls.
     pub unsafe fn resize(&self, width: i32) {
-        let width = width.max(1);
-        let (_, height, positions) = layout(width);
-        self.height.set(height);
-        let _ = SetWindowPos(self.hwnd, null_mut(), 0, 0, width, height, SWP_NOZORDER);
-        for (button, (x, y, w, h)) in self.buttons.iter().zip(positions) {
-            let _ = SetWindowPos(*button, null_mut(), x, y, w, h, SWP_NOZORDER);
+        if self.resizing.replace(true) {
+            self.pending_width.set(Some(width));
+            return;
         }
+        let mut width = width;
+        loop {
+            let plan =
+                shotkit::toolbar_layout::layout(width, GetDpiForWindow(self.hwnd), &layout_items());
+            self.height.set(plan.height);
+            menus::set_overflow(self.hwnd, plan.overflow);
+            let _ = SetWindowPos(
+                self.hwnd,
+                null_mut(),
+                0,
+                0,
+                width.max(1),
+                plan.height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            for (button, action) in self.buttons.iter().zip(ACTIONS.iter()) {
+                let position = if action.id == ID_MORE {
+                    plan.more
+                } else {
+                    plan.buttons.iter().find(|p| p.0 == action.id).map(|p| p.1)
+                };
+                if let Some((x, y, w, h)) = position {
+                    let _ = SetWindowPos(
+                        *button,
+                        null_mut(),
+                        x,
+                        y,
+                        w,
+                        h,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    ShowWindow(*button, 8); // SW_SHOWNA: resizing must not activate controls
+                } else {
+                    ShowWindow(*button, 0);
+                }
+            }
+            match self.pending_width.take() {
+                Some(latest) if latest != width => width = latest,
+                _ => break,
+            }
+        }
+        self.resizing.set(false);
     }
 
     pub fn height(&self) -> i32 {
@@ -454,163 +549,4 @@ impl Drop for Toolbar {
             self.buttons.clear();
         }
     }
-}
-
-/// Create an editor toolbar as a child of `parent`.
-///
-/// Commands sent to the parent:
-///
-/// | ID | Action |
-/// | --- | --- |
-/// | `ID_SELECT` / `ID_ARROW` / `ID_LINE` | Auswahl / Pfeil / Linie |
-/// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
-/// | `ID_MARKER` / `ID_BLUR` / `ID_STEP` / `ID_PEN` | Marker / Verpixeln / Nummer / Stift |
-/// | `ID_CROP` | Zuschneiden |
-/// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` / `ID_FRAME` | Farbe / Linienbreite / Schriftgröße / Rahmen und Schatten |
-/// | `ID_SAVE` / `ID_CAPTURE` / `ID_COPY` / `ID_UNDO` / `ID_REDO` | Speichern / Aufnahme / Kopieren / Zurück / Wiederholen |
-///
-/// `WM_COMMAND.wParam` contains the ID in its low word and `BN_CLICKED` in its
-/// high word; `lParam` is the clicked button HWND.
-// SAFETY CONTRACT:
-// Voraussetzung: parent ist ein lebendes eigenes Fenster auf dem UI-Thread und zustandsseitig callbackbereit.
-// Warum erfüllt bzw. offen: Der Aufrufer erstellt das Fenster zuerst; Tooltiptexte bleiben in Toolbar gespeichert, Handlelebensdauer bei Reentranz bleibt offen.
-// Nachrichten: CreateWindowExW, SendMessageW und DestroyWindow können synchron reentrieren.
-pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
-    if parent.is_null() || IsWindow(parent) == 0 {
-        return Err("Ungültiges Editor-Fenster".into());
-    }
-    let instance = GetModuleHandleW(null());
-    if instance.is_null() || !register_class(instance) {
-        return Err("Toolbar-Fensterklasse konnte nicht registriert werden".into());
-    }
-
-    let mut client: NativeRect = std::mem::zeroed();
-    let width = if GetClientRect(parent, &mut client) != 0 {
-        (client.right - client.left).max(1)
-    } else {
-        640
-    };
-    let (_, height, positions) = layout(width);
-    let class_name = wide(CLASS_NAME);
-    let hwnd = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        null(),
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        0,
-        0,
-        width,
-        height,
-        parent,
-        null_mut(),
-        instance,
-        parent,
-    );
-    if hwnd.is_null() {
-        return Err("Toolbar-Fenster konnte nicht erstellt werden".into());
-    }
-
-    let button_class = wide("BUTTON");
-    let font = GetStockObject(DEFAULT_GUI_FONT);
-    let mut buttons = Vec::with_capacity(ACTIONS.len());
-    let mut tip_text = Vec::with_capacity(ACTIONS.len());
-    InitCommonControls();
-    let tip_class = wide("tooltips_class32");
-    let tooltip = CreateWindowExW(
-        0x00000008,
-        tip_class.as_ptr(),
-        null(),
-        0x80000000 | 0x00000001,
-        0,
-        0,
-        0,
-        0,
-        hwnd,
-        null_mut(),
-        instance,
-        null_mut(),
-    );
-    if tooltip.is_null() {
-        DestroyWindow(hwnd);
-        return Err("Tooltip-Fenster konnte nicht erstellt werden".into());
-    }
-    for (index, (action, (x, y, w, h))) in ACTIONS.iter().zip(positions).enumerate() {
-        let label = wide(action.label);
-        let mut tooltip_label = wide(match action.id {
-            ID_CAPTURE => "Neue Aufnahme (Strg+N)",
-            ID_COPY => "Kopieren (Strg+C)",
-            ID_SAVE => "Speichern (Strg+S)",
-            ID_UNDO => "Zurück (Strg+Z)",
-            ID_REDO => "Wiederholen (Strg+Y)",
-            _ => action.label,
-        });
-        let button_style = BS_PUSHBUTTON;
-        let button = CreateWindowExW(
-            0,
-            button_class.as_ptr(),
-            label.as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | button_style,
-            x,
-            y,
-            w,
-            h,
-            hwnd,
-            action.id as Hwnd,
-            instance,
-            null_mut(),
-        );
-        if button.is_null() {
-            DestroyWindow(hwnd);
-            return Err(format!(
-                "Toolbar-Schaltfläche {} konnte nicht erstellt werden",
-                action.label
-            ));
-        }
-        SendMessageW(button, 0x0030, font as usize, 1); // WM_SETFONT
-        if index == 0 {
-            if let Ok(mut active) = ACTIVE_TOOLS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-            {
-                active.insert(parent as usize, (hwnd as usize, ID_SELECT));
-            }
-            if let Ok(mut colors) = CURRENT_COLORS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-            {
-                colors.insert(parent as usize, 0x000000FF); // Style::default() is red.
-            }
-        }
-        if !tooltip.is_null() {
-            // Version 5 common controls require the V2 size (without lpReserved).
-            let mut info = ToolInfoW {
-                size: std::mem::offset_of!(ToolInfoW, reserved) as u32,
-                flags: TTF_IDISHWND | TTF_SUBCLASS,
-                hwnd,
-                id: button as usize,
-                rect: std::mem::zeroed(),
-                instance,
-                text: tooltip_label.as_mut_ptr(),
-                lparam: 0,
-                reserved: null_mut(),
-            };
-            if SendMessageW(tooltip, 0x0432, 0, &mut info as *mut _ as isize) == 0 {
-                // TTM_ADDTOOLW
-                DestroyWindow(tooltip);
-                DestroyWindow(hwnd);
-                return Err(format!(
-                    "Tooltip für {} konnte nicht registriert werden",
-                    action.label
-                ));
-            }
-        }
-        tip_text.push(tooltip_label);
-        buttons.push(button);
-    }
-    Ok(Toolbar {
-        hwnd,
-        buttons,
-        height: Cell::new(height),
-        _tip_text: tip_text,
-    })
 }

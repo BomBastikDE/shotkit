@@ -6,12 +6,10 @@ use super::*;
 // Nachrichten: MessageBoxW kann Nachrichten verarbeiten.
 pub(super) unsafe fn report_editor_error(h: H) {
     if let Some(error) = editor(h).take_error() {
+        let message = format!("Die Bearbeitung konnte nicht übernommen werden: {error}");
         MessageBoxW(
             h,
-            wide(&format!(
-                "Die Bearbeitung konnte nicht übernommen werden: {error:?}"
-            ))
-            .as_ptr(),
+            wide(&message).as_ptr(),
             wide("ShotKit Rust").as_ptr(),
             0x10,
         );
@@ -26,7 +24,13 @@ pub(super) unsafe fn copy_current(h: H) {
         return;
     }
     let copied = composited_bitmap(h, false).and_then(|bmp| {
-        let result = clipboard::copy_bitmap(h, bmp, window_state(h).width, window_state(h).height);
+        let result = clipboard::copy_bitmap(
+            h,
+            bmp,
+            window_state(h).width,
+            window_state(h).height,
+            active_settings().exclude_from_clipboard_history,
+        );
         DeleteObject(bmp);
         result
     });
@@ -115,6 +119,7 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
         (1, "Rahmen hinzufügen"),
         (2, "Schlagschatten hinzufügen"),
         (3, "Rahmen und Schlagschatten hinzufügen"),
+        (4, "Leinwandgröße ändern…"),
     ] {
         AppendMenuW(menu, 0, id, wide(label).as_ptr());
     }
@@ -126,7 +131,7 @@ pub(super) unsafe fn choose_frame_action(h: H) -> Option<u32> {
     SetForegroundWindow(h);
     let selected = TrackPopupMenu(menu, 0x0100 | 0x0002, p.x, p.y, 0, h, std::ptr::null());
     DestroyMenu(menu);
-    (1..=3).contains(&selected).then_some(selected)
+    (1..=4).contains(&selected).then_some(selected)
 }
 
 // SAFETY CONTRACT:
@@ -165,10 +170,10 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
         editor(h)
             .document_mut()
             .begin_edit()
-            .map_err(|e| format!("{e:?}"))?;
-        if let Err(error) = editor(h).add_frame(options) {
+            .map_err(|e| e.to_string())?;
+        if let Err(error) = editor(h).add_frame_with_budget(options, &shared_image_budget()) {
             let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+            return Err(error.to_string());
         }
         let output = editor(h).image_arc();
         let bitmap = match create_bitmap(&output) {
@@ -178,13 +183,20 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
                 return Err(error);
             }
         };
-        if let Err(error) = editor(h).document_mut().commit_edit() {
-            DeleteObject(bitmap);
-            let _ = editor(h).document_mut().abort_edit();
-            return Err(format!("{error:?}"));
+        match confirm_and_commit_staged_edit(h) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                DeleteObject(bitmap);
+                let _ = editor(h).document_mut().abort_edit();
+                return Ok(());
+            }
+            Err(error) => {
+                DeleteObject(bitmap);
+                let _ = editor(h).document_mut().abort_edit();
+                return Err(error.to_string());
+            }
         }
         install_bitmap(h, bitmap, &output);
-        window_state(h).dirty = true;
         window_state(h).zoom = 1.0;
         window_state(h).pan_x = 0;
         window_state(h).pan_y = 0;
@@ -210,28 +222,72 @@ pub(super) unsafe fn edit_style(h: H, id: usize) {
     match id {
         toolbar::ID_COLOR => {
             let Some(color) = choose_color(h) else { return };
-            editor(h).set_current_color(color);
-            toolbar::set_color(h, color.r, color.g, color.b);
             replacement.color = color;
         }
         toolbar::ID_LINE_WIDTH => {
             let Some(width) = choose_number(h, &[1, 2, 3, 4, 6, 8, 12, 16]) else {
                 return;
             };
-            editor(h).set_current_width(width);
             replacement.width = width;
         }
         toolbar::ID_FONT_SIZE => {
             let Some(size) = choose_number(h, &[14, 18, 24, 28, 36, 48, 64, 96]) else {
                 return;
             };
-            editor(h).set_current_font_size(size);
             replacement.font_size = size;
         }
         _ => return,
     }
-    if editor(h).set_selected_style(replacement) {
-        window_state(h).dirty = true;
+    let callout = editor(h).selected_index().and_then(|index| {
+        editor(h).selection().and_then(|shape| match &shape.kind {
+            shotkit::shapes::ShapeKind::Callout { data } => Some((index, data.as_ref().clone())),
+            _ => None,
+        })
+    });
+    let callout = if let Some((index, mut data)) = callout {
+        if replacement.font_size != data.layout.font_size {
+            match shotkit::alpha_render::measure_callout_text(&data.text, replacement.font_size) {
+                Ok(layout) => data.layout = layout,
+                Err(error) => {
+                    MessageBoxW(
+                        h,
+                        wide(&format!(
+                            "Der Text konnte nicht vermessen werden: {error:?}"
+                        ))
+                        .as_ptr(),
+                        wide("Sprechblase").as_ptr(),
+                        0x10,
+                    );
+                    return;
+                }
+            }
+        }
+        Some((index, data))
+    } else {
+        None
+    };
+    let color = replacement.color;
+    let applied = apply_annotation_edit(h, |state| {
+        match id {
+            toolbar::ID_COLOR => {
+                state.set_current_color(replacement.color);
+            }
+            toolbar::ID_LINE_WIDTH => {
+                state.set_current_width(replacement.width);
+            }
+            toolbar::ID_FONT_SIZE => {
+                state.set_current_font_size(replacement.font_size);
+            }
+            _ => unreachable!(),
+        }
+        if let Some((index, data)) = callout {
+            state.replace_callout_with_style(index, data, replacement);
+        } else {
+            state.set_selected_style(replacement);
+        }
+    });
+    if applied && id == toolbar::ID_COLOR {
+        toolbar::set_color(h, color.r, color.g, color.b);
     }
 }
 
@@ -243,12 +299,66 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
         Tool::Rectangle => toolbar::ID_RECTANGLE,
         Tool::Ellipse => toolbar::ID_ELLIPSE,
         Tool::Text => toolbar::ID_TEXT,
+        Tool::Callout => toolbar::ID_CALLOUT,
+        Tool::Spotlight => toolbar::ID_SPOTLIGHT,
+        Tool::Magnifier => toolbar::ID_MAGNIFIER,
         Tool::Highlight => toolbar::ID_MARKER,
         Tool::Blur => toolbar::ID_BLUR,
+        Tool::GaussianBlur => toolbar::ID_GAUSSIAN_BLUR,
+        Tool::Redact => toolbar::ID_REDACT,
         Tool::Step => toolbar::ID_STEP,
+        Tool::Stamp => toolbar::ID_STAMP,
         Tool::Pen => toolbar::ID_PEN,
         Tool::Crop => toolbar::ID_CROP,
     }
+}
+
+/// Apply a tool selection consistently for toolbar clicks and keyboard
+/// shortcuts, including marker color, dirty state, and toolbar readback.
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Editorfenster auf dem UI-Thread.
+// Warum erfüllt bzw. offen: Aufrufer bearbeiten ein eigenes Fenster; vollständige Handlelebensdauer bleibt Aufruferpflicht.
+// Nachrichten: SetWindowTextW und InvalidateRect können Fensterzustand aktualisieren.
+pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
+    cancel_gesture(h);
+    let old_color = editor(h).current_style().color;
+    if !apply_annotation_edit(h, |state| {
+        state.set_tool(tool);
+    }) {
+        return;
+    }
+    let color = editor(h).current_style().color;
+    if color != old_color {
+        toolbar::set_color(h, color.r, color.g, color.b);
+    }
+    toolbar::set_active(h, toolbar_id_for_tool(tool));
+    SetWindowTextW(
+        h,
+        wide(&format!(
+            "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+        ))
+        .as_ptr(),
+    );
+    InvalidateRect(h, std::ptr::null(), 0);
+}
+
+fn apply_form_style(style: &mut shotkit::shapes::Style, id: usize) -> bool {
+    use shotkit::shapes::{ArrowEnds, FillMode, LineStyle, RectangleCorners};
+    match id {
+        toolbar::ID_FILL_NONE => style.fill = FillMode::None,
+        toolbar::ID_FILL_SOLID => style.fill = FillMode::Solid,
+        toolbar::ID_FILL_TRANSLUCENT => style.fill = FillMode::Translucent,
+        toolbar::ID_LINE_SOLID => style.line_style = LineStyle::Solid,
+        toolbar::ID_LINE_DASHED => style.line_style = LineStyle::Dashed,
+        toolbar::ID_LINE_DOTTED => style.line_style = LineStyle::Dotted,
+        toolbar::ID_CORNERS_SQUARE => style.rectangle_corners = RectangleCorners::Square,
+        toolbar::ID_CORNERS_ROUNDED => style.rectangle_corners = RectangleCorners::Rounded,
+        toolbar::ID_ARROW_SINGLE => style.arrow_ends = ArrowEnds::Single,
+        toolbar::ID_ARROW_DOUBLE => style.arrow_ends = ArrowEnds::Double,
+        toolbar::ID_ARROW_DOT => style.arrow_ends = ArrowEnds::Dot,
+        _ => return false,
+    }
+    true
 }
 
 // SAFETY CONTRACT:
@@ -256,6 +366,137 @@ pub(super) fn toolbar_id_for_tool(tool: Tool) -> usize {
 // Warum erfüllt bzw. offen: Der eigene Nachrichtenhandler ruft die Aktion mit einem eigenen Fenster auf; alle Aufrufer bleiben zu prüfen.
 // Nachrichten: Fenster-, Dialog- und Aufnahmeaktionen können Nachrichten auslösen.
 pub(super) unsafe fn toolbar_action(h: H, id: usize) {
+    // Native popup loops run inside the parent's existing ModalGuard. Return
+    // only validated ordinary commands and reuse their exact editor workflows.
+    let id = if matches!(
+        id,
+        toolbar::ID_MORE
+            | toolbar::ID_FILE
+            | toolbar::ID_VIEW
+            | toolbar::ID_STAMP
+            | toolbar::ID_FORM_STYLE
+    ) {
+        let stamp_kind = editor(h).stamp_kind();
+        let style = editor(h)
+            .selection()
+            .map(|shape| shape.style.clone())
+            .unwrap_or_else(|| editor(h).current_style().clone());
+        let target = toolbar::style_target(editor(h).selection().map(|shape| &shape.kind));
+        let Some(selected) = toolbar::popup(h, id, stamp_kind, &style, target) else {
+            SetFocus(h);
+            return;
+        };
+        selected
+    } else {
+        id
+    };
+    if (toolbar::ID_SPOTLIGHT_25..=toolbar::ID_MAGNIFIER_RECT).contains(&id) {
+        apply_annotation_edit(h, |state| match id {
+            toolbar::ID_SPOTLIGHT_25 => {
+                state.set_spotlight_opacity(0.25);
+            }
+            toolbar::ID_SPOTLIGHT_50 => {
+                state.set_spotlight_opacity(0.5);
+            }
+            toolbar::ID_SPOTLIGHT_75 => {
+                state.set_spotlight_opacity(0.75);
+            }
+            toolbar::ID_SPOTLIGHT_90 => {
+                state.set_spotlight_opacity(0.9);
+            }
+            toolbar::ID_MAGNIFY_150 => {
+                state.set_magnifier_zoom(1.5);
+            }
+            toolbar::ID_MAGNIFY_200 => {
+                state.set_magnifier_zoom(2.0);
+            }
+            toolbar::ID_MAGNIFY_300 => {
+                state.set_magnifier_zoom(3.0);
+            }
+            toolbar::ID_MAGNIFY_400 => {
+                state.set_magnifier_zoom(4.0);
+            }
+            toolbar::ID_MAGNIFIER_CIRCLE => {
+                state.set_magnifier_frame(shotkit::shapes::MagnifierFrame::Circle);
+            }
+            toolbar::ID_MAGNIFIER_RECT => {
+                state.set_magnifier_frame(shotkit::shapes::MagnifierFrame::Rectangle);
+            }
+            _ => unreachable!(),
+        });
+        report_editor_error(h);
+        SetFocus(h);
+        InvalidateRect(h, std::ptr::null(), 0);
+        return;
+    }
+    if (toolbar::ID_CALLOUT_FILL..=toolbar::ID_CALLOUT_POINTER).contains(&id) {
+        let selected = editor(h).selected_index().and_then(|index| {
+            editor(h).selection().and_then(|shape| match &shape.kind {
+                shotkit::shapes::ShapeKind::Callout { data } => {
+                    Some((index, data.as_ref().clone()))
+                }
+                _ => None,
+            })
+        });
+        if let Some((index, mut data)) = selected {
+            match id {
+                toolbar::ID_CALLOUT_FILL => {
+                    let Some(color) = choose_color(h) else {
+                        return;
+                    };
+                    data.fill_color = color;
+                }
+                toolbar::ID_CALLOUT_TEXT_COLOR => {
+                    let Some(color) = choose_color(h) else {
+                        return;
+                    };
+                    data.text_color = color;
+                }
+                _ => {
+                    data.tip = if data.tip.is_some() {
+                        None
+                    } else {
+                        Some(ShapePoint::new(
+                            data.origin.x + 20.0,
+                            data.origin.y + data.layout.body_height + 35.0,
+                        ))
+                    };
+                }
+            }
+            apply_annotation_edit(h, |state| {
+                state.replace_callout(index, data);
+            });
+            report_editor_error(h);
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        SetFocus(h);
+        return;
+    }
+    if (toolbar::ID_FILL_NONE..=toolbar::ID_ARROW_DOT).contains(&id) {
+        let mut current = editor(h).current_style().clone();
+        if !apply_form_style(&mut current, id) {
+            return;
+        }
+        let selected = editor(h).selection().and_then(|shape| {
+            toolbar::form_style_applies(id, toolbar::style_target(Some(&shape.kind)))
+                .then(|| shape.style.clone())
+        });
+        apply_annotation_edit(h, |state| {
+            state.set_current_style(current);
+            if let Some(mut selected) = selected {
+                apply_form_style(&mut selected, id);
+                state.set_selected_style(selected);
+            }
+        });
+        report_editor_error(h);
+        SetFocus(h);
+        InvalidateRect(h, std::ptr::null(), 0);
+        return;
+    }
+    let stamp_kind = toolbar::stamp_kind_for_command(id);
+    if let Some(kind) = stamp_kind {
+        editor(h).set_stamp_kind(kind);
+    }
     let tool = match id {
         toolbar::ID_SELECT => Some(Tool::Select),
         toolbar::ID_ARROW => Some(Tool::Arrow),
@@ -263,24 +504,21 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
         toolbar::ID_RECTANGLE => Some(Tool::Rectangle),
         toolbar::ID_ELLIPSE => Some(Tool::Ellipse),
         toolbar::ID_TEXT => Some(Tool::Text),
+        toolbar::ID_CALLOUT => Some(Tool::Callout),
+        toolbar::ID_SPOTLIGHT => Some(Tool::Spotlight),
+        toolbar::ID_MAGNIFIER => Some(Tool::Magnifier),
         toolbar::ID_MARKER => Some(Tool::Highlight),
         toolbar::ID_BLUR => Some(Tool::Blur),
+        toolbar::ID_GAUSSIAN_BLUR => Some(Tool::GaussianBlur),
+        toolbar::ID_REDACT => Some(Tool::Redact),
         toolbar::ID_STEP => Some(Tool::Step),
+        _ if stamp_kind.is_some() => Some(Tool::Stamp),
         toolbar::ID_PEN => Some(Tool::Pen),
         toolbar::ID_CROP => Some(Tool::Crop),
         _ => None,
     };
     if let Some(tool) = tool {
-        cancel_gesture(h);
-        editor(h).set_tool(tool);
-        toolbar::set_active(h, toolbar_id_for_tool(tool));
-        SetWindowTextW(
-            h,
-            wide(&format!(
-                "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-            ))
-            .as_ptr(),
-        );
+        activate_tool(h, tool);
     } else {
         match id {
             toolbar::ID_SWATCH_RED
@@ -298,11 +536,12 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     .selection()
                     .map(|shape| shape.style.clone())
                     .unwrap_or_else(|| editor(h).current_style().clone());
-                editor(h).set_current_color(color);
-                toolbar::set_color(h, r, g, b);
                 replacement.color = color;
-                if editor(h).set_selected_style(replacement) {
-                    window_state(h).dirty = true;
+                if apply_annotation_edit(h, |state| {
+                    state.set_current_color(color);
+                    state.set_selected_style(replacement);
+                }) {
+                    toolbar::set_color(h, r, g, b);
                 }
             }
             toolbar::ID_COLOR | toolbar::ID_LINE_WIDTH | toolbar::ID_FONT_SIZE => edit_style(h, id),
@@ -315,13 +554,27 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                         0x30,
                     );
                 } else if let Some(action) = choose_frame_action(h) {
-                    apply_frame(h, action);
+                    if action == 4 {
+                        canvas::resize(h);
+                    } else {
+                        apply_frame(h, action);
+                    }
                 }
             }
             toolbar::ID_CAPTURE => capture_region(h),
             toolbar::ID_SAVE => {
                 save(h, false);
             }
+            toolbar::ID_SAVE_AS => {
+                save(h, true);
+            }
+            toolbar::ID_OPEN => open_image(h),
+            toolbar::ID_PASTE => paste_image(h),
+            toolbar::ID_FOLDER => open_storage_folder(h),
+            toolbar::ID_ZOOM_IN => apply_zoom(h, view::ZoomAction::In),
+            toolbar::ID_ZOOM_OUT => apply_zoom(h, view::ZoomAction::Out),
+            toolbar::ID_ZOOM_ORIGINAL => apply_zoom(h, view::ZoomAction::Original),
+            toolbar::ID_ZOOM_FIT => apply_zoom(h, view::ZoomAction::Fit),
             toolbar::ID_COPY => copy_current(h),
             toolbar::ID_UNDO => history(h, false),
             toolbar::ID_REDO => history(h, true),
@@ -331,4 +584,30 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
     report_editor_error(h);
     SetFocus(h);
     InvalidateRect(h, std::ptr::null(), 0);
+}
+
+// SAFETY CONTRACT: h is a live editor on the UI thread. State values are copied
+// before GetClientRect; no WindowState reference spans a native call.
+unsafe fn apply_zoom(h: H, action: view::ZoomAction) {
+    let image = (window_state(h).width as u32, window_state(h).height as u32);
+    let current = window_state(h).zoom;
+    let top = toolbar_height(h);
+    let mut client: Rect = zeroed();
+    GetClientRect(h, &mut client);
+    let zoom = view::zoom_for_action(
+        action,
+        image,
+        (0, top, client.right, client.bottom - top),
+        current,
+    );
+    {
+        let state = window_state(h);
+        state.zoom = zoom;
+        if matches!(action, view::ZoomAction::Original | view::ZoomAction::Fit) {
+            state.pan_x = 0;
+            state.pan_y = 0;
+        }
+    }
+    // A smaller image exposes background outside the new image rectangle.
+    InvalidateRect(h, std::ptr::null(), 1);
 }

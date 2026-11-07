@@ -8,7 +8,9 @@ param(
     [int] $StartupTimeoutSeconds = 25,
 
     [ValidateRange(20, 180)]
-    [int] $CaptureTimeoutSeconds = 75
+    [int] $CaptureTimeoutSeconds = 75,
+
+    [switch] $MouseAbort
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +24,10 @@ if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "EXE not found: $ExePath"
 }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
+$imageName = [IO.Path]::GetFileNameWithoutExtension($ExePath)
+if (@(Get-Process -Name $imageName -ErrorAction SilentlyContinue).Count -gt 0) {
+    throw "PREEXISTING_PROCESS: refusing to target or change '$imageName'."
+}
 
 if (-not ('ShotKitScrollSmoke.Native' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -65,7 +71,16 @@ namespace ShotKitScrollSmoke {
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
         public static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out Point point);
+        public static Point CursorPosition() {
+            Point point;
+            if (!GetCursorPos(out point)) throw new InvalidOperationException("GetCursorPos failed.");
+            return point;
+        }
         [DllImport("user32.dll")]
         public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
         [DllImport("user32.dll")]
@@ -76,6 +91,12 @@ namespace ShotKitScrollSmoke {
         public static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
         [DllImport("user32.dll")]
         public static extern int GetSystemMetrics(int index);
+
+        public static int WindowOwner(IntPtr hwnd) {
+            uint owner;
+            GetWindowThreadProcessId(hwnd, out owner);
+            return (int)owner;
+        }
 
         public static string InputDesktopName() {
             IntPtr desktop = OpenInputDesktop(0, false, 0x0001);
@@ -318,6 +339,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     $surfaceWindow = Wait-ForCondition -TimeoutSeconds 20 -Description 'the synthetic scroll surface' -OwnedProcess $surface -Condition {
         Get-ProcessWindows $surface | Where-Object { $_.Title -eq 'ShotKit Synthetic Scroll Surface' -and $_.Visible } | Select-Object -First 1
     }
+    if ([ShotKitScrollSmoke.Native]::WindowOwner($surfaceWindow.Handle) -ne $surface.Id) {
+        throw "SURFACE_OWNER_MISMATCH: HWND=$($surfaceWindow.Handle), expected PID=$($surface.Id)."
+    }
     $ready = Wait-ForCondition -TimeoutSeconds 10 -Description 'the synthetic surface geometry' -OwnedProcess $surface -Condition {
         if (Test-Path -LiteralPath $readyFile) { Get-Content -LiteralPath $readyFile -Raw }
     }
@@ -357,6 +381,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
+    if ([ShotKitScrollSmoke.Native]::WindowOwner($mainWindow.Handle) -ne $shotKit.Id) {
+        throw "SHOTKIT_WINDOW_OWNER_MISMATCH: HWND=$($mainWindow.Handle), expected PID=$($shotKit.Id)."
+    }
     $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
     }
@@ -371,6 +398,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     if (-not [ShotKitScrollSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)) {
         throw 'Could not activate the synthetic test surface.'
     }
+    if ([ShotKitScrollSmoke.Native]::GetForegroundWindow() -ne $surfaceWindow.Handle) {
+        throw "SURFACE_NOT_FOREGROUND_BEFORE_HOTKEY: expected HWND=$($surfaceWindow.Handle), actual=$([ShotKitScrollSmoke.Native]::GetForegroundWindow())."
+    }
     [ShotKitScrollSmoke.Native]::keybd_event(0x79, 0, 0, [UIntPtr]::Zero)
     [ShotKitScrollSmoke.Native]::keybd_event(0x79, 0, 0x0002, [UIntPtr]::Zero)
     $directionDialog = Wait-ForCondition -TimeoutSeconds 10 -Description 'the scroll direction prompt' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
@@ -384,6 +414,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
     }
+    if ([ShotKitScrollSmoke.Native]::WindowOwner($overlay.Handle) -ne $shotKit.Id) {
+        throw "OVERLAY_OWNER_MISMATCH: HWND=$($overlay.Handle), expected PID=$($shotKit.Id)."
+    }
     $originX = $geometry[0]
     $originY = $geometry[1]
     $startX = $originX + 80
@@ -391,6 +424,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     $endX = $startX + 600
     $endY = $startY + 400
     [void][ShotKitScrollSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    if ([ShotKitScrollSmoke.Native]::GetForegroundWindow() -ne $overlay.Handle) {
+        throw "OVERLAY_NOT_FOREGROUND_FOR_SELECTION: expected HWND=$($overlay.Handle), actual=$([ShotKitScrollSmoke.Native]::GetForegroundWindow())."
+    }
     if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($startX, $startY)) { throw 'Could not position the selection start.' }
     Start-Sleep -Milliseconds 150
     [ShotKitScrollSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -399,9 +435,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 
     # The second observed wheel event can only be issued after ShotKit has
-    # captured, matched, and stitched the first scrolled viewport. Escape is
-    # sent while the second movement is pending, so that movement is not added
-    # to the saved prefix.
+    # captured, matched, and stitched the first scrolled viewport. The default
+    # Escape path remains unchanged; -MouseAbort moves the cursor while the
+    # second movement is pending, before it can be captured or stitched.
     $secondWheel = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'a second observable wheel event after the first stitched step' -OwnedProcess $shotKit -Condition {
         if (Test-Path -LiteralPath $eventFile) {
             $eventState = [IO.File]::ReadAllText($eventFile).Trim()
@@ -410,17 +446,70 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     }
     $firstStepOffset = [int]$secondWheel[1] / 2
     if ($firstStepOffset -le 0) { throw "Synthetic surface did not demonstrate a positive first scroll offset: '$secondWheel'." }
-    Write-Output "MILESTONE: observed two real wheel events; first-step offset=$firstStepOffset proves the first viewport was followed by another scroll request. Sending Escape now."
-    [ShotKitScrollSmoke.Native]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 120
-    [ShotKitScrollSmoke.Native]::keybd_event(0x1B, 0, 0x0002, [UIntPtr]::Zero)
+    if ($MouseAbort) {
+        if ([int]$secondWheel[0] -ne 2 -or [int]$secondWheel[1] -ne 240) {
+            throw "MOUSE_ABORT_STEP_GATE_FAILED: expected exactly two 120px positive wheel events before input, observed count=$($secondWheel[0]) offset=$($secondWheel[1])."
+        }
+        if ([ShotKitScrollSmoke.Native]::InputDesktopName() -ne $inputDesktop) {
+            throw 'INPUT_DESKTOP_CHANGED before mouse-abort trigger.'
+        }
+        if ([ShotKitScrollSmoke.Native]::GetForegroundWindow() -ne $surfaceWindow.Handle) {
+            throw "TARGET_NOT_FOREGROUND_BEFORE_MOUSE_ABORT: expected surface HWND=$($surfaceWindow.Handle), actual=$([ShotKitScrollSmoke.Native]::GetForegroundWindow())."
+        }
 
-    $completion = Wait-ForCondition -TimeoutSeconds 20 -Description 'the Escape cancellation notification' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
+        # WindowsScrollIo uses the right edge and vertical midpoint of the
+        # 600x400 selection as its expected cursor position for downward scroll.
+        $expectedCursorX = $startX + 600 - 8
+        $expectedCursorY = $startY + 200
+        $cursorBefore = [ShotKitScrollSmoke.Native]::CursorPosition()
+        if ($cursorBefore.X -ne $expectedCursorX -or $cursorBefore.Y -ne $expectedCursorY) {
+            throw "SCROLL_CURSOR_IDENTITY_MISMATCH: observed ($($cursorBefore.X),$($cursorBefore.Y)), expected ($expectedCursorX,$expectedCursorY)."
+        }
+
+        # Move only within the owned synthetic surface, outside the selected
+        # capture rectangle, without clicking or sending Escape.
+        $moveX = $originX + 20
+        $moveY = $originY + 20
+        if ($moveX -lt $originX -or $moveY -lt $originY -or
+            $moveX -ge ($originX + $geometry[2]) -or $moveY -ge ($originY + $geometry[3]) -or
+            ($moveX -ge $startX -and $moveX -lt $endX -and $moveY -ge $startY -and $moveY -lt $endY)) {
+            throw "MOUSE_ABORT_TARGET_OUTSIDE_SAFE_SURFACE: point=($moveX,$moveY), surface=($originX,$originY,$($geometry[2]),$($geometry[3]))."
+        }
+        if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($moveX, $moveY)) {
+            throw 'Could not move the cursor within the owned synthetic surface.'
+        }
+        $cursorAfter = [ShotKitScrollSmoke.Native]::CursorPosition()
+        if ($cursorAfter.X -ne $moveX -or $cursorAfter.Y -ne $moveY) {
+            throw "MOUSE_ABORT_CURSOR_MOVE_MISMATCH: requested ($moveX,$moveY), observed ($($cursorAfter.X),$($cursorAfter.Y))."
+        }
+        if ([ShotKitScrollSmoke.Native]::GetForegroundWindow() -ne $surfaceWindow.Handle) {
+            throw "TARGET_FOREGROUND_CHANGED_DURING_MOUSE_ABORT: expected surface HWND=$($surfaceWindow.Handle), actual=$([ShotKitScrollSmoke.Native]::GetForegroundWindow())."
+        }
+        Write-Output "MILESTONE: first 120px scroll is committed; second wheel is pending; moved cursor within owned test surface from ($($cursorBefore.X),$($cursorBefore.Y)) to ($moveX,$moveY) without click/Escape."
+    }
+    else {
+        Write-Output "MILESTONE: observed two real wheel events; first-step offset=$firstStepOffset proves the first viewport was followed by another scroll request. Sending Escape now."
+        [ShotKitScrollSmoke.Native]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 120
+        [ShotKitScrollSmoke.Native]::keybd_event(0x1B, 0, 0x0002, [UIntPtr]::Zero)
+    }
+
+    $expectedReason = if ($MouseAbort) { 'Durch Mausbewegung beendet.' } else { 'Mit Esc beendet.' }
+    $completion = Wait-ForCondition -TimeoutSeconds 20 -Description 'the scroll cancellation notification' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
+    if ([ShotKitScrollSmoke.Native]::WindowOwner($completion.Handle) -ne $shotKit.Id) {
+        throw "COMPLETION_DIALOG_OWNER_MISMATCH: HWND=$($completion.Handle), expected PID=$($shotKit.Id)."
+    }
     $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
-    if ($completionText -notlike '*Mit Esc beendet.*') {
-        throw "Scroll did not report Escape cancellation. Dialog='$completionText'"
+    if ($completionText -notlike "*$expectedReason*") {
+        throw "Scroll cancellation reason mismatch. Expected='$expectedReason' Dialog='$completionText'"
+    }
+    if ($MouseAbort) {
+        $finalEvent = [IO.File]::ReadAllText($eventFile).Trim()
+        if ($finalEvent -cne '2,240') {
+            throw "MOUSE_ABORT_STEPPED_AFTER_TRIGGER: expected event state 2,240, found '$finalEvent'."
+        }
     }
     $pngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)
     if ($pngs.Count -ne 1) { throw "Expected one auto-saved partial PNG, found $($pngs.Count)." }
@@ -458,7 +547,12 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
         } | Select-Object -First 1
     }
     Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')
-    $passMessage = "PASS: Escape produced the expected 'Mit Esc beendet.' outcome and saved $($png.Name) as a pixel-exact ${expectedWidth}x${expectedHeight} stitched prefix after an observed successful scroll step."
+    if ($MouseAbort) {
+        $passMessage = "PASS: cursor movement inside the owned synthetic surface produced '$expectedReason'; saved $($png.Name) as a pixel-exact ${expectedWidth}x${expectedHeight} prefix after exactly one committed 120px step."
+    }
+    else {
+        $passMessage = "PASS: Escape produced the expected '$expectedReason' outcome and saved $($png.Name) as a pixel-exact ${expectedWidth}x${expectedHeight} stitched prefix after an observed successful scroll step."
+    }
 }
 finally {
     foreach ($owned in @($shotKit, $surface)) {

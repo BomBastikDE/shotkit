@@ -60,6 +60,24 @@ pub fn flatten_checkerboard(image: &Image) -> Result<Image, String> {
     Image::new(image.width, image.height, pixels).map_err(str::to_owned)
 }
 
+/// Flatten an owned preview in place, retaining its pixel allocation.
+pub fn flatten_checkerboard_in_place(image: &mut Image) -> Result<(), String> {
+    checked_image_len(image).map_err(str::to_owned)?;
+    for (index, pixel) in image.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        if pixel[3] != 255 {
+            let x = index % image.width;
+            let y = index / image.width;
+            let gray = if ((x / 12) + (y / 12)).is_multiple_of(2) {
+                236
+            } else {
+                196
+            };
+            *pixel = source_over([gray, gray, gray, 255], *pixel, 255);
+        }
+    }
+    Ok(())
+}
+
 /// Composites an equally sized straight-alpha BGRA layer over `base`.
 ///
 /// Both public `Image` fields are revalidated because callers can construct an
@@ -120,26 +138,55 @@ mod tests {
     }
 
     #[test]
+    fn in_place_checkerboard_matches_copy_and_reuses_allocation() {
+        let mut pixels = vec![0; 25 * 25 * 4];
+        for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            *pixel = [i as u8, (i * 7) as u8, (i * 13) as u8, i as u8];
+        }
+        let mut image = Image::new(25, 25, pixels).unwrap();
+        let expected = flatten_checkerboard(&image).unwrap();
+        let allocation = image.pixels.as_ptr();
+        let capacity = image.pixels.capacity();
+        flatten_checkerboard_in_place(&mut image).unwrap();
+        assert_eq!(image, expected);
+        assert_eq!(image.pixels.as_ptr(), allocation);
+        assert_eq!(image.pixels.capacity(), capacity);
+
+        let mut invalid = Image {
+            width: 2,
+            height: 2,
+            pixels: vec![1, 2, 3, 4],
+        };
+        let original = invalid.pixels.clone();
+        assert!(flatten_checkerboard_in_place(&mut invalid).is_err());
+        assert_eq!(invalid.pixels, original);
+    }
+
+    #[test]
     fn checkerboard_flattens_only_transparent_pixels_without_changing_output() {
         let mut pixels = vec![0; 25 * 2 * 4];
-        for (i, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(&[i as u8, 100, 200, [0, 128, 255][i % 3]]);
         }
         let image = Image::new(25, 2, pixels).unwrap();
         let result = flatten_checkerboard(&image).unwrap();
         for (index, (src, dst)) in image
             .pixels
-            .chunks_exact(4)
-            .zip(result.pixels.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(result.pixels.as_chunks::<4>().0.iter())
             .enumerate()
         {
-            let gray = if (((index % image.width) / 12) + ((index / image.width) / 12)) % 2 == 0 {
+            let gray = if (((index % image.width) / 12) + ((index / image.width) / 12))
+                .is_multiple_of(2)
+            {
                 236
             } else {
                 196
             };
             assert_eq!(
-                dst,
+                *dst,
                 source_over(
                     [gray, gray, gray, 255],
                     [src[0], src[1], src[2], src[3]],
