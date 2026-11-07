@@ -171,7 +171,7 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
             .document_mut()
             .begin_edit()
             .map_err(|e| e.to_string())?;
-        if let Err(error) = editor(h).add_frame(options) {
+        if let Err(error) = editor(h).add_frame_with_budget(options, &shared_image_budget()) {
             let _ = editor(h).document_mut().abort_edit();
             return Err(error.to_string());
         }

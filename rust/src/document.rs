@@ -629,6 +629,25 @@ impl Document {
     /// Add frame/shadow and move annotations to the new image-content origin.
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
         let image = ImageHandle::from_image(image_edit::add_frame(&self.current.image, options)?);
+        self.install_frame(image, options)
+    }
+
+    /// Add tracked frame/shadow output; aborting a staged edit releases only
+    /// that output while preserving the source and its history ownership.
+    pub fn add_frame_with_budget(
+        &mut self,
+        options: FrameOptions,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        let image = image_edit::add_frame_with_budget(&self.current.image, options, budget)?;
+        self.install_frame(image, options)
+    }
+
+    fn install_frame(
+        &mut self,
+        image: ImageHandle,
+        options: FrameOptions,
+    ) -> Result<(), DocumentError> {
         let shadow = options.shadow;
         let margin_x = shadow.map_or(0usize, |s| {
             s.blur_radius

@@ -359,6 +359,14 @@ impl EditorController {
         self.cancel_drag();
         self.document.add_frame(options)
     }
+    pub fn add_frame_with_budget(
+        &mut self,
+        options: FrameOptions,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.add_frame_with_budget(options, budget)
+    }
     pub fn stamp_kind(&self) -> StampKind {
         self.stamp_kind
     }

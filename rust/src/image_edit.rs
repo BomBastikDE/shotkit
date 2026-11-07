@@ -82,7 +82,7 @@ pub enum ImageEditError {
 impl fmt::Display for ImageEditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Budget(error) => write!(f, "Kein freies Bildbudget für den Ausschnitt: {error}"),
+            Self::Budget(error) => write!(f, "Kein freies Bildbudget für die Bearbeitung: {error}"),
             Self::InvalidCrop => {
                 f.write_str("Der Ausschnitt liegt außerhalb des Bildes oder ist leer")
             }
@@ -182,6 +182,58 @@ fn copy_crop(source: &Image, rect: CropRect, mut pixels: Vec<u8>) -> Result<Imag
 /// Add a colored frame and optional soft shadow without modifying `source`.
 /// `color` uses the crate's RGBA order; output storage is BGRA.
 pub fn add_frame(source: &Image, options: FrameOptions) -> Result<Image, ImageEditError> {
+    let layout = frame_layout(source, options)?;
+    let pixels = reserve_pixels(layout.byte_len)?;
+    render_frame(source, options, layout, pixels)
+}
+
+/// Reserve frame/shadow OUTPUT pixels before allocation in the caller's shared
+/// pool. Source/history remain retained; Reserved admission can use headroom but
+/// cannot bypass the common ceiling. Pixels and lease share immutable ownership.
+pub fn add_frame_with_budget(
+    source: &Image,
+    options: FrameOptions,
+    budget: &ResourceBudget,
+) -> Result<ImageHandle, ImageEditError> {
+    add_frame_with_budget_using(source, options, budget, reserve_pixels)
+}
+
+fn add_frame_with_budget_using(
+    source: &Image,
+    options: FrameOptions,
+    budget: &ResourceBudget,
+    allocate: impl FnOnce(usize) -> Result<Vec<u8>, ImageEditError>,
+) -> Result<ImageHandle, ImageEditError> {
+    let layout = frame_layout(source, options)?;
+    let mut lease = budget
+        .try_acquire(layout.byte_len, AdmissionClass::Reserved)
+        .map_err(ImageEditError::Budget)?;
+    // No budget lock crosses allocation. Charge any spare retained capacity
+    // before rendering or handing the output to document/history ownership.
+    let pixels = allocate(layout.byte_len)?;
+    lease
+        .try_resize(pixels.capacity())
+        .map_err(ImageEditError::Budget)?;
+    let image = render_frame(source, options, layout, pixels)?;
+    Ok(ImageHandle::from_imported(Arc::new(
+        TrackedImage::from_reserved(image, lease),
+    )))
+}
+
+struct FrameLayout {
+    radius: usize,
+    left_shadow: usize,
+    top_shadow: usize,
+    card_width: usize,
+    card_height: usize,
+    content_x: usize,
+    content_y: usize,
+    out_width: usize,
+    out_height: usize,
+    byte_len: usize,
+}
+
+fn frame_layout(source: &Image, options: FrameOptions) -> Result<FrameLayout, ImageEditError> {
     validate_source(source)?;
     let shadow = options.shadow;
     if shadow.is_some_and(|s| s.blur_radius > MAX_SHADOW_RADIUS) {
@@ -253,7 +305,44 @@ pub fn add_frame(source: &Image, options: FrameOptions) -> Result<Image, ImageEd
         return Err(ImageEditError::ImageTooLarge);
     }
 
-    let mut pixels = reserve_pixels(byte_len)?;
+    Ok(FrameLayout {
+        radius,
+        left_shadow,
+        top_shadow,
+        card_width,
+        card_height,
+        content_x,
+        content_y,
+        out_width,
+        out_height,
+        byte_len,
+    })
+}
+
+// Geometry and byte products are checked before allocation. Rendering writes
+// only into the admitted output capacity and does not allocate scratch images.
+fn render_frame(
+    source: &Image,
+    options: FrameOptions,
+    layout: FrameLayout,
+    mut pixels: Vec<u8>,
+) -> Result<Image, ImageEditError> {
+    let FrameLayout {
+        radius,
+        left_shadow,
+        top_shadow,
+        card_width,
+        card_height,
+        content_x,
+        content_y,
+        out_width,
+        out_height,
+        byte_len,
+    } = layout;
+    if !pixels.is_empty() || pixels.capacity() < byte_len {
+        return Err(ImageEditError::AllocationFailed);
+    }
+    let shadow = options.shadow;
     // Reservation above makes initialization infallible: no further allocation
     // is needed, and transparent padding keeps its original zero-filled bytes.
     pixels.resize(byte_len, 0);
@@ -343,6 +432,146 @@ fn validate_source(source: &Image) -> Result<(), ImageEditError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_frame_options() -> FrameOptions {
+        FrameOptions {
+            width: 1,
+            color: Color::rgba(23, 45, 67, 128),
+            shadow: None,
+        }
+    }
+
+    #[test]
+    fn budgeted_frame_rejects_invalid_geometry_and_ceiling_before_allocation() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let original = source.clone();
+        let budget = ResourceBudget::new(8, 0).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        for options in [
+            FrameOptions {
+                width: usize::MAX,
+                ..budget_frame_options()
+            },
+            FrameOptions {
+                shadow: Some(ShadowOptions {
+                    offset_x: 0,
+                    offset_y: 0,
+                    blur_radius: MAX_SHADOW_RADIUS + 1,
+                    opacity: 255,
+                }),
+                ..budget_frame_options()
+            },
+        ] {
+            assert!(matches!(
+                add_frame_with_budget_using(&source, options, &budget, |_| panic!(
+                    "invalid frame allocated"
+                )),
+                Err(ImageEditError::ImageTooLarge | ImageEditError::InvalidShadow)
+            ));
+        }
+        assert!(matches!(
+            add_frame_with_budget_using(&source, budget_frame_options(), &budget, |_| panic!(
+                "refused frame allocated"
+            )),
+            Err(ImageEditError::Budget(_))
+        ));
+        assert_eq!(source, original);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
+
+    #[test]
+    fn budgeted_frame_allocation_failure_and_capacity_refusal_release_only_output() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let original = source.clone();
+        let source_ptr = source.pixels.as_ptr();
+        // Frame is 4 x 3 BGRA pixels; all of its 48 bytes use reserved headroom.
+        let budget = ResourceBudget::new(56, 48).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        assert_eq!(
+            add_frame_with_budget_using(&source, budget_frame_options(), &budget, |len| {
+                assert_eq!(len, 48);
+                // Reentering the pool proves no budget mutex crosses allocation.
+                assert_eq!(budget.snapshot().used_bytes, 56);
+                drop(budget.try_acquire(0, AdmissionClass::Reserved).unwrap());
+                Err(ImageEditError::AllocationFailed)
+            }),
+            Err(ImageEditError::AllocationFailed)
+        );
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+        assert!(matches!(
+            add_frame_with_budget_using(&source, budget_frame_options(), &budget, |_| Ok(
+                Vec::with_capacity(49)
+            )),
+            Err(ImageEditError::Budget(_))
+        ));
+        assert_eq!(source, original);
+        assert_eq!(source.pixels.as_ptr(), source_ptr);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
+
+    #[test]
+    fn budgeted_frame_matches_legacy_pixels_at_exact_ceiling_for_all_modes() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        for (width, shadow) in [
+            (1, None),
+            (
+                0,
+                Some(ShadowOptions {
+                    offset_x: 2,
+                    offset_y: 1,
+                    blur_radius: 1,
+                    opacity: 112,
+                }),
+            ),
+            (
+                1,
+                Some(ShadowOptions {
+                    offset_x: -2,
+                    offset_y: -1,
+                    blur_radius: 1,
+                    opacity: 112,
+                }),
+            ),
+        ] {
+            let options = FrameOptions {
+                width,
+                shadow,
+                ..budget_frame_options()
+            };
+            let expected = add_frame(&source, options).unwrap();
+            let bytes = expected.pixels.len();
+            let budget = ResourceBudget::new(8 + bytes, bytes).unwrap();
+            let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+            let output = add_frame_with_budget(&source, options, &budget).unwrap();
+            assert_eq!(output.image(), &expected);
+            assert_eq!(
+                budget.snapshot().used_bytes,
+                retained.bytes() + output.pixels.capacity()
+            );
+            assert!(budget.try_acquire(1, AdmissionClass::Reserved).is_err());
+            drop(output);
+            assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+        }
+    }
+
+    #[test]
+    fn budgeted_frame_charges_actual_capacity_until_last_shared_owner() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let budget = ResourceBudget::new(80, 0).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        let output = add_frame_with_budget_using(&source, budget_frame_options(), &budget, |_| {
+            Ok(Vec::with_capacity(53))
+        })
+        .unwrap();
+        let capacity = output.pixels.capacity();
+        assert!(capacity >= 53);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes() + capacity);
+        let last = output.clone();
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes() + capacity);
+        drop(last);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
 
     fn one_pixel_crop() -> CropRect {
         CropRect {

@@ -1,7 +1,7 @@
 //! Shared immutable image ownership for legacy and budgeted image paths.
 //!
 //! Cloning a handle retains its existing allocation; it never copies pixels.
-//! Imports, ordinary captures and budgeted crops retain their lease through
+//! Imports, ordinary captures, budgeted crops and frame/shadow outputs retain their lease through
 //! `TrackedImage`, including after
 //! the admission service or original editor has gone away. Borrowing an Image
 //! does not transfer ownership or detach its reservation. Explicitly cloning

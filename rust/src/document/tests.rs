@@ -1638,6 +1638,122 @@ fn budget_crop_rect() -> CropRect {
     }
 }
 
+fn budget_frame_options() -> FrameOptions {
+    FrameOptions {
+        width: 1,
+        color: Color::rgba(23, 45, 67, 128),
+        shadow: None,
+    }
+}
+
+#[test]
+fn frame_budget_and_direct_history_refusal_preserve_revision_and_both_histories() {
+    use crate::resource_budget::{AdmissionClass, ResourceBudget};
+    let budget = ResourceBudget::new(128, 0).unwrap();
+    let mut document = tracked_crop_document(&budget);
+    document.add_shape(shape()).unwrap();
+    document.add_shape(shape()).unwrap();
+    assert!(document.undo());
+    assert!(document.mark_saved());
+    let before = document.clone();
+    let used = budget.snapshot().used_bytes;
+    let blocker = budget
+        .try_acquire(128 - used, AdmissionClass::Normal)
+        .unwrap();
+    assert!(matches!(
+        document.add_frame_with_budget(budget_frame_options(), &budget),
+        Err(DocumentError::Image(ImageEditError::Budget(_)))
+    ));
+    assert_same_crop_baseline(&document, &before);
+    drop(blocker);
+    document.history_budget = 0;
+    assert_eq!(
+        document.add_frame_with_budget(budget_frame_options(), &budget),
+        Err(DocumentError::HistoryBudgetExceeded)
+    );
+    assert_same_crop_baseline(&document, &before);
+    assert_eq!(budget.snapshot().used_bytes, used);
+}
+
+#[test]
+fn budgeted_frame_bitmap_failure_history_failure_and_decline_restore_exact_baseline() {
+    use crate::resource_budget::ResourceBudget;
+    for failure in 0..3 {
+        let budget = ResourceBudget::new(128, 0).unwrap();
+        let mut document = tracked_crop_document(&budget);
+        document.add_shape(shape()).unwrap();
+        document.add_shape(shape()).unwrap();
+        assert!(document.undo()); // Keep both undo and redo populated.
+        assert!(document.mark_saved());
+        let before = document.clone();
+        let used = budget.snapshot().used_bytes;
+        document.begin_edit().unwrap();
+        document
+            .add_frame_with_budget(budget_frame_options(), &budget)
+            .unwrap();
+        assert!(budget.snapshot().used_bytes > used);
+        match failure {
+            0 => {
+                // Models native bitmap construction returning Err before the
+                // history dialog. The staged output alone is abandoned.
+                document.abort_edit().unwrap();
+            }
+            1 => {
+                let _guard = HistoryReservationFailureGuard::after(0);
+                assert!(matches!(
+                    document.plan_commit_edit_with_fallback(),
+                    Err(DocumentError::AllocationFailed)
+                ));
+                document.abort_edit().unwrap();
+            }
+            _ => {
+                let plan = document.plan_commit_edit_with_fallback().unwrap().unwrap();
+                let plan = document.suspend_edit_with_plan(plan).unwrap();
+                assert_same_crop_baseline(&document, &before);
+                // A declined history confirmation drops the suspended output.
+                drop(plan);
+            }
+        }
+        assert_same_crop_baseline(&document, &before);
+        assert_eq!(budget.snapshot().used_bytes, used);
+    }
+}
+
+#[test]
+fn budgeted_frame_lease_follows_current_undo_redo_plans_and_external_clones() {
+    use crate::resource_budget::ResourceBudget;
+    let budget = ResourceBudget::new(128, 0).unwrap();
+    let mut document = tracked_crop_document(&budget);
+    let source = document.image_arc();
+    let source_bytes = source.pixels.capacity();
+    document.begin_edit().unwrap();
+    document
+        .add_frame_with_budget(budget_frame_options(), &budget)
+        .unwrap();
+    let frame = document.image_arc();
+    let frame_bytes = frame.pixels.capacity();
+    let plan = document.plan_commit_edit().unwrap().unwrap();
+    let plan = document.suspend_edit_with_plan(plan).unwrap();
+    assert!(document.image_arc().ptr_eq(&source));
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + frame_bytes);
+    document
+        .commit_edit_with_approval(plan, CommitApproval::PreserveHistory)
+        .unwrap();
+    assert!(document.image_arc().ptr_eq(&frame));
+    assert!(document.try_undo().unwrap());
+    assert!(document.redo_image_arc().unwrap().ptr_eq(&frame));
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + frame_bytes);
+    assert!(document.try_redo().unwrap());
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + frame_bytes);
+    let external = document.clone();
+    drop(document);
+    drop(frame);
+    drop(source);
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + frame_bytes);
+    drop(external);
+    assert_eq!(budget.snapshot().used_bytes, 0);
+}
+
 #[test]
 fn crop_budget_and_direct_history_refusal_preserve_revision_and_both_histories() {
     use crate::resource_budget::{AdmissionClass, ResourceBudget};
