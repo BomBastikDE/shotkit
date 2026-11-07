@@ -59,6 +59,7 @@ fn import_budget_error(error: BudgetError) -> String {
 }
 
 mod bounded_reader;
+mod jpeg_budget_reader;
 
 /// Enforce the limit on bytes actually read, even if the file changes after opening.
 pub fn read_image_file(path: &Path) -> Result<Vec<u8>, String> {
@@ -113,7 +114,8 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
 }
 
 /// Decode borrowed encoded bytes using the same peak policy as file imports.
-/// No complete encoded-data copy is made. The caller keeps the source stable
+/// JPEG additionally admits its decoder-owned encoded copy before construction.
+/// Other formats retain the existing workspace policy. The caller keeps the source stable
 /// until return (for clipboard memory, hold its native lock). An error means
 /// no successful Image was produced; post-decode errors travel with ownership.
 pub fn decode_with_budget(data: &[u8], budget: &ResourceBudget) -> Result<BudgetedImage, String> {
@@ -123,15 +125,17 @@ pub fn decode_with_budget(data: &[u8], budget: &ResourceBudget) -> Result<Budget
     let reader = ImageReader::new(BufReader::new(Cursor::new(data)))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
-    let image = decode_reader_admitted(reader, Some(&mut lease))?;
+    let image =
+        decode_reader_admitted(reader, Some(&mut lease), Some((budget, data.len() as u64)))?;
     Ok(BudgetedImage::from_decoded(image, lease))
 }
 
-/// Decode a file without retaining a second, complete copy of its encoded bytes.
+/// Decode a file from its open handle. The JPEG decoder retains a complete
+/// encoded copy; other codec scratch remains unmeasured.
 /// On Windows the open handle refuses concurrent write/delete access until the
 /// decoder finishes. Other platforms do not provide that guarantee here.
 pub fn decode_file(path: &Path) -> Result<(Image, Option<ImageFormat>), String> {
-    decode_file_inner(path, None)
+    decode_file_inner(path, None, None)
 }
 
 /// Admit an import against a shared budget and return ownership of its pixels
@@ -144,14 +148,18 @@ pub fn decode_file(path: &Path) -> Result<(Image, Option<ImageFormat>), String> 
 /// size arithmetic is checked. Successful import retains pixels.capacity().
 /// Imports use Normal admission, preserving the budget's configured headroom.
 /// Accounting is constant-time per admission; pixel conversion is linear in
-/// pixel count. This path retains no complete encoded-file copy. Reservation
-/// does not itself allocate the represented bytes.
+/// pixel count. JPEG additionally admits a decoder-owned complete encoded copy
+/// before construction and retains that reservation until decoding is finished.
+/// Reservation does not itself allocate the represented bytes.
 ///
 /// This is admission accounting for this import, not a process memory ceiling:
 /// codecs can allocate while parsing headers, potentially exceeding the initial
 /// 16-MiB allowance, and their internal scratch memory is not measured or capped
 /// by this allowance. Allocator overhead, other allocations and OS memory are
-/// uncounted. Existing decoder/file limits remain independently enforced.
+/// uncounted. JPEG uses fallible fixed-length input allocation and checks actual
+/// Vec capacity afterward; allocator capacity beyond the admitted allowance can
+/// therefore exist briefly before rejection. Existing decoder/file limits remain
+/// independently enforced.
 /// The returned lease does not automatically account for later image clones or
 /// edits. Errors release this import's reservation through RAII.
 pub fn decode_file_with_budget(
@@ -161,7 +169,7 @@ pub fn decode_file_with_budget(
     let mut lease = budget
         .try_acquire(IMPORT_WORKSPACE_ALLOWANCE, AdmissionClass::Normal)
         .map_err(import_budget_error)?;
-    let (image, format) = decode_file_inner(path, Some(&mut lease))?;
+    let (image, format) = decode_file_inner(path, Some(&mut lease), Some(budget))?;
     // Decoder, orientation/conversion temporaries and file reader are gone.
     lease
         .try_resize(image.pixels.capacity())
@@ -172,18 +180,24 @@ pub fn decode_file_with_budget(
 fn decode_file_inner(
     path: &Path,
     lease: Option<&mut BudgetLease>,
+    budget: Option<&ResourceBudget>,
 ) -> Result<(Image, Option<ImageFormat>), String> {
     let file = open_image_file(path, MAX_IMAGE_BYTES)?;
     // Keep the same file object available for the final length check and, on
     // Windows, keep the read-only sharing contract alive until that check.
     let guard = file.try_clone().map_err(|e| e.to_string())?;
+    let encoded_length = guard.metadata().map_err(|e| e.to_string())?.len();
+    if encoded_length > MAX_IMAGE_BYTES {
+        return Err("Die Bilddatei ist zu groß.".into());
+    }
     let bounded =
         bounded_reader::BoundedReader::new(file, MAX_IMAGE_BYTES).map_err(|e| e.to_string())?;
     let reader = ImageReader::new(BufReader::new(bounded))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     let format = reader.format();
-    let image = decode_reader_admitted(reader, lease)?;
+    let image =
+        decode_reader_admitted(reader, lease, budget.map(|budget| (budget, encoded_length)))?;
     if guard.metadata().map_err(|e| e.to_string())?.len() > MAX_IMAGE_BYTES {
         return Err("Die Bilddatei ist zu groß.".into());
     }
@@ -206,7 +220,7 @@ fn open_image_file(path: &Path, limit: u64) -> Result<std::fs::File, String> {
 }
 
 fn decode_reader<R: BufRead + Seek>(reader: ImageReader<R>) -> Result<Image, String> {
-    decode_reader_admitted(reader, None)
+    decode_reader_admitted(reader, None, None)
 }
 
 fn import_peak_reservation(width: u32, height: u32, decoder_bytes: u64) -> Result<usize, String> {
@@ -225,13 +239,48 @@ fn import_peak_reservation(width: u32, height: u32, decoder_bytes: u64) -> Resul
 fn decode_reader_admitted<R: BufRead + Seek>(
     mut reader: ImageReader<R>,
     lease: Option<&mut BudgetLease>,
+    encoded_admission: Option<(&ResourceBudget, u64)>,
 ) -> Result<Image, String> {
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
     limits.max_image_width = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
     limits.max_image_height = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
     reader.limits(limits.clone());
-    let mut decoder = reader.into_decoder().map_err(|error| match error {
+    // Own the encoded-copy lease here, outside the reader: image's JPEG
+    // constructor drops its reader but retains the Vec until read_image ends.
+    // Keep this reservation separate so raster admission cannot replace it.
+    let mut encoded_lease = match (reader.format(), encoded_admission) {
+        (Some(ImageFormat::Jpeg), Some((budget, length))) => Some(
+            budget
+                .try_acquire(
+                    jpeg_budget_reader::copy_allowance(length)?,
+                    AdmissionClass::Normal,
+                )
+                .map_err(import_budget_error)?,
+        ),
+        _ => None,
+    };
+    let decoder: Result<Box<dyn ImageDecoder + '_>, image::ImageError> =
+        if let Some(encoded_lease) = encoded_lease.as_mut() {
+            let length = encoded_admission
+                .expect("JPEG admission has a source length")
+                .1;
+            let input = jpeg_budget_reader::JpegBudgetReader::new(
+                reader.into_inner(),
+                length,
+                encoded_lease,
+            );
+            let mut admitted = ImageReader::with_format(input, ImageFormat::Jpeg);
+            admitted.limits(limits.clone());
+            admitted
+                .into_decoder()
+                .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
+        } else {
+            reader
+                .into_decoder()
+                .map(|decoder| Box::new(decoder) as Box<dyn ImageDecoder + '_>)
+        };
+    let mut decoder = decoder.map_err(|error| match error {
         image::ImageError::Limits(ref limit)
             if limit.kind() == image::error::LimitErrorKind::DimensionError =>
         {
@@ -808,6 +857,75 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), bytes.into_inner());
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn jpeg_copy_admission_precedes_constructor_for_files_and_borrowed_bytes() {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0];
+        bytes.resize(32 * 1024, 0); // Recognized JPEG, invalid constructor headers.
+        let allowance = jpeg_budget_reader::copy_allowance(bytes.len() as u64).unwrap();
+        let path = stream_test_path("jpeg-copy-with-png-extension.png");
+        std::fs::write(&path, &bytes).unwrap();
+        for from_file in [false, true] {
+            for enough in [false, true] {
+                let ceiling = IMPORT_WORKSPACE_ALLOWANCE + allowance - usize::from(!enough);
+                let budget = ResourceBudget::new(ceiling + 37, 0).unwrap();
+                let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+                let error = if from_file {
+                    decode_file_with_budget(&path, &budget).unwrap_err()
+                } else {
+                    decode_with_budget(&bytes, &budget).unwrap_err()
+                };
+                assert_eq!(error.contains("cannot reserve"), !enough, "{error}");
+                assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn jpeg_copy_lease_is_additive_at_raster_admission_and_released_after_decode() {
+        let bytes = encode(&sample(), ImageFormat::Jpeg).unwrap();
+        let original = bytes.clone();
+        let allowance = jpeg_budget_reader::copy_allowance(bytes.len() as u64).unwrap();
+        let raster_peak = import_peak_reservation(2, 2, 2 * 2 * 3).unwrap();
+        let path = stream_test_path("jpeg-copy-budget.png");
+        std::fs::write(&path, &bytes).unwrap();
+        for from_file in [false, true] {
+            // Constructor succeeds, but the still-live encoded lease prevents
+            // raster admission. Without it this budget would admit the raster.
+            let budget = ResourceBudget::new(raster_peak + allowance - 1 + 37, 0).unwrap();
+            let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+            let error = if from_file {
+                decode_file_with_budget(&path, &budget).unwrap_err()
+            } else {
+                decode_with_budget(&bytes, &budget).unwrap_err()
+            };
+            assert!(error.contains("cannot reserve"), "{error}");
+            assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+
+            let budget = ResourceBudget::new(64 * 1024 * 1024, 1024).unwrap();
+            let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+            let decoded = if from_file {
+                let (image, format, lease) = decode_file_with_budget(&path, &budget).unwrap();
+                assert_eq!(format, Some(ImageFormat::Jpeg));
+                BudgetedImage::from_decoded(image, lease)
+            } else {
+                decode_with_budget(&bytes, &budget).unwrap()
+            };
+            assert_eq!(decoded.image, decode(&bytes).unwrap());
+            assert!(decoded.post_decode_error.is_none());
+            assert_eq!(decoded.lease.bytes(), decoded.image.pixels.capacity());
+            assert_eq!(
+                budget.snapshot().used_bytes,
+                37 + decoded.image.pixels.capacity()
+            );
+            drop(decoded);
+            assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+        }
+        assert_eq!(bytes, original);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

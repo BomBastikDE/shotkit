@@ -1,5 +1,5 @@
 //! Ordinary screenshot ownership. Native GDI resources, clipboard copies,
-//! scroll captures and non-crop edit allocations are not charged by this integration.
+//! scroll captures and edits outside the shared image budget are not charged here.
 use super::*;
 use shotkit::{
     capture_admission,
