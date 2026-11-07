@@ -67,6 +67,113 @@ pub fn pixelate_into(
     Ok(())
 }
 
+/// Grid offset derived from the per-shape operating-system seed.
+pub fn pixelate_phase(block_size: usize, seed: u64) -> (usize, usize) {
+    assert!(block_size > 0, "block size must be nonzero");
+    (
+        (seed as u32 as usize) % block_size,
+        ((seed >> 32) as u32 as usize) % block_size,
+    )
+}
+
+/// Pixelate using a stable per-shape seed; callers must supply OS randomness.
+pub fn pixelate_region_seeded(
+    source: &Image,
+    region: PixelateRect,
+    block_size: usize,
+    seed: u64,
+) -> Result<Image, PixelateError> {
+    validate_request(source, region, block_size)?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(source.pixels.len())
+        .map_err(|_| PixelateError::AllocationFailed)?;
+    pixels.extend_from_slice(&source.pixels);
+    pixelate_into_seeded(source, &mut pixels, region, block_size, seed)?;
+    Image::new(source.width, source.height, pixels).map_err(|_| PixelateError::InvalidImage)
+}
+
+/// Replace only the selected region with alpha-correct, quantized noisy blocks.
+pub fn pixelate_into_seeded(
+    source: &Image,
+    target: &mut [u8],
+    region: PixelateRect,
+    block_size: usize,
+    seed: u64,
+) -> Result<(), PixelateError> {
+    let (right, bottom) = validate_request(source, region, block_size)?;
+    if target.len() != source.pixels.len() {
+        return Err(PixelateError::InvalidImage);
+    }
+    let block_size = block_size.max(24);
+    let (phase_x, phase_y) = pixelate_phase(block_size, seed);
+    let mut by = region.y;
+    let mut row = 0_u64;
+    while by < bottom {
+        let bh = if row == 0 && phase_y != 0 {
+            block_size - phase_y
+        } else {
+            block_size
+        };
+        let end_y = by + bh.min(bottom - by);
+        let mut bx = region.x;
+        let mut column = 0_u64;
+        while bx < right {
+            let bw = if column == 0 && phase_x != 0 {
+                block_size - phase_x
+            } else {
+                block_size
+            };
+            let end_x = bx + bw.min(right - bx);
+            let count = (end_x - bx) as u64 * (end_y - by) as u64;
+            let mut alpha_sum = 0_u64;
+            let mut premultiplied = [0_u64; 3];
+            for y in by..end_y {
+                for x in bx..end_x {
+                    let offset = (y * source.width + x) * 4;
+                    let alpha = u64::from(source.pixels[offset + 3]);
+                    alpha_sum += alpha;
+                    for (channel, sum) in premultiplied.iter_mut().enumerate() {
+                        *sum += u64::from(source.pixels[offset + channel]) * alpha;
+                    }
+                }
+            }
+            let mut color = [0_u8; 4];
+            color[3] = div_round(alpha_sum, count) as u8;
+            // A completely black sampling block stays black: redaction-sanitized
+            // pixels must not be repainted as gray by the pixelation noise.
+            if color[3] != 0 && premultiplied.iter().any(|sum| *sum != 0) {
+                // Deterministic non-cryptographic mixing preserves redraws;
+                // it does not make pixelation a secure redaction mechanism.
+                let value = seed
+                    ^ row.wrapping_mul(0x9e3779b97f4a7c15)
+                    ^ column.wrapping_mul(0xbf58476d1ce4e5b9);
+                let mut mixed = value.wrapping_add(0x9e3779b97f4a7c15);
+                mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d049bb133111eb);
+                mixed ^= mixed >> 31;
+                let noise = (mixed % 193) as i32 - 96;
+                for channel in 0..3 {
+                    let mean = div_round(premultiplied[channel], alpha_sum) as i32;
+                    let quantized = (mean + noise).clamp(0, 255) as u8 / 64;
+                    color[channel] = quantized * 64 + 32;
+                }
+            }
+            for y in by..end_y {
+                for x in bx..end_x {
+                    let offset = (y * source.width + x) * 4;
+                    target[offset..offset + 4].copy_from_slice(&color);
+                }
+            }
+            bx = end_x;
+            column += 1;
+        }
+        by = end_y;
+        row += 1;
+    }
+    Ok(())
+}
+
 fn validate_request(
     source: &Image,
     region: PixelateRect,
@@ -453,5 +560,51 @@ mod tests {
             ),
             Err(PixelateError::InvalidImage)
         );
+    }
+    #[test]
+    fn hardened_pixelation_is_stable_clipped_and_preserves_transparency() {
+        let mut pixels = vec![255_u8; 40 * 40 * 4];
+        for y in 0..40 {
+            for x in 0..40 {
+                let offset = (y * 40 + x) * 4;
+                pixels[offset] = (x * 5) as u8;
+                pixels[offset + 1] = (y * 5) as u8;
+            }
+        }
+        let source = Image::new(40, 40, pixels).unwrap();
+        let region = PixelateRect {
+            x: 3,
+            y: 4,
+            width: 30,
+            height: 30,
+        };
+        let first = pixelate_region_seeded(&source, region, 12, 0x1020_3040_5060_7080).unwrap();
+        let repeat = pixelate_region_seeded(&source, region, 24, 0x1020_3040_5060_7080).unwrap();
+        assert_eq!(first, repeat);
+        assert_eq!(&first.pixels[..4], &source.pixels[..4]);
+        assert_ne!(
+            first,
+            pixelate_region_seeded(&source, region, 24, 0x8877_6655_4433_2211).unwrap()
+        );
+        let mut target = source.pixels.clone();
+        assert_eq!(
+            pixelate_into_seeded(&source, &mut target, region, 0, 7),
+            Err(PixelateError::InvalidBlockSize)
+        );
+        assert_eq!(target, source.pixels);
+        let transparent = Image::new(1, 1, vec![123, 44, 88, 0]).unwrap();
+        let result = pixelate_region_seeded(
+            &transparent,
+            PixelateRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            24,
+            9,
+        )
+        .unwrap();
+        assert_eq!(result.pixels, [0, 0, 0, 0]);
     }
 }

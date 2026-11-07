@@ -25,7 +25,8 @@ fn blur_is_explicitly_left_to_source_aware_renderer() {
     let shape = Shape::new(ShapeKind::Blur {
         start: Point::new(1.0, 1.0),
         end: Point::new(8.0, 8.0),
-    });
+    })
+    .with_pixelation_seed(0x74_5afe_1234_5678);
     assert_eq!(
         render_shape(16, 16, &shape),
         Err(RenderError::UnsupportedShape(
@@ -234,7 +235,8 @@ fn invalid_layer_and_backend_failure_release_admission() {
     let unsupported = Shape::new(ShapeKind::Blur {
         start: Point::new(0.0, 0.0),
         end: Point::new(2.0, 2.0),
-    });
+    })
+    .with_pixelation_seed(0x74_5afe_1234_5678);
     let zero = ResourceBudget::new(0, 0).unwrap();
     assert!(matches!(
         render_shape_layer(32, 32, &unsupported, Some(&zero)),

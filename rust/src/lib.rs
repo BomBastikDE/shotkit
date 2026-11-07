@@ -24,6 +24,7 @@ pub mod mouse_history;
 pub mod network_path;
 pub mod output_windows;
 pub mod pixelate;
+pub mod pixelation_random;
 pub mod recovery_admission;
 pub mod recovery_images;
 pub mod rejected_import;
