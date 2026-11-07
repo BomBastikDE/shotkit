@@ -1,5 +1,9 @@
 # Änderungsprotokoll der Rust-Version
 
+## In Entwicklung für 2.1.0
+
+- **Rissrand:** Unter „Rahmen / Schatten / Leinwand…“ → „Rissrand…“ bekommt das Bild eine abgerissene, transparente Kante an den gewählten Seiten, auf Wunsch mit einem Schatten, der der Kante folgt ([#98](https://github.com/BomBastikDE/shotkit/issues/98)).
+
 ## Version 2.0.1
 
 Fehlerkorrekturen aus dem Praxistest von 2.0.0.

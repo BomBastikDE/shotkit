@@ -651,6 +651,17 @@ impl Document {
         self.install_frame(image, options)
     }
 
+    /// Add a tracked torn edge (#98). Annotations move with the shadow margin
+    /// exactly as for a frame of width zero with the same shadow.
+    pub fn add_torn_edge_with_budget(
+        &mut self,
+        options: image_edit::TornEdgeOptions,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        let image = image_edit::add_torn_edge_with_budget(&self.current.image, options, budget)?;
+        self.install_frame(image, image_edit::torn_edge_frame_equivalent(options))
+    }
+
     fn install_frame(
         &mut self,
         image: ImageHandle,

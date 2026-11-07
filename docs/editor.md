@@ -47,12 +47,22 @@ vergrößert. Mit <kbd>Umschalt</kbd> zeichnen auch Verpixeln, Weichzeichnen und
   - Sprechblase: Füllfarbe, Textfarbe, Spitze ein/aus
   - Spotlight: Abdunklung; Bildlupe: Vergrößerung und Form
 - **Linienbreite…** und **Schriftgröße…** – gelten für neue Objekte und für das gerade ausgewählte
-- **Rahmen / Schatten / Leinwand…** – Rahmen und/oder Schlagschatten um das ganze Bild oder **Leinwandgröße ändern…**
+- **Rahmen / Schatten / Leinwand…** – Rahmen und/oder Schlagschatten um das ganze Bild, **Leinwandgröße ändern…** oder **Rissrand…**
 - **Neue Aufnahme**, **Kopieren**, **Speichern**, **Zurück**, **Wiederholen**
 - **Ansicht** – Vergrößern, Verkleinern, Originalgröße, Einpassen
 - **Datei** – Speichern, Speichern unter …, Öffnen …, Bild aus Zwischenablage einfügen, Speicherordner öffnen
 
 Ist das Fenster schmal, rücken weitere Symbole in das Menü **»** am rechten Rand.
+
+### Rissrand
+
+Unter **Rahmen / Schatten / Leinwand…** → **Rissrand…** bekommt das Bild eine „abgerissene“ Kante, zum Beispiel um
+zu zeigen, dass es nur ein Ausschnitt einer längeren Seite ist. Du wählst die Seiten (unten, oben und unten, links und
+rechts oder ringsum) und ob ein Schatten der gezackten Kante folgen soll. Die abgerissene Kante ist transparent; als PNG
+gespeichert bleibt sie das auch. Das Bild selbst wird nicht verkleinert, nur der Randstreifen von höchstens 12 Pixeln
+wird ausgefranst. Sehr niedrige oder schmale Bilder (unter 25 Pixeln an der betroffenen Seite) lehnt ShotKit mit einer
+Meldung ab. Wie bei Rahmen und Schatten lässt sich der Rissrand rückgängig machen; Markierungen bleiben bearbeitbar und
+werden davon nicht ausgefranst.
 
 ### Leinwandgröße ändern
 
