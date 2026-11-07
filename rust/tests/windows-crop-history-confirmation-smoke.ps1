@@ -261,7 +261,7 @@ try {
         # This predecessor is now approximately 102 MB, so a subsequent crop
         # must retain its normal Undo step without a history-loss prompt.
         Drag-Crop $editorHandle $process.Id $firstWidth $firstHeight
-        [void](Wait-For { Get-OwnedWindows | Where-Object { $_.H -eq $editorHandle -and $_.Title -like '*Werkzeug Select*' } } 'normal undoable crop after WithoutUndo')
+        [void](Wait-For { Get-OwnedWindows | Where-Object { $_.H -eq $editorHandle -and $_.Title -like '*Werkzeug: Auswahl*' } } 'normal undoable crop after WithoutUndo')
         $second=Read-Fingerprint
         $secondSize=($second.Split(':')[0]).Split('x')
         if ([int]$secondSize[0] -ge $firstWidth -or [int]$secondSize[1] -ge $firstHeight -or $second -eq $first) { throw 'CROP_AFTER_WITHOUT_UNDO_DID_NOT_COMMIT.' }

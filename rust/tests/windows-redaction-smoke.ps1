@@ -148,11 +148,11 @@ try {
     if(-not [ShotKitRedactionSmoke.N]::SetForegroundWindow($main.H)){throw 'EDITOR_FOCUS_FAILED'}
     [ShotKitRedactionSmoke.N]::keybd_event(0x53,0,0,[UIntPtr]::Zero)
     [ShotKitRedactionSmoke.N]::keybd_event(0x53,0,2,[UIntPtr]::Zero)
-    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug Redact*'}} 'Redact tool activation by S')
+    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug: Schwärzen*'}} 'Redact tool activation by S')
     Drag-Image 24 20 90 80
     Save-Image 'redaction export'; Assert-Redacted (Read-Image) 'redaction export' $false
     Click-Button $main.H 'Verpixeln (B) – keine sichere Schwärzung'
-    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug Blur*'}} 'Blur tool activation')
+    [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug: Verpixeln*'}} 'Blur tool activation')
     Drag-Image 60 40 130 100
     Save-Image 'overlapping pixelation export'; Assert-Redacted (Read-Image) 'overlapping pixelation export' $true
     Click-Button $main.H 'Zurück'; Save-Image 'undo pixelation export'; Assert-Redacted (Read-Image) 'undo pixelation export' $false

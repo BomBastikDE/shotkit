@@ -288,7 +288,7 @@ try {
     $shownW=[int][Math]::Round(160*$fit,[MidpointRounding]::AwayFromZero);$shownH=[int][Math]::Round(120*$fit,[MidpointRounding]::AwayFromZero)
     $viewX=[int][Math]::Floor(($viewW-$shownW)/2.0);$viewY=$tb.Bottom+[int][Math]::Floor(($viewH-$shownH)/2.0)
     Button $main.Handle 'Text (T)'
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Title -like '*Werkzeug Text*'} | Select-Object -First 1} 5 'active Text tool')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Title -like '*Werkzeug: Text*'} | Select-Object -First 1} 5 'active Text tool')
 
     $original='smoke original';$changed='smoke edited'
     Canvas-Click 30 30
@@ -303,7 +303,7 @@ try {
     Write-Output "TEXT_PLACEMENT_STATUS: $placement"
 
     # Keep Text selected and click within the new object's hit bounds.
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Text*'} | Select-Object -First 1} 5 'Text tool remaining active after creation')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Text*'} | Select-Object -First 1} 5 'Text tool remaining active after creation')
     # Click well inside the text bounds rather than near the top-left tolerance edge.
     Canvas-Click 40 40
     $d=Check-DialogText $original 'first reopen after creation'
@@ -323,7 +323,7 @@ try {
     $d=Check-DialogText $original 'reopen after Undo'
     Button $d.Handle 'Abbrechen'
     Button $main.Handle 'Auswahl (V)'
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Select*'} | Select-Object -First 1} 5 'active Select tool for text double-click')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Auswahl*'} | Select-Object -First 1} 5 'active Select tool for text double-click')
     Canvas-DoubleClick 40 40
     $d=Check-DialogText $original 'double-click on existing text with Select tool'
     Button $d.Handle 'Abbrechen'
@@ -352,14 +352,14 @@ try {
     Write-Output "PASS: selected text size changed through native menu (export height $baseHeight to $largeHeight), with exact pixel Undo and Redo."
 
     Button $main.Handle 'Nummer (N)'
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Step*'} | Select-Object -First 1} 5 'active Number tool')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Nummer*'} | Select-Object -First 1} 5 'active Number tool')
     Canvas-Click 80 80
     Button $main.Handle 'Speichern'
     $firstMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     $doubleClickTime=[ShotKitTextSmoke.Native]::GetDoubleClickTime()
     Start-Sleep -Milliseconds ([int]$doubleClickTime+100)
     Canvas-DoubleClick 80 80
-    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Step*'} | Select-Object -First 1} 5 'Number tool remains active after canvas double-click')
+    [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Nummer*'} | Select-Object -First 1} 5 'Number tool remains active after canvas double-click')
     Button $main.Handle 'Speichern'
     $secondMarkerHash=(Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     if($secondMarkerHash -ceq $firstMarkerHash){throw 'DOUBLE_CLICK_MARK_NOT_SAVED: saved image did not change after the quick second Number click.'}

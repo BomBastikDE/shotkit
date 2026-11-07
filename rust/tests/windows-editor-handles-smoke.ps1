@@ -301,13 +301,13 @@ try {
     $fit=[Math]::Min($viewW/160.0,$viewH/120.0); $shownW=[int][Math]::Round(160*$fit,[MidpointRounding]::AwayFromZero); $shownH=[int][Math]::Round(120*$fit,[MidpointRounding]::AwayFromZero)
     $viewX=[int][Math]::Floor(($viewW-$shownW)/2.0); $viewY=$toolbarHeight+[int][Math]::Floor(($viewH-$shownH)/2.0)
     Click-Button 'Rechteck (R)'
-    [void](Wait-For { (Get-Main).Title -like '*Werkzeug Rectangle*' } 5 'Rectangle tool')
+    [void](Wait-For { (Get-Main).Title -like '*Werkzeug: Rechteck*' } 5 'Rectangle tool')
     # Create a rectangle. Mouse-up selects it while Rectangle remains active.
     Drag-Image 30 25 70 60
-    [void](Wait-For { (Get-Main).Title -like '*Werkzeug Rectangle*' } 3 'Rectangle tool remaining active')
+    [void](Wait-For { (Get-Main).Title -like '*Werkzeug: Rechteck*' } 3 'Rectangle tool remaining active')
     # Start at the visible lower-right handle and resize, without selecting Select.
     Drag-Image 70 60 120 95 { Capture-HeldHandlePreview }
-    [void](Wait-For { (Get-Main).Title -like '*Werkzeug Rectangle*' } 3 'Rectangle tool remaining active after handle drag')
+    [void](Wait-For { (Get-Main).Title -like '*Werkzeug: Rechteck*' } 3 'Rectangle tool remaining active after handle drag')
     Click-Button 'Speichern'
     $saved=Wait-For { try { $im=Read-Image $inputPath; if($im.Width -eq 160 -and $im.Height -eq 120){$im} } catch { $null } } 15 'saved annotation image'
     $xs=[System.Collections.Generic.List[int]]::new(); $ys=[System.Collections.Generic.List[int]]::new(); $red=0
