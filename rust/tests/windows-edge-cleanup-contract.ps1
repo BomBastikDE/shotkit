@@ -37,6 +37,38 @@ foreach ($argumentCase in $profileArgumentCases) {
 }
 
 # Deterministic process lifecycle tests: no real processes are opened or killed.
+# Model Process.Handle with a CLR getter, including property failures that
+# PowerShell member access can suppress into a null result.
+if (-not ('ShotKitEdgeCleanup.TestProcess' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+namespace ShotKitEdgeCleanup {
+    public sealed class TestProcess : IDisposable {
+        public bool HasExited { get; set; }
+        public string ProcessName { get; set; } = "msedge";
+        public bool Disposed { get; private set; }
+        public bool Opened { get; private set; }
+        public bool ExitBeforeHandle { get; set; }
+        public bool DenyHandle { get; set; }
+        public bool ZeroHandle { get; set; }
+        public IntPtr Handle {
+            get {
+                if (ExitBeforeHandle) {
+                    HasExited = true;
+                    throw new InvalidOperationException("Process exited.");
+                }
+                if (DenyHandle) throw new UnauthorizedAccessException("Handle access denied.");
+                if (ZeroHandle) return IntPtr.Zero;
+                Opened = true;
+                return new IntPtr(123);
+            }
+        }
+        public void Dispose() { Disposed = true; }
+    }
+}
+'@
+}
+
 function Test-EdgeDiscoveryRaces {
     $edgeProfile = 'C:\owned-test-profile'
     $created = [DateTime]::UtcNow
@@ -46,7 +78,7 @@ function Test-EdgeDiscoveryRaces {
         param([string] $ClassName, [string] $Filter)
         if ($case -eq 'cim-error') { throw [UnauthorizedAccessException]::new('CIM failure') }
         if ($Filter -eq "Name='msedge.exe'") { return $candidate }
-        if ($case -ne 'access-denied' -and $null -ne $fake -and -not $fake.Opened) { throw 'Native handle was not opened before PID revalidation.' }
+        if ($case -notin @('access-denied', 'handle-access-denied', 'zero-handle') -and $null -ne $fake -and -not $fake.Opened) { throw 'Native handle was not opened before PID revalidation.' }
         if ($case -eq 'gone-after-open') { return $null }
         if ($case -eq 'reused-pid') {
             return [pscustomobject]@{ ProcessId=123; CreationDate=$created.AddSeconds(1); Name='msedge.exe'; CommandLine=$candidate.CommandLine }
@@ -71,16 +103,14 @@ function Test-EdgeDiscoveryRaces {
         if ($snapshots.Count -ne 0 -or $edgeOwnedHandles.Count -ne 0) { throw 'Foreign argument established process ownership.' }
     }
     $candidate.CommandLine = 'msedge.exe --user-data-dir=C:\owned-test-profile'
-    foreach ($case in @('vanished', 'access-denied', 'cim-error', 'exited-before-handle', 'exited-after-open', 'gone-after-open', 'reused-pid', 'foreign-profile', 'foreign-name', 'profile-prefix-after-open', 'other-argument-after-open', 'unexpected-name', 'valid')) {
+    foreach ($case in @('vanished', 'access-denied', 'cim-error', 'exited-before-handle', 'handle-access-denied', 'zero-handle', 'exited-after-open', 'gone-after-open', 'reused-pid', 'foreign-profile', 'foreign-name', 'profile-prefix-after-open', 'other-argument-after-open', 'unexpected-name', 'valid')) {
         $edgeOwnedHandles = [Collections.Generic.List[object]]::new()
-        $fake = [pscustomobject]@{ HasExited=($case -eq 'exited-after-open'); ProcessName='msedge'; Disposed=$false; Opened=$false }
+        $fake = [ShotKitEdgeCleanup.TestProcess]::new()
+        $fake.HasExited = $case -eq 'exited-after-open'
+        $fake.ExitBeforeHandle = $case -eq 'exited-before-handle'
+        $fake.DenyHandle = $case -eq 'handle-access-denied'
+        $fake.ZeroHandle = $case -eq 'zero-handle'
         if ($case -eq 'unexpected-name') { $fake.ProcessName = 'other' }
-        $fake | Add-Member -MemberType ScriptProperty -Name Handle -Value {
-            if ($case -eq 'exited-before-handle') { $this.HasExited = $true; throw [InvalidOperationException]::new('Process exited.') }
-            $this.Opened = $true
-            return [IntPtr]123
-        }
-        $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.Disposed = $true }
         $open = {
             param($ProcessId)
             if ($ProcessId -ne 123) { throw 'Unexpected process target.' }
@@ -90,10 +120,14 @@ function Test-EdgeDiscoveryRaces {
         }
         $failed = $false
         $snapshots = @()
+        $discoveryFailure = $null
         try { $snapshots = @(Get-ProfileEdgeProcesses -OpenProcess $open) }
-        catch { $failed = $true }
-        $mustFail = $case -in @('access-denied', 'cim-error', 'unexpected-name')
-        if ($failed -ne $mustFail) { throw "Unexpected discovery error result in case '$case': failed=$failed." }
+        catch { $failed = $true; $discoveryFailure = $_ }
+        $mustFail = $case -in @('access-denied', 'handle-access-denied', 'zero-handle', 'cim-error', 'unexpected-name')
+        if ($failed -ne $mustFail) {
+            $detail = if ($null -ne $discoveryFailure) { $discoveryFailure.Exception.ToString() } else { 'none' }
+            throw "Unexpected discovery error result in case '$case': failed=$failed; exception=$detail."
+        }
         $expectedHandles = if ($case -eq 'valid') { 1 } else { 0 }
         if ($edgeOwnedHandles.Count -ne $expectedHandles) { throw "Unverified kill target retained in case '$case'." }
         if ($case -eq 'vanished') {
@@ -101,7 +135,7 @@ function Test-EdgeDiscoveryRaces {
             $unverified = @(Get-ProfileEdgeProcesses -OpenProcess $open -IncludeUnverifiedSnapshots)
             if ($unverified.Count -ne 1 -or $edgeOwnedHandles.Count -ne 0) { throw 'Stale CIM row must remain visible only for mandatory final cleanup verification.' }
         }
-        if ($case -in @('exited-before-handle', 'exited-after-open', 'gone-after-open', 'reused-pid', 'foreign-profile', 'foreign-name', 'profile-prefix-after-open', 'other-argument-after-open', 'unexpected-name') -and -not $fake.Disposed) {
+        if ($case -in @('exited-before-handle', 'handle-access-denied', 'zero-handle', 'exited-after-open', 'gone-after-open', 'reused-pid', 'foreign-profile', 'foreign-name', 'profile-prefix-after-open', 'other-argument-after-open', 'unexpected-name') -and -not $fake.Disposed) {
             throw "Rejected process handle leaked in case '$case'."
         }
         if ($case -eq 'valid') {

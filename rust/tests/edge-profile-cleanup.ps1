@@ -114,7 +114,12 @@ function Get-ProfileEdgeProcesses {
         try {
             try {
                 $handle = & $OpenProcess ([int]$candidate.ProcessId)
-                $null = $handle.Handle # acquire and retain the native handle before revalidation
+                $nativeHandle = $handle.Handle # acquire and retain before revalidation
+                # PowerShell property access can suppress a throwing getter and
+                # return null. Never revalidate or register without a held handle.
+                if ($null -eq $nativeHandle -or $nativeHandle -eq [IntPtr]::Zero) {
+                    throw 'Cannot acquire a native handle for the profile-owned Edge candidate.'
+                }
             }
             catch {
                 # GetProcessById reports ArgumentException for an exited PID.
