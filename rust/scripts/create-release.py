@@ -1,18 +1,62 @@
 #!/usr/bin/env python3
-"""Publish an alpha, beta, or v2.0.0 stable release only after the workflow's blocking checks pass."""
+"""Publish a v2 release only after the workflow's blocking checks pass."""
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
-TAG_PATTERN = re.compile(r"(?:v2\.0\.0|v2\.\d+\.\d+-(?:alpha|beta)\.\d+)\Z")
+TAG_PATTERN = re.compile(r"v2\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta)\.(?:0|[1-9][0-9]*))?\Z")
+
+def validate_main_ancestry(commit, repo_dir, main_ref="refs/remotes/origin/main"):
+    """Require the tested checkout and its commit to be contained in main."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Invalid tested commit SHA")
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo_dir), *args],
+                              capture_output=True, text=True, check=False)
+    head = git("rev-parse", "--verify", "HEAD^{commit}")
+    if head.returncode != 0 or head.stdout.strip() != commit:
+        raise ValueError("Checkout does not match the tested commit")
+    ancestry = git("merge-base", "--is-ancestor", commit, main_ref)
+    if ancestry.returncode != 0:
+        raise ValueError("Tested commit is not verified on main")
+
+
+def extract_release_notes(changelog_path, tag):
+    """Read exactly one nonempty version section from the checked-in changelog."""
+    version = tag.removeprefix("v")
+    contents = Path(changelog_path).read_text(encoding="utf-8")
+    header = re.compile(r"^## Version " + re.escape(version) + r"(?:[ \t]+[–—-][^\n]*)?[ \t]*$", re.MULTILINE)
+    matches = list(header.finditer(contents))
+    if len(matches) != 1:
+        raise ValueError("Exactly one matching changelog version section is required")
+    start = matches[0].end()
+    next_header = re.search(r"^##[ \t]+", contents[start:], re.MULTILINE)
+    end = start + next_header.start() if next_header else len(contents)
+    section = contents[start:end].strip()
+    if not section:
+        raise ValueError("Changelog version section is empty")
+    return section
+
+
+def resolve_release_links(notes, repository, tag):
+    """Resolve relative inline Markdown links against this tag's rust directory."""
+    base = f"https://github.com/{repository}/blob/{tag}/rust/"
+    def resolve(match):
+        target = match.group(2)
+        parts = urllib.parse.urlsplit(target)
+        if parts.scheme or parts.netloc or target.startswith(("#", "/")):
+            return match.group(0)
+        return match.group(1) + urllib.parse.urljoin(base, target) + match.group(3)
+    return re.sub(r"(!?\[[^]\n]+\]\()([^\s)]+)(\))", resolve, notes)
 
 
 class NoAuthenticatedRedirect(urllib.request.HTTPRedirectHandler):
@@ -63,14 +107,17 @@ def api(url, token, method="GET", data=None, content_type="application/json"):
         return json.load(response)
 
 
-def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=None):
+def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=None, changelog_path=None, repo_dir=None):
     if not TAG_PATTERN.fullmatch(tag):
-        raise ValueError("Only v2 alpha, beta, or v2.0.0 stable tags may create a release")
+        raise ValueError("Only valid v2 stable, alpha, or beta tags may create a release")
     manifest_path = manifest_path or Path(__file__).resolve().parent.parent / "Cargo.toml"
     with Path(manifest_path).open("rb") as manifest:
         version = tomllib.load(manifest).get("package", {}).get("version")
     if version != tag.removeprefix("v"):
         raise ValueError("Release tag does not match Cargo package version")
+    changelog_path = changelog_path or Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    notes = extract_release_notes(changelog_path, tag)
+    validate_main_ancestry(commit, repo_dir or Path(__file__).resolve().parents[2])
     exe = Path(exe_path).read_bytes()
     if len(exe) < 100_000 or exe[:2] != b"MZ":
         raise ValueError("Tested artifact is not a valid-sized Windows executable")
@@ -88,28 +135,11 @@ def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=Non
         raise ValueError("Release already exists; refusing to change it")
     filename = f"shotkit-{tag}-windows-x64.exe"
     checksum = f"{hashlib.sha256(exe).hexdigest()}  {filename}\n".encode()
-    prerelease = tag != "v2.0.0"
+    prerelease = "-" in tag
     make_latest = "false" if prerelease else "true"
-    stage = ("Beta" if "-beta." in tag else "Alpha") if prerelease else "stabile Version"
-    body = (
-        f"Automatisch getestete {stage}. CI: {run_url}\n\n"
-        "Die EXE ist nicht signiert. Windows SmartScreen kann eine Warnung zeigen; "
-        "nach eigener Prüfung kann die Ausführung über ‚Weitere Informationen‘ und "
-        "‚Trotzdem ausführen‘ gestartet werden. Die SHA256-Datei dient zur "
-        "Integritätsprüfung."
-    )
-    if not prerelease:
-        body += (
-            "\n\nRust ist die neue maßgebliche Version von ShotKit. "
-            "C# v1.2.0 bleibt als historische, abgeschlossene Version erhalten. "
-            "Echte Mixed-DPI- und Mehrmonitor-Tests stehen noch aus. "
-            "Verpixelung ist keine sichere Schwärzung. "
-            "Bei abruptem Abbruch beim Speichern können temporäre Dateien mit Bilddaten zurückbleiben. "
-            "Diese Veröffentlichung ist kein vollständiges Security-Audit.\n\n"
-            f"[Änderungen und bekannte Grenzen](https://github.com/{repository}/blob/{tag}/rust/CHANGELOG.md)"
-        )
+    body = resolve_release_links(notes, repository, tag) + f"\n\nCI: {run_url}"
     payload = json.dumps({"tag_name": tag, "name": f"ShotKit {tag}", "body": body,
-                          "draft": True, "prerelease": prerelease, "make_latest": make_latest}).encode()
+                          "draft": True, "prerelease": prerelease, "make_latest": "false"}).encode()
     release = api(f"{base}/releases", token, "POST", payload)
     if release["draft"] is not True or release["prerelease"] is not prerelease:
         raise ValueError("GitHub did not create the expected draft release")
