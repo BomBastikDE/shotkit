@@ -13,13 +13,14 @@ use crate::{
     alpha_render,
     gaussian_blur::gaussian_blur_layer,
     image_handle::ImageHandle,
+    import_admission::TrackedImage,
     pixelate::{pixelate_into, PixelateRect},
     resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget},
     shapes::{Shape, ShapeKind},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
 /// Aggregate retained preview pixel capacity across editors and reentrant paints.
@@ -39,7 +40,7 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
     render_document_over(source, source, shapes)
 }
 
-/// A transient UI render: pixels and their shared-pool reservation stay together.
+/// A document render: pixels and their shared-pool reservation stay together.
 /// Field order drops the allocation before releasing admission. This accounts
 /// only for the final Rust output buffer. Budgeted rendering also admits its
 /// temporary redaction-sanitized sampling copy, current annotation layer and
@@ -58,6 +59,12 @@ impl BudgetedRender {
     /// Flatten without exposing mutable pixel ownership or changing capacity.
     pub fn flatten_checkerboard(&mut self) -> Result<(), String> {
         crate::alpha_composite::flatten_checkerboard_in_place(&mut self.image)
+    }
+
+    // Move pixels and admission together; sharing never copies or detaches them.
+    fn into_shared(self) -> ImageHandle {
+        let Self { image, pixel_lease } = self;
+        ImageHandle::from_imported(Arc::new(TrackedImage::from_reserved(image, pixel_lease)))
     }
 }
 
@@ -99,6 +106,25 @@ pub fn render_document_shared(
         return Ok(source.clone());
     }
     render_document(source, shapes).map(ImageHandle::from_image)
+}
+
+/// Share an unchanged source or retain a budgeted annotation result for export.
+/// An empty annotation stack preserves the original allocation and lease, even
+/// when the pool is full. Otherwise the same pool admits output, sanitized
+/// sampling, shape layers and Gaussian work before their allocation. The final
+/// output lease stays with every result clone through synchronous encoding.
+/// Native GDI/clipboard buffers, encoder conversions/scratch and RSS are outside
+/// this accounting. Admission failure never retries an unbudgeted render.
+pub fn render_document_shared_budgeted(
+    source: &ImageHandle,
+    shapes: &[Shape],
+    budget: &ResourceBudget,
+) -> Result<ImageHandle, String> {
+    if shapes.is_empty() {
+        validate_image(source)?;
+        return Ok(source.clone());
+    }
+    render_document_budgeted(source, shapes, budget).map(BudgetedRender::into_shared)
 }
 
 /// Cached, fully rendered prefix of one image's annotation stack.
@@ -804,6 +830,165 @@ mod tests {
             assert!(render_document_shared(&image, &[]).is_err());
             assert!(render_document(&image, &[]).is_err());
         }
+    }
+
+    #[test]
+    fn budgeted_shared_export_reuses_source_at_full_budget_and_validates() {
+        let image = Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap();
+        let bytes = image.pixels.capacity();
+        let budget = ResourceBudget::new(bytes, 0).unwrap();
+        let lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let source =
+            ImageHandle::from_imported(Arc::new(TrackedImage::from_reserved(image, lease)));
+        let pixels = source.pixels.as_ptr();
+        let output = render_document_shared_budgeted(&source, &[], &budget).unwrap();
+        assert!(source.ptr_eq(&output));
+        assert_eq!(output.pixels.as_ptr(), pixels);
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(source);
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+
+        let zero = ResourceBudget::new(0, 0).unwrap();
+        let untracked = ImageHandle::from_image(Image::new(1, 1, vec![1, 2, 3, 4]).unwrap());
+        assert!(untracked.ptr_eq(&render_document_shared_budgeted(&untracked, &[], &zero).unwrap()));
+        let malformed = ImageHandle::from_image(Image {
+            width: 1,
+            height: 1,
+            pixels: vec![],
+        });
+        assert!(render_document_shared_budgeted(&malformed, &[], &zero).is_err());
+        assert_eq!(zero.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn budgeted_render_sharing_moves_pixels_and_lease_without_copying() {
+        use crate::shapes::Point;
+        let source = Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap();
+        let shapes = [Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0),
+        })];
+        let budget = ResourceBudget::new(source.pixels.len(), 0).unwrap();
+        let observer = budget.clone();
+        let rendered = render_document_budgeted(&source, &shapes, &budget).unwrap();
+        let pixels = rendered.image().pixels.as_ptr();
+        let capacity = rendered.image().pixels.capacity();
+        let output = rendered.into_shared();
+        assert_eq!(output.pixels.as_ptr(), pixels);
+        let ImageHandle::Imported(tracked) = &output else {
+            panic!("expected tracked annotation output");
+        };
+        assert_eq!(tracked.reserved_bytes(), capacity);
+        let retained = output.clone();
+        assert!(output.ptr_eq(&retained));
+        drop(source);
+        drop(budget);
+        drop(output);
+        assert_eq!(observer.snapshot().used_bytes, capacity);
+        // Encoding borrows the tracked allocation; its admission remains live.
+        let png = crate::image_io::encode(&retained, image::ImageFormat::Png).unwrap();
+        assert_eq!(crate::image_io::decode(&png).unwrap(), *retained);
+        assert_eq!(observer.snapshot().used_bytes, capacity);
+        drop(retained);
+        assert_eq!(observer.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn budgeted_shared_export_uses_headroom_and_rejects_nested_output() {
+        use crate::shapes::Point;
+        let image = Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap();
+        let bytes = image.pixels.capacity();
+        let original = image.clone();
+        let budget = ResourceBudget::new(bytes * 2, bytes).unwrap();
+        let lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let source =
+            ImageHandle::from_imported(Arc::new(TrackedImage::from_reserved(image, lease)));
+        let shapes = [Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0),
+        })];
+        assert!(budget.try_acquire(1, AdmissionClass::Normal).is_err());
+        let output = render_document_shared_budgeted(&source, &shapes, &budget).unwrap();
+        assert!(!source.ptr_eq(&output));
+        assert_eq!(*source, original);
+        assert_eq!(&output.pixels[..4], &[0, 0, 0, 255]);
+        assert_eq!(&output.pixels[4..], &original.pixels[4..]);
+        assert_eq!(budget.snapshot().used_bytes, bytes * 2);
+        // Models a nested operation while the outer export owns its pixels.
+        assert!(render_document_shared_budgeted(&source, &shapes, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, bytes * 2);
+        let result = std::panic::catch_unwind(move || {
+            let _output = output;
+            panic!("simulate cancelled export callback");
+        });
+        assert!(result.is_err());
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        assert_eq!(*source, original);
+        drop(source);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn budgeted_shared_export_never_falls_back_to_unredacted_sampling() {
+        use crate::shapes::Point;
+        let source = ImageHandle::from_image(
+            Image::new(
+                4,
+                1,
+                vec![255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+            )
+            .unwrap(),
+        );
+        let original = (*source).clone();
+        let bytes = source.pixels.len();
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(1.0, 1.0),
+        });
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(4.0, 1.0),
+        });
+        for shapes in [[redact.clone(), blur.clone()], [blur, redact]] {
+            let small = ResourceBudget::new(bytes, 0).unwrap();
+            let error = render_document_shared_budgeted(&source, &shapes, &small)
+                .err()
+                .unwrap();
+            assert!(error.contains("Sampling-Quelle"));
+            assert_eq!(small.snapshot().used_bytes, 0);
+            let budget = ResourceBudget::new(bytes * 2, 0).unwrap();
+            let output = render_document_shared_budgeted(&source, &shapes, &budget).unwrap();
+            // A secret confined to the redaction must not tint nearby pixels.
+            assert_eq!(output.pixels, [0, 0, 0, 255].repeat(4));
+            assert_eq!(*output, render_document(&source, &shapes).unwrap());
+            assert_eq!(*source, original);
+            assert_eq!(budget.snapshot().used_bytes, output.pixels.capacity());
+            drop(output);
+            assert_eq!(budget.snapshot().used_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn budgeted_shared_export_releases_output_on_gaussian_and_render_failure() {
+        let (source, shapes) = budget_preview_fixture();
+        let original = (*source).clone();
+        let bytes = source.pixels.len();
+        let peak = bytes + gaussian_fixture_work_bytes();
+        let small = ResourceBudget::new(peak - 1, 0).unwrap();
+        assert!(render_document_shared_budgeted(&source, &shapes, &small).is_err());
+        assert_eq!(small.snapshot().used_bytes, 0);
+        let budget = ResourceBudget::new(peak, 0).unwrap();
+        let output = render_document_shared_budgeted(&source, &shapes, &budget).unwrap();
+        assert_eq!(*output, render_document(&source, &shapes).unwrap());
+        assert_eq!(budget.snapshot().used_bytes, output.pixels.capacity());
+        drop(output);
+        let mut invalid = shapes;
+        invalid[0].style.width = f32::NAN;
+        assert!(render_document_shared_budgeted(&source, &invalid, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        assert_eq!(*source, original);
     }
 
     #[test]

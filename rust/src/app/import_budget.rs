@@ -1,8 +1,10 @@
 //! Windows file and clipboard imports. This shared budget accounts for decoder-known
 //! import buffers and retained imported, clipboard, ordinary screenshot, crop
-//! frame/shadow, canvas-resize and transient UI composition output, redaction-
-//! sanitized sampling, current shape-layer pixels and Gaussian work/result buffers,
-//! not GDI, other renderer scratch, other edits, allocator overhead or process RSS.
+//! frame/shadow, canvas-resize, transient UI composition and annotated save output,
+//! redaction-sanitized sampling, current shape-layer pixels and Gaussian work/result
+//! buffers,
+//! not GDI, encoder conversions/scratch, other renderer scratch, other edits,
+//! allocator overhead or process RSS.
 //! Nothing here replaces an existing editor.
 use super::*;
 use shotkit::{
@@ -27,7 +29,7 @@ fn imports() -> &'static ImportAdmission {
     })
 }
 
-/// Imports, screenshots, edits and transient UI composition share one pool.
+/// Imports, screenshots, edits, UI composition and annotated saves share a pool.
 pub(super) fn shared_image_budget() -> ResourceBudget {
     imports().budget().clone()
 }

@@ -195,6 +195,8 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     };
     let result = (|| -> Result<(), String> {
         let format = image_io::format_from_path(&path)?;
+        // Keep the shared source or tracked annotation output alive through
+        // encoding and atomic publication; borrowing pixels detaches no lease.
         let image = bitmap_image(h)?;
         write_image_atomic(&path, &image, format, replace_existing)
     })();

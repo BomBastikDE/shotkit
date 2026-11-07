@@ -194,7 +194,11 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<shotkit::image_handle::ImageHa
         let state = editor(h);
         (state.image_arc(), state.shapes().to_vec())
     };
-    shotkit::alpha_document::render_document_shared(&image, &shapes)
+    shotkit::alpha_document::render_document_shared_budgeted(
+        &image,
+        &shapes,
+        &shared_image_budget(),
+    )
 }
 
 // SAFETY CONTRACT:
