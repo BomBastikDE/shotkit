@@ -278,7 +278,14 @@ try {
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'editor window'
     [void][ShotKitTextSmoke.Native]::ShowWindow($main.Handle,3);[void][ShotKitTextSmoke.Native]::SetForegroundWindow($main.Handle)
     $welcome=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
+    # BM_CLICK requires the dialog to be active; the editor was foregrounded above.
+    [void](Wait-For {
+        [void][ShotKitTextSmoke.Native]::SetForegroundWindow($welcome.Handle)
+        [ShotKitTextSmoke.Native]::GetForegroundWindow() -eq $welcome.Handle
+    } 5 'startup notice foreground')
     Button $welcome.Handle 'OK'
+    # Check the process-owned dialog identity, not the old HWND (which may be reused).
+    [void](Wait-For { -not @(Owned-Windows | Where-Object {$_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}).Count } 10 'startup notice close')
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'} | Select-Object -First 1} 10 'loaded editor'
     $client=[Activator]::CreateInstance([ShotKitTextSmoke.Rect]);if(-not [ShotKitTextSmoke.Native]::Client($main.Handle,[ref]$client)){throw 'Could not read editor size.'}
     $toolbar=[ShotKitTextSmoke.Native]::Children($main.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'} | Select-Object -First 1
