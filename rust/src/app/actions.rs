@@ -633,6 +633,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             toolbar::ID_OPEN => open_image(h),
             toolbar::ID_PASTE => paste_image(h),
             toolbar::ID_FOLDER => open_storage_folder(h),
+            toolbar::ID_PIN => pin::pin_current(h),
             toolbar::ID_ZOOM_IN => apply_zoom(h, view::ZoomAction::In),
             toolbar::ID_ZOOM_OUT => apply_zoom(h, view::ZoomAction::Out),
             toolbar::ID_ZOOM_ORIGINAL => apply_zoom(h, view::ZoomAction::Original),

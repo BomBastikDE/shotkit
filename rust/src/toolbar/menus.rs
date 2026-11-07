@@ -39,6 +39,7 @@ const FILE: &[(usize, &str)] = &[
     (ID_OPEN, "Öffnen …\tStrg+O"),
     (ID_PASTE, "Bild aus Zwischenablage einfügen\tStrg+V"),
     (ID_FOLDER, "Speicherordner öffnen"),
+    (ID_PIN, "Anheften\tStrg+T"),
 ];
 const VIEW: &[(usize, &str)] = &[
     (ID_ZOOM_IN, "Vergrößern\tStrg++"),

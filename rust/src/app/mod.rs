@@ -1,6 +1,7 @@
 mod callout;
 mod canvas;
 mod mouse_history;
+mod pin;
 mod preview_scaling;
 mod region;
 mod scroll_completion;
