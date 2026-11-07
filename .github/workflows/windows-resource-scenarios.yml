@@ -1,0 +1,40 @@
+name: Windows large-image scenario checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Issue 65 scenario (1 and 2 have documented partial coverage)'
+        type: choice
+        required: true
+        default: All
+        options: ['All', '1', '2', '3', '4', '5']
+  pull_request:
+    paths:
+      - '.github/workflows/windows-resource-scenarios.yml'
+      - 'rust/tests/run-resource-scenarios.ps1'
+      - 'rust/tests/windows-png-export-memory-smoke.ps1'
+      - 'rust/tests/windows-import-budget-smoke.ps1'
+
+permissions:
+  contents: read
+
+jobs:
+  resource-checks:
+    runs-on: windows-2022
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+      - name: Build Windows application
+        timeout-minutes: 15
+        run: cargo build --locked --release
+      - name: Run bounded resource scenarios sequentially
+        timeout-minutes: 32
+        shell: pwsh
+        env:
+          RESOURCE_SCENARIO: ${{ inputs.scenario || 'All' }}
+        run: ./tests/run-resource-scenarios.ps1 -ExePath target/release/shotkit.exe -Scenario $env:RESOURCE_SCENARIO
