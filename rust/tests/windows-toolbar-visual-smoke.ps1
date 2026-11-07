@@ -7,6 +7,7 @@ param(
     [switch]$PopupOnly
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1'){throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'}
 if(-not [Environment]::UserInteractive){throw 'NO_INTERACTIVE_DESKTOP: the Windows runner is not interactive.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -73,7 +74,7 @@ namespace ShotKitToolbarVisual {
   [DllImport("shell32.dll",CharSet=CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint command,ref NotifyData data);
   public static bool VerifyTrayRegistration(IntPtr host) {
    var n=new NotifyData { Size=(uint)Marshal.SizeOf(typeof(NotifyData)), Hwnd=host, Id=1, Flags=4,
-    Tip="ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü", Info="", InfoTitle="" };
+    Tip="ShotKit: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü", Info="", InfoTitle="" };
    return Shell_NotifyIconW(1,ref n); // NIM_MODIFY of the existing tooltip; fails for an unknown icon.
   }
   [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d,int x,int y,int w,int h,IntPtr s,int sx,int sy,int op);
@@ -316,17 +317,7 @@ try {
  while([DateTime]::UtcNow -lt $deadline){if($p.HasExited){throw "PROCESS_EXITED: code $($p.ExitCode)"};$main=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1;if($main){break};Start-Sleep -Milliseconds 150}
  if(-not $main){throw 'EDITOR_NOT_READY: visible owned ShotKitRustEditor window not found.'}
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H);Start-Sleep -Milliseconds 400
- # Acknowledge only the app-owned startup notice, if present.
- $deadline=[DateTime]::UtcNow.AddSeconds(12);$welcome=$null
- while([DateTime]::UtcNow -lt $deadline){$welcome=Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1;if($welcome){break};Start-Sleep -Milliseconds 100}
- if(-not $welcome){throw 'STARTUP_NOTICE_MISSING: owned prototype notice did not appear.'}
- $ok=[ShotKitToolbarVisual.Native]::Buttons($welcome.H)|Where-Object{$_.Text -eq 'OK'}|Select-Object -First 1
- if(-not $ok){throw 'STARTUP_NOTICE_UNEXPECTED: owned prototype notice lacked exact OK button.'}
- [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($welcome.H)
- [void][ShotKitToolbarVisual.Native]::SendMessageW($ok.H,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
- $deadline=[DateTime]::UtcNow.AddSeconds(5)
- while([DateTime]::UtcNow -lt $deadline){$still=Owned-Windows|Where-Object{$_.H -eq $welcome.H -and $_.Visible}|Select-Object -First 1;if(-not $still){break};Start-Sleep -Milliseconds 100}
- if($still){throw 'STARTUP_NOTICE_CLOSE_FAILED: the owned notice remained visible after OK.'}
+ Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $p -GetWindows { Owned-Windows }
  [void][ShotKitToolbarVisual.Native]::SetForegroundWindow($main.H)
  Start-Sleep -Milliseconds 500
  $toolbar=[ShotKitToolbarVisual.Native]::Children($main.H)|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|Select-Object -First 1

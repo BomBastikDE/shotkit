@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "EXE not found: $ExePath"
@@ -155,7 +156,6 @@ function Get-OwnErrorDialog {
 function Assert-NoOwnErrorDialog {
     param([System.Diagnostics.Process] $OwnedProcess)
     $dialog = Get-OwnErrorDialog $OwnedProcess |
-        Where-Object { $_.Title -ne 'ShotKit Rust – Prototyp' } |
         Select-Object -First 1
     if ($null -ne $dialog) {
         $details = [ShotKitSmoke.Native]::WindowText($dialog.Handle)
@@ -241,15 +241,7 @@ try {
         Get-OwnWindows $process | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
 
-    # main() deliberately blocks on this informational MessageBox before its
-    # message loop. Close only that known dialog belonging to this process.
-    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $process -Condition {
-        Get-OwnErrorDialog $process | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    if (-not [ShotKitSmoke.Native]::PostMessageW($welcome.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)) {
-        throw 'Could not safely close the ShotKit startup dialog with its default OK action.'
-    }
-    Start-Sleep -Milliseconds 300
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnWindows $process }
     Assert-NoOwnErrorDialog $process
 
     # F11 is the app's registered area-capture hotkey. The test profile disables

@@ -7,12 +7,7 @@ use super::*;
 pub(super) unsafe fn report_editor_error(h: H) {
     if let Some(error) = editor(h).take_error() {
         let message = format!("Die Bearbeitung konnte nicht übernommen werden: {error}");
-        MessageBoxW(
-            h,
-            wide(&message).as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
-            0x10,
-        );
+        MessageBoxW(h, wide(&message).as_ptr(), wide("ShotKit").as_ptr(), 0x10);
     }
 }
 // SAFETY CONTRACT:
@@ -206,7 +201,7 @@ pub(super) unsafe fn apply_frame(h: H, action: u32) {
         MessageBoxW(
             h,
             wide(&format!("Rahmen/Schlagschatten fehlgeschlagen: {error}")).as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x10,
         );
     }
@@ -335,7 +330,7 @@ pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
     SetWindowTextW(
         h,
         wide(&format!(
-            "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
+            "ShotKit – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
         ))
         .as_ptr(),
     );
@@ -550,7 +545,7 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
                     MessageBoxW(
                         h,
                         wide("Öffne zuerst ein Bild.").as_ptr(),
-                        wide("ShotKit Rust").as_ptr(),
+                        wide("ShotKit").as_ptr(),
                         0x30,
                     );
                 } else if let Some(action) = choose_frame_action(h) {

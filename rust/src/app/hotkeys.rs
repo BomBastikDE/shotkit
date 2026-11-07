@@ -20,7 +20,7 @@ pub(super) unsafe fn register(h: H) {
         MessageBoxW(
             h,
             wide("F9 ist belegt. Bereichsaufnahme über Einzelklick auf das Tray-Symbol.").as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x30,
         );
     }
@@ -29,7 +29,7 @@ pub(super) unsafe fn register(h: H) {
             h,
             wide("F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.")
                 .as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x30,
         );
     }
@@ -37,7 +37,7 @@ pub(super) unsafe fn register(h: H) {
         MessageBoxW(
             h,
             wide("F11 ist belegt; Bereichsaufnahme ist derzeit nicht verfügbar.").as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x30,
         );
     }

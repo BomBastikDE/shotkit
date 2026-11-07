@@ -214,7 +214,7 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
             MessageBoxW(
                 h,
                 wide(&format!("Speichern fehlgeschlagen:\n{e}")).as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
+                wide("ShotKit").as_ptr(),
                 0x10,
             );
             false
@@ -382,7 +382,7 @@ pub(super) unsafe fn confirm_replace(h: H) -> bool {
     match MessageBoxW(
         h,
         wide("Das Bild enthält ungespeicherte Änderungen. Jetzt speichern?").as_ptr(),
-        wide("ShotKit Rust").as_ptr(),
+        wide("ShotKit").as_ptr(),
         0x23,
     ) {
         6 => save(h, false),
@@ -469,7 +469,7 @@ unsafe fn create_editor_window_with_protection(
     let h = CreateWindowExW(
         0,
         class.as_ptr(),
-        wide("ShotKit Rust").as_ptr(),
+        wide("ShotKit").as_ptr(),
         0x00cf0000 | 0x02000000, // WS_CLIPCHILDREN keeps toolbar children out of parent repaint.
         0x80000000u32 as i32,
         0x80000000u32 as i32,
@@ -586,7 +586,7 @@ pub(super) unsafe fn initialize_image(h: H, image: Image) -> Result<(), String> 
     window_state(h).pan_y = 0;
     SetWindowTextW(
         h,
-        wide("ShotKit Rust – Strg+S speichern · F10 Scroll-Aufnahme").as_ptr(),
+        wide("ShotKit – Strg+S speichern · F10 Scroll-Aufnahme").as_ptr(),
     );
     InvalidateRect(h, std::ptr::null(), 1);
     Ok(())
@@ -648,7 +648,7 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
         MessageBoxW(
             h,
             wide(&format!("Zuschneiden fehlgeschlagen: {e}")).as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x10,
         );
     }

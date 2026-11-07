@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner.'
 }
@@ -139,8 +140,7 @@ function Run-Dotted-Png-Overwrite {
     $script:proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $source) -WorkingDirectory $root -PassThru
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'dotted-name editor window'
     [void][ShotKitSaveSmoke.Native]::SetForegroundWindow($main.Handle)
-    $welcome=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'dotted-name startup notice'
-    Button $welcome.Handle 'OK'
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} 10 'dotted-name loaded editor'
 
     Save-As-Dialog $main.Handle 'dotted-name decline' 'Bericht v1.2'
@@ -167,8 +167,7 @@ function Run-Format([string]$Format) {
     $script:proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $source) -WorkingDirectory $root -PassThru
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'editor window'
     [void][ShotKitSaveSmoke.Native]::SetForegroundWindow($main.Handle)
-    $welcome=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
-    Button $welcome.Handle 'OK'
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
     $main=Wait-For {Owned-Windows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'} | Select-Object -First 1} 10 'loaded editor'
 
     $protect=Request-Save-Protection $main.Handle "$Format overwrite-protection prompt"

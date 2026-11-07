@@ -128,7 +128,7 @@ function Get-OwnedDialogs([System.Diagnostics.Process] $Process) {
     @(Get-OwnedWindows $Process | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' })
 }
 function Close-StartupDialog($Dialog) {
-    if ($Dialog.ProcessId -ne $shotKit.Id -or $Dialog.ClassName -ne '#32770' -or $Dialog.Title -notlike '*Prototyp*') {
+    if ($Dialog.ProcessId -ne $shotKit.Id -or $Dialog.ClassName -ne '#32770' -or $Dialog.Title -cne 'Willkommen bei ShotKit') {
         throw "REFUSING_DIALOG_CLOSE: not the owned ShotKit startup notice (pid=$($Dialog.ProcessId), title='$($Dialog.Title)')."
     }
     if (-not [ShotKitMagnifierSmoke.Native]::PostMessageW($Dialog.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
@@ -192,7 +192,7 @@ $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powe
     }
     $mainWindow = Wait-Until { (Get-OwnedWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1) } 'the owned ShotKit primary window'
     if ($mainWindow.ProcessId -ne $shotKit.Id) { throw "MAIN_WINDOW_OWNER_MISMATCH: HWND=$($mainWindow.Handle), expected PID=$($shotKit.Id)." }
-    $startup = Wait-Until { Get-OwnedDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1 } 'ShotKit startup notice'
+    $startup = Wait-Until { Get-OwnedDialogs $shotKit | Where-Object { $_.Title -ceq 'Willkommen bei ShotKit' } | Select-Object -First 1 } 'ShotKit startup notice'
     Close-StartupDialog $startup
     $remainingDialogs = @(Get-OwnedDialogs $shotKit)
     if ($remainingDialogs.Count -gt 0) { throw "UNEXPECTED_SHOTKIT_DIALOG: title='$($remainingDialogs[0].Title)'." }

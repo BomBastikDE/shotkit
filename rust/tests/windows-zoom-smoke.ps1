@@ -5,6 +5,7 @@ param(
     [ValidateRange(5,60)][int]$ActionTimeoutSeconds=15
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if(($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive runner or dedicated opt-in session required.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -145,10 +146,8 @@ try {
  try {$proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixture) -WorkingDirectory $root -PassThru} finally {$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnostic}
  $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'owned editor window' $StartupTimeoutSeconds
  if([ShotKitZoomSmoke.N]::Owner($main.H) -ne $proc.Id){throw 'EDITOR_OWNER_MISMATCH'}
- $notice=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice' 12
- if(-not[ShotKitZoomSmoke.N]::PostMessageW($notice.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_FAILED'}
- [void](Wait-For {-not[ShotKitZoomSmoke.N]::IsWindow($notice.H)} 'startup notice close' 8)
- $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'editor after notice' 8
+ Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
+ $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'ready editor' 8
  Focus-Editor $main.H;Start-Sleep -Milliseconds 500
  $fitBase=Get-VisibleBounds $main.H
  Focus-Editor $main.H;[ShotKitZoomSmoke.N]::CtrlKey(0x39);Start-Sleep -Milliseconds 350;$fitBase=Get-VisibleBounds $main.H

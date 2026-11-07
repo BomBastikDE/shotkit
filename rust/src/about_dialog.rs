@@ -337,7 +337,7 @@ unsafe extern "system" fn about_proc(hwnd: H, message: u32, wparam: W, lparam: L
             let dpi = GetDpiForWindow(hwnd).max(96);
             let version = format!("Version: {}", env!("CARGO_PKG_VERSION"));
             let labels = [
-                "ShotKit Rust",
+                "ShotKit",
                 &version,
                 "Entwickler: Oliver Muenk",
                 "Lizenz: MIT",
