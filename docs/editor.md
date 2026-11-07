@@ -50,9 +50,22 @@ vergrößert. Mit <kbd>Umschalt</kbd> zeichnen auch Verpixeln, Weichzeichnen und
 - **Rahmen / Schatten / Leinwand…** – Rahmen und/oder Schlagschatten um das ganze Bild, **Leinwandgröße ändern…** oder **Rissrand…**
 - **Neue Aufnahme**, **Kopieren**, **Speichern**, **Zurück**, **Wiederholen**
 - **Ansicht** – Vergrößern, Verkleinern, Originalgröße, Einpassen
-- **Datei** – Speichern, Speichern unter …, Öffnen …, Bild aus Zwischenablage einfügen, Speicherordner öffnen
+- **Datei** – Speichern, Speichern unter …, Öffnen …, Bild aus Zwischenablage einfügen, Speicherordner öffnen, **Anheften**
 
 Ist das Fenster schmal, rücken weitere Symbole in das Menü **»** am rechten Rand.
+
+### Bild anheften
+
+**Datei → Anheften** oder <kbd>Strg</kbd>+<kbd>T</kbd> zeigt das aktuelle Bild **mit allen Markierungen** als kleines
+Fenster, das über allen anderen Programmen schwebt, zum Beispiel um Werte abzutippen oder eine Anleitung neben dem
+Zielprogramm offen zu halten.
+
+- **Verschieben:** mit der Maus ziehen. **Zoomen:** Mausrad (25–400 %). **Schließen:** <kbd>Esc</kbd> oder Doppelklick.
+- **Rechtsklick:** Kopieren (<kbd>Strg</kbd>+<kbd>C</kbd>), Im Editor öffnen, Originalgröße (100 %), Schließen.
+- Das angeheftete Bild ist eine **Kopie**: Spätere Änderungen im Editor ändern es nicht. Mehrere Bilder lassen sich
+  gleichzeitig anheften. Große Bilder öffnen verkleinert, passend zum Bildschirm.
+- Schwärzungen sind enthalten wie beim Speichern. Beachte, dass das angeheftete Fenster in späteren Bildschirmaufnahmen
+  mit zu sehen ist, wenn es im aufgenommenen Bereich liegt.
 
 ### Rissrand
 
@@ -82,6 +95,7 @@ Bildbereiche ab. Die Änderung lässt sich rückgängig machen. Sehr große Bild
 | <kbd>Strg</kbd>+<kbd>Umschalt</kbd>+<kbd>S</kbd> | Speichern unter (PNG, JPG, BMP, GIF) |
 | <kbd>Strg</kbd>+<kbd>O</kbd> | Bild öffnen (zusätzlich TIFF) |
 | <kbd>Strg</kbd>+<kbd>V</kbd> | Bild aus der Zwischenablage in einem neuen Editor öffnen |
+| <kbd>Strg</kbd>+<kbd>T</kbd> | Bild anheften (schwebendes Fenster) |
 | <kbd>Strg</kbd>+<kbd>N</kbd> | Neue Aufnahme |
 | <kbd>Strg</kbd>+Mausrad, <kbd>Strg</kbd>+<kbd>+</kbd> / <kbd>Strg</kbd>+<kbd>-</kbd> | Zoomen (auch mit dem Ziffernblock) |
 | <kbd>Strg</kbd>+<kbd>0</kbd> / <kbd>Strg</kbd>+<kbd>9</kbd> | Originalgröße / Einpassen (auch mit dem Ziffernblock) |

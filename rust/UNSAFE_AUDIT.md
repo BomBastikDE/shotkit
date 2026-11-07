@@ -6,7 +6,7 @@ Diese Bestandsaufnahme erfasst jede `unsafe fn`-Definition im Rust-Quelltext ein
 
 **Weitere Statuswerte:** `offen` kennzeichnet eine noch nicht entschiedene Voraussetzung; `Beleg fehlt` kennzeichnet einen Vertrag ohne gesonderten vollständigen Nachweis. `Bewusst zurückgestellt` nennt einen konkreten Grund und den ausstehenden Nachweis; daraus folgt keine Behauptung, die betreffende Voraussetzung sei erfüllt.
 
-**Zählung:** 155 Funktionen; 0 offen, 4 für den jeweils ausdrücklich eingegrenzten Vertrag belegt, 39 bewusst zurückgestellt und 112 mit fehlendem gesondertem Beleg.
+**Zählung:** 169 Funktionen (155 in der Tabelle, 14 im Abschnitt „Ergänzungen v2.1.0“); 0 offen, 4 für den jeweils ausdrücklich eingegrenzten Vertrag belegt, 39 bewusst zurückgestellt und 126 mit fehlendem gesondertem Beleg.
 
 Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe einschließlich unauffälliger Stellen steht zusätzlich in [REENTRANCY_AUDIT.md](REENTRANCY_AUDIT.md). Die Ablösung des globalen Overlay-Zustands ist in [ROADMAP.md](ROADMAP.md) für nach der Beta notiert.
 
@@ -211,3 +211,25 @@ Diese Kombination der Kriterien benötigt Owner-/PR-Prüfung; sie wird hier nich
 ## Neuer einzelner unsafe-Block: Zufallsquelle
 
 - `pixelation_random::operating_system_seed` (`BCryptGenRandom`): **Beleg fehlt** bis zum Windows-CI-Lauf. Voraussetzung: ein gültiger, exklusiv beschreibbarer 8-Byte-Puffer und der systemseitige Zufallsanbieter; beide sind lokal angelegt beziehungsweise über die Windows-API angefordert. Der Aufruf versendet keine Fensternachrichten. Ein Fehler wird ohne Ersatzwert an den Aufrufer zurückgegeben.
+
+## Ergänzungen v2.1.0
+
+Neue `unsafe fn` aus #95 (Fokus nach Texteingabe), #98 (Rissrand) und #99 (Bild anheften). Status jeweils **Beleg fehlt**: Die Verträge sind benannt und durch Code-Review sowie die genannten Windows-Tests ausgeübt, aber nicht gesondert nachgewiesen. Die Verkleinerung der `unsafe`-Fläche verfolgt #69.
+
+| Datei | Funktion | Status | Vertrag |
+|---|---|---|---|
+| `src/text_dialog.rs` | `restore_owner_before_destroy` | Beleg fehlt | `owner` ist null oder ein Fensterhandle; `IsWindow` schützt vor einem veralteten Handle. Aufruf nur vor `DestroyWindow` des eigenen Dialogs (`windows-callout-smoke.ps1`, `windows-editor-text-smoke.ps1`). |
+| `src/app/actions.rs` | `choose_from_menu` | Beleg fehlt | `h` ist ein lebendes eigenes Fenster als Menübesitzer; das lokale Menü wird vor der Rückkehr zerstört; das Ergebnis ist auf die übergebenen IDs begrenzt. |
+| `src/app/actions.rs` | `apply_torn_edge` | Beleg fehlt | `h` ist ein Editorfenster mit Bild auf dem UI-Thread; Menüwerte sind Kopien, der Editorzugriff erfolgt erst danach (`windows-frame-shadow-smoke.ps1`). |
+| `src/app/actions.rs` | `apply_base_image_edit` | Beleg fehlt | Wie das vorherige `apply_frame`: Bearbeitung wird gestagt, Bitmapfehler und abgelehnte Verlaufsrückfrage brechen ab; keine Zustandsreferenz über Dialoge hinweg. |
+| `src/app/pin.rs` | `pin_current` | Beleg fehlt | `h` ist ein lebendes Editorfenster auf dem UI-Thread; prüft das Bitmap vor jedem Zugriff (`windows-pin-smoke.ps1`). |
+| `src/app/pin.rs` | `pin` | Beleg fehlt | Editorzustand wird vor Win32-Aufrufen kopiert; das Anzeige-Bitmap wird bei Fehlern vor der Übergabe an das Fenster freigegeben. |
+| `src/app/pin.rs` | `create_window` | Beleg fehlt | Klasse wird einmalig auf dem UI-Thread registriert; alle UTF-16-Puffer leben bis zur Rückkehr von `CreateWindowExW`. |
+| `src/app/pin.rs` | `place_initially` | Beleg fehlt | `window` lebt; `WorkAreaInfo` entspricht `MONITORINFO` mit gesetzter Größe; Fehlschläge führen zu einem Standardbereich. |
+| `src/app/pin.rs` | `resize` | Beleg fehlt | `window` lebt; Größe aus dem eigenen Zustand, Zoom auf 25–400 % begrenzt. |
+| `src/app/pin.rs` | `state` | Beleg fehlt | `GWLP_USERDATA` enthält null oder den aus `Box::into_raw` stammenden `PinState` dieses Fensters; freigegeben erst in `WM_NCDESTROY`. Aufrufer halten die Referenz nicht über reentrante Aufrufe, die das Fenster zerstören. |
+| `src/app/pin.rs` | `copy` | Beleg fehlt | Das temporäre Bitmap wird nach `copy_bitmap` freigegeben; Einstellung zum Zwischenablageverlauf wird beachtet. |
+| `src/app/pin.rs` | `context_menu` | Beleg fehlt | Lokales Menü; nach `TrackPopupMenu` wird der Zustand erneut über `state` geholt, weil das Menü reentrieren kann. |
+| `src/app/pin.rs` | `paint` | Beleg fehlt | `BeginPaint`/`EndPaint` paarig; das ausgewählte Bitmap wird vor `DeleteDC` zurückgesetzt. |
+| `src/app/pin.rs` | `proc` | Beleg fehlt | Fensterprozedur auf dem UI-Thread; Zustand nur über `state`; `WM_NCDESTROY` löscht `GWLP_USERDATA` vor der Freigabe, sodass spätere Nachrichten keinen freigegebenen Zustand sehen. |
+
