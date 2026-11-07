@@ -21,6 +21,7 @@ pub mod mouse_history;
 pub mod network_path;
 pub mod output_windows;
 pub mod pixelate;
+pub mod rejected_import;
 #[cfg(windows)]
 pub mod render;
 pub mod resource_budget;

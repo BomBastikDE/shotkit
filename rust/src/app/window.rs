@@ -9,7 +9,19 @@ use super::*;
 pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     if m == 0x0081 {
         // WM_NCCREATE
-        let state = Box::into_raw(Box::new(WindowState::new()));
+        let mut state = WindowState::new();
+        // Our class accepts only null or a live EditorCreationProtection in
+        // lpCreateParams. Clone before any Win32 call; never retain the marker
+        // reference across creation messages or after CreateWindowExW returns.
+        let params = (*(l as *const CreateStructParams)).create_params;
+        if !params.is_null() {
+            state.initialization_close_blocked = Some(
+                (*(params as *const EditorCreationProtection))
+                    .close_blocked
+                    .clone(),
+            );
+        }
+        let state = Box::into_raw(Box::new(state));
         SetWindowLongPtrW(h, -21, state as isize);
     }
     if GetWindowLongPtrW(h, -21) == 0 {
@@ -21,6 +33,14 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
         SetWindowLongPtrW(h, -21, 0);
         drop(Box::from_raw(state));
         return DefWindowProcW(h, m, w, l);
+    }
+    if m == 0x0010
+        && window_state(h)
+            .initialization_close_blocked
+            .as_ref()
+            .is_some_and(|blocked| blocked.get())
+    {
+        return 0;
     }
     let input = m == toolbar::WM_COMMAND
         || (0x0100..=0x0109).contains(&m)
@@ -101,3 +121,7 @@ unsafe fn dispatch_window(h: H, m: u32, w: W, l: L) -> L {
     }
     DefWindowProcW(h, m, w, l)
 }
+
+#[cfg(test)]
+#[path = "window_initialization_tests.rs"]
+mod initialization_tests;

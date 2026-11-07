@@ -449,6 +449,29 @@ pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> 
 // Warum erfüllt: run registriert die Klasse vor dem Erzeugen; Fehler aus CreateWindow und Toolbar werden geprüft.
 // Nachrichten: CreateWindowExW, SendMessageW und DestroyWindow können reentrieren; die ersetzte Toolbar wird nach Ende des State-Borrows freigegeben.
 pub(super) unsafe fn create_editor_window() -> Result<H, String> {
+    create_editor_window_with_protection(None)
+}
+
+// Foundation only: existing capture/import paths deliberately do not call it.
+// The returned guard must cover ALL initialization, registration and handoff
+// calls that can synchronously dispatch WM_CLOSE. It is safe to drop after an
+// explicit DestroyWindow on a failed initialization.
+#[allow(dead_code)]
+pub(super) unsafe fn create_editor_window_protected(
+) -> Result<(H, EditorInitializationGuard), String> {
+    let token = Rc::new(Cell::new(true));
+    let guard = EditorInitializationGuard(token.clone());
+    let protection = EditorCreationProtection {
+        close_blocked: token,
+    };
+    create_editor_window_with_protection(Some(&protection)).map(|h| (h, guard))
+}
+
+// No WindowState/toolbar reference crosses a Win32 call. The optional marker
+// lives through CreateWindowExW; its per-window token also covers toolbar setup.
+unsafe fn create_editor_window_with_protection(
+    protection: Option<&EditorCreationProtection>,
+) -> Result<H, String> {
     let class = wide("ShotKitRustEditor");
     let h = CreateWindowExW(
         0,
@@ -462,7 +485,9 @@ pub(super) unsafe fn create_editor_window() -> Result<H, String> {
         null_mut(),
         null_mut(),
         GetModuleHandleW(std::ptr::null()),
-        null_mut(),
+        protection.map_or(null_mut(), |marker| {
+            std::ptr::from_ref(marker).cast_mut().cast()
+        }),
     );
     if h.is_null() {
         return Err("Editorfenster konnte nicht erstellt werden.".into());

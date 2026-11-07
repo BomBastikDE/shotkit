@@ -27,7 +27,7 @@ use crate::{
     overlay, scroll_windows, text_dialog, toolbar,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::c_void,
     mem::{size_of, zeroed},
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -345,6 +345,7 @@ impl Drop for BusyGuard {
 // GWLP_USERDATA; no active-window swapping is used, including during modal loops.
 struct WindowState {
     generation: usize,
+    initialization_close_blocked: Option<Rc<Cell<bool>>>,
     toolbar: Option<Rc<toolbar::Toolbar>>,
     editor: Option<EditorController>,
     preview_cache: Rc<RefCell<Option<shotkit::alpha_document::PreviewCache>>>,
@@ -371,6 +372,7 @@ impl WindowState {
                     value.checked_add(1)
                 })
                 .unwrap_or(0),
+            initialization_close_blocked: None,
             toolbar: None,
             editor: None,
             preview_cache: Rc::new(RefCell::new(None)),
@@ -388,6 +390,30 @@ impl WindowState {
             crop_end: None,
             modal_depth: 0,
         }
+    }
+}
+
+// Passed only by the protected editor constructor. WM_NCCREATE copies the
+// token before any subsequent creation messages; the stack marker is never
+// retained by the HWND. Ordinary editor/primary creation passes null.
+struct EditorCreationProtection {
+    close_blocked: Rc<Cell<bool>>,
+}
+
+// CREATESTRUCTW starts with lpCreateParams on both Windows architectures.
+#[repr(C)]
+struct CreateStructParams {
+    create_params: *mut c_void,
+}
+
+/// Keep this guard until the complete import/editor handoff is initialized.
+/// It owns no HWND or WindowState borrow: destruction/failure of the window
+/// before the guard is dropped is safe, including HWND reuse.
+#[must_use = "keep the guard alive until editor initialization is complete"]
+pub(super) struct EditorInitializationGuard(Rc<Cell<bool>>);
+impl Drop for EditorInitializationGuard {
+    fn drop(&mut self) {
+        self.0.set(false);
     }
 }
 static mut PRIMARY: H = null_mut();
