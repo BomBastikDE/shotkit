@@ -85,6 +85,8 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     let mut rendered = if preview {
         // Take the cache out before GDI+ rendering: nested window messages may
         // paint again, so no RefCell borrow or window-state reference may span it.
+        // The cache owns its budget lease while local: nested paints still see
+        // these pixels charged to the same process-wide preview-cache pool.
         let shared = Rc::clone(&window_state(h).preview_cache);
         let mut cache = shared.borrow_mut().take();
         let result =
