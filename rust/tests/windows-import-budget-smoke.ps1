@@ -58,14 +58,28 @@ namespace ShotKitImportBudgetSmoke {
    var clock=System.Diagnostics.Stopwatch.StartNew();byte[] row=new byte[checked(width*4+1)];long rasterBytes=checked((long)row.Length*height);
    // PNG filter byte=0; opaque black RGBA pixels (not an invalid/missing payload).
    for(int x=4;x<row.Length;x+=4)row[x]=255;
+   // .NET Fastest exceeded the existing 4-MiB fixture guard at 16384x8192
+   // on Windows. Optimal changes only the encoding, not a single raster byte.
+   // Keep the same size/time guards and validate every decompressed byte.
    using(var compressed=new System.IO.MemoryStream()){
-    using(var z=new System.IO.Compression.ZLibStream(compressed,System.IO.Compression.CompressionLevel.Fastest,true)){
-     for(int y=0;y<height;y++){z.Write(row,0,row.Length);if(clock.Elapsed.TotalSeconds>30||compressed.Length>4194304)throw new Exception("FIXTURE_GENERATION_LIMIT");}
+    using(var z=new System.IO.Compression.ZLibStream(compressed,System.IO.Compression.CompressionLevel.Optimal,true)){
+     for(int y=0;y<height;y++){
+      z.Write(row,0,row.Length);
+      if(clock.Elapsed.TotalSeconds>30)throw new Exception("FIXTURE_GENERATION_TIMEOUT: elapsed_ms="+clock.ElapsedMilliseconds+", compressed_bytes="+compressed.Length);
+      if(compressed.Length>4194304)throw new Exception("FIXTURE_GENERATION_SIZE_LIMIT: compressed_bytes="+compressed.Length+", limit=4194304, elapsed_ms="+clock.ElapsedMilliseconds);
+     }
     }
-    byte[] data=compressed.ToArray();if(data.Length>4194304)throw new Exception("FIXTURE_TOO_LARGE");
+    byte[] data=compressed.ToArray();if(data.Length>4194304)throw new Exception("FIXTURE_TOO_LARGE: compressed_bytes="+data.Length+", limit=4194304");
+    if(clock.Elapsed.TotalSeconds>30)throw new Exception("FIXTURE_GENERATION_TIMEOUT_AFTER_FINISH: elapsed_ms="+clock.ElapsedMilliseconds);
+    Console.WriteLine("FIXTURE_ENCODED: dimensions="+width+"x"+height+", rgba_bytes="+((long)width*height*4)+", zlib_bytes="+data.Length+", elapsed_ms="+clock.ElapsedMilliseconds+", compression=Optimal");
     // Verify full decompression length with bounded buffers, independently of app import.
     using(var input=new System.IO.MemoryStream(data))using(var z=new System.IO.Compression.ZLibStream(input,System.IO.Compression.CompressionMode.Decompress)){
-     long count=0;int n;while((n=z.Read(row,0,row.Length))>0){count+=n;if(count>rasterBytes||clock.Elapsed.TotalSeconds>45)throw new Exception("FIXTURE_VALIDATION_LIMIT");}
+     byte[] check=new byte[row.Length];long count=0;int n;
+     while((n=z.Read(check,0,check.Length))>0){
+      if(count+n>rasterBytes||clock.Elapsed.TotalSeconds>45)throw new Exception("FIXTURE_VALIDATION_LIMIT");
+      for(int i=0;i<n;i++)if(check[i]!=row[(int)((count+i)%row.Length)])throw new Exception("FIXTURE_RASTER_CONTENT at filtered byte "+(count+i));
+      count+=n;
+     }
      if(count!=rasterBytes)throw new Exception("FIXTURE_RASTER_LENGTH");
     }
     using(var file=System.IO.File.Create(path)){

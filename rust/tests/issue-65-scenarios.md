@@ -103,3 +103,29 @@ vorhandene PowerShell-Dockerimage ist amd64 auf einem aarch64-Host und startet
 mit `exec format error`. Der Windows-Workflow muss die ausführbare Syntax,
 die GUI-Abläufe und die Ressourcenmessungen noch belegen. Es wurden keine
 Werkzeuge nachinstalliert.
+
+## Erster Windows-Lauf und Fixture-Korrektur
+
+[Resource-Lauf 42397942098](https://github.com/BomBastikDE/shotkit/actions/runs/42397942098)
+bestand Szenario 1 (PNG und JPEG) und 2a einschließlich aller vier PNG-Exporte:
+Schwärzung, kombinierte Schwärzung/Blur, UndoBlur und UndoRedact. Der alternative
+Budgetablehnungszweig von 2a wurde dabei nicht erreicht. Die ShotKit-Instanz von
+2a meldete einen nativen Spitzen-Working-Set von 1 145 720 832 Bytes; der
+Hintergrundsampler erfasste maximal 1 122 820 096 private Bytes. Das sind
+verschiedene Messgrößen und keine allgemeine Speicherobergrenze.
+
+2b scheiterte **vor dem Anwendungsstart** beim Fixture-Aufbau mit
+`FIXTURE_GENERATION_LIMIT`. Zwischen Szenariostart und Fehler lagen nur rund
+1,27 Sekunden; der gemeinsame Guard konnte somit wegen der 4-MiB-Grenze des
+komprimierten Datenstroms auslösen, nicht wegen seines 30-Sekunden-Timeouts.
+Die Fixture verwendet nun `CompressionLevel.Optimal` statt `Fastest` bei
+unveränderten Filter-0-/RGBA8-Pixelbytes, Abmessungen und sämtlichen Größen-/
+Zeitgrenzen. Separate Fehlertexte zeigen künftig Zeit bzw. komprimierte Länge;
+die unabhängige Dekompression prüft zusätzlich jeden gefilterten Rasterbyte.
+
+Eine lokale Nachbildung mit Python/zlib-Level 6 erzeugte für Admission,
+Boundary und JustOver 414 082, 542 777 und 542 843 komprimierte Bytes und
+prüfte alle Rasterzeilen vollständig. Das belegt die unveränderten synthetischen
+Pixel und die Eignung stärkerer Kompression; es ersetzt keine Ausführung der
+.NET-Implementierung unter Windows. Für die Korrektur und die in diesem Lauf
+nicht mehr erreichten Szenarien 2b bis 5 bleibt ein neuer Windows-Lauf Pflicht.
