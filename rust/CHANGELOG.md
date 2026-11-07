@@ -2,7 +2,7 @@
 
 ## In Entwicklung für 2.1.0
 
-- **Mauszeiger mit aufnehmen:** Neue Option im Tray-Menü unter Einstellungen (standardmäßig aus). Der Zeiger wird in die Aufnahme übernommen und ist im Editor ein verschiebbares, löschbares Objekt; automatisch gespeicherte und kopierte Bilder enthalten ihn. Hinweis: Mit dieser Version kommt ein neues Feld in die Einstellungsdatei, das ältere Versionen nicht lesen können ([#36](https://github.com/BomBastikDE/shotkit/issues/36)).
+- **Mauszeiger mit aufnehmen:** Neue Option im Tray-Menü unter Einstellungen (standardmäßig aus). Der Zeiger wird in die Aufnahme übernommen und ist im Editor ein verschiebbares, löschbares Objekt; automatisch gespeicherte und kopierte Bilder enthalten ihn. Hinweis: Ist die Option eingeschaltet, steht sie als neues Feld in der Einstellungsdatei, das Version 2.0.x nicht lesen kann; bei ausgeschalteter Option bleibt die Datei mit 2.0.x kompatibel ([#36](https://github.com/BomBastikDE/shotkit/issues/36)).
 - **Rissrand:** Unter „Rahmen / Schatten / Leinwand…“ → „Rissrand…“ bekommt das Bild eine abgerissene, transparente Kante an den gewählten Seiten, auf Wunsch mit einem Schatten, der der Kante folgt ([#98](https://github.com/BomBastikDE/shotkit/issues/98)).
 
 ## Version 2.0.1

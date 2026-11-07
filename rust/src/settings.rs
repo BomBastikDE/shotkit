@@ -81,7 +81,11 @@ pub struct Settings {
     #[serde(default)]
     pub scroll_direction: ScrollDirection,
     /// Insert the mouse cursor as an editable object into captures (#36).
-    #[serde(default)]
+    ///
+    /// Written only when enabled: the default settings then stay byte-identical
+    /// to the frozen v1 schema used by reset receipts, and 2.0.x can still read
+    /// the file as long as the option is off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub capture_cursor: bool,
 }
 
@@ -856,6 +860,25 @@ mod tests {
         assert!(settings.exclude_from_clipboard_history);
         assert!(!settings.auto_save);
         assert_eq!(settings.scroll_direction, ScrollDirection::Down);
+    }
+
+    #[test]
+    fn default_settings_stay_valid_for_the_frozen_v1_reset_receipt() {
+        // The Windows reset protocol writes these defaults and refuses if they
+        // no longer match the frozen v1 receipt schema (#36 added a field).
+        let defaults = serde_json::to_vec_pretty(&Settings::default()).unwrap();
+        assert!(reset_receipt::valid_v1_settings(&defaults));
+        assert!(!String::from_utf8_lossy(&defaults).contains("capture_cursor"));
+        // Enabled, the option is written and read back; such a file is no
+        // longer v1-receipt material, which is the documented downgrade limit.
+        let enabled = Settings {
+            capture_cursor: true,
+            ..Settings::default()
+        };
+        let bytes = serde_json::to_vec_pretty(&enabled).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("\"capture_cursor\": true"));
+        assert_eq!(serde_json::from_slice::<Settings>(&bytes).unwrap(), enabled);
+        assert!(!reset_receipt::valid_v1_settings(&bytes));
     }
 
     #[test]
