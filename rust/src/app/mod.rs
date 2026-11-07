@@ -48,7 +48,7 @@ use shotkit::{
     image_io, output_windows,
     recovery_admission::{self, AdmissionError as SourceAdmissionError, Permit as SourcePermit},
     recovery_images::RecoveryImages,
-    scroll_capture::{self, Direction, Outcome, ScrollIo},
+    scroll_capture::{self, Direction, Outcome},
     scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
