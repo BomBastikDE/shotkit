@@ -50,7 +50,14 @@ fn csharp_midpoint_rounding_is_ties_to_even_for_positive_and_negative_angles() {
 
 #[test]
 fn shift_modifier_is_applied_to_preview_and_final_mouse_up() {
-    for tool in [Tool::Rectangle, Tool::Ellipse, Tool::Highlight, Tool::Blur] {
+    for tool in [
+        Tool::Rectangle,
+        Tool::Ellipse,
+        Tool::Highlight,
+        Tool::Blur,
+        Tool::GaussianBlur,
+        Tool::Redact,
+    ] {
         let mut e = editor();
         e.set_tool(tool);
         e.mouse_down(p(10.0, 10.0));
@@ -88,6 +95,103 @@ fn shift_modifier_is_applied_to_preview_and_final_mouse_up() {
 
 fn editor() -> EditorController {
     EditorController::with_image(Image::new(100, 100, vec![128; 100 * 100 * 4]).unwrap()).unwrap()
+}
+
+fn add_rect_and_select(e: &mut EditorController) {
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(10.0, 10.0));
+    e.mouse_up(p(50.0, 50.0));
+    e.set_tool(Tool::Select);
+    // Select the left edge away from the corner handles. A center click misses
+    // a rectangle because hit testing targets its outline.
+    e.mouse_down(p(12.0, 30.0));
+    e.mouse_up(p(12.0, 30.0));
+    assert!(e.selection().is_some());
+}
+
+#[test]
+fn marker_tool_switches_default_red_to_yellow_and_recolors_selection_undoably() {
+    let mut e = editor();
+    add_rect_and_select(&mut e);
+    let old_style = e.selection().unwrap().style.clone();
+    assert_eq!(old_style.color, Color::rgba(230, 40, 40, 255));
+
+    assert!(e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert_eq!(e.selection().unwrap().style.color, Color::MARKER_YELLOW);
+
+    // One Undo restores the selected object; the next history item is still
+    // the original rectangle creation, so it removes that object.
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0].style, old_style);
+    assert!(e.undo());
+    assert!(e.shapes().is_empty());
+    assert!(!e.undo());
+}
+
+#[test]
+fn marker_tool_without_selection_changes_only_the_active_drawing_color() {
+    let mut e = editor();
+    assert!(!e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert!(e.shapes().is_empty());
+    assert!(!e.undo());
+
+    e.mouse_down(p(5.0, 5.0));
+    e.mouse_up(p(15.0, 15.0));
+    assert_eq!(e.shapes()[0].style.color, Color::MARKER_YELLOW);
+}
+
+#[test]
+fn marker_tool_preserves_custom_color_and_selected_shape_style() {
+    let mut e = editor();
+    let blue = Color::rgba(0, 120, 215, 255);
+    e.set_current_color(blue);
+    add_rect_and_select(&mut e);
+    let old_style = e.selection().unwrap().style.clone();
+
+    assert!(!e.set_tool(Tool::Highlight));
+    assert_eq!(e.current_style().color, blue);
+    assert_eq!(e.selection().unwrap().style, old_style);
+}
+
+fn test_rect(x: f32, y: f32) -> Shape {
+    Shape::new(ShapeKind::Rectangle {
+        start: p(x, y),
+        end: p(x + 10.0, y + 10.0),
+    })
+}
+
+#[test]
+fn compose_preview_replaces_in_place_and_keeps_following_shapes() {
+    let original = test_rect(1.0, 2.0);
+    let following = test_rect(30.0, 40.0);
+    let replacement = test_rect(5.0, 6.0);
+    let (shapes, stable_count) = compose_preview_shapes(
+        &[original, following.clone()],
+        Some((Some(0), replacement.clone())),
+    )
+    .unwrap();
+
+    assert_eq!(shapes, vec![replacement, following]);
+    assert_eq!(shapes.len(), 2);
+    assert_eq!(stable_count, 0);
+}
+
+#[test]
+fn compose_preview_appends_creation_after_existing_selected_shapes_once() {
+    let selected = test_rect(1.0, 2.0);
+    let following = test_rect(30.0, 40.0);
+    let draft = test_rect(60.0, 70.0);
+    let (shapes, stable_count) = compose_preview_shapes(
+        &[selected.clone(), following.clone()],
+        Some((None, draft.clone())),
+    )
+    .unwrap();
+
+    assert_eq!(shapes, vec![selected, following, draft]);
+    assert_eq!(shapes.len(), 3);
+    assert_eq!(stable_count, 2);
 }
 
 #[test]
@@ -135,6 +239,31 @@ fn creates_with_preview_then_commits_once_and_undo_redoes() {
     assert!(e.redo());
     assert_eq!(e.shapes().len(), 1);
 }
+
+#[test]
+fn preview_index_tracks_existing_shape_drags_but_not_new_shape_creation() {
+    let mut e = rect_editor();
+    assert_eq!(e.selected_index(), Some(0));
+
+    // Handle drags are allowed while a drawing tool is active.
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(10.0, 10.0));
+    e.mouse_move(p(5.0, 5.0));
+    assert_eq!(e.preview_index(), Some(0));
+    assert_eq!(e.preview().unwrap().bounds().x, 5.0);
+    assert_eq!(e.shapes()[0].bounds().x, 10.0);
+    e.mouse_up(p(5.0, 5.0));
+
+    // A create drag can retain the previous selection, but must append its
+    // preview instead of replacing that selected document shape.
+    e.mouse_down(p(70.0, 70.0));
+    e.mouse_move(p(80.0, 85.0));
+    assert_eq!(e.selected_index(), Some(0));
+    assert_eq!(e.preview_index(), None);
+    assert_eq!(e.shapes().len(), 1);
+    assert_eq!(e.preview().unwrap().bounds().x, 70.0);
+}
+
 #[test]
 fn moves_as_one_step_and_delete_undo_redo() {
     let mut e = rect_editor();
@@ -143,6 +272,7 @@ fn moves_as_one_step_and_delete_undo_redo() {
     e.mouse_move(p(20.0, 30.0));
     assert_eq!(e.shapes()[0].bounds().x, 10.0);
     assert_eq!(e.preview().unwrap().bounds().x, 20.0);
+    assert_eq!(e.preview_index(), Some(0));
     e.mouse_up(p(20.0, 30.0));
     assert_eq!(e.shapes()[0].bounds().x, 20.0);
     assert!(e.undo());
@@ -286,6 +416,35 @@ fn select_first(e: &mut EditorController) {
 }
 
 #[test]
+fn undo_redo_shape_count_change_never_keeps_a_shifted_selection() {
+    let mut e = two_rectangles();
+    e.set_tool(Tool::Rectangle);
+    e.mouse_down(p(180.0, 10.0));
+    e.mouse_up(p(220.0, 40.0));
+    e.set_tool(Tool::Select);
+    select_first(&mut e);
+    assert!(e.delete_selected());
+    e.mouse_down(p(180.0, 25.0));
+    e.mouse_up(p(180.0, 25.0));
+    assert_eq!(e.selected_index(), Some(1));
+
+    assert!(e.undo());
+    assert_eq!(e.shapes().len(), 3);
+    assert_eq!(e.selected_index(), None);
+    assert!(!e.delete_selected());
+    assert!(!e.nudge_selected(1.0, 0.0));
+    assert_eq!(e.shapes().len(), 3);
+
+    e.mouse_down(p(100.0, 25.0));
+    e.mouse_up(p(100.0, 25.0));
+    assert_eq!(e.selected_index(), Some(1));
+    assert!(e.redo());
+    assert_eq!(e.shapes().len(), 2);
+    assert_eq!(e.selected_index(), None);
+    assert!(!e.delete_selected());
+}
+
+#[test]
 fn delete_during_move_cancels_drag_before_removing_shape() {
     let mut e = two_rectangles();
     select_first(&mut e);
@@ -374,6 +533,10 @@ fn new_shapes_and_placed_text_use_current_style() {
         color: Color::rgba(12, 34, 56, 200),
         width: 7.5,
         font_size: 31.0,
+        fill: crate::shapes::FillMode::Translucent,
+        line_style: crate::shapes::LineStyle::Dashed,
+        arrow_ends: crate::shapes::ArrowEnds::Dot,
+        rectangle_corners: crate::shapes::RectangleCorners::Rounded,
     };
     assert!(e.set_current_style(style.clone()));
 
@@ -396,6 +559,10 @@ fn selected_style_change_is_undoable_and_redoable() {
         color: Color::rgba(20, 80, 140, 255),
         width: 9.0,
         font_size: 42.0,
+        fill: crate::shapes::FillMode::Solid,
+        line_style: crate::shapes::LineStyle::Dotted,
+        arrow_ends: crate::shapes::ArrowEnds::Double,
+        rectangle_corners: crate::shapes::RectangleCorners::Rounded,
     };
 
     assert!(e.set_selected_style(replacement.clone()));
@@ -508,7 +675,7 @@ fn mixed_shape_and_crop_share_one_undo_redo_history() {
     e.set_tool(Tool::Rectangle);
     e.mouse_down(p(20.0, 20.0));
     e.mouse_up(p(40.0, 40.0));
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
 
     e.crop(CropRect {
         x: 10,
@@ -529,7 +696,7 @@ fn mixed_shape_and_crop_share_one_undo_redo_history() {
         (100, 100)
     );
     assert_eq!(e.shapes()[0].bounds().x, 20.0);
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
     assert!(e.undo());
     assert!(e.shapes().is_empty());
     assert!(e.redo());
@@ -552,11 +719,11 @@ fn frame_is_undoable_with_shape_coordinates_and_image_arc() {
     .unwrap();
     assert_eq!(e.document().image().width, 110);
     assert_eq!(e.shapes()[0].bounds().x, before.x + 5.0);
-    assert!(!Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(!original_image.ptr_eq(&e.image_arc()));
     assert!(e.undo());
     assert_eq!(e.document().image().width, 100);
     assert_eq!(e.shapes()[0].bounds().x, before.x);
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
     assert!(e.redo());
     assert_eq!(e.document().image().width, 110);
 }
@@ -584,6 +751,34 @@ fn history_budget_errors_are_exposed_and_leave_document_unchanged() {
         (e.document().image().width, e.document().image().height),
         (100, 100)
     );
+}
+
+#[test]
+fn undo_that_cannot_preserve_redo_reports_error_and_keeps_document() {
+    let original = Image::new(3, 2, vec![31; 3 * 2 * 4]).unwrap();
+    let large = Image::new(16, 16, vec![77; 16 * 16 * 4]).unwrap();
+    let mut editor = EditorController::with_image(original.clone()).unwrap();
+    editor.document_mut().set_history_budget(1024);
+    editor.document_mut().mark_saved();
+    editor.document_mut().replace_image(large.clone()).unwrap();
+    assert!(editor.document().can_undo());
+    assert!(!editor.undo());
+    assert_eq!(editor.document().image(), &large);
+    assert!(editor.document().can_undo());
+    assert!(!editor.document().can_redo());
+    assert!(editor.document().is_dirty());
+    assert_eq!(
+        editor.take_error(),
+        Some(DocumentError::HistoryNavigationBudgetExceeded)
+    );
+    assert!(editor.take_error().is_none());
+
+    editor.document_mut().set_history_budget(8192);
+    assert!(editor.undo());
+    assert_eq!(editor.document().image(), &original);
+    assert!(!editor.document().is_dirty());
+    assert!(editor.redo());
+    assert_eq!(editor.document().image(), &large);
 }
 
 #[test]
@@ -620,4 +815,625 @@ fn undo_redo_keeps_selection_valid_across_crop() {
     assert!(e.redo());
     assert_eq!(e.selected_index(), Some(0));
     assert!(e.selection().is_some());
+}
+
+#[test]
+fn redact_tool_creates_and_moves_a_redaction() {
+    let mut e = editor();
+    e.set_tool(Tool::Redact);
+    e.mouse_down(p(10.0, 12.0));
+    e.mouse_move(p(40.0, 35.0));
+    assert!(matches!(
+        e.preview().unwrap().kind,
+        ShapeKind::Redact { .. }
+    ));
+    e.mouse_up(p(40.0, 35.0));
+    assert!(matches!(e.shapes()[0].kind, ShapeKind::Redact { .. }));
+    e.set_tool(Tool::Select);
+    e.mouse_down(p(25.0, 23.0));
+    e.mouse_up(p(25.0, 23.0));
+    assert!(e.nudge_selected(2.0, 3.0));
+    assert_eq!(e.shapes()[0].bounds().x, 12.0);
+}
+
+#[test]
+fn gaussian_blur_gesture_resize_move_and_history_preserve_style() {
+    let mut e = editor();
+    e.set_tool(Tool::GaussianBlur);
+    e.mouse_down(p(10.0, 12.0));
+    e.mouse_move(p(40.0, 35.0));
+    assert!(matches!(
+        e.preview().unwrap().kind,
+        ShapeKind::GaussianBlur { .. }
+    ));
+    e.mouse_up(p(40.0, 35.0));
+    let original = e.shapes()[0].clone();
+    assert_eq!(original.handles().len(), 4);
+    e.set_tool(Tool::Select);
+    e.mouse_down(p(25.0, 23.0));
+    e.mouse_up(p(25.0, 23.0));
+    assert!(e.nudge_selected(2.0, 3.0));
+    let moved = e.shapes()[0].clone();
+    assert_eq!(moved.bounds().x, 12.0);
+    assert_eq!(moved.style, original.style);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], original);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], moved);
+    e.mouse_down(moved.handles()[2]);
+    e.mouse_up(p(60.0, 55.0));
+    let resized = e.shapes()[0].clone();
+    assert_eq!(resized.bounds().width, 48.0);
+    assert_eq!(resized.style, original.style);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], moved);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], resized);
+}
+
+#[test]
+fn gaussian_blur_crop_and_frame_offset_and_history_are_consistent() {
+    let mut e = editor();
+    e.set_tool(Tool::GaussianBlur);
+    e.mouse_down(p(20.0, 25.0));
+    e.mouse_up(p(55.0, 60.0));
+    let original = e.shapes()[0].clone();
+    let source = e.image_arc();
+    e.crop(CropRect {
+        x: 10,
+        y: 15,
+        width: 70,
+        height: 65,
+    })
+    .unwrap();
+    let mut cropped = original.clone();
+    cropped.offset(-10.0, -15.0);
+    assert_eq!(e.shapes()[0], cropped);
+    e.add_frame(FrameOptions {
+        width: 5,
+        color: Color::rgba(255, 255, 255, 128),
+        shadow: None,
+    })
+    .unwrap();
+    let mut framed = cropped.clone();
+    framed.offset(5.0, 5.0);
+    assert_eq!(e.shapes()[0], framed);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], cropped);
+    assert!(e.undo());
+    assert_eq!(e.shapes()[0], original);
+    assert!(source.ptr_eq(&e.image_arc()));
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], cropped);
+    assert!(e.redo());
+    assert_eq!(e.shapes()[0], framed);
+}
+
+#[test]
+fn stamps_place_resize_move_and_round_trip_history_without_advancing_steps() {
+    let mut editor = EditorController::new();
+    editor.set_stamp_kind(StampKind::Warning);
+    editor.set_tool(Tool::Stamp);
+    assert!(editor.set_current_font_size(40.0));
+    editor.mouse_down(p(100.0, 100.0));
+    editor.mouse_up(p(100.0, 100.0));
+    let placed = editor.shapes()[0].clone();
+    assert_eq!(
+        placed.kind,
+        ShapeKind::Stamp {
+            center: p(100.0, 100.0),
+            kind: StampKind::Warning
+        }
+    );
+    assert_eq!(placed.bounds().width, 40.0);
+    assert_eq!(placed.handles().len(), 4);
+    editor.mouse_down(p(120.0, 120.0));
+    editor.mouse_move(p(140.0, 140.0));
+    assert_eq!(editor.preview().unwrap().bounds().width, 80.0);
+    assert_eq!(editor.shapes()[0], placed);
+    editor.mouse_up(p(140.0, 140.0));
+    let resized = editor.shapes()[0].clone();
+    assert_eq!(resized.bounds().width, 80.0);
+    assert!(editor.undo());
+    assert_eq!(editor.shapes()[0], placed);
+    assert!(editor.redo());
+    assert_eq!(editor.shapes()[0], resized);
+    assert!(editor.nudge_selected(12.0, -3.0));
+    assert_eq!(editor.shapes()[0].bounds().x, resized.bounds().x + 12.0);
+    assert!(editor.undo());
+    assert_eq!(editor.shapes()[0], resized);
+    editor.clear_selection();
+    editor.set_tool(Tool::Step);
+    editor.mouse_down(p(220.0, 220.0));
+    editor.mouse_up(p(220.0, 220.0));
+    assert!(matches!(
+        editor.shapes()[1].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+}
+
+#[test]
+fn stamp_kind_change_cancels_draft_and_preserves_existing_symbol() {
+    let mut editor = EditorController::new();
+    editor.set_tool(Tool::Stamp);
+    editor.mouse_down(p(50.0, 50.0));
+    editor.set_stamp_kind(StampKind::Info);
+    assert!(editor.preview().is_none());
+    editor.mouse_up(p(50.0, 50.0));
+    assert!(editor.shapes().is_empty());
+    editor.mouse_down(p(100.0, 100.0));
+    editor.mouse_up(p(100.0, 100.0));
+    editor.set_stamp_kind(StampKind::Cross);
+    assert!(matches!(
+        editor.shapes()[0].kind,
+        ShapeKind::Stamp {
+            kind: StampKind::Info,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn callout_edits_keep_measured_layout_atomic_and_undoable() {
+    use crate::shapes::{CalloutData, CalloutTextLayout, Color};
+    let mut editor = EditorController::new();
+    let size = editor.current_style().font_size;
+    let data = CalloutData {
+        origin: Point::new(5.0, 8.0),
+        text: "one\ntwo".into(),
+        fill_color: Color::rgba(255, 255, 255, 255),
+        text_color: Color::rgba(0, 0, 0, 255),
+        tip: Some(Point::new(10.0, 100.0)),
+        layout: CalloutTextLayout {
+            font_size: size,
+            body_width: 100.0,
+            body_height: 80.0,
+            line_height: 20.0,
+            line_widths: vec![30.0, 30.0],
+        },
+    };
+    assert!(editor.place_callout(data.clone()));
+    let index = editor.selected_index().unwrap();
+    let mut style = editor.current_style().clone();
+    style.font_size += 1.0;
+    assert!(!editor.set_selected_style(style.clone()));
+    assert!(!editor.replace_callout_with_style(index, data.clone(), style.clone()));
+    let mut replacement = data.clone();
+    replacement.text = "changed".into();
+    replacement.layout.font_size = style.font_size;
+    replacement.layout.line_widths = vec![60.0];
+    assert!(editor.replace_callout_with_style(index, replacement.clone(), style));
+    assert!(editor.undo());
+    assert!(
+        matches!(&editor.shapes()[index].kind, ShapeKind::Callout {data: found} if **found == data)
+    );
+    assert!(editor.redo());
+    assert!(
+        matches!(&editor.shapes()[index].kind, ShapeKind::Callout {data: found} if **found == replacement)
+    );
+}
+
+#[test]
+fn effect_gestures_and_strength_changes_are_independently_undoable() {
+    use crate::shapes::MagnifierFrame;
+    let mut e = EditorController::new();
+    e.set_tool(Tool::Spotlight);
+    e.mouse_down(Point::new(10.0, 20.0));
+    e.mouse_up(Point::new(30.0, 40.0));
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.5)
+    );
+    assert!(e.set_spotlight_opacity(0.75));
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.75)
+    );
+    assert!(e.undo());
+    assert!(
+        matches!(&e.shapes()[0].kind, ShapeKind::Spotlight { data } if data.dim_opacity == 0.5)
+    );
+    assert!(e.redo());
+
+    e.set_tool(Tool::Magnifier);
+    e.clear_selection();
+    e.mouse_down(Point::new(40.0, 40.0));
+    e.mouse_up(Point::new(80.0, 80.0));
+    assert!(e.set_magnifier_zoom(3.0));
+    assert!(e.set_magnifier_frame(MagnifierFrame::Rectangle));
+    assert!(
+        matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 3.0 && data.frame == MagnifierFrame::Rectangle)
+    );
+    assert!(e.undo());
+    assert!(
+        matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 3.0 && data.frame == MagnifierFrame::Circle)
+    );
+    assert!(e.undo());
+    assert!(matches!(&e.shapes()[1].kind, ShapeKind::Magnifier { data } if data.zoom == 2.0));
+}
+
+#[test]
+fn prepared_step_restores_original_until_accept_and_commits_one_history_entry() {
+    let mut e = editor();
+    e.document_mut().mark_saved();
+    let image = e.image_arc();
+    let before = AnnotationState::capture(&e);
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.set_tool(Tool::Step);
+            e.mouse_down(p(25.0, 25.0));
+            e.mouse_up(p(25.0, 25.0));
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.undo_entries_to_evict(), 0);
+    assert_eq!(plan.redo_entries_to_discard(), 0);
+    assert!(plan.history_bytes() <= plan.history_budget());
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert!(e.shapes().is_empty());
+    assert!(!e.document().is_dirty());
+    assert!(!e.document().can_undo());
+    assert!(image.ptr_eq(&e.image_arc()));
+
+    assert!(e.commit_annotation_edit(plan, false).unwrap());
+    assert_eq!(e.selected_index(), Some(0));
+    assert_eq!(e.tool(), Tool::Step);
+    assert_eq!(e.next_step, 2);
+    assert!(matches!(
+        e.shapes()[0].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+    assert!(e.document().is_dirty());
+    assert!(e.undo());
+    assert!(e.shapes().is_empty());
+    assert!(!e.undo());
+    assert!(e.redo());
+    assert!(matches!(
+        e.shapes()[0].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+}
+
+#[test]
+fn dropping_prepared_annotation_preserves_document_selection_defaults_and_redo() {
+    let mut e = rect_editor();
+    assert!(e.place_text(p(70.0, 70.0), "redo"));
+    assert!(e.undo());
+    e.document_mut().mark_saved();
+    let shapes = e.shapes().to_vec();
+    let before = AnnotationState::capture(&e);
+    let bytes = e.document().history_bytes();
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.set_tool(Tool::Step);
+            e.mouse_down(p(75.0, 75.0));
+            e.mouse_up(p(75.0, 75.0));
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.redo_entries_to_discard(), 1);
+    drop(plan);
+    assert_eq!(e.shapes(), shapes);
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert_eq!(e.document().history_bytes(), bytes);
+    assert!(!e.document().is_dirty());
+    assert!(e.preview().is_none());
+    assert!(e.redo());
+    assert_eq!(e.selected_text(), None);
+    assert!(matches!(&e.shapes()[1].kind, ShapeKind::Text { text, .. } if text == "redo"));
+}
+
+#[test]
+fn prepared_annotation_requires_permission_to_discard_redo_branch() {
+    let mut e = rect_editor();
+    assert!(e.undo());
+    let before = AnnotationState::capture(&e);
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.place_text(p(30.0, 30.0), "new branch");
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.undo_entries_to_evict(), 0);
+    assert_eq!(plan.redo_entries_to_discard(), 1);
+    assert_eq!(
+        e.commit_annotation_edit(plan, false),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert!(e.shapes().is_empty());
+    assert!(e.document().can_redo());
+
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.place_text(p(30.0, 30.0), "new branch");
+        })
+        .unwrap()
+        .unwrap();
+    assert!(e.commit_annotation_edit(plan, true).unwrap());
+    assert_eq!(e.selected_text(), Some("new branch"));
+    assert!(!e.document().can_redo());
+    assert!(e.undo());
+    assert!(e.shapes().is_empty());
+}
+
+#[test]
+fn prepared_annotation_requires_permission_to_evict_undo() {
+    let mut e = editor();
+    for i in 0..12 {
+        e.document_mut()
+            .add_shape(test_rect(i as f32, 10.0))
+            .unwrap();
+    }
+    let budget = e.document().history_bytes();
+    e.document_mut().set_history_budget(budget);
+    e.document_mut().mark_saved();
+    let before = AnnotationState::capture(&e);
+    let shapes = e.shapes().to_vec();
+    let bytes = e.document().history_bytes();
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.place_text(p(70.0, 70.0), "extra");
+        })
+        .unwrap()
+        .unwrap();
+    assert!(plan.undo_entries_to_evict() > 0);
+    assert_eq!(plan.redo_entries_to_discard(), 0);
+    assert_eq!(
+        e.commit_annotation_edit(plan, false),
+        Err(DocumentError::HistoryEvictionNotApproved)
+    );
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert_eq!(e.shapes(), shapes);
+    assert_eq!(e.document().history_bytes(), bytes);
+    assert!(!e.document().is_dirty());
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.place_text(p(70.0, 70.0), "extra");
+        })
+        .unwrap()
+        .unwrap();
+    let expected_bytes = plan.history_bytes();
+    assert!(e.commit_annotation_edit(plan, true).unwrap());
+    assert_eq!(e.document().history_bytes(), expected_bytes);
+    assert_eq!(e.shapes().len(), 13);
+    assert!(e.undo());
+    assert_eq!(e.shapes(), shapes);
+}
+
+#[test]
+fn prepared_style_and_defaults_are_atomic_with_selected_shape() {
+    let mut e = rect_editor();
+    let before = AnnotationState::capture(&e);
+    let shapes = e.shapes().to_vec();
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            assert!(e.set_tool(Tool::Highlight));
+            e.set_stamp_kind(StampKind::Warning);
+            e.set_spotlight_opacity(0.75);
+            e.set_magnifier_zoom(3.0);
+            e.set_magnifier_frame(crate::shapes::MagnifierFrame::Rectangle);
+            e.set_current_width(7.0);
+            e.set_current_font_size(31.0);
+            e.set_hit_tolerance(9.0);
+            e.clear_selection();
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert_eq!(e.shapes(), shapes);
+    assert!(e.commit_annotation_edit(plan, false).unwrap());
+    assert_eq!(e.selected_index(), None);
+    assert_eq!(e.tool(), Tool::Highlight);
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert_eq!(e.shapes()[0].style.color, Color::MARKER_YELLOW);
+    assert_eq!(e.stamp_kind(), StampKind::Warning);
+    assert_eq!(e.spotlight_opacity, 0.75);
+    assert_eq!(e.magnifier_zoom, 3.0);
+    assert_eq!(e.magnifier_frame, crate::shapes::MagnifierFrame::Rectangle);
+    assert_eq!(e.current_style().width, 7.0);
+    assert_eq!(e.current_style().font_size, 31.0);
+    assert_eq!(e.hit_tolerance, 9.0);
+    assert!(e.undo());
+    assert_eq!(e.shapes(), shapes);
+}
+
+#[test]
+fn prepared_noop_retains_selection_and_defaults_without_clearing_redo() {
+    let mut e = rect_editor();
+    assert!(e.place_text(p(70.0, 70.0), "redo"));
+    assert!(e.undo());
+    assert_eq!(e.selected_index(), None);
+    e.document_mut().mark_saved();
+    let bytes = e.document().history_bytes();
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.set_tool(Tool::Select);
+            e.mouse_down(p(12.0, 25.0));
+            e.mouse_up(p(12.0, 25.0));
+            e.set_current_color(Color::MARKER_YELLOW);
+            e.set_stamp_kind(StampKind::Warning);
+            e.set_spotlight_opacity(0.75);
+        })
+        .unwrap();
+    assert!(plan.is_none());
+    assert_eq!(e.selected_index(), Some(0));
+    assert_eq!(e.current_style().color, Color::MARKER_YELLOW);
+    assert_eq!(e.stamp_kind(), StampKind::Warning);
+    assert_eq!(e.spotlight_opacity, 0.75);
+    assert_eq!(e.document().history_bytes(), bytes);
+    assert!(!e.document().is_dirty());
+    assert!(e.document().can_redo());
+    assert!(e.redo());
+    assert_eq!(e.shapes().len(), 2);
+}
+
+#[test]
+fn prepared_annotation_rejects_stale_controller_or_document_without_rollback() {
+    for mutation in 0..4 {
+        let mut e = rect_editor();
+        let plan = e
+            .prepare_annotation_edit(|e| {
+                e.delete_selected();
+            })
+            .unwrap()
+            .unwrap();
+        match mutation {
+            0 => e.set_current_color(Color::MARKER_YELLOW),
+            1 => {
+                e.document_mut().add_shape(test_rect(60.0, 60.0)).unwrap();
+            }
+            2 => e.clear_selection(),
+            _ => {
+                e.document_mut().mark_saved();
+            }
+        }
+        let before = AnnotationState::capture(&e);
+        let shapes = e.shapes().to_vec();
+        let bytes = e.document().history_bytes();
+        let dirty = e.document().is_dirty();
+        assert_eq!(
+            e.commit_annotation_edit(plan, true),
+            Err(DocumentError::StaleHistoryPlan)
+        );
+        assert_eq!(AnnotationState::capture(&e), before);
+        assert_eq!(e.shapes(), shapes);
+        assert_eq!(e.document().history_bytes(), bytes);
+        assert_eq!(e.document().is_dirty(), dirty);
+    }
+}
+
+#[test]
+fn prepared_pointer_move_restores_pregesture_selection_and_never_resurrects_drag() {
+    for accept in [false, true] {
+        let mut e = rect_editor();
+        e.set_tool(Tool::Select);
+        e.clear_selection();
+        let shapes = e.shapes().to_vec();
+        e.mouse_down(p(12.0, 25.0));
+        assert_eq!(e.selected_index(), Some(0));
+        e.mouse_move(p(17.0, 30.0));
+        let plan = e
+            .prepare_annotation_edit(|e| e.mouse_up(p(17.0, 30.0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(e.selected_index(), None);
+        assert_eq!(e.shapes(), shapes);
+        assert!(e.preview().is_none());
+        assert!(e.last_position.is_none());
+        if accept {
+            assert!(e.commit_annotation_edit(plan, false).unwrap());
+            assert_eq!(e.selected_index(), Some(0));
+            assert_ne!(e.shapes(), shapes);
+        } else {
+            drop(plan);
+            e.mouse_up(p(90.0, 90.0));
+            assert_eq!(e.selected_index(), None);
+            assert_eq!(e.shapes(), shapes);
+        }
+        assert!(e.preview().is_none());
+    }
+}
+
+#[test]
+fn fresh_controller_failure_aborts_staged_changes_and_preserves_previous_error() {
+    let mut e = rect_editor();
+    e.last_error = Some(DocumentError::HistoryBudgetExceeded);
+    let before = AnnotationState::capture(&e);
+    let shapes = e.shapes().to_vec();
+    let bytes = e.document().history_bytes();
+    let result = e.prepare_annotation_edit(|e| {
+        e.set_current_color(Color::MARKER_YELLOW);
+        assert!(e.delete_selected());
+        assert!(!e.edit_shape(99, |_| {}));
+    });
+    assert!(matches!(result, Err(DocumentError::InvalidShapeIndex)));
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert_eq!(e.shapes(), shapes);
+    assert_eq!(e.document().history_bytes(), bytes);
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.delete_selected();
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(e.last_error, before.last_error);
+    assert!(e.commit_annotation_edit(plan, false).unwrap());
+    assert_eq!(e.take_error(), Some(DocumentError::HistoryBudgetExceeded));
+}
+
+#[test]
+fn failed_preparation_restores_step_defaults_selection_and_cancels_gesture() {
+    let mut e = editor();
+    e.document_mut().set_history_budget(0);
+    e.set_tool(Tool::Step);
+    let before = AnnotationState::capture(&e);
+    e.mouse_down(p(25.0, 25.0));
+    let result = e.prepare_annotation_edit(|e| {
+        e.mouse_up(p(25.0, 25.0));
+        e.set_current_color(Color::MARKER_YELLOW);
+        assert!(!e.edit_shape(99, |_| {}));
+    });
+    assert!(matches!(result, Err(DocumentError::InvalidShapeIndex)));
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert!(e.shapes().is_empty());
+    assert!(e.preview().is_none());
+    assert!(e.last_position.is_none());
+    e.mouse_up(p(30.0, 30.0));
+    assert!(e.shapes().is_empty());
+}
+
+#[test]
+fn oversized_annotation_requires_specific_irreversible_approval() {
+    let mut e = editor();
+    e.document_mut().set_history_budget(0);
+    e.set_tool(Tool::Step);
+    let before = AnnotationState::capture(&e);
+    e.mouse_down(p(25.0, 25.0));
+    let plan = e
+        .prepare_annotation_edit(|e| e.mouse_up(p(25.0, 25.0)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.mode(), HistoryCommitMode::WithoutUndo);
+    assert_eq!(
+        e.commit_annotation_edit(plan, true),
+        Err(DocumentError::IrreversibleEditNotApproved)
+    );
+    assert_eq!(AnnotationState::capture(&e), before);
+    assert!(e.shapes().is_empty());
+    assert!(e.preview().is_none());
+    e.mouse_down(p(25.0, 25.0));
+    let plan = e
+        .prepare_annotation_edit(|e| e.mouse_up(p(25.0, 25.0)))
+        .unwrap()
+        .unwrap();
+    assert!(e
+        .commit_annotation_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
+        .unwrap());
+    assert_eq!(e.shapes().len(), 1);
+    assert!(matches!(
+        e.shapes()[0].kind,
+        ShapeKind::Step { number: 1, .. }
+    ));
+    assert!(!e.undo());
+    assert!(!e.redo());
+}
+
+#[test]
+fn new_pointer_gesture_makes_prepared_annotation_stale_without_canceling_new_gesture() {
+    let mut e = rect_editor();
+    let plan = e
+        .prepare_annotation_edit(|e| {
+            e.delete_selected();
+        })
+        .unwrap()
+        .unwrap();
+    e.mouse_down(p(10.0, 10.0));
+    e.mouse_move(p(5.0, 5.0));
+    let preview = e.preview();
+    assert_eq!(
+        e.commit_annotation_edit(plan, true),
+        Err(DocumentError::StaleHistoryPlan)
+    );
+    assert_eq!(e.preview(), preview);
+    assert!(e.preview().is_some());
+    assert_eq!(e.shapes().len(), 1);
 }

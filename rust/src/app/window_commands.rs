@@ -6,9 +6,16 @@ use super::*;
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
 // Nachrichten: DestroyWindow, ShowWindow und Menü-/Aufnahmefunktionen können reentrieren; der Handler hält keine Zustandsreferenz über diese Aufrufe.
 pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
+    if let Some(result) = scroll_completion::dispatch(h, m, w, |ticket| {
+        scroll_completion::finish_scroll(ticket);
+    }) {
+        return Some(result);
+    }
     Some(match m {
         WM_FINISH_QUIT if h == PRIMARY => {
-            DestroyWindow(h);
+            if take_quit_completion(&FINISH_QUIT_READY, window_state(h).modal_depth) {
+                DestroyWindow(h);
+            }
             0
         }
         WM_COPYDATA => handle_instance_file(h, l),
@@ -19,47 +26,6 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
         0x0312 if hotkeys::dispatch(h, w) => 0,
         TRAY if l as u32 == 0x0202 => {
             capture_region(h);
-            0
-        }
-        SCROLL_DONE => {
-            let result = SCROLL_RESULT
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-            let Some(result) = result else {
-                return Some(0);
-            };
-            SCROLL_BUSY.store(false, Ordering::SeqCst);
-            match result {
-                Ok(outcome) => {
-                    let message = outcome.reason;
-                    let was_visible = RESTORE_EDITOR.swap(false, Ordering::SeqCst);
-                    if let Err(e) = handle_capture(h, outcome.image, was_visible) {
-                        if was_visible {
-                            ShowWindow(h, 5);
-                        }
-                        MessageBoxW(h, wide(&e).as_ptr(), wide("ShotKit Rust").as_ptr(), 0x10);
-                    } else {
-                        MessageBoxW(
-                            h,
-                            wide(&message).as_ptr(),
-                            wide("Scroll-Aufnahme beendet").as_ptr(),
-                            0,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if RESTORE_EDITOR.swap(false, Ordering::SeqCst) {
-                        ShowWindow(h, 5);
-                    }
-                    MessageBoxW(
-                        h,
-                        wide(&e).as_ptr(),
-                        wide("Scroll-Aufnahme fehlgeschlagen").as_ptr(),
-                        0x10,
-                    );
-                }
-            }
             0
         }
         DELAYED_CAPTURE => {
@@ -118,61 +84,77 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6b || w == 0xbb) => {
-            window_state(h).zoom = (window_state(h).zoom * 1.25).clamp(0.05, 64.0);
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_IN);
             0
         }
         0x0100 if GetKeyState(0x11) < 0 && (w == 0x6d || w == 0xbd) => {
-            window_state(h).zoom = (window_state(h).zoom * 0.8).clamp(0.05, 64.0);
-            InvalidateRect(h, std::ptr::null(), 1);
+            toolbar_action(h, toolbar::ID_ZOOM_OUT);
             0
         }
         0x020a if !window_state(h).bitmap.is_null() => {
             let delta = ((w >> 16) as u16 as i16) as i32;
-            if GetKeyState(0x11) < 0 {
-                window_state(h).zoom = (window_state(h).zoom
-                    * if delta > 0 { 1.2 } else { 1.0 / 1.2 })
-                .clamp(0.05, 64.0);
-            } else if GetKeyState(0x10) < 0 {
-                window_state(h).pan_x = window_state(h).pan_x.saturating_sub(delta);
+            let action = view::wheel_action(w);
+            let diagnostic = std::env::var_os("SHOTKIT_UIA_DIAGNOSTICS_PATH").is_some();
+            let before = if diagnostic {
+                let state = window_state(h);
+                Some((state.pan_x, state.pan_y, state.zoom))
             } else {
-                window_state(h).pan_y = window_state(h).pan_y.saturating_sub(delta);
+                None
+            };
+            if action == view::WheelAction::Zoom {
+                window_state(h).zoom = view::zoom_after_wheel(window_state(h).zoom, delta);
+            } else {
+                let mut client: Rect = zeroed();
+                GetClientRect(h, &mut client);
+                let viewport = (
+                    0,
+                    toolbar_height(h),
+                    client.right,
+                    client.bottom - toolbar_height(h),
+                );
+                let state = window_state(h);
+                let pan = view::pan_after_wheel(
+                    (state.width as u32, state.height as u32),
+                    viewport,
+                    state.zoom,
+                    (state.pan_x, state.pan_y),
+                    delta,
+                    action == view::WheelAction::PanHorizontal,
+                );
+                state.pan_x = pan.0;
+                state.pan_y = pan.1;
+            }
+            if let Some((pan_x, pan_y, zoom)) = before {
+                let (after_x, after_y, after_zoom) = {
+                    let state = window_state(h);
+                    (state.pan_x, state.pan_y, state.zoom)
+                };
+                let mode = match action {
+                    view::WheelAction::Zoom => 0,
+                    view::WheelAction::PanHorizontal => 1,
+                    view::WheelAction::PanVertical => 2,
+                };
+                crate::uia_picker::log_diagnostic(&format!(
+                    "wheel hwnd={} flags={} delta={} mode={} pan_before=({}, {}) zoom_before={} pan_after=({}, {}) zoom_after={}",
+                    h as usize, w & 0xffff, delta, mode, pan_x, pan_y, zoom, after_x, after_y, after_zoom
+                ));
             }
             InvalidateRect(h, std::ptr::null(), 1);
             0
         }
-        0x0100 if GetKeyState(0x11) < 0 && w == 0x30 => {
-            window_state(h).zoom = 1.0;
-            window_state(h).pan_x = 0;
-            window_state(h).pan_y = 0;
-            InvalidateRect(h, std::ptr::null(), 1);
+        0x0100
+            if GetKeyState(0x11) < 0
+                && view::zoom_reset_key(w) == Some(view::ZoomAction::Original) =>
+        {
+            toolbar_action(h, toolbar::ID_ZOOM_ORIGINAL);
             0
         }
-        0x0100 if GetKeyState(0x11) < 0 && w == 0x39 && !window_state(h).bitmap.is_null() => {
-            let v = view::layout(
-                (window_state(h).width as u32, window_state(h).height as u32),
-                (
-                    0,
-                    toolbar_height(h),
-                    {
-                        let mut r: Rect = zeroed();
-                        GetClientRect(h, &mut r);
-                        r.right
-                    },
-                    {
-                        let mut r: Rect = zeroed();
-                        GetClientRect(h, &mut r);
-                        r.bottom - toolbar_height(h)
-                    },
-                ),
-                1.0,
-                (0, 0),
-            );
-            window_state(h).zoom =
-                (window_state(h).width as f64 / v.width as f64).clamp(0.05, 64.0);
-            window_state(h).pan_x = 0;
-            window_state(h).pan_y = 0;
-            InvalidateRect(h, std::ptr::null(), 1);
+        0x0100
+            if GetKeyState(0x11) < 0
+                && view::zoom_reset_key(w) == Some(view::ZoomAction::Fit)
+                && !window_state(h).bitmap.is_null() =>
+        {
+            toolbar_action(h, toolbar::ID_ZOOM_FIT);
             0
         }
         toolbar::WM_COMMAND => {
@@ -215,8 +197,11 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
             0
         }
         0x0100 if w == 0x2e || w == 0x08 => {
-            if editor(h).delete_selected() {
-                window_state(h).dirty = true;
+            if window_state(h).drawing {
+                cancel_gesture(h);
+            }
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.delete_selected()) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -253,8 +238,8 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x27 => (step, 0.0),
                 _ => (0.0, step),
             };
-            if editor(h).nudge_selected(dx, dy) {
-                window_state(h).dirty = true;
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.nudge_selected(dx, dy)) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -270,23 +255,15 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x54 => Some(Tool::Text),
                 0x4d => Some(Tool::Highlight),
                 0x42 => Some(Tool::Blur),
+                0x57 => Some(Tool::GaussianBlur),
+                0x53 => Some(Tool::Redact),
                 0x4e => Some(Tool::Step),
                 0x50 => Some(Tool::Pen),
                 0x43 => Some(Tool::Crop),
                 _ => None,
             };
             if let Some(tool) = tool {
-                cancel_gesture(h);
-                editor(h).set_tool(tool);
-                toolbar::set_active(h, toolbar_id_for_tool(tool));
-                SetWindowTextW(
-                    h,
-                    wide(&format!(
-                        "ShotKit Rust – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-                    ))
-                    .as_ptr(),
-                );
-                InvalidateRect(h, std::ptr::null(), 0);
+                activate_tool(h, tool);
             }
             0
         }

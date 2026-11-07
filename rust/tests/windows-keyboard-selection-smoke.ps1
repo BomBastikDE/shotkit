@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 namespace ShotKitKeyboardSmoke {
     public sealed class WindowInfo { public IntPtr Handle; public string ClassName; public string Title; public bool Visible; }
+    [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
     public static class Native {
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr data);
         private delegate bool EnumChildProc(IntPtr hwnd, IntPtr data);
@@ -36,7 +37,10 @@ namespace ShotKitKeyboardSmoke {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll", SetLastError=true)] public static extern bool GetCursorPos(out Point point);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
         [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
@@ -64,7 +68,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Keyboard-Selection-' 
 $appData = Join-Path $testRoot 'appdata'; $localAppData = Join-Path $testRoot 'localappdata'; $saveFolder = Join-Path $testRoot 'captures'
 $surfaceScript = Join-Path $testRoot 'surface.ps1'; $readyFile = Join-Path $testRoot 'surface-ready.txt'
 $surfaceStdout = Join-Path $testRoot 'surface.stdout.log'; $surfaceStderr = Join-Path $testRoot 'surface.stderr.log'
-$shotKit = $null; $surface = $null; $shiftDown = $false
+$shotKit = $null; $surface = $null; $shiftDown = $false; $ctrlDown = $false
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 
 function Get-OwnWindows([System.Diagnostics.Process] $p) { [ShotKitKeyboardSmoke.Native]::WindowsForProcess($p.Id) }
@@ -150,6 +154,43 @@ namespace ShotKitKeyboardSurface {
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the area-selection overlay' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
 
+    # Losing mouse capture while a drag is active must cancel without output.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    try {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+130),($geometry[1]+110)); Start-Sleep -Milliseconds 150
+        if(-not [ShotKitKeyboardSmoke.Native]::PostMessageW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not post WM_CANCELMODE to the selection overlay.'}
+        [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'capture loss to cancel the selection overlay' -OwnedProcess $shotKit -Condition {
+            if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+        })
+    }
+    finally { [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Capture-loss cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after capture loss' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    # A synchronously sent WM_CANCELMODE can be dispatched while GetMessageW
+    # is blocked. Its completion must wake the overlay loop even as the HWND
+    # is destroyed by the callback.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    try {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+130),($geometry[1]+110)); Start-Sleep -Milliseconds 150
+        $sendResult=[IntPtr]::Zero
+        if([ShotKitKeyboardSmoke.Native]::SendMessageTimeoutW($overlay.Handle,0x001f,[IntPtr]::Zero,[IntPtr]::Zero,2,5000,[ref]$sendResult) -eq [IntPtr]::Zero){throw 'Could not synchronously send WM_CANCELMODE to the selection overlay.'}
+        [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'synchronously sent WM_CANCELMODE to cancel the selection overlay' -OwnedProcess $shotKit -Condition {
+            if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+        })
+    }
+    finally { [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Synchronous capture-loss cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after synchronous capture loss' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
     # First prove Escape abandons a Shift-frozen manual selection without
     # producing output, then request a fresh overlay for the confirmed case.
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
@@ -167,6 +208,67 @@ namespace ShotKitKeyboardSurface {
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after Escape' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    $sendResult=[IntPtr]::Zero
+    if([ShotKitKeyboardSmoke.Native]::SendMessageTimeoutW($overlay.Handle,0x0100,[IntPtr]0x1B,[IntPtr]::Zero,2,5000,[ref]$sendResult) -eq [IntPtr]::Zero){throw 'Could not synchronously send Escape to the selection overlay.'}
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'synchronously sent Escape to close the selection overlay' -OwnedProcess $shotKit -Condition {
+        if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+    })
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after synchronous Escape' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    # Legacy parity: a real right-click aborts the overlay and produces no file.
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)
+    [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+30),($geometry[1]+30)); Start-Sleep -Milliseconds 100
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero)
+    [ShotKitKeyboardSmoke.Native]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)
+    [void](Wait-ForCondition -TimeoutSeconds 10 -Description 'right-click to close the selection overlay' -OwnedProcess $shotKit -Condition {
+        if(-not (Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible})){ $true }
+    })
+    if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne 0){throw 'Right-click cancellation unexpectedly produced a capture.'}
+    [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
+    Send-Key 0x7A $true; Send-Key 0x7A $false
+    $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'a fresh area-selection overlay after right-click' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
+
+    # Use real key events on the foreground overlay and check physical screen
+    # coordinates for every direction and both step sizes. Keep the pointer
+    # comfortably inside the fixture, away from screen boundaries.
+    if(-not [ShotKitKeyboardSmoke.Native]::SetForegroundWindow($overlay.Handle)){throw 'Could not activate the overlay for cursor movement.'}
+    Start-Sleep -Milliseconds 100
+    if([ShotKitKeyboardSmoke.Native]::GetForegroundWindow() -ne $overlay.Handle){throw 'Selection overlay is not foreground before cursor movement.'}
+    $cursorStartX=$geometry[0]+400; $cursorStartY=$geometry[1]+300
+    foreach($step in @(1,10)) {
+        foreach($direction in @(
+            @{Key=0x25; DX=-1; DY=0; Name='Left'},
+            @{Key=0x26; DX=0; DY=-1; Name='Up'},
+            @{Key=0x27; DX=1; DY=0; Name='Right'},
+            @{Key=0x28; DX=0; DY=1; Name='Down'}
+        )) {
+            if(-not [ShotKitKeyboardSmoke.Native]::SetCursorPos($cursorStartX,$cursorStartY)){throw 'Could not position the cursor for keyboard movement.'}
+            Start-Sleep -Milliseconds 100
+            $before=[ShotKitKeyboardSmoke.Point]::new()
+            if(-not [ShotKitKeyboardSmoke.Native]::GetCursorPos([ref]$before)){throw 'GetCursorPos failed before keyboard movement.'}
+            if($before.X -ne $cursorStartX -or $before.Y -ne $cursorStartY){throw "Unexpected starting cursor position ($($before.X),$($before.Y))."}
+            if([ShotKitKeyboardSmoke.Native]::GetForegroundWindow() -ne $overlay.Handle){throw 'Selection overlay lost foreground before cursor movement.'}
+            try {
+                Send-Key 0x11 $true; $ctrlDown=$true
+                if($step -eq 10){Send-Key 0x10 $true; $shiftDown=$true}
+                try {Send-Key ([byte]$direction.Key) $true; Start-Sleep -Milliseconds 60}
+                finally {Send-Key ([byte]$direction.Key) $false}
+            }
+            finally {
+                if($shiftDown){Send-Key 0x10 $false; $shiftDown=$false}
+                if($ctrlDown){Send-Key 0x11 $false; $ctrlDown=$false}
+            }
+            Start-Sleep -Milliseconds 150
+            if([ShotKitKeyboardSmoke.Native]::GetForegroundWindow() -ne $overlay.Handle){throw 'Selection overlay lost foreground during cursor movement.'}
+            $after=[ShotKitKeyboardSmoke.Point]::new()
+            if(-not [ShotKitKeyboardSmoke.Native]::GetCursorPos([ref]$after)){throw 'GetCursorPos failed after keyboard movement.'}
+            $expectedX=$before.X+$direction.DX*$step; $expectedY=$before.Y+$direction.DY*$step
+            if($after.X -ne $expectedX -or $after.Y -ne $expectedY){throw "Ctrl$(if($step -eq 10){'+Shift'})+$($direction.Name) moved cursor to ($($after.X),$($after.Y)); expected ($expectedX,$expectedY)."}
+        }
+    }
 
     # Drag a known 200x150 rectangle over the synthetic surface. Shift remains
     # physically held across mouse-up; the overlay must stay alive for edits.
@@ -215,6 +317,35 @@ namespace ShotKitKeyboardSurface {
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $plainOverlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the overlay for the ordinary mouse-drag regression case' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($plainOverlay.Handle)
+    # Empty horizontal and vertical drags must release capture but retain this
+    # exact overlay for another attempt. Test both directions, and Shift as
+    # well: a zero-area drag must never become a keyboard-editable selection.
+    $beforeEmptyDrags=@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count
+    $beforeEmptyEditors=@(Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible}).Count
+    foreach($emptyDrag in @(
+        @{X=280; Y=60; Shift=$false; Name='horizontal'},
+        @{X=80; Y=210; Shift=$false; Name='vertical'},
+        @{X=30; Y=60; Shift=$true; Name='reverse horizontal with Shift'},
+        @{X=80; Y=30; Shift=$true; Name='reverse vertical with Shift'}
+    )) {
+        [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+80),($geometry[1]+60)); Start-Sleep -Milliseconds 100
+        [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+        try {
+            [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+$emptyDrag.X),($geometry[1]+$emptyDrag.Y)); Start-Sleep -Milliseconds 150
+            if($emptyDrag.Shift){Send-Key 0x10 $true; $shiftDown=$true}
+        }
+        finally {
+            [ShotKitKeyboardSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+            if($shiftDown){Send-Key 0x10 $false; $shiftDown=$false}
+        }
+        Start-Sleep -Milliseconds 400
+        $retainedOverlay=Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1
+        if($null -eq $retainedOverlay -or $retainedOverlay.Handle -ne $plainOverlay.Handle){throw "Empty $($emptyDrag.Name) drag did not retain the original selection overlay."}
+        if(@(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File).Count -ne $beforeEmptyDrags){throw "Empty $($emptyDrag.Name) drag unexpectedly produced a capture."}
+        if(@(Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustEditor' -and $_.Visible}).Count -ne $beforeEmptyEditors){throw "Empty $($emptyDrag.Name) drag unexpectedly opened an editor."}
+    }
+    # Complete a real rectangle in the same overlay after the empty attempts;
+    # the existing dimension and source-pixel assertions below prove recovery.
     [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+80),($geometry[1]+60)); Start-Sleep -Milliseconds 100
     [ShotKitKeyboardSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
     [void][ShotKitKeyboardSmoke.Native]::SetCursorPos(($geometry[0]+280),($geometry[1]+210)); Start-Sleep -Milliseconds 150
@@ -278,10 +409,11 @@ namespace ShotKitKeyboardSurface {
         }
     }
     finally {$clickBitmap.Dispose()}
-    Write-Output "PASS: Escape cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Plain mouse drag remained immediate at 200x150 with verified pixels on '$inputDesktop'."
+    Write-Output "PASS: Capture loss, Escape, and right-click cancelled without output; Shift-drag stayed open; arrows translated and Shift+arrows resized to ${expectedWidth}x${expectedHeight} with verified pixels; Enter confirmed. Empty horizontal/vertical drags (both directions, including Shift) retained the same overlay without output; the subsequent plain drag captured 200x150 with verified pixels on '$inputDesktop'."
 }
 finally {
     if($shiftDown){Send-Key 0x10 $false}
+    if($ctrlDown){Send-Key 0x11 $false}
     foreach($owned in @($shotKit,$surface)) {
         if($null -ne $owned) {
             try {if (-not $owned.HasExited){$owned.Kill();if (-not $owned.WaitForExit(5000) -or -not $owned.HasExited){throw 'Owned process did not exit after termination request.'}}}

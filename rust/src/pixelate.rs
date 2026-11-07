@@ -1,13 +1,11 @@
 //! Alpha-correct pixelation of a bounded rectangle in a BGRA image.
 //!
-//! The source remains unchanged. The returned image is a complete independent
-//! copy with the requested region replaced by block averages, ready to replace
-//! the source image in a document.
+//! The source remains unchanged. Block averages can be written into an existing
+//! target buffer or returned in an independent full-size copy of the image.
 
-use crate::stitch::Image;
+use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
 
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
-const MAX_DIMENSION: usize = 30_000;
 const MAX_BLOCK_SIZE: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +35,43 @@ pub fn pixelate_region(
     region: PixelateRect,
     block_size: usize,
 ) -> Result<Image, PixelateError> {
+    let (right, bottom) = validate_request(source, region, block_size)?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(source.pixels.len())
+        .map_err(|_| PixelateError::AllocationFailed)?;
+    pixels.extend_from_slice(&source.pixels);
+    pixelate_validated(source, &mut pixels, region, block_size, right, bottom);
+
+    Image::new(source.width, source.height, pixels).map_err(|_| PixelateError::InvalidImage)
+}
+
+/// Replace only `region` in a full-size BGRA `target`, sampling immutable `source`.
+///
+/// Uses the same alpha-correct averages as [`pixelate_region`], without allocating
+/// a full-size intermediate image. Pixels outside `region` retain their current
+/// target values. The target length must exactly match the source byte length;
+/// a mismatch returns `InvalidImage`. All validation precedes any target write,
+/// so every error leaves the target unchanged.
+pub fn pixelate_into(
+    source: &Image,
+    target: &mut [u8],
+    region: PixelateRect,
+    block_size: usize,
+) -> Result<(), PixelateError> {
+    let (right, bottom) = validate_request(source, region, block_size)?;
+    if target.len() != source.pixels.len() {
+        return Err(PixelateError::InvalidImage);
+    }
+    pixelate_validated(source, target, region, block_size, right, bottom);
+    Ok(())
+}
+
+fn validate_request(
+    source: &Image,
+    region: PixelateRect,
+    block_size: usize,
+) -> Result<(usize, usize), PixelateError> {
     validate_image(source)?;
     if block_size == 0 || block_size > MAX_BLOCK_SIZE {
         return Err(PixelateError::InvalidBlockSize);
@@ -52,13 +87,19 @@ pub fn pixelate_region(
     if region.width == 0 || region.height == 0 || right > source.width || bottom > source.height {
         return Err(PixelateError::InvalidRegion);
     }
+    Ok((right, bottom))
+}
 
-    let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(source.pixels.len())
-        .map_err(|_| PixelateError::AllocationFailed)?;
-    pixels.extend_from_slice(&source.pixels);
-
+// Call only after validating both buffers and the complete region. These bounds
+// also cap each sum at 4096 * 4096 * 255 * 255, safely within u64.
+fn pixelate_validated(
+    source: &Image,
+    target: &mut [u8],
+    region: PixelateRect,
+    block_size: usize,
+    right: usize,
+    bottom: usize,
+) {
     let mut block_y = region.y;
     while block_y < bottom {
         let block_bottom = block_y + block_size.min(bottom - block_y);
@@ -92,15 +133,13 @@ pub fn pixelate_region(
             for y in block_y..block_bottom {
                 for x in block_x..block_right {
                     let offset = (y * source.width + x) * 4;
-                    pixels[offset..offset + 4].copy_from_slice(&average);
+                    target[offset..offset + 4].copy_from_slice(&average);
                 }
             }
             block_x = block_right;
         }
         block_y = block_bottom;
     }
-
-    Image::new(source.width, source.height, pixels).map_err(|_| PixelateError::InvalidImage)
 }
 
 fn validate_image(image: &Image) -> Result<(), PixelateError> {
@@ -111,8 +150,8 @@ fn validate_image(image: &Image) -> Result<(), PixelateError> {
         .ok_or(PixelateError::InvalidImage)?;
     if image.width == 0
         || image.height == 0
-        || image.width > MAX_DIMENSION
-        || image.height > MAX_DIMENSION
+        || image.width > MAX_EDITABLE_IMAGE_DIMENSION
+        || image.height > MAX_EDITABLE_IMAGE_DIMENSION
         || bytes != image.pixels.len()
         || bytes > MAX_IMAGE_BYTES
     {
@@ -131,6 +170,145 @@ mod tests {
 
     fn image(width: usize, height: usize, pixels: Vec<u8>) -> Image {
         Image::new(width, height, pixels).unwrap()
+    }
+
+    #[test]
+    fn writes_exact_premultiplied_averages_only_inside_target_region() {
+        // Hand-calculated colors exercise hidden RGB, partial alpha, clipped
+        // final blocks, and a target whose surrounding pixels differ from source.
+        let samples = [
+            [10, 20, 30, 0],
+            [20, 40, 60, 255],
+            [100, 90, 80, 128],
+            [60, 80, 100, 255],
+            [250, 10, 90, 0],
+            [200, 190, 180, 128],
+        ];
+        for (width, height) in [(5, 4), (4, 3)] {
+            let mut source = image(width, height, [3, 7, 11, 17].repeat(width * height));
+            let region = PixelateRect {
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 2,
+            };
+            for (index, sample) in samples.iter().enumerate() {
+                let offset = ((1 + index / 3) * width + 1 + index % 3) * 4;
+                source.pixels[offset..offset + 4].copy_from_slice(sample);
+            }
+            let original = source.clone();
+            for block in [1, 2, 3, MAX_BLOCK_SIZE] {
+                let mut target = [201, 202, 203, 204].repeat(width * height);
+                let mut expected = target.clone();
+                for (index, sample) in samples.iter().enumerate() {
+                    let color = match block {
+                        1 if sample[3] == 0 => [0, 0, 0, 0],
+                        1 => *sample,
+                        2 if index % 3 < 2 => [40, 60, 80, 128],
+                        2 => [150, 140, 130, 128],
+                        _ => [77, 87, 97, 128],
+                    };
+                    let offset = ((1 + index / 3) * width + 1 + index % 3) * 4;
+                    expected[offset..offset + 4].copy_from_slice(&color);
+                }
+                pixelate_into(&source, &mut target, region, block).unwrap();
+                assert_eq!(target, expected, "{width}x{height}, block {block}");
+                assert_eq!(source, original);
+                // The compatibility API still returns a complete source copy.
+                let full = pixelate_region(&source, region, block).unwrap();
+                for y in 0..height {
+                    for x in 0..width {
+                        let offset = (y * width + x) * 4;
+                        let inside = (1..4).contains(&x) && (1..3).contains(&y);
+                        let expected = if inside { &target } else { &source.pixels };
+                        assert_eq!(
+                            &full.pixels[offset..offset + 4],
+                            &expected[offset..offset + 4]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_requests_never_mutate_target() {
+        let source = image(2, 2, vec![79; 16]);
+        let valid = PixelateRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let mut target = vec![123; 16];
+        for region in [
+            PixelateRect { width: 0, ..valid },
+            PixelateRect { height: 0, ..valid },
+            PixelateRect { x: 1, ..valid },
+            PixelateRect { y: 1, ..valid },
+            PixelateRect {
+                x: usize::MAX,
+                ..valid
+            },
+            PixelateRect {
+                y: usize::MAX,
+                ..valid
+            },
+        ] {
+            assert_eq!(
+                pixelate_into(&source, &mut target, region, 1),
+                Err(PixelateError::InvalidRegion)
+            );
+            assert_eq!(target, vec![123; 16]);
+        }
+        for block in [0, MAX_BLOCK_SIZE + 1, usize::MAX] {
+            assert_eq!(
+                pixelate_into(&source, &mut target, valid, block),
+                Err(PixelateError::InvalidBlockSize)
+            );
+            assert_eq!(target, vec![123; 16]);
+        }
+        for len in [0, 4, 15, 17, 20] {
+            let mut target = vec![123; len];
+            assert_eq!(
+                pixelate_into(&source, &mut target, valid, 1),
+                Err(PixelateError::InvalidImage)
+            );
+            assert_eq!(target, vec![123; len]);
+        }
+        for invalid in [
+            Image {
+                width: 2,
+                height: 2,
+                pixels: vec![0; 15],
+            },
+            Image {
+                width: 2,
+                height: 2,
+                pixels: vec![0; 17],
+            },
+            Image {
+                width: 0,
+                height: 2,
+                pixels: vec![],
+            },
+            Image {
+                width: usize::MAX,
+                height: 2,
+                pixels: vec![],
+            },
+            image(
+                MAX_EDITABLE_IMAGE_DIMENSION + 1,
+                1,
+                vec![0; (MAX_EDITABLE_IMAGE_DIMENSION + 1) * 4],
+            ),
+        ] {
+            assert_eq!(
+                pixelate_into(&invalid, &mut target, valid, 1),
+                Err(PixelateError::InvalidImage)
+            );
+            assert_eq!(target, vec![123; 16]);
+        }
     }
 
     #[test]

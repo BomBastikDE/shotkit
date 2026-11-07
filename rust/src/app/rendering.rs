@@ -54,57 +54,62 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
     let (crop_start, crop_end) = (window_state(h).crop_start, window_state(h).crop_end);
     // Copy editor data before rendering or making Win32 calls, which may
     // synchronously dispatch messages and borrow this window state again.
-    let (source, shapes, tool, selection, stable_count) = {
+    let (source, shapes, tool, selection, moving_selection, stable_count) = {
         let state = editor(h);
-        let mut draft = if preview { state.preview() } else { None };
-        let stable_count = if draft.is_some() && state.tool() == Tool::Select {
-            state.selected_index().unwrap_or(state.shapes().len())
+        let preview_shapes = if preview {
+            state.preview().map(|draft| (state.preview_index(), draft))
         } else {
-            state.shapes().len()
+            None
         };
-        let mut shapes = Vec::with_capacity(state.shapes().len() + usize::from(draft.is_some()));
-        for (i, shape) in state.shapes().iter().enumerate() {
-            if draft.is_some() && state.tool() == Tool::Select && state.selected_index() == Some(i)
-            {
-                shapes.push(draft.take().expect("draft checked above"));
+        let preview_index = preview_shapes.as_ref().and_then(|(index, _)| *index);
+        let (shapes, stable_count) =
+            shotkit::editor::compose_preview_shapes(state.shapes(), preview_shapes)
+                .map_err(str::to_owned)?;
+        let selection = state.selected_index().and_then(|selected| {
+            if preview_index == Some(selected) {
+                shapes.get(selected).cloned()
             } else {
-                shapes.push(shape.clone());
+                state.selection().cloned()
             }
-        }
-        if let Some(shape) = draft {
-            shapes.push(shape);
-        }
+        });
+        let moving_selection = preview_index.is_some() && preview_index == state.selected_index();
         (
             state.image_arc(),
             shapes,
             state.tool(),
-            state.selection().cloned(),
+            selection,
+            moving_selection,
             stable_count,
         )
     };
-    let rendered = if preview {
+    let mut rendered = if preview {
         // Take the cache out before GDI+ rendering: nested window messages may
         // paint again, so no RefCell borrow or window-state reference may span it.
+        // The cache owns its budget lease while local: nested paints still see
+        // these pixels charged to the same process-wide preview-cache pool.
         let shared = Rc::clone(&window_state(h).preview_cache);
         let mut cache = shared.borrow_mut().take();
-        let result =
-            shotkit::alpha_document::render_preview(&source, &shapes, stable_count, &mut cache);
+        let result = shotkit::alpha_document::render_preview_budgeted(
+            &source,
+            &shapes,
+            stable_count,
+            &mut cache,
+            &shared_image_budget(),
+        );
         *shared.borrow_mut() = cache;
         result?
     } else {
-        shotkit::alpha_document::render_document(&source, &shapes)?
+        shotkit::alpha_document::render_document_budgeted(&source, &shapes, &shared_image_budget())?
     };
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
     // preview against a checkerboard so transparent source pixels and
     // translucent annotations are displayed using the same source-over math
     // as the document renderer. Export continues to use the original alpha.
-    let display_image = if preview {
-        shotkit::alpha_composite::flatten_checkerboard(&rendered)?
-    } else {
-        rendered
-    };
-    let output = create_bitmap(&display_image)?;
-    if !preview || (tool != Tool::Crop && tool != Tool::Select) {
+    if preview {
+        rendered.flatten_checkerboard()?;
+    }
+    let output = create_bitmap(rendered.image())?;
+    if !preview || (tool != Tool::Crop && tool != Tool::Select && !moving_selection) {
         return Ok(output);
     }
     let screen = GetDC(null_mut());
@@ -142,7 +147,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
             DeleteObject(pen);
         }
     }
-    if preview && tool == Tool::Select {
+    if preview && (tool == Tool::Select || moving_selection) {
         if let Some(shape) = selection.as_ref() {
             let b = shape.bounds();
             let pen = CreatePen(0, 1, 0x00d77800);
@@ -179,7 +184,7 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
 // Voraussetzung: h erfüllt den Fensterzustandsvertrag und enthält gültige Bilddaten.
 // Warum erfüllt bzw. offen: Arc und Formen werden vor dem Renderer kopiert.
 // Nachrichten: Native GDI-Aufrufe können Reentranz nicht pauschal ausschließen.
-pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
+pub(super) unsafe fn bitmap_image(h: H) -> Result<shotkit::image_handle::ImageHandle, String> {
     if window_state(h).bitmap.is_null() || window_state(h).width <= 0 || window_state(h).height <= 0
     {
         return Err("Kein Bild geöffnet.".into());
@@ -189,7 +194,11 @@ pub(super) unsafe fn bitmap_image(h: H) -> Result<Image, String> {
         let state = editor(h);
         (state.image_arc(), state.shapes().to_vec())
     };
-    shotkit::alpha_document::render_document(&image, &shapes)
+    shotkit::alpha_document::render_document_shared_budgeted(
+        &image,
+        &shapes,
+        &shared_image_budget(),
+    )
 }
 
 // SAFETY CONTRACT:

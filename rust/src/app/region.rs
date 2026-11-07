@@ -5,13 +5,9 @@ use super::*;
 // Warum erfüllt bzw. offen: Die Funktion wird vom Fensterhandler aufgerufen; vollständiger Reentranznachweis steht noch aus.
 // Nachrichten: ShowWindow, MessageBoxW und overlay::select können reentrieren; Koordinaten und BusyGuard sind eigene Werte, kein State-Borrow bleibt aktiv.
 pub(super) unsafe fn capture_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, w, height)) = overlay::select() else {
@@ -75,15 +71,14 @@ pub(super) unsafe fn capture_region_rect(
             return;
         }
     }
-    let image = scroll_windows::WindowsScrollIo::new(
+    match capture_ordinary_rect(
+        h,
         rect.left,
         rect.top,
         rect.right - rect.left,
         rect.bottom - rect.top,
-        0,
-    )
-    .and_then(|mut io| io.capture());
-    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        was_visible,
+    ) {
         Ok(()) => {
             if remember_on_success {
                 *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);
@@ -163,13 +158,9 @@ pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, S
 // Warum erfüllt bzw. offen: Der Handler übergibt h; Monitorgrenzen werden vor Wiederholung geprüft.
 // Nachrichten: MessageBoxW, ShowWindow und capture_region_rect können reentrieren; LAST_REGION wird kopiert und der MutexGuard vor dem Dialog beendet.
 pub(super) unsafe fn repeat_last_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     // Drop the mutex guard before the dialog can dispatch nested messages.
     let previous_region = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner());
     let Some(rect) = previous_region else {
@@ -189,16 +180,14 @@ pub(super) unsafe fn repeat_last_region(h: H) {
 
 // SAFETY CONTRACT:
 // Voraussetzung: h lebt während der modalen Auswahl und des Starts des Workers.
-// Warum erfüllt bzw. offen: BusyGuard serialisiert die Aufnahme; die übrigen Reentranzpfade müssen noch geprüft werden.
-// Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow und overlay::select können reentrieren; Einstellungen sind geklont, BusyGuard hält keinen State-Borrow.
+// Warum erfüllt: window::proc hält für beide Aufrufer (Hotkey und Tray) einen
+// ModalGuard; dessen Close-Gate schützt h auch während synchroner Sends.
+// Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow, SendMessageTimeoutW
+// und overlay::select können reentrieren; kein State-Borrow bleibt dabei aktiv.
 pub(super) unsafe fn start_scroll(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(mut busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let mut busy = BusyGuard(true);
+    };
     let previous_direction = active_settings().scroll_direction;
     let previous_label = match previous_direction {
         settings::ScrollDirection::Down => "nach unten",
@@ -240,14 +229,16 @@ pub(super) unsafe fn start_scroll(h: H) {
         _ => return,
     };
     let mut prefs = active_settings();
-    prefs.scroll_direction = match direction {
+    let selected_direction = match direction {
         Direction::Down => settings::ScrollDirection::Down,
         Direction::Right => settings::ScrollDirection::Right,
         Direction::Left => settings::ScrollDirection::Left,
     };
-    // save_settings refuses to replace unreadable or unsupported settings
-    // files; a persistence error must not prevent the requested capture.
-    let _ = save_settings(h, prefs);
+    if prefs.scroll_direction != selected_direction {
+        prefs.scroll_direction = selected_direction;
+        // A persistence error must not prevent the requested capture.
+        let _ = save_settings(h, prefs);
+    }
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, width, height)) = overlay::select() else {
@@ -290,36 +281,177 @@ pub(super) unsafe fn start_scroll(h: H) {
         );
         return;
     }
-    SetForegroundWindow(root);
-    if GetForegroundWindow() != root {
+    if let Err(error) = activate_scroll_target(root) {
         if was_visible {
             ShowWindow(h, 5);
         }
         MessageBoxW(
             h,
-            wide("Zielfenster konnte nicht aktiviert werden. Bitte erneut versuchen.").as_ptr(),
+            wide(error.message()).as_ptr(),
             wide("Scroll-Aufnahme").as_ptr(),
             0x30,
         );
         return;
     }
-    RESTORE_EDITOR.store(was_visible, Ordering::SeqCst);
-    busy.0 = false;
-    let hwnd = h as usize;
-    let target_window = root as usize;
-    std::thread::spawn(move || {
-        let result = (|| -> Result<Outcome, String> {
-            let mut io = scroll_windows::WindowsScrollIo::new(x, y, width, height, target_window)?;
-            std::thread::sleep(std::time::Duration::from_millis(350));
-            scroll_capture::run(&mut io, direction)
-        })();
-        *SCROLL_RESULT.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
-        if PostMessageW(hwnd as H, SCROLL_DONE, 0, 0) == 0 {
-            SCROLL_RESULT
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-            SCROLL_BUSY.store(false, Ordering::SeqCst);
+    let owner = WindowIdentity {
+        handle: h as usize,
+        generation: window_state(h).generation,
+    };
+    let ticket = SCROLL_COMPLETION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .begin(owner, was_visible);
+    let Some(ticket) = ticket else {
+        if was_visible {
+            ShowWindow(h, 5);
         }
-    });
+        MessageBoxW(
+            h,
+            wide("Scroll-Aufnahme konnte nicht gestartet werden.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x10,
+        );
+        return;
+    };
+    // PRIMARY remains alive while SCROLL_BUSY is set. Install on its owner
+    // thread before launching the worker; the original editor may later close.
+    if SetTimer(PRIMARY, SCROLL_POLL_TIMER, 100, None) == 0 {
+        SCROLL_COMPLETION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancel_unstarted(ticket);
+        if was_visible {
+            ShowWindow(h, 5);
+        }
+        MessageBoxW(
+            h,
+            wide("Scroll-Aufnahme konnte den Abschlusstimer nicht starten.").as_ptr(),
+            wide("Scroll-Aufnahme").as_ptr(),
+            0x10,
+        );
+        return;
+    }
+    let diagnostic_folder = active_settings().save_folder;
+    let coordinator = PRIMARY as usize;
+    let target_window = root as usize;
+    busy.disarm();
+    let worker = std::thread::Builder::new()
+        .name("scroll-capture".into())
+        .spawn(move || {
+            let result = (|| -> Result<Outcome, String> {
+                let mut io =
+                    scroll_windows::WindowsScrollIo::new(x, y, width, height, target_window)?;
+                io.set_diagnostic_folder(diagnostic_folder);
+                std::thread::sleep(std::time::Duration::from_millis(350));
+                scroll_capture::run(&mut io, direction)
+            })();
+            scroll_completion::publish_scroll(ticket, result, || {
+                PostMessageW(coordinator as H, SCROLL_DONE, ticket.to_wire(), 0)
+            });
+        });
+    if let Err(error) = worker {
+        scroll_completion::publish_scroll(
+            ticket,
+            Err(format!(
+                "Scroll-Worker konnte nicht gestartet werden: {error}"
+            )),
+            || 0,
+        );
+        scroll_completion::finish_scroll(ticket);
+    }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollTargetActivationError {
+    Unavailable,
+    Unresponsive,
+    Changed,
+    NotForeground,
+}
+
+impl ScrollTargetActivationError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => {
+                "Das ausgewählte Fenster ist nicht mehr verfügbar. Bitte erneut auswählen."
+            }
+            Self::Unresponsive => {
+                "Windows konnte die Rückmeldung des ausgewählten Fensters nicht bestätigen. Bitte erneut versuchen."
+            }
+            Self::Changed => "Das ausgewählte Fenster hat sich geändert. Bitte erneut auswählen.",
+            Self::NotForeground => {
+                "Windows hat das ausgewählte Fenster nicht in den Vordergrund gebracht. Bitte erneut versuchen."
+            }
+        }
+    }
+}
+
+fn verify_scroll_target_identity(
+    expected_thread: u32,
+    expected_process: u32,
+    current_thread: u32,
+    current_process: u32,
+) -> Result<(), ScrollTargetActivationError> {
+    if current_thread != expected_thread || current_process != expected_process {
+        Err(ScrollTargetActivationError::Changed)
+    } else {
+        Ok(())
+    }
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem UI-Thread, ohne gehaltene Zustands-Borrows oder
+// Locks. root ist ein fremdes HWND und wird nie als Rust-Zeiger dereferenziert.
+// Warum erfüllt: start_scroll hält nur lokale Werte; sein eigener Owner bleibt
+// durch den ModalGuard des Nachrichtenhandlers am Leben. Fehlgeschlagener Send
+// oder Thread-/PID-Wechsel des fremden HWND brechen ab; Wiederverwendung im
+// selben Thread ist dadurch nicht ausgeschlossen. Vor Eingaben prüft zusätzlich
+// WindowsScrollIo das exakte Vordergrundfenster.
+// Nachrichten: SetForegroundWindow und SendMessageTimeoutW können synchron
+// Nachrichten verarbeiten.
+unsafe fn activate_scroll_target(root: H) -> Result<(), ScrollTargetActivationError> {
+    activate_scroll_target_with_foreground(root, || GetForegroundWindow())
+}
+
+// Same contract as activate_scroll_target. The reader runs only after the real
+// message barrier and identity checks; tests can supply an observed HWND without
+// depending on desktop-wide foreground policy or changing another window's focus.
+unsafe fn activate_scroll_target_with_foreground(
+    root: H,
+    foreground: impl FnOnce() -> H,
+) -> Result<(), ScrollTargetActivationError> {
+    let mut process = 0;
+    let thread = GetWindowThreadProcessId(root, &mut process);
+    if thread == 0 {
+        return Err(ScrollTargetActivationError::Unavailable);
+    }
+    SetForegroundWindow(root);
+    // Cross-thread activation is asynchronous. Let the target process its
+    // activation notification before checking it; never start scrolling merely
+    // because SetForegroundWindow accepted the request. A hung target remains
+    // bounded and no input queues are attached.
+    let mut result = 0;
+    if SendMessageTimeoutW(
+        root,
+        0, // WM_NULL: wait for the activation notification, without input.
+        0,
+        0,
+        0x0002, // SMTO_ABORTIFHUNG
+        2_000,
+        &mut result,
+    ) == 0
+    {
+        return Err(ScrollTargetActivationError::Unresponsive);
+    }
+    let mut current_process = 0;
+    let current_thread = GetWindowThreadProcessId(root, &mut current_process);
+    verify_scroll_target_identity(thread, process, current_thread, current_process)?;
+    if foreground() != root {
+        return Err(ScrollTargetActivationError::NotForeground);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "region_tests.rs"]
+mod tests;
