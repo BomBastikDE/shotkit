@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Der Vorschau-Cache berücksichtigt beim Neuaufbau die tatsächliche Pufferkapazität bereits vor dem Zeichnen. Ein ausgeschöpftes Cache-Budget nutzt weiterhin die ungecachte Darstellung; andere Renderfehler werden weitergegeben ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Während der Editor-Komposition werden auch temporäre Formenebenen im gemeinsamen Bildbudget berücksichtigt. Sehr große Bilder können dadurch beim Zeichnen oder Kopieren früher eine Speichermeldung erhalten; die Anleitung nennt Beispiele und verbleibende Grenzen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Die für bestimmte Effekte benötigte bereits geschwärzte Quellkopie wird während der Editor-Komposition im Bildbudget gehalten. Reicht das Budget nicht, wird die Darstellung abgebrochen; es erfolgt kein Rückfall auf eine ungeschwärzte Effektquelle ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
