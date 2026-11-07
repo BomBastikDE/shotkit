@@ -367,6 +367,7 @@ unsafe fn acquire_recovery_safe_source(h: H) -> Option<SourcePermit<'static>> {
 }
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
+static SETTINGS_MISSING: AtomicBool = AtomicBool::new(false);
 static LAST_REGION: Mutex<Option<last_region::Rect>> = Mutex::new(None);
 struct BusyGuard(bool);
 impl Drop for BusyGuard {
@@ -680,7 +681,7 @@ unsafe fn refresh_title(h: H) {
         .map(|editor| format!(" · Werkzeug {:?}", editor.tool()))
         .unwrap_or_default();
     let title = format!(
-        "{}{} – ShotKit Rust{} · Strg+S speichern",
+        "{}{} – ShotKit{} · Strg+S speichern",
         if state
             .editor
             .as_ref()
@@ -741,7 +742,7 @@ unsafe fn quit_application(h: H) {
         MessageBoxW(
             h,
             wide("Bitte die laufende oder geplante Aufnahme zuerst abschließen.").as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x30,
         );
         return;
@@ -791,7 +792,7 @@ unsafe fn run_application() {
             MessageBoxW(
                 null_mut(),
                 wide(&error).as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
+                wide("ShotKit").as_ptr(),
                 0x10,
             );
             return;
@@ -802,7 +803,7 @@ unsafe fn run_application() {
             MessageBoxW(
                 null_mut(),
                 wide(&error).as_ptr(),
-                wide("ShotKit Rust – Datei nicht geöffnet").as_ptr(),
+                wide("ShotKit – Datei nicht geöffnet").as_ptr(),
                 0x30,
             );
         }
@@ -838,7 +839,7 @@ unsafe fn run_application() {
     let h = CreateWindowExW(
         0,
         class.as_ptr(),
-        wide("ShotKit Rust").as_ptr(),
+        wide("ShotKit").as_ptr(),
         0x00cf0000,
         0x80000000u32 as i32,
         0x80000000u32 as i32,
@@ -859,13 +860,37 @@ unsafe fn run_application() {
         return;
     }
     hotkeys::register(h);
-    for path in std::env::args_os().skip(1).map(PathBuf::from) {
-        let result = absolute_argument_path(path).and_then(|path| open_image_path(h, path));
+    let arguments: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    for path in &arguments {
+        let result = absolute_argument_path(path.clone()).and_then(|path| open_image_path(h, path));
         if let Err(error) = result {
             MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
         }
     }
-    MessageBoxW(h,wide("Prototyp gestartet. F9: Bildschirm aufnehmen; Druck oder F11: Bereich wählen; F10: Scroll-Aufnahme. Im Editor: Strg+S speichern. Rechtsklick auf das Tray-Symbol öffnet das Menü.").as_ptr(),wide("ShotKit Rust – Prototyp").as_ptr(),0);
+    if shotkit::first_start::show_notice(
+        SETTINGS_MISSING.load(Ordering::SeqCst),
+        SETTINGS_WRITABLE.load(Ordering::SeqCst),
+        !arguments.is_empty(),
+        autostart::get().ok(),
+    ) {
+        MessageBoxW(
+            h,
+            wide("ShotKit läuft im Infobereich der Taskleiste. Druck oder F11: Bereich; F9: Bildschirm; F10: Scroll-Aufnahme. Rechtsklick auf das Symbol öffnet das Menü.").as_ptr(),
+            wide("Willkommen bei ShotKit").as_ptr(),
+            0,
+        );
+        if let Err(error) = persist_first_start() {
+            MessageBoxW(
+                h,
+                wide(&format!(
+                    "Der erste Start konnte nicht gespeichert werden: {error}"
+                ))
+                .as_ptr(),
+                wide("ShotKit").as_ptr(),
+                0x30,
+            );
+        }
+    }
     let mut msg: Msg = zeroed();
     while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
         TranslateMessage(&msg);

@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
@@ -327,31 +328,10 @@ finally { $surface.Dispose() }
     }
     finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData }
 
-    $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -AllowedDialogTitles @('*Prototyp*') -Condition {
+    $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-OwnWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
-    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -AllowedDialogTitles @('*Prototyp*') -Condition {
-        Get-OwnDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    $okButton = [IntPtr]::Zero
-    $buttonDetails = ''
-    $buttonDeadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ([DateTime]::UtcNow -lt $buttonDeadline -and -not $shotKit.HasExited) {
-        $details = ''
-        $candidate = [ShotKitActiveWindowSmoke.Native]::FindUniqueVisibleOkButton($welcome.Handle, [ref]$details)
-        $buttonDetails = $details
-        if ($candidate -ne [IntPtr]::Zero) { $okButton = $candidate; break }
-        Start-Sleep -Milliseconds 100
-    }
-    if ($okButton -eq [IntPtr]::Zero) {
-        $dialogText = [ShotKitActiveWindowSmoke.Native]::WindowText($welcome.Handle)
-        $exitDetail = if ($shotKit.HasExited) { " process exited with code $($shotKit.ExitCode)." } else { '' }
-        throw "Timed out waiting for a unique visible OK button (dialog HWND=$($welcome.Handle)). Title='$($welcome.Title)'; text='$dialogText'; children='$buttonDetails'$exitDetail"
-    }
-    [void][ShotKitActiveWindowSmoke.Native]::SendMessageW($okButton, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
-    $null = Wait-ForCondition -TimeoutSeconds 5 -Description 'the startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-        -not (Get-OwnDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
-    }
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-OwnWindows $shotKit }
 
     if (-not [ShotKitActiveWindowSmoke.Native]::Activate($root)) { throw 'SetForegroundWindow failed for the synthetic target.' }
     $null = Wait-ForCondition -TimeoutSeconds 5 -Description 'the synthetic window to become foreground' -OwnedProcess $surface -Condition {

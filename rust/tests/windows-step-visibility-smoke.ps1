@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'This smoke test is restricted to an interactive ephemeral GitHub Actions Windows runner.'
 }
@@ -219,10 +220,7 @@ try {
     $main=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'} | Select-Object -First 1} $StartupTimeoutSeconds 'editor window'
     [void][ShotKitStepSmoke.Native]::ShowWindow($main.Handle,3)
     [void][ShotKitStepSmoke.Native]::SetForegroundWindow($main.Handle)
-    $welcome=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1} 12 'startup notice'
-    [void][ShotKitStepSmoke.Native]::SetForegroundWindow($welcome.Handle)
-    [void](Get-Button $welcome.Handle 'OK');[ShotKitStepSmoke.Native]::CloseNotice($welcome.Handle)
-    [void](Wait-For {if(-not (Get-OwnedWindows | Where-Object {$_.Handle -eq $welcome.Handle -and $_.Visible})) {$true}} 5 'startup notice dismissal')
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnedWindows }
     $main=Wait-For {Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'} | Select-Object -First 1} 10 'loaded editor'
     $client=[Activator]::CreateInstance([ShotKitStepSmoke.Rect]);if(-not [ShotKitStepSmoke.Native]::Client($main.Handle,[ref]$client)){throw 'GetClientRect failed.'}
     $toolbar=[ShotKitStepSmoke.Native]::Children($main.Handle) | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'} | Select-Object -First 1

@@ -5,6 +5,7 @@ param(
     [ValidateRange(10,90)][int]$ActionTimeoutSeconds=25
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if(($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive runner or dedicated opt-in session required.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -92,10 +93,7 @@ function Run-Format($Format){
  $script:proc=$proc
  try{
   $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'owned editor' $StartupTimeoutSeconds
-  $welcome=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice' 12
-  if([ShotKitFormatsSmoke.N]::Owner($welcome.H) -ne $proc.Id){throw "STARTUP_DIALOG_OWNER_MISMATCH HWND=$($welcome.H)."}
-  if(-not [ShotKitFormatsSmoke.N]::PostMessageW($welcome.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw "STARTUP_DIALOG_CLOSE_POST_FAILED HWND=$($welcome.H)."}
-  [void](Wait-For {-not [ShotKitFormatsSmoke.N]::IsWindow($welcome.H)} 'owned startup notice close' 8)
+  Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
   $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*'}|Select-Object -First 1} 'loaded editor' 12
   [void][ShotKitFormatsSmoke.N]::SetForegroundWindow($main.H)
   [void](Wait-For {[ShotKitFormatsSmoke.N]::GetForegroundWindow() -eq $main.H} 'exact editor foreground before Save As' 5)

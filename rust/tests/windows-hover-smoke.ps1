@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
@@ -211,7 +212,7 @@ function Assert-NoUnexpectedDialog {
         [string[]] $AllowedTitles = @()
     )
     $dialog = Get-ProcessDialogs $OwnedProcess |
-        Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -notlike '*Prototyp*' } |
+        Where-Object { $AllowedTitles -notcontains $_.Title } |
         Select-Object -First 1
     if ($null -ne $dialog) {
         throw "Unexpected ShotKit dialog. Title='$($dialog.Title)' Text='$([ShotKitHoverSmoke.Native]::WindowText($dialog.Handle))'"
@@ -383,36 +384,7 @@ finally { [ShotKitHoverSurface.Dpi]::Restore() }
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
-    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
-        Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    $okButton = [IntPtr]::Zero
-    $buttonDeadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ([DateTime]::UtcNow -lt $buttonDeadline -and -not $shotKit.HasExited) {
-        $buttonDetails = ''
-        $okButton = [ShotKitHoverSmoke.Native]::FindVisibleOkButton($welcome.Handle, [ref]$buttonDetails)
-        if ($okButton -ne [IntPtr]::Zero) { break }
-        Start-Sleep -Milliseconds 100
-    }
-    if ($okButton -eq [IntPtr]::Zero) {
-        $dialogTitle = $welcome.Title
-        $dialogText = [ShotKitHoverSmoke.Native]::WindowText($welcome.Handle)
-        $exitDetail = if ($shotKit.HasExited) { " process exited with code $($shotKit.ExitCode)." } else { '' }
-        throw "Timed out waiting for a visible Button-class child titled OK (dialog HWND $($welcome.Handle)). Dialog title='$dialogTitle'; text='$dialogText'; buttons='$buttonDetails'$exitDetail"
-    }
-    $okControlId = [ShotKitHoverSmoke.Native]::GetDlgCtrlID($okButton)
-    if (-not [ShotKitHoverSmoke.Native]::PostMessageW($okButton, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)) {
-        throw "Could not post BM_CLICK to startup OK button HWND=$($okButton.ToInt64()) control ID=$okControlId."
-    }
-    try {
-        $welcomeClosed = Wait-ForCondition -TimeoutSeconds 5 -Description 'the ShotKit startup dialog to close' -OwnedProcess $shotKit -AllowedDialogTitles @($welcome.Title) -Condition {
-            -not (Get-ProcessDialogs $shotKit | Where-Object { $_.Handle -eq $welcome.Handle })
-        }
-    }
-    catch {
-        $dialogText = [ShotKitHoverSmoke.Native]::WindowText($welcome.Handle)
-        throw "Startup dialog remained after BM_CLICK (button HWND=$($okButton.ToInt64()), control ID=$okControlId). Title='$($welcome.Title)'; text='$dialogText'. $($_.Exception.Message)"
-    }
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-ProcessWindows $shotKit }
     Assert-NoUnexpectedDialog $shotKit
 
     $controlHandle = [IntPtr]([int64]$geometry[4])

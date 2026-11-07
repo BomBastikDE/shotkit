@@ -8,6 +8,7 @@ param(
 # writes. Native tray selection uses the existing output-matrix pattern, so this
 # fixture deliberately has NO owner/local-session opt-in.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 $fixtureClock = [Diagnostics.Stopwatch]::StartNew()
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
@@ -514,8 +515,7 @@ function Start-CaseProcess([string] $CaseRoot, [string] $RunName) {
     Write-UiSnapshot 'process_started'
 }
 function Complete-Startup {
-    $notice = Wait-Dialog 'ShotKit Rust – Prototyp' 'Prototyp gestartet.'
-    Click-OkDialog $notice
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitSettingsResetSmoke.Native]::Windows($process.Id) }
     $script:primary = Wait-Value {
         [ShotKitSettingsResetSmoke.Native]::Windows($process.Id) | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     } 'owned primary window'
@@ -586,7 +586,7 @@ function Assert-LoadedOpenEditor([bool] $Expected) {
 }
 function Assert-BlockedSave {
     Toggle-OpenEditor
-    $warning = Wait-Dialog 'ShotKit Rust' 'Einstellungen können nicht gespeichert werden'
+    $warning = Wait-Dialog 'ShotKit' 'Einstellungen können nicht gespeichert werden'
     Click-OkDialog $warning
     Assert-PrimaryEnabled
     Assert-Event 'settings_save_stage=attempt'
@@ -654,7 +654,7 @@ try {
     Write-UiSnapshot 'default_no_enter_begin' $prompt 7
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0100, [IntPtr]13, [IntPtr]0)) 'Enter keydown post failed'
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0101, [IntPtr]13, [IntPtr]0)) 'Enter keyup post failed'
-    $warning = Wait-Dialog 'ShotKit Rust' 'Speichern der Einstellungen ist deaktiviert'
+    $warning = Wait-Dialog 'ShotKit' 'Speichern der Einstellungen ist deaktiviert'
     Click-OkDialog $warning
     Complete-Startup
     Assert-Event 'settings_reset_stage=declined'
@@ -709,7 +709,7 @@ try {
     $settingsPath = Join-Path $settingsDir 'settings.json'
     [IO.File]::WriteAllBytes(($settingsPath + '.reset-pending'), $pending)
     Start-CaseProcess $caseRoot 'first'
-    $warning = Wait-Dialog 'ShotKit Rust' 'Speichern der Einstellungen ist deaktiviert'
+    $warning = Wait-Dialog 'ShotKit' 'Speichern der Einstellungen ist deaktiviert'
     Click-OkDialog $warning
     Complete-Startup
     Assert-True (@(Read-Events | Where-Object { $_ -match '^settings_load_stage=failed ' }).Count -eq 1) 'Interrupted reset must fail startup load'

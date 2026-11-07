@@ -85,6 +85,15 @@ namespace ShotKitAboutSmoke {
             EnumProc cb = delegate(IntPtr child, IntPtr d) { var t = new StringBuilder(1024); GetWindowTextW(child,t,t.Capacity); if (t.Length > 0) b.Append(' ').Append(t); return true; };
             EnumChildWindows(h,cb,IntPtr.Zero); GC.KeepAlive(cb); return b.ToString();
         }
+        public static bool HasExactChildText(IntPtr parent, string expected) {
+            bool found = false;
+            EnumProc cb = delegate(IntPtr child, IntPtr d) {
+                var text = new StringBuilder(1024); GetWindowTextW(child, text, text.Capacity);
+                if (String.Equals(text.ToString(), expected, StringComparison.Ordinal)) found = true;
+                return true;
+            };
+            EnumChildWindows(parent, cb, IntPtr.Zero); GC.KeepAlive(cb); return found;
+        }
         public static string VerifyAndClickAboutMenuItem(IntPtr popupWindow, uint expectedId, string expectedText) {
             const uint MN_GETHMENU = 0x01E1;
             const uint MF_BYPOSITION = 0x0400;
@@ -138,7 +147,7 @@ try {
     while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited) {
         $windows = @([ShotKitAboutSmoke.Native]::Windows($process.Id))
         $main = $windows | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
-        $welcome = $windows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' } | Select-Object -First 1
+        $welcome = $windows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -ceq 'Willkommen bei ShotKit' } | Select-Object -First 1
         if ($main -and $welcome) { break }
         Start-Sleep -Milliseconds 100
     }
@@ -202,7 +211,10 @@ try {
     if (-not $about) { throw 'ABOUT_WINDOW_TIMEOUT: selecting the tray menu item did not open the expected ShotKitRustAboutWindow.' }
 
     $allText = [ShotKitAboutSmoke.Native]::WindowText($about.Handle)
-    foreach ($expectedText in @('ShotKit Rust', "Version: $expectedVersion", 'Entwickler: Oliver Muenk', 'Website öffnen: alleswasbewegt.de')) {
+    if (-not [ShotKitAboutSmoke.Native]::HasExactChildText($about.Handle, 'ShotKit')) {
+        throw "ABOUT_PRODUCT_NAME_MISMATCH: exact ShotKit label missing. Content='$allText'"
+    }
+    foreach ($expectedText in @("Version: $expectedVersion", 'Entwickler: Oliver Muenk', 'Website öffnen: alleswasbewegt.de')) {
         if ($allText -notmatch [regex]::Escape($expectedText)) {
             throw "ABOUT_CONTENT_MISSING: expected '$expectedText' in the native About window. Content='$allText'"
         }

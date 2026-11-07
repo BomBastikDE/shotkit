@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or -not [Environment]::UserInteractive) {
     throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner.'
 }
@@ -289,25 +290,7 @@ try {
     finally { $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData }
     $main=Wait-For { Get-Main } $StartupTimeoutSeconds 'ShotKit editor'
     [void][ShotKitHandlesSmoke.Native]::ShowWindow($main.Handle,3); [void][ShotKitHandlesSmoke.Native]::SetForegroundWindow($main.Handle)
-    $notice=Wait-For { Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1 } 10 'ShotKit startup notice'
-    $ok=[ShotKitHandlesSmoke.Native]::Buttons($notice.Handle) | Where-Object { ($_.Text -replace '&','').Trim() -eq 'OK' } | Select-Object -First 1
-    if($null -eq $ok){throw 'STARTUP_NOTICE_BUTTON_MISSING: expected owned OK button.'}
-    # BM_CLICK can fail when the dialog is inactive. The editor was just
-    # foregrounded above, so activate the notice and verify it before clicking.
-    [void](Wait-For {
-        [void][ShotKitHandlesSmoke.Native]::SetForegroundWindow($notice.Handle)
-        [ShotKitHandlesSmoke.Native]::GetForegroundWindow() -eq $notice.Handle
-    } 5 'startup notice foreground')
-    [ShotKitHandlesSmoke.Native]::Click($ok.Handle)
-    # HWND values can be reused after a dialog is destroyed. Check for the
-    # owned notice itself, including hidden windows, rather than its old HWND.
-    try {
-        [void](Wait-For { -not @(Get-OwnedWindows | Where-Object { $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' }).Count } 10 'startup notice close')
-    } catch {
-        $windows = @(Get-OwnedWindows | ForEach-Object { "HWND=$($_.Handle) PID=$($_.Pid) class='$($_.ClassName)' title='$($_.Title)' visible=$($_.Visible)" }) -join '; '
-        Write-Host "STARTUP_NOTICE_DIAGNOSTIC: original HWND=$($notice.Handle); current owned windows: $windows"
-        throw
-    }
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Get-OwnedWindows }
     $main=Wait-For { Get-Main | Where-Object {$_.Title -like '*Strg+S speichern*'} | Select-Object -First 1 } 15 'loaded image editor'
     $client=[Activator]::CreateInstance([ShotKitHandlesSmoke.Rect]); [void][ShotKitHandlesSmoke.Native]::ClientRect($main.Handle,[ref]$client)
     # Native toolbar geometry is obtained from its owned child HWND.
@@ -366,7 +349,7 @@ try {
             if($dialogs.Count -gt 1){throw 'COLOR_DIALOG_AMBIGUOUS.'}
             if($dialogs.Count -eq 0){return}
             $candidate=$dialogs[0]
-            if($candidate.Title -like '*Prototyp*'){throw 'COLOR_UNEXPECTED_STARTUP_NOTICE.'}
+            if($candidate.Title -like 'Willkommen bei ShotKit'){throw 'COLOR_UNEXPECTED_STARTUP_NOTICE.'}
             if([ShotKitHandlesSmoke.Native]::Owner($candidate.Handle) -ne $proc.Id){throw 'COLOR_DIALOG_OWNER_MISMATCH.'}
             $controls=@([ShotKitHandlesSmoke.Native]::Controls($candidate.Handle))
             $ready=$true

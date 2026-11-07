@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'edge-profile-cleanup.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the GitHub runner is not interactive.' }
@@ -218,7 +219,7 @@ function Format-DialogDetails {
 function Assert-NoUnexpectedDialog {
     param([System.Diagnostics.Process] $OwnedProcess, [string[]] $AllowedTitles = @())
     $dialog = Get-ProcessDialogs $OwnedProcess |
-        Where-Object { $AllowedTitles -notcontains $_.Title -and $_.Title -notlike '*Prototyp*' } |
+        Where-Object { $AllowedTitles -notcontains $_.Title } |
         Select-Object -First 1
     if ($null -ne $dialog) { throw "Unexpected ShotKit dialog: $(Format-DialogDetails $dialog)" }
 }
@@ -441,16 +442,12 @@ try {
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
-    $welcome = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {
-        Get-ProcessDialogs $shotKit | Where-Object { $_.Title -like '*Prototyp*' } | Select-Object -First 1
-    }
-    Click-DialogButton -OwnedProcess $shotKit -Dialog $welcome -ExpectedTexts @('OK') -Description 'startup acknowledgement' | Out-Null
-    Wait-ForDialogClosed -OwnedProcess $shotKit -DialogHandle $welcome.Handle -Description 'startup dialog closure after its OK button was clicked'
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-ProcessWindows $shotKit }
     Assert-NoUnexpectedDialog $shotKit
 
-    # Reacquire the actual top-level browser window after ShotKit's dialog has
-    # closed; do not assume the earlier HWND remained the active foreground target.
-    $browserWindow = Wait-ForCondition -TimeoutSeconds 5 -Description 'owned Edge window after startup dialog closure' -OwnedProcess $null -Condition {
+    # Reacquire the actual top-level browser window after ShotKit startup;
+    # do not assume the earlier HWND remained the active foreground target.
+    $browserWindow = Wait-ForCondition -TimeoutSeconds 5 -Description 'owned Edge window after ShotKit startup' -OwnedProcess $null -Condition {
         $owned = Get-ProfileEdgeProcesses
         foreach ($process in $owned) {
             [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$process.ProcessId) |
@@ -466,7 +463,7 @@ try {
             [ShotKitBrowserScrollSmoke.Native]::ProcessIdForWindow($foregroundHwnd) -eq $browserWindow.ProcessId) { $true } else { $false }
     }
     if (-not $foreground) { throw 'EDGE_FOCUS_MISMATCH: foreground HWND changed before F10.' }
-    Write-Output 'MILESTONE: Edge activated after ShotKit startup dialog closed; polling current DOM viewport against the owned renderer HWND.'
+    Write-Output 'MILESTONE: Edge activated after ShotKit startup; polling current DOM viewport against the owned renderer HWND.'
 
     $geometryTimeoutSeconds = [Math]::Min($StartupTimeoutSeconds, 15)
     $geometryDeadline = [DateTime]::UtcNow.AddSeconds($geometryTimeoutSeconds)

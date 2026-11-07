@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion -lt [Version]'7.2') { throw 'PowerShell 7.2+ (pwsh, .NET ZLibStream) is required.' }
 if (($env:GITHUB_ACTIONS -ne 'true') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive Windows CI runner is required.'
@@ -256,10 +257,7 @@ try {
     try { $process = Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixturePath) -WorkingDirectory $root -PassThru; $processStopped = $false }
     finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData }
 
-    $notice = Wait-For { Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' } | Select-Object -First 1 } 'owned startup notice'
-    if ([ShotKitImportBudgetSmoke.Native]::Owner($notice.H) -ne [uint32]$process.Id) { throw 'NOTICE_OWNER_MISMATCH: refusing to close an unowned startup dialog.' }
-    [void][ShotKitImportBudgetSmoke.Native]::PostMessageW($notice.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
-    [void](Wait-For { -not @(Get-OwnedWindows | Where-Object { $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*' }).Count } 'startup notice close' 8)
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { Get-OwnedWindows }
     $editor = Wait-For { Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' -and $_.Title -like '*Strg+S speichern*' } | Select-Object -First 1 } 'loaded fixture editor'
     if (-not [ShotKitImportBudgetSmoke.Native]::SetForegroundWindow($editor.H)) { throw 'EDITOR_FOCUS_FAILED.' }
     [void](Wait-For { [ShotKitImportBudgetSmoke.Native]::GetForegroundWindow() -eq $editor.H } 'editor foreground')

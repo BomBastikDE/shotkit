@@ -186,13 +186,13 @@ pub(super) unsafe fn install(h: H, inst: H) -> bool {
     n.callback = TRAY;
     // Win32 integer resource ID 1, encoded as a pointer without dereferencing.
     n.icon = LoadIconW(inst, std::ptr::without_provenance::<u16>(1));
-    let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
+    let tip = wide("ShotKit: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
     n.tip[..tip.len()].copy_from_slice(&tip);
     if Shell_NotifyIconW(0, &n) == 0 {
         MessageBoxW(
             h,
             wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x10,
         );
         return false;

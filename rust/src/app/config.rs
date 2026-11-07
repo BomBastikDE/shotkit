@@ -52,7 +52,7 @@ pub(super) unsafe fn apply_annotation_edit(
                     "Die Bearbeitung konnte nicht übernommen werden: {error}"
                 ))
                 .as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
+                wide("ShotKit").as_ptr(),
                 0x10,
             );
             return false;
@@ -75,7 +75,7 @@ pub(super) unsafe fn apply_annotation_edit(
                     "Die Bearbeitung konnte nicht übernommen werden: {error}"
                 ))
                 .as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
+                wide("ShotKit").as_ptr(),
                 0x10,
             );
             false
@@ -127,6 +127,7 @@ pub(super) unsafe fn load_settings(h: H) {
     // A modal prompt can dispatch menu messages. Keep writes disabled until
     // loading, explicit recovery and completion verification have all finished.
     SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
+    SETTINGS_MISSING.store(false, Ordering::SeqCst);
     *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
     let result = settings::settings_path().and_then(|path| {
         settings::reset_windows::ensure_clear(&path).map_err(|source| settings::SettingsError::Io {
@@ -135,7 +136,10 @@ pub(super) unsafe fn load_settings(h: H) {
             source,
         })?;
         match settings::load_outcome(&path)? {
-            settings::SettingsLoadOutcome::Missing => Ok(Settings::default()),
+            settings::SettingsLoadOutcome::Missing => {
+                SETTINGS_MISSING.store(true, Ordering::SeqCst);
+                Ok(Settings::default())
+            },
             settings::SettingsLoadOutcome::Loaded { settings, .. } => Ok(settings),
             settings::SettingsLoadOutcome::Rejected(rejected) => {
                 if rejected.recovery_eligibility != settings::RecoveryEligibility::UnambiguousVersion1 {
@@ -186,7 +190,7 @@ pub(super) unsafe fn load_settings(h: H) {
                 "settings_load_stage=failed {}",
                 e.diagnostic_summary()
             ));
-            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert. Vorhandene Dateien bleiben erhalten; bei einer unterbrochenen Wiederherstellung müssen Einstellungsdatei, .reset-pending-Datei sowie Recovery-Backups, Belege und temporäre Dateien vor einem weiteren Versuch manuell geprüft werden.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert. Vorhandene Dateien bleiben erhalten; bei einer unterbrochenen Wiederherstellung müssen Einstellungsdatei, .reset-pending-Datei sowie Recovery-Backups, Belege und temporäre Dateien vor einem weiteren Versuch manuell geprüft werden.")).as_ptr(),wide("ShotKit").as_ptr(),0x30);
         }
     }
 }
@@ -200,7 +204,7 @@ pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
         crate::uia_picker::log_diagnostic(
             "settings_save_stage=blocked reason=settings_not_writable",
         );
-        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die Einstellungsdatei oder eine Wiederherstellung ungeklärt ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die Einstellungsdatei oder eine Wiederherstellung ungeklärt ist.").as_ptr(),wide("ShotKit").as_ptr(),0x30);
         return false;
     }
     let result = settings::settings_path().and_then(|path| {
@@ -233,7 +237,7 @@ pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
                     "Einstellungen konnten nicht gespeichert werden: {e}"
                 ))
                 .as_ptr(),
-                wide("ShotKit Rust").as_ptr(),
+                wide("ShotKit").as_ptr(),
                 0x10,
             );
             false
@@ -316,4 +320,17 @@ pub(super) unsafe fn open_storage_folder(h: H) {
             0x10,
         );
     }
+}
+
+/// Persist the initial defaults without replacing a settings file created concurrently.
+pub(super) fn persist_first_start() -> Result<(), String> {
+    let path = settings::settings_path().map_err(|error| error.to_string())?;
+    settings::reset_windows::ensure_clear(&path).map_err(|error| error.to_string())?;
+    let parent = path.parent().ok_or("Einstellungsordner fehlt")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let bytes =
+        serde_json::to_vec_pretty(&Settings::default()).map_err(|error| error.to_string())?;
+    shotkit::atomic_save_windows::write_atomic(&path, &bytes, false)?;
+    SETTINGS_MISSING.store(false, Ordering::SeqCst);
+    Ok(())
 }
