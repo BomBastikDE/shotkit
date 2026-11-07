@@ -6,6 +6,7 @@
 use std::{ffi::c_void, mem::size_of, ptr::null_mut, thread, time::Duration};
 
 use shotkit::{
+    capture_buffer::try_bgra_buffer,
     scroll_capture::{Direction, ScrollIo},
     stitch::Image,
 };
@@ -271,11 +272,8 @@ impl ScrollIo for WindowsScrollIo {
             return Err("Bildschirmbereich konnte nicht kopiert werden.".into());
         }
 
-        let len = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|n| n.checked_mul(4))
-            .ok_or("Bildgröße überläuft.")?;
-        let mut pixels = vec![0u8; len];
+        let mut pixels = try_bgra_buffer(width as usize, height as usize)?;
+        let len = pixels.len();
         let mut info = BitmapInfo {
             header: BitmapInfoHeader {
                 size: size_of::<BitmapInfoHeader>() as u32,

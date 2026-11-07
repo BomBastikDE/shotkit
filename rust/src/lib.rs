@@ -4,6 +4,7 @@ pub mod alpha_document;
 pub mod alpha_render;
 #[cfg(windows)]
 pub mod atomic_save_windows;
+pub mod capture_buffer;
 pub mod capture_output;
 pub mod clipboard_retry;
 pub mod cursor_snapshot;
