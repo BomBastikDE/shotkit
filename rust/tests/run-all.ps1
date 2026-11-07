@@ -18,7 +18,7 @@ $isCi = $env:GITHUB_ACTIONS -eq 'true'
 if (-not $isCi -and -not $AllowLocalInteractive) {
     throw 'LOCAL_OPT_IN_REQUIRED: use -AllowLocalInteractive only in a dedicated test session; tests control mouse and keyboard and replace clipboard contents.'
 }
-if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw 'ShotKit EXE not found.' }
+if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw 'NOT RUN: ShotKit EXE not found; the interactive smoke suite could not start.' }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 $ScreenshotPath = [IO.Path]::GetFullPath($ScreenshotPath)
 $PreviewScreenshotPath = Join-Path (Split-Path -Parent $ScreenshotPath) ('shotkit-held-preview-' + [Guid]::NewGuid().ToString('N') + '.png')
