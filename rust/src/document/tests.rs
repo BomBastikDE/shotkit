@@ -1986,3 +1986,49 @@ fn budgeted_crop_lease_follows_current_undo_redo_plans_and_external_clones() {
     drop(external);
     assert_eq!(budget.snapshot().used_bytes, 0);
 }
+
+#[test]
+fn seeded_capture_cursor_belongs_to_the_initial_state() {
+    use crate::{cursor_snapshot::CursorPixels, shapes::CursorSprite};
+    let cursor = || {
+        Shape::new(ShapeKind::Cursor {
+            data: CursorSprite::new(
+                Point::new(1.0, 0.0),
+                1,
+                1,
+                CursorPixels::PremultipliedRgba(vec![0, 0, 0, 255]),
+            )
+            .unwrap(),
+        })
+    };
+    // An auto-saved capture is clean; seeding the cursor keeps it clean and
+    // adds no history step, so Undo cannot remove it.
+    let mut document = Document::new(image()).unwrap();
+    document.mark_saved();
+    document.seed_initial_shapes(vec![cursor()]).unwrap();
+    assert_eq!(document.shapes().len(), 1);
+    assert!(!document.is_dirty());
+    assert!(!document.can_undo());
+    assert!(!document.undo());
+    assert_eq!(document.shapes().len(), 1);
+    // The cursor is an ordinary object afterwards: movable and removable.
+    document
+        .edit_shape(0, |shape| shape.offset(1.0, 1.0))
+        .unwrap();
+    document.remove_shape(0).unwrap();
+    assert!(document.undo());
+    assert!(document.undo());
+    assert_eq!(document.shapes()[0].bounds().x, 1.0);
+    // Only a fresh, unedited document can be seeded.
+    assert_eq!(
+        document.seed_initial_shapes(vec![cursor()]),
+        Err(DocumentError::NotInitialState)
+    );
+    let mut edited = Document::new(image()).unwrap();
+    edited.add_shape(shape()).unwrap();
+    assert!(edited.undo());
+    assert_eq!(
+        edited.seed_initial_shapes(vec![cursor()]),
+        Err(DocumentError::NotInitialState)
+    );
+}

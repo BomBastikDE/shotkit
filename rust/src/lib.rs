@@ -6,6 +6,7 @@ pub mod alpha_render;
 pub mod atomic_save_windows;
 pub mod capture_admission;
 pub mod capture_buffer;
+pub mod capture_cursor;
 pub mod capture_output;
 pub mod clipboard_admission;
 pub mod clipboard_retry;

@@ -33,6 +33,7 @@ foreach ($name in $processNames) {
 $pwsh = (Get-Process -Id $PID).Path
 $cases = @(
     @{ Name = 'Interactive Windows first-start notice smoke test'; Script = 'windows-first-start-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
+    @{ Name = 'Interactive Windows mouse cursor capture smoke test'; Script = 'windows-cursor-capture-smoke.ps1'; Extra = @(); TimeoutSeconds = 180; Toolbar = $false },
     @{ Name = 'Windows shared live-log reader contract'; Script = 'windows-shared-log-reader-contract.ps1'; Extra = @(); TimeoutSeconds = 60; Toolbar = $false },
     @{ Name = 'Interactive Windows About dialog smoke test'; Script = 'windows-about-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows delayed capture smoke test'; Script = 'windows-delayed-capture-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },

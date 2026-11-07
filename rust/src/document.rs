@@ -37,6 +37,7 @@ pub enum DocumentError {
     HistoryEvictionNotApproved,
     IrreversibleEditNotApproved,
     StaleHistoryPlan,
+    NotInitialState,
 }
 impl std::fmt::Display for DocumentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -51,6 +52,9 @@ impl std::fmt::Display for DocumentError {
             ),
             Self::TransactionAlreadyOpen => f.write_str("Eine Bearbeitung läuft bereits"),
             Self::NoTransaction => f.write_str("Es läuft keine Bearbeitung"),
+            Self::NotInitialState => f.write_str(
+                "Die Aufnahme wurde bereits bearbeitet; der Mauszeiger kann nicht mehr eingefügt werden",
+            ),
             Self::InvalidShapeIndex => {
                 f.write_str("Das ausgewählte Objekt ist nicht mehr vorhanden")
             }
@@ -566,6 +570,23 @@ impl Document {
             return Err(DocumentError::NoTransaction);
         };
         self.current = before;
+        self.invalidate_history_plans();
+        Ok(())
+    }
+
+    /// Seed the objects of a freshly captured document, e.g. the captured
+    /// mouse cursor (#36). They belong to the **initial** state: no history
+    /// step, no unsaved change, and Undo does not remove them. Allowed only
+    /// before any edit and while no shapes exist.
+    pub fn seed_initial_shapes(&mut self, shapes: Vec<Shape>) -> Result<(), DocumentError> {
+        if !self.undo.is_empty()
+            || !self.redo.is_empty()
+            || self.staged_before.is_some()
+            || !self.current.shapes.is_empty()
+        {
+            return Err(DocumentError::NotInitialState);
+        }
+        self.current.shapes = shapes;
         self.invalidate_history_plans();
         Ok(())
     }
