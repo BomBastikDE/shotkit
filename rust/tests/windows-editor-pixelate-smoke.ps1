@@ -143,9 +143,15 @@ try {
     [void](Wait-Value {Get-Main|?{$_.Title -like '*Werkzeug: Verpixeln*'}} 'Blur tool activation')
     Drag-Image 24 20 120 90
     Save-Image 'pixelation export'
-    Assert-Pixelated (Read-Image) 'pixelation export'
+    $pixelated=Read-Image
+    Assert-Pixelated $pixelated 'pixelation export'
     Click-Button $main.H 'Zurück';Save-Image 'undo export';Assert-Original (Read-Image) 'undo export'
-    Click-Button $main.H 'Wiederholen';Save-Image 'redo export';Assert-Pixelated (Read-Image) 'redo export'
+    Click-Button $main.H 'Wiederholen';Save-Image 'redo export';$redone=Read-Image;Assert-Pixelated $redone 'redo export'
+    for($i=0;$i -lt $pixelated.Pixels.Length;$i++) {
+        if($redone.Pixels[$i].ToArgb() -ne $pixelated.Pixels[$i].ToArgb()) {
+            throw "Redo changed pixelation output at pixel ($($i%160),$([int]($i/160)))."
+        }
+    }
     Write-Output 'PASS: interactive Verpixeln changed sampled pixels inside the selected region, preserved pixels outside it, and undo/redo restored the corresponding PNG output.'
 }
 catch { $failure=$_ }

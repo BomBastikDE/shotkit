@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -170,7 +171,7 @@ function Get-ProcessWindows {
 function Get-ProcessOutput {
     param([string] $Path)
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        $content = [IO.File]::ReadAllText($Path)
+        $content = Read-SharedText -Path $Path
         return $content.Trim()
     }
     return ''
@@ -435,7 +436,8 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
     # second movement is pending, before it can be captured or stitched.
     $secondWheel = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'a second observable wheel event after the first stitched step' -OwnedProcess $shotKit -Condition {
         if (Test-Path -LiteralPath $eventFile) {
-            $eventState = [IO.File]::ReadAllText($eventFile).Trim()
+            $eventState = Read-SharedText -Path $eventFile
+            if ($null -ne $eventState) { $eventState = $eventState.Trim() }
             if ($eventState -match '^(\d+),(\d+)$' -and [int]$Matches[1] -ge 2 -and [int]$Matches[2] -gt 0) { @($Matches[1], $Matches[2]) }
         }
     }
@@ -501,7 +503,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $EventFile)
         throw "Scroll cancellation reason mismatch. Expected='$expectedReason' Dialog='$completionText'"
     }
     if ($MouseAbort) {
-        $finalEvent = [IO.File]::ReadAllText($eventFile).Trim()
+        $finalEvent = (Read-SharedText -Path $eventFile).Trim()
         if ($finalEvent -cne '2,240') {
             throw "MOUSE_ABORT_STEPPED_AFTER_TRIGGER: expected event state 2,240, found '$finalEvent'."
         }

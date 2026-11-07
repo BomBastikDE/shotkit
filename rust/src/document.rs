@@ -31,6 +31,7 @@ pub enum DocumentError {
     TransactionAlreadyOpen,
     NoTransaction,
     InvalidShapeIndex,
+    RandomUnavailable,
     AllocationFailed,
     ImageBudgetExceeded,
     HistoryEvictionNotApproved,
@@ -53,6 +54,7 @@ impl std::fmt::Display for DocumentError {
             Self::InvalidShapeIndex => {
                 f.write_str("Das ausgewählte Objekt ist nicht mehr vorhanden")
             }
+            Self::RandomUnavailable => f.write_str("Zufallswerte für die Verpixelung sind nicht verfügbar. Die Form wurde nicht erstellt."),
             Self::AllocationFailed => f.write_str("Es steht nicht genügend Speicher zur Verfügung"),
             Self::ImageBudgetExceeded => f.write_str(
                 "Das Speicherlimit für Bilddaten reicht für diese Leinwandänderung nicht aus",

@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_CI_WINDOWS_REQUIRED: this global hotkey-conflict test runs only on an interactive ephemeral Windows CI desktop.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -161,8 +162,8 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  try {
   $ready=Wait-For {if(Test-Path -LiteralPath $readyFile){(Read-ReservationFile $readyFile)}} 'reservation helper readiness' 10 $helper
  } catch {
-  $stdout=if(Test-Path -LiteralPath $helperStdout){Get-Content -LiteralPath $helperStdout -Raw}else{''}
-  $stderr=if(Test-Path -LiteralPath $helperStderr){Get-Content -LiteralPath $helperStderr -Raw}else{''}
+  $stdout=Read-SharedText -Path $helperStdout
+  $stderr=Read-SharedText -Path $helperStderr
   throw "RESERVATION_HELPER_START_FAILED: $($_.Exception.Message); stdout='$stdout'; stderr='$stderr'"
  }
  $readyParts=$ready.Split(',');if($readyParts.Count -ne 3 -or [int]$readyParts[0] -ne $helper.Id){throw "RESERVATION_HELPER_IDENTITY_MISMATCH: '$ready', process PID=$($helper.Id)."}

@@ -170,13 +170,17 @@ try {
     $first=Start-ShotKit
     $notice=Wait-ForNotice $first
     Write-Host "PASS first-start notice shown: PID=$($first.Id), title='$($notice.Title)'"
-    # IDOK (1) closes only this process-owned modal dialog; no global keystrokes are sent.
-    if(-not [ShotKitFirstStartSmoke.Native]::PostMessageW($notice.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)) {
-        throw 'Could not acknowledge the first-start notice with WM_COMMAND/IDOK.'
+    # The same owned WM_CLOSE path is verified by the About smoke test.
+    if(-not [ShotKitFirstStartSmoke.Native]::PostMessageW($notice.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
+        throw 'Could not close the owned first-start notice with WM_CLOSE.'
     }
     $deadline=[DateTime]::UtcNow.AddSeconds(5)
     while([DateTime]::UtcNow -lt $deadline -and (Get-ModalDialogs $first).Count -gt 0) { Start-Sleep -Milliseconds 100 }
-    if((Get-ModalDialogs $first).Count -gt 0) { throw 'First-start notice remained open after acknowledgment.' }
+    $remaining=@(Get-ModalDialogs $first)
+    if($remaining.Count -gt 0) {
+        $details=$remaining | ForEach-Object { "'$($_.Title)': $($_.Text)" }
+        throw "Dialog remained after first-start notice acknowledgment: $($details -join '; ')"
+    }
     $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while([DateTime]::UtcNow -lt $deadline -and -not [IO.File]::Exists($settingsA)) { Start-Sleep -Milliseconds 100 }
     if(-not [IO.File]::Exists($settingsA)) { throw 'Acknowledgment did not persist first-start settings.' }
@@ -201,7 +205,7 @@ try {
     # C: File argument on a genuinely fresh profile suppresses the notice.
     Set-TestProfile 'argument'
     $png=Join-Path $testRoot 'argument.png'
-    [IO.File]::WriteAllBytes($png,[Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p0sAAAAASUVORK5CYII='))
+    [IO.File]::WriteAllBytes($png,[Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='))
     $argument=Start-ShotKit @($png)
     Assert-NoDialog $argument 'fresh start with image argument'
     $editorDeadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)

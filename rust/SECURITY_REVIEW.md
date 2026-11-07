@@ -21,7 +21,7 @@ Risiko = Auswirkung × Wahrscheinlichkeit, bezogen auf das Bedrohungsmodell. „
 
 | # | Angriffsfläche | Mögliche Auswirkung | Risiko | Stand | Nachweis / Issue |
 |---|---|---|---|---|---|
-| 1 | **Verpixeln** | Verpixelter Text lässt sich bei bekannter Schrift per Kandidatenvergleich zurückrechnen; laut Simulation 100 % Treffer, auch mit 24-px-Blöcken | **hoch** | Härtung beschlossen, im Plan; Werkzeug-Hinweis „keine sichere Schwärzung“ vorhanden | #5 (Simulation und Kriterium dort) |
+| 1 | **Verpixeln** | Verpixelter Text kann unter Umständen rekonstruiert werden | mittel | Gehärtet: mindestens 48 px, zufällige Rasterphase, vier Farbstufen und Rauschen; keine sichere Schwärzung. Die Rauschableitung mit SplitMix ist nicht kryptografisch (#85) | #5; `tests/pixelation_attack.rs` (Kandidatenvergleich und Gegenprobe) |
 | 2 | Weichzeichnen | Starke Unschärfe ist nicht dasselbe wie Entfernen; bei bekannter Schrift ist eine Rekonstruktion grundsätzlich denkbar | mittel | Werkzeug-Hinweis „keine sichere Schwärzung“; Handbuch verweist auf Schwärzen | nach 2.0.0 gleiche Messung wie #5 |
 | 3 | Schwärzen | Ungeschwärzte Pixel im Export oder in Effekten, die die Fläche abtasten | niedrig | Deckendes `[0,0,0,255]` wird **nach** allen anderen Formen angewendet; Verpixeln, Weichzeichnen und Lupe tasten eine bereits geschwärzte Quelle ab; Exporttests | `alpha_document.rs` `apply_redactions`; #52 (Prüfungen vom 06.11.), CI |
 | 4 | Automatische Ausgabe vor dem Schwärzen | Automatisches Speichern und Kopieren läuft vor dem Editor; spätere Schwärzungen ändern diese Rohkopien nicht | mittel | Dokumentiert (Anleitung). Standard beim ersten Start: automatisches Speichern und Kopieren **aus** | `rust/README.md`; Empfehlung: Hinweis auch im Handbuch, Abschnitt Sicherheit |
@@ -44,8 +44,8 @@ Zwei in #52 genannte, unbestätigte Hypothesen sind hier nicht enthalten. Sie we
 
 ## Ergebnis für v2.0.0
 
-- **Hoch:** nur Nr. 1 (Verpixeln). Die Behebung ist beschlossen und Teil von #72 (#5). Danach gibt es kein offenes hohes Risiko.
-- **Mittel (kein Blocker, als bekannte Grenze dokumentieren):** Nr. 2, 4, 5 (in Arbeit), 15, 16.
+- **Hoch:** kein offenes bestätigtes hohes Risiko. Die zwei oben genannten Hypothesen sind weiterhin unbestätigt.
+- **Mittel (kein Blocker, als bekannte Grenze dokumentieren):** Nr. 1, 2, 4, 5 (in Arbeit), 15, 16.
 - **Niedrig:** keine Aufgabe für v2.0.0.
 
 ## Empfehlungen nach 2.0.0
