@@ -15,6 +15,12 @@ use std::{
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 // Policy allowance, not a measured or enforced bound on external codec memory.
 const IMPORT_WORKSPACE_ALLOWANCE: usize = 16 * 1024 * 1024;
+// PNG's internal allocation policy remains in force for the decoder lifetime;
+// image::PngDecoder::set_limits cannot update the underlying png::Reader.
+// This caps cumulative codec accounting, including metadata and the output line,
+// and can reject otherwise valid PNGs. It is not an actual memory ceiling;
+// the external raster allocation remains subject to the separate full limits.
+const PNG_DECODER_ALLOCATION_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// A successful decode owns its pixels even if final capacity accounting fails.
 /// Callers must retain this value through admission/recovery instead of turning
@@ -245,7 +251,11 @@ fn decode_reader_admitted<R: BufRead + Seek>(
     limits.max_alloc = Some(MAX_IMAGE_BYTES);
     limits.max_image_width = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
     limits.max_image_height = Some(MAX_EDITABLE_IMAGE_DIMENSION as u32);
-    reader.limits(limits.clone());
+    let mut constructor_limits = limits.clone();
+    if reader.format() == Some(ImageFormat::Png) {
+        constructor_limits.max_alloc = Some(PNG_DECODER_ALLOCATION_LIMIT);
+    }
+    reader.limits(constructor_limits);
     // Own the encoded-copy lease here, outside the reader: image's JPEG
     // constructor drops its reader but retains the Vec until read_image ends.
     // Keep this reservation separate so raster admission cannot replace it.
@@ -856,6 +866,99 @@ mod tests {
             assert_eq!(budget.snapshot().used_bytes, 0);
             assert_eq!(std::fs::read(&path).unwrap(), bytes.into_inner());
             std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    // Encoder writes a CRC-valid eXIf chunk before the first IDAT. The caller
+    // controls the payload; this helper does not validate TIFF/Exif contents.
+    // Fixture generation runs only inside the test runner's sandbox.
+    fn png_with_header_exif(exif: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_chunk(png::chunk::eXIf, exif).unwrap();
+            writer
+                .write_image_data(&[1, 2, 3, 255, 4, 5, 6, 255])
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn png_header_metadata_policy_releases_leases_for_files_and_borrowed_bytes() {
+        // Stay clear of internal buffer/accounting overhead at the exact boundary.
+        // The CRC-valid eXIf chunk deliberately carries malformed TIFF/Exif
+        // (all zeros). The decoder currently retains it without TIFF validation;
+        // orientation extraction must fall back to NoTransforms. This exercises
+        // allocation policy, not acceptance of standards-compliant Exif data.
+        for (metadata_bytes, accepted) in [(8 * 1024 * 1024, true), (17 * 1024 * 1024, false)] {
+            let bytes = png_with_header_exif(&vec![0; metadata_bytes]);
+            let path = stream_test_path("png-header-policy.jpg");
+            std::fs::write(&path, &bytes).unwrap();
+            for from_file in [false, true] {
+                let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+                let existing = budget.try_acquire(37, AdmissionClass::Normal).unwrap();
+                let result = if from_file {
+                    decode_file_with_budget(&path, &budget).map(|(image, format, lease)| {
+                        assert_eq!(format, Some(ImageFormat::Png));
+                        BudgetedImage::from_decoded(image, lease)
+                    })
+                } else {
+                    decode_with_budget(&bytes, &budget)
+                };
+                match result {
+                    Ok(decoded) => {
+                        assert!(accepted);
+                        assert_eq!((decoded.image.width, decoded.image.height), (2, 1));
+                        assert!(decoded.post_decode_error.is_none());
+                        assert_eq!(
+                            budget.snapshot().used_bytes,
+                            37 + decoded.image.pixels.capacity()
+                        );
+                        drop(decoded);
+                    }
+                    Err(error) => {
+                        assert!(!accepted, "{error}");
+                        assert!(!error.contains("cannot reserve"), "{error}");
+                    }
+                }
+                assert_eq!(budget.snapshot().used_bytes, existing.bytes());
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn png_constructor_policy_preserves_exif_orientation() {
+        // Little-endian TIFF, one SHORT Orientation entry with value 6 (90 CW).
+        let exif = [
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let bytes = png_with_header_exif(&exif);
+        let budget = ResourceBudget::new(64 * 1024 * 1024, 0).unwrap();
+        let decoded = decode_with_budget(&bytes, &budget).unwrap();
+        assert_eq!((decoded.image.width, decoded.image.height), (1, 2));
+        assert_eq!(decoded.image.pixels, [3, 2, 1, 255, 6, 5, 4, 255]);
+        drop(decoded);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn png_constructor_policy_keeps_large_rasters_and_other_formats() {
+        let source = Image::new(2049, 2048, vec![255; 2049 * 2048 * 4]).unwrap();
+        assert!(source.pixels.len() as u64 > PNG_DECODER_ALLOCATION_LIMIT);
+        for format in [ImageFormat::Png, ImageFormat::Bmp] {
+            let bytes = encode(&source, format).unwrap();
+            let budget = ResourceBudget::new(128 * 1024 * 1024, 0).unwrap();
+            let decoded = decode_with_budget(&bytes, &budget).unwrap();
+            assert_eq!(decoded.image, source);
+            assert!(decoded.post_decode_error.is_none());
+            drop(decoded);
+            assert_eq!(budget.snapshot().used_bytes, 0);
         }
     }
 
