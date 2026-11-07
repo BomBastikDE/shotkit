@@ -13,6 +13,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -235,7 +236,7 @@ function Get-ProcessWindows {
 function Get-ProcessOutput {
     param([string] $Path)
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        $content = [IO.File]::ReadAllText($Path)
+        $content = Read-SharedText -Path $Path
         return $content.Trim()
     }
     return ''

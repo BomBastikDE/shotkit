@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
     throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner.'
 }
@@ -181,7 +182,7 @@ function Check-DialogText([string]$Expected,[string]$Stage) {
     if($null -eq $edit){throw 'TEXT_DIALOG_EDIT_CONTROL_MISSING.'}
     $actual=[ShotKitTextSmoke.Native]::EditText($edit.Handle)
     if($actual -cne $Expected){
-        $clickDiag=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue | Where-Object {$_ -like 'text-click *'} | Select-Object -Last 1) -join ''
+        $clickDiag=@(Read-SharedLines -Path $diagnosticPath | Where-Object {$_ -like 'text-click *'} | Select-Object -Last 1) -join ''
         throw "TEXT_DIALOG_INITIAL_CONTENT_WRONG at ${Stage}: expected '$Expected', got '$actual'. Last canvas click: $lastCanvasClick. Product text-click diagnostic: '$clickDiag'. Main title='$([ShotKitTextSmoke.Native]::Title($main.Handle))'."
     }
     return $d
@@ -258,7 +259,7 @@ function Read-Image([string]$Path) {
 }
 function Wait-ForTextPlacement {
     Wait-For {
-        $lines=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue)
+        $lines=@(Read-SharedLines -Path $diagnosticPath)
         $lines | Where-Object {$_ -match '^text-place image=\(30,30\) placed=true shapes=1$'} | Select-Object -Last 1
     } 5 'text placement confirmation from product diagnostics'
 }
@@ -375,7 +376,7 @@ try {
 }
 catch {
     $failure=$_
-    $lines=@(Get-Content -LiteralPath $diagnosticPath -ErrorAction SilentlyContinue | Select-Object -Last 80)
+        $lines=@(Read-SharedLines -Path $diagnosticPath | Select-Object -Last 80)
     if($lines.Count -gt 0){$failure=[Exception]::new("$($_ | Out-String)`nSHOTKIT_UIA_DIAGNOSTICS ($diagnosticPath):`n$($lines -join [Environment]::NewLine)")}
 }
 finally {
