@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'LOCAL_OPT_IN_REQUIRED: use run-all.ps1 -AllowLocalInteractive in a dedicated test session.' }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -114,8 +115,8 @@ function Wait-Until([scriptblock] $Condition, [string] $What) {
     while ([DateTime]::UtcNow -lt $until) {
         if ($shotKit -and $shotKit.HasExited) { throw "ShotKit exited before $What (code $($shotKit.ExitCode))." }
         if ($surface -and $surface.HasExited) {
-            $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-            $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+            $stdout = Read-SharedText -Path $stdoutPath
+            $stderr = Read-SharedText -Path $stderrPath
             throw "SURFACE_HELPER_EXITED before $What (code $($surface.ExitCode)); stdout='$stdout'; stderr='$stderr'"
         }
         $value = & $Condition
@@ -174,8 +175,8 @@ $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powe
     $surface = Start-Process -FilePath $powershellExe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"' + $helperPath + '"'),('"' + $readyFile + '"')) -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     try { $ready = Wait-Until { Test-Path -LiteralPath $readyFile } }
     catch {
-        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+        $stdout = Read-SharedText -Path $stdoutPath
+        $stderr = Read-SharedText -Path $stderrPath
         throw "SURFACE_HELPER_START_FAILED: $($_.Exception.Message); stdout='$stdout'; stderr='$stderr'"
     }
     $origin = [IO.File]::ReadAllText($readyFile).Split(',')

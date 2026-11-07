@@ -8,6 +8,7 @@ param(
 # writes. Native tray selection uses the existing output-matrix pattern, so this
 # fixture deliberately has NO owner/local-session opt-in.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 $fixtureClock = [Diagnostics.Stopwatch]::StartNew()
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) {
@@ -476,20 +477,7 @@ function Assert-Defaults([string] $Path, [bool] $OpenEditor = $true) {
         $s.auto_save -ceq $false -and $s.scroll_direction -ceq 'down') 'Usable safe default settings required'
 }
 function Read-Events {
-    if (-not [IO.File]::Exists($script:diagnostics)) { return @() }
-    # The application briefly opens this live log for appending. Retry only
-    # Windows sharing/lock violations; propagate all other failures unchanged.
-    for ($attempt = 0; ; $attempt++) {
-        try { return @([IO.File]::ReadAllLines($script:diagnostics)) }
-        catch {
-            $cause = $_.Exception
-            while ($null -ne $cause -and $cause -isnot [IO.IOException]) { $cause = $cause.InnerException }
-            if ($null -eq $cause) { throw }
-            $win32Error = $cause.HResult -band 0xFFFF
-            if ($attempt -ge 10 -or $win32Error -notin @(32, 33)) { throw }
-            Start-Sleep -Milliseconds 50
-        }
-    }
+    return @(Read-SharedLines -Path $script:diagnostics)
 }
 function Assert-Event([string] $Event) {
     Assert-True ((Read-Events) -ccontains $Event) "Missing app diagnostic '$Event'"

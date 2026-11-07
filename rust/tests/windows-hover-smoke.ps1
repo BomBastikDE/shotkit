@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -228,8 +229,8 @@ function Wait-ForCondition {
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($OwnedProcess.HasExited) {
             if ($OwnedProcess.Id -eq $surface.Id) {
-                $stdout = if (Test-Path -LiteralPath $helperStdout) { [IO.File]::ReadAllText($helperStdout).Trim() } else { '' }
-                $stderr = if (Test-Path -LiteralPath $helperStderr) { [IO.File]::ReadAllText($helperStderr).Trim() } else { '' }
+                $stdout = (Read-SharedText -Path $helperStdout).Trim()
+                $stderr = (Read-SharedText -Path $helperStderr).Trim()
                 throw "Synthetic surface exited before $Description (exit $($OwnedProcess.ExitCode)).`nstdout:`n$stdout`nstderr:`n$stderr"
             }
             throw "ShotKit exited before $Description (exit code $($OwnedProcess.ExitCode))."

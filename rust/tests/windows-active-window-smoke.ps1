@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -411,7 +412,7 @@ finally { $surface.Dispose() }
 catch {
     foreach ($log in @($helperStdout, $helperStderr)) {
         if (Test-Path -LiteralPath $log -PathType Leaf) {
-            $contents = Get-Content -LiteralPath $log -Raw
+            $contents = Read-SharedText -Path $log
             if ($contents) { Write-Host ("Helper log {0}:`n{1}" -f (Split-Path -Leaf $log), $contents) }
         }
     }

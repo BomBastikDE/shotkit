@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
 }
@@ -179,7 +180,7 @@ function Get-ProcessWindows {
 function Get-ProcessOutput {
     param([string] $Path)
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        $content = [IO.File]::ReadAllText($Path)
+        $content = Read-SharedText -Path $Path
         return $content.Trim()
     }
     return ''
@@ -421,7 +422,7 @@ $surfaceForm = [ShotKitScrollDiagnosticsSurface.Surface]::new($ReadyFile, $Wheel
     if ($completionText -notmatch 'Bildinhalt' -or $completionText -notmatch 'Diagnose gespeichert:') {
         throw "Completion did not report an ambiguous match and a saved diagnosis: '$completionText'"
     }
-    if (-not (Test-Path -LiteralPath $wheelFile -PathType Leaf) -or ([IO.File]::ReadAllText($wheelFile).Trim() -cne '1')) {
+    if (-not (Test-Path -LiteralPath $wheelFile -PathType Leaf) -or ((Read-SharedText -Path $wheelFile).Trim() -cne '1')) {
         throw 'Expected exactly one wheel event on the synthetic surface.'
     }
     $pngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)

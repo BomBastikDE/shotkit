@@ -5,6 +5,7 @@ param(
     [ValidateRange(5,60)][int]$ActionTimeoutSeconds=15
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if(($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive runner or dedicated opt-in session required.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -82,13 +83,13 @@ function Assert-OwnedInputTarget($H,$X,$Y){if([ShotKitZoomSmoke.N]::Owner($H) -n
 function Send-ModifiedWheel($H,[int]$X,[int]$Y,[int]$Delta,[byte]$Key,[int]$Flag){
  Focus-Editor $H;Assert-OwnedInputTarget $H $X $Y
  if(([ShotKitZoomSmoke.N]::GetAsyncKeyState($Key) -band 0x8000) -ne 0){throw "MODIFIER_ALREADY_DOWN: key=$Key"}
- $before=@(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}}).Count
+ $before=@(Read-SharedLines -Path $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}).Count
  try {
   [ShotKitZoomSmoke.N]::keybd_event($Key,0,0,[UIntPtr]::Zero)
   [void](Wait-For {([ShotKitZoomSmoke.N]::GetAsyncKeyState($Key) -band 0x8000) -ne 0} 'modifier key down' 5)
   Assert-OwnedInputTarget $H $X $Y
   [ShotKitZoomSmoke.N]::Wheel($X,$Y,$Delta)
-  $line=Wait-For { $lines=@(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}});if($lines.Count -gt $before){$lines[$before]} } 'wheel event processed by editor' 5
+  $line=Wait-For { $lines=@(Read-SharedLines -Path $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '});if($lines.Count -gt $before){$lines[$before]} } 'wheel event processed by editor' 5
   $script:lastPanWheelDiagnostic=$line
   if($line -notmatch '^wheel hwnd=(\d+) flags=(\d+) delta=(-?\d+) mode=([012]) '){throw "WHEEL_DIAGNOSTIC_INVALID: $line"}
   $expectedMode=if(($Flag -band 0x0004) -ne 0){1}else{0}
@@ -96,9 +97,9 @@ function Send-ModifiedWheel($H,[int]$X,[int]$Y,[int]$Delta,[byte]$Key,[int]$Flag
   return $line
  } finally {[ShotKitZoomSmoke.N]::keybd_event($Key,0,2,[UIntPtr]::Zero)}
 }
-function Get-WheelDiagnosticCount { @(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}}).Count }
+function Get-WheelDiagnosticCount { @(Read-SharedLines -Path $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}).Count }
 function Wait-WheelDiagnostic([int]$Before,$H,[int]$Delta,[int]$Flag,[int]$Mode){
- $line=Wait-For { $lines=@(if(Test-Path -LiteralPath $diagnosticLog){Get-Content -LiteralPath $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '}});if($lines.Count -gt $Before){$lines[$Before]} } 'wheel event processed by editor' 5
+ $line=Wait-For { $lines=@(Read-SharedLines -Path $diagnosticLog | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] '});if($lines.Count -gt $Before){$lines[$Before]} } 'wheel event processed by editor' 5
  $script:lastPanWheelDiagnostic=$line
  if($line -notmatch '^wheel hwnd=(\d+) flags=(\d+) delta=(-?\d+) mode=([012]) '){throw "WHEEL_DIAGNOSTIC_INVALID: $line"}
  if([UInt64]$Matches[1] -ne [UInt64]($H.ToInt64()) -or [int]$Matches[3] -ne $Delta -or ([int]$Matches[2] -band $Flag) -ne $Flag -or [int]$Matches[4] -ne $Mode){throw "PAN_WHEEL_DELIVERY_MISMATCH: $line"}
@@ -176,7 +177,7 @@ try {
  if($proc -and -not $proc.HasExited -and $null -eq $failure){$failure='OWNED_PROCESS_CLEANUP_FAILED'}
  $mayRemoveRoot=($null -eq $proc -or $proc.HasExited)
  if($proc){$proc.Dispose()};$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldDiagnostic
- if($null -ne $failure -and (Test-Path -LiteralPath $diagnosticLog -PathType Leaf)){try{Write-Output 'WHEEL_DIAGNOSTICS (last 60 lines):';Get-Content -LiteralPath $diagnosticLog -Tail 60 | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] pan_before=\(-?\d+, -?\d+\) zoom_before=[0-9.eE+-]+ pan_after=\(-?\d+, -?\d+\) zoom_after=[0-9.eE+-]+$'} | ForEach-Object {Write-Output $_}}catch{Write-Output 'WHEEL_DIAGNOSTICS_UNAVAILABLE'}}
+ if($null -ne $failure -and (Test-Path -LiteralPath $diagnosticLog -PathType Leaf)){try{Write-Output 'WHEEL_DIAGNOSTICS (last 60 lines):';Read-SharedLines -Path $diagnosticLog | Select-Object -Last 60 | Where-Object {$_ -match '^wheel hwnd=\d+ flags=\d+ delta=-?\d+ mode=[012] pan_before=\(-?\d+, -?\d+\) zoom_before=[0-9.eE+-]+ pan_after=\(-?\d+, -?\d+\) zoom_after=[0-9.eE+-]+$'} | ForEach-Object {Write-Output $_}}catch{Write-Output 'WHEEL_DIAGNOSTICS_UNAVAILABLE'}}
  if($mayRemoveRoot -and (Test-Path -LiteralPath $root)){Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
 }
 if($null -ne $failure){throw $failure}
