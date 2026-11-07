@@ -4,8 +4,6 @@
 
 Die C#-Version v1.2.0 ist historisch abgeschlossen; Rust ist die maßgebliche Weiterentwicklung. Die EXE ist unsigniert. Echte Windows-Praxistests mit gemischter DPI und mehreren Monitoren sowie Teile der Sicherheitsprüfung stehen noch aus. Verpixelung ist keine sichere Schwärzung. Bei abruptem Abbruch während des Speicherns können temporäre Dateien mit Bilddaten zurückbleiben; Hinweise stehen in der [Rust-Anleitung](README.md).
 
-- Scrollaufnahmen melden jetzt ausdrücklich, dass das Seitenende nicht bestätigt wurde und das Bild möglicherweise unvollständig ist. Die bisherige Aufnahme bleibt auch bei einer hängenden oder langsam ladenden Seite erhalten; Bildende und Übergänge bitte prüfen ([#58](https://github.com/BomBastikDE/shotkit/issues/58)).
-
 - Auch das Rendern annotierter Bilder zum Speichern verwendet das gemeinsame Bildbudget; das Ergebnis behält seine Reservierung bis zum Ende der Ausgabe. Bei knappem Budget wird das Speichern vor dem Schreiben mit einer Meldung abgebrochen, das Dokument bleibt erhalten. Bilder ohne Anmerkungen verwenden weiterhin das vorhandene Bild ohne zusätzliche Pixelkopie. Native GDI-/Zwischenablagepuffer, Encoder-Konvertierungen und Hilfsspeicher sowie RSS bleiben außerhalb dieser Grenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Bei Gauß-Weichzeichnung in der budgetierten Editor-Komposition werden die drei gleichzeitig benötigten Arbeitsbuffer im gemeinsamen Bildbudget berücksichtigt. Bei knappen Ressourcen kann die Vorschau daher früher kontrolliert abbrechen; native GDI-Puffer und Encoder-Hilfsspeicher bleiben gesondert zu betrachten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
