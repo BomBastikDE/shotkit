@@ -340,7 +340,7 @@ impl ScrollIo for WindowsScrollIo {
             return Err("Zielfenster ist nicht mehr aktiv; Scroll-Aufnahme beendet.".into());
         }
         let (x, y, width, height) = self.rect;
-        self.scroll_cursor = match direction {
+        let requested_cursor = match direction {
             Direction::Down => Point {
                 x: x + width - 8.min(width / 4),
                 y: y + height / 2,
@@ -350,9 +350,23 @@ impl ScrollIo for WindowsScrollIo {
                 y: y + height - 8.min(height / 4),
             },
         };
-        if unsafe { SetCursorPos(self.scroll_cursor.x, self.scroll_cursor.y) } == 0 {
+        if unsafe { SetCursorPos(requested_cursor.x, requested_cursor.y) } == 0 {
             return Err("Mauszeiger konnte nicht im Aufnahmebereich positioniert werden.".into());
         }
+        // Set/GetCursorPos use the same thread DPI context (physical desktop
+        // coordinates under the PerMonitorV2 manifest). Windows may clamp a
+        // requested point to ClipCursor or a monitor edge. Read the actual
+        // position before sending input; keep exact movement detection thereafter.
+        let mut actual_cursor = Point::default();
+        // SAFETY: actual_cursor is an exclusive, initialized Win32 POINT output
+        // and remains alive until this synchronous, non-reentrant call returns.
+        if unsafe { GetCursorPos(&mut actual_cursor) } == 0 {
+            return Err("Mausposition nach dem Positionieren konnte nicht gelesen werden.".into());
+        }
+        if !cursor_in_rect(actual_cursor, self.rect) {
+            return Err("Mauszeiger kann nicht im Aufnahmebereich positioniert werden; Scroll-Aufnahme beendet.".into());
+        }
+        self.scroll_cursor = actual_cursor;
         let input = wheel_input(direction, notches);
         // SAFETY: input has Win32 INPUT layout and lives until SendInput returns.
         // SendInput may deliver messages; no reference to global state is held here.
@@ -385,6 +399,11 @@ impl ScrollIo for WindowsScrollIo {
     }
 
     fn progress(&mut self, _length: usize) {}
+}
+
+fn cursor_in_rect(point: Point, (x, y, width, height): (i32, i32, i32, i32)) -> bool {
+    // new() has already validated positive dimensions and non-overflowing edges.
+    point.x >= x && point.x < x + width && point.y >= y && point.y < y + height
 }
 
 fn wheel_input(direction: Direction, notches: i32) -> Input {
@@ -441,6 +460,17 @@ mod tests {
         }
         assert!(check_input_result(1).is_ok());
         assert!(check_input_result(0).is_err());
+    }
+
+    #[test]
+    fn clamped_cursor_must_remain_within_half_open_capture_bounds() {
+        let rect = (-1200, -200, 600, 400);
+        for (x, y) in [(-1200, -200), (-601, 199), (-604, 0)] {
+            assert!(cursor_in_rect(Point { x, y }, rect));
+        }
+        for (x, y) in [(-1201, 0), (-600, 0), (-900, -201), (-900, 200)] {
+            assert!(!cursor_in_rect(Point { x, y }, rect));
+        }
     }
 
     #[test]

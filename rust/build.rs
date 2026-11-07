@@ -69,6 +69,7 @@ fn run_compiler(program: &Path, args: &[OsString], resource_dir: &Path) -> Resul
 fn main() {
     println!("cargo:rerun-if-changed=resources/shotkit.rc");
     println!("cargo:rerun-if-changed=resources/shotkit.ico");
+    println!("cargo:rerun-if-changed=resources/shotkit.manifest");
     for variable in [
         "RC",
         "WindowsSdkDir",
