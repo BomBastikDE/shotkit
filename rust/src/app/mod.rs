@@ -679,7 +679,7 @@ unsafe fn refresh_title(h: H) {
     let tool = state
         .editor
         .as_ref()
-        .map(|editor| format!(" · Werkzeug {:?}", editor.tool()))
+        .map(|editor| format!(" · Werkzeug: {}", editor.tool().display_name()))
         .unwrap_or_default();
     let title = format!(
         "{}{} – ShotKit{} · Strg+S speichern",

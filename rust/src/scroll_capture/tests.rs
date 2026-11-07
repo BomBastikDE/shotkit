@@ -51,6 +51,9 @@ struct FakeScrollIo {
     capture_calls: usize,
     fail_capture_at: Option<usize>,
     scroll_calls: usize,
+    stall_after: Option<usize>,
+    resume_at_ms: Option<u64>,
+    elapsed_ms: u64,
     progress: Vec<usize>,
     diagnostics: Vec<(Image, Image, String)>,
     diagnostic_success: bool,
@@ -75,6 +78,9 @@ impl FakeScrollIo {
             capture_calls: 0,
             fail_capture_at: None,
             scroll_calls: 0,
+            stall_after: None,
+            resume_at_ms: None,
+            elapsed_ms: 0,
             progress: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_success: false,
@@ -98,6 +104,9 @@ impl FakeScrollIo {
             capture_calls: 0,
             fail_capture_at: None,
             scroll_calls: 0,
+            stall_after: None,
+            resume_at_ms: None,
+            elapsed_ms: 0,
             progress: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_success: false,
@@ -211,6 +220,11 @@ impl ScrollIo for FakeScrollIo {
             return Err("unexpected fake scroll direction".into());
         }
         self.scroll_calls += 1;
+        if self.stall_after.is_some_and(|at| self.offset >= at)
+            && self.resume_at_ms.is_none_or(|at| self.elapsed_ms < at)
+        {
+            return Ok(());
+        }
         let viewport = if self.horizontal {
             self.width
         } else {
@@ -226,7 +240,8 @@ impl ScrollIo for FakeScrollIo {
         self.offset = (self.offset as isize + delta).clamp(0, max as isize) as usize;
         Ok(())
     }
-    fn wait_ms(&mut self, _: u64) {
+    fn wait_ms(&mut self, millis: u64) {
+        self.elapsed_ms += millis;
         self.wait_calls += 1;
         if self.cancel_on_wait == Some(self.wait_calls) {
             self.cancel = true;
@@ -253,11 +268,7 @@ fn down_stitches_a_moving_synthetic_page_to_its_full_length() {
     assert_eq!(out.image.width, 120);
     assert_eq!(out.image.height, 610);
     assert_eq!(out.image.pixels, io.capture_page_vertical(610));
-    assert!(
-        out.reason.contains("Ende des scrollbaren Bereichs"),
-        "{}",
-        out.reason
-    );
+    assert!(out.reason.contains(UNCONFIRMED_END), "{}", out.reason);
     assert!(io.scroll_calls >= 3);
     assert!(!io.progress.is_empty());
 }
@@ -306,11 +317,7 @@ fn sticky_header_and_footer_are_not_duplicated_across_stitched_seams() {
         io.scroll_calls > 0 && io.scroll_calls <= 150,
         "scroll loop must remain bounded"
     );
-    assert!(
-        out.reason.contains("Ende des scrollbaren Bereichs"),
-        "{}",
-        out.reason
-    );
+    assert!(out.reason.contains(UNCONFIRMED_END), "{}", out.reason);
 }
 
 #[test]
@@ -318,7 +325,10 @@ fn cancellation_returns_the_captured_prefix_without_scrolling() {
     let mut io = FakeScrollIo::vertical(220, 700);
     io.cancel = true;
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, "Mit Esc beendet.");
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(out.image.height, 220);
     assert_eq!(io.scroll_calls, 0);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
@@ -329,7 +339,10 @@ fn mouse_movement_before_first_scroll_keeps_initial_frame() {
     let mut io = FakeScrollIo::vertical(220, 700);
     io.mouse_move = true;
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, "Durch Mausbewegung beendet.");
+    assert_eq!(
+        out.reason,
+        "Durch Mausbewegung beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 0);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
 }
@@ -340,7 +353,10 @@ fn cancellation_during_post_scroll_wait_does_not_capture_or_stitch_unsettled_fra
     // Wait 1 settles the initial viewport; wait 2 follows the first scroll.
     io.cancel_on_wait = Some(2);
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, "Mit Esc beendet.");
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 1);
     assert_eq!(io.capture_calls, 2);
     assert_eq!(out.image.height, 220);
@@ -355,7 +371,10 @@ fn cancellation_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
     io.cancel_on_wait = Some(4);
     let out = run(&mut io, Direction::Down).unwrap();
 
-    assert_eq!(out.reason, "Mit Esc beendet.");
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 2);
     assert_eq!(
         io.capture_calls, 4,
@@ -371,7 +390,10 @@ fn mouse_movement_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
     io.mouse_move_on_wait = Some(4);
     let out = run(&mut io, Direction::Down).unwrap();
 
-    assert_eq!(out.reason, "Durch Mausbewegung beendet.");
+    assert_eq!(
+        out.reason,
+        "Durch Mausbewegung beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 2);
     assert_eq!(
         io.capture_calls, 4,
@@ -393,15 +415,19 @@ fn capture_failure_after_initial_frame_returns_captured_prefix() {
         out.reason
     );
     assert!(out.reason.contains("Aufnahme bis hierhin übernommen"));
+    assert!(out.reason.starts_with(UNCONFIRMED_END));
     assert_eq!(out.image.height, 220);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
 }
 
 #[test]
-fn static_page_is_detected_as_end_after_two_attempts() {
+fn static_page_stops_without_claiming_a_confirmed_end() {
     let mut io = FakeScrollIo::vertical(220, 220);
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, "Ende des scrollbaren Bereichs erreicht.");
+    assert_eq!(
+        out.reason,
+        unconfirmed_reason("Keine weitere Scrollbewegung erkennbar.")
+    );
     assert_eq!(out.image.height, 220);
     assert_eq!(io.scroll_calls, 2);
 }
@@ -512,7 +538,10 @@ fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
         };
         let out = run(&mut io, Direction::Down).unwrap();
         assert_eq!(io.offset, PAGE_LEN - HEIGHT);
-        assert_eq!(out.reason, "Ende des scrollbaren Bereichs erreicht.");
+        assert_eq!(
+            out.reason,
+            unconfirmed_reason("Keine weitere Scrollbewegung erkennbar.")
+        );
         assert_eq!(out.fallback_count, 0);
         assert_eq!((out.image.width, out.image.height), (WIDTH, PAGE_LEN));
         let mut expected = vec![255; WIDTH * PAGE_LEN * 4];
@@ -691,11 +720,7 @@ fn rightward_capture_rotates_back_to_output_orientation() {
     let out = run(&mut io, Direction::Right).unwrap();
     assert_eq!((out.image.width, out.image.height), (610, 220));
     assert_eq!(out.image.pixels, io.capture_page_horizontal(610));
-    assert!(
-        out.reason.contains("Ende des scrollbaren Bereichs"),
-        "{}",
-        out.reason
-    );
+    assert!(out.reason.contains(UNCONFIRMED_END), "{}", out.reason);
     assert!(io.scroll_calls >= 3);
 }
 
@@ -714,11 +739,7 @@ fn leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order() {
         "all pixels and seams must return in left-to-right page order"
     );
     assert_eq!(io.offset, 0, "capture should reach the page's left edge");
-    assert!(
-        out.reason.contains("Ende des scrollbaren Bereichs"),
-        "{}",
-        out.reason
-    );
+    assert!(out.reason.contains(UNCONFIRMED_END), "{}", out.reason);
     assert!(io.scroll_calls >= 3);
 }
 
@@ -898,4 +919,50 @@ fn diagnostic_write_failure_keeps_partial_image_without_claiming_a_path() {
     assert_eq!(io.diagnostics.len(), 1);
     assert_eq!(out.image.pixels, initial);
     assert!(!out.reason.contains("Diagnose gespeichert"));
+}
+
+#[test]
+fn stalled_or_delayed_page_keeps_exact_partial_pixels_and_warns_about_unconfirmed_end() {
+    for resume_at_ms in [None, Some(10_000)] {
+        let mut io = FakeScrollIo::vertical(220, 1_400);
+        io.stall_after = Some(100);
+        io.resume_at_ms = resume_at_ms;
+        let out = run(&mut io, Direction::Down).unwrap();
+        assert!(io.offset >= 100);
+        assert!(
+            io.offset < io.page_len - io.height,
+            "fixture must stop before its true end"
+        );
+        assert_eq!(out.image.height, io.offset + io.height);
+        assert_eq!(out.image.pixels, io.capture_page_vertical(out.image.height));
+        assert_eq!(out.fallback_count, 0);
+        assert!(out.reason.starts_with(UNCONFIRMED_END));
+        assert!(out
+            .reason
+            .contains("Keine weitere Scrollbewegung erkennbar."));
+        assert!(!out
+            .reason
+            .contains("Ende des scrollbaren Bereichs erreicht"));
+        assert!(
+            io.elapsed_ms < 10_000,
+            "delayed fixture resumes after capture stopped"
+        );
+        let stopped_at = io.offset;
+        io.wait_ms(10_000);
+        io.scroll(Direction::Down, 1).unwrap();
+        assert_eq!(io.offset > stopped_at, resume_at_ms.is_some());
+    }
+}
+
+#[test]
+fn only_pure_user_stops_omit_the_unconfirmed_end_warning() {
+    for reason in [
+        "Keine weitere Scrollbewegung erkennbar.",
+        "Maximale Anzahl Scroll-Schritte erreicht.",
+        "Scrollaufnahme konnte nicht gestartet werden.",
+        "Mit Esc beendet.\nDie Aufnahme konnte nicht zurückgedreht werden.",
+        "Durch Mausbewegung beendet.\nDie Aufnahme konnte nicht zurückgedreht werden.",
+    ] {
+        assert_eq!(completion_reason(reason), unconfirmed_reason(reason));
+    }
 }

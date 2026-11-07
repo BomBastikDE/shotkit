@@ -137,7 +137,7 @@ function Activate-Key([byte]$Key,[string]$Tool) {
     if(-not [ShotKitGaussianBlurSmoke.N]::SetForegroundWindow($main.H)){throw 'EDITOR_FOCUS_FAILED'}
     [ShotKitGaussianBlurSmoke.N]::keybd_event($Key,0,0,[UIntPtr]::Zero)
     [ShotKitGaussianBlurSmoke.N]::keybd_event($Key,0,2,[UIntPtr]::Zero)
-    [void](Wait-Value {Get-Main | Where-Object {$_.Title -like "*Werkzeug $Tool*"}} "$Tool tool activation")
+    [void](Wait-Value {Get-Main | Where-Object {$_.Title -like "*Werkzeug: $Tool*"}} "$Tool tool activation")
 }
 function Drag-Image([int]$x1,[int]$y1,[int]$x2,[int]$y2) {
     $pt=[Activator]::CreateInstance([ShotKitGaussianBlurSmoke.Point]); if(-not [ShotKitGaussianBlurSmoke.N]::ClientToScreen($main.H,[ref]$pt)){throw 'ClientToScreen failed'}
@@ -172,7 +172,7 @@ try {
     $vw=$client.Right;$vh=$client.Bottom-$tr.Bottom
     $fit=[Math]::Min($vw/160.0,$vh/120.0);$displayW=[int][Math]::Round(160*$fit);$displayH=[int][Math]::Round(120*$fit)
     $viewX=[int][Math]::Floor(($vw-$displayW)/2.0);$viewY=$tr.Bottom+[int][Math]::Floor(($vh-$displayH)/2.0)
-    Activate-Key 0x57 'GaussianBlur'
+    Activate-Key 0x57 'Weichzeichnen'
     Drag-Image 60 40 130 100
     $blurred=Save-AndAssert 'W blur export' {param($im) Assert-Blurred $im 'W blur export' $false}
     Click-Button $main.H 'Zurück'
@@ -181,10 +181,10 @@ try {
     [void](Save-AndAssert 'redo blur export' {param($im) Assert-Same $im $blurred 'redo blur export'})
 
     # Exercise both annotation orders: black over blur, then blur over black.
-    Activate-Key 0x53 'Redact'
+    Activate-Key 0x53 'Schwärzen'
     Drag-Image 24 20 90 80
     $redacted=Save-AndAssert 'redaction over blur export' {param($im) Assert-Blurred $im 'redaction over blur export' $true}
-    Activate-Key 0x57 'GaussianBlur'
+    Activate-Key 0x57 'Weichzeichnen'
     Drag-Image 60 40 130 100
     $overlap=Save-AndAssert 'blur over redaction export' {param($im) Assert-Blurred $im 'blur over redaction export' $true}
     Click-Button $main.H 'Zurück'

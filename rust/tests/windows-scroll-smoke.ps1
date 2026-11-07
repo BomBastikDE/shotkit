@@ -504,6 +504,9 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $Cl
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
+    if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
+        throw "Scroll did not warn that the document end is unconfirmed. Dialog='$completionText'"
+    }
     if ($CursorClip -ne 'None') {
         $clipEvidence = @((Read-SharedText -Path $clipProofFile).Trim() -split '\r?\n')
         $wheelEvidence = @($clipEvidence | Where-Object { $_.StartsWith('wheel,') })
@@ -511,7 +514,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $Cl
     }
     $expectedReason = if ($CursorClip -eq 'Outside') {
         'Mauszeiger kann nicht im Aufnahmebereich positioniert werden'
-    } else { 'Ende des scrollbaren Bereichs erreicht.' }
+    } else { 'Keine weitere Scrollbewegung erkennbar.' }
     if ($completionText -notlike "*$expectedReason*") {
         throw "Scroll completion mismatch. Expected='$expectedReason' Dialog='$completionText'"
     }

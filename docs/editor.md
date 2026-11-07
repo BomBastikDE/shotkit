@@ -7,6 +7,9 @@ bekommt ein eigenes Fenster; mehrere Bilder lassen sich parallel bearbeiten. All
 bis zum Speichern einzeln auswählbar und änderbar. Fährst du mit der Maus über ein Symbol, nennt ShotKit seinen
 Namen und gegebenenfalls das Tastenkürzel.
 
+Der Fenstertitel zeigt den geöffneten Dateipfad und das aktive Werkzeug mit seinem Namen aus der Werkzeugleiste.
+Ein Stern vor dem Dateipfad kennzeichnet ungespeicherte Änderungen; beides bleibt beim Werkzeugwechsel sichtbar.
+
 ## Werkzeuge
 
 | Werkzeug | Taste | Bedienung |

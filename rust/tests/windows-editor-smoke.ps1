@@ -587,7 +587,7 @@ try {
     # Select the actual toolbar tool and verify the editor accepted the command.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Rechteck (R)') -Description 'rectangle tool')
     [void](Wait-ForValue -Seconds 5 -Description 'rectangle tool activation' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Rectangle*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Rechteck*' } | Select-Object -First 1
     })
 
     # Drag a large rectangle well inside the image; coordinates are derived
@@ -682,7 +682,7 @@ try {
     # Select yellow explicitly so this case isolates marker rendering and compositing.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Marker (M)') -Description 'text marker tool')
     [void](Wait-ForValue -Seconds 5 -Description 'text marker tool activation' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Highlight*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Marker*' } | Select-Object -First 1
     })
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Gelb') -Description 'yellow marker color')
     Invoke-CanvasDrag 120 80 155 115 $false
@@ -738,7 +738,7 @@ try {
     # leave the editor foreground and focused; the test never sets focus.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Auswahl (V)') -Description 'select tool for keyboard nudge')
     [void](Wait-ForValue -Seconds 5 -Description 'select tool activation for keyboard nudge' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Select*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Auswahl*' } | Select-Object -First 1
     })
     $selectX = [int][Math]::Floor(($squareBounds.Left + $squareBounds.Right) / 2.0)
     $selectY = $squareBounds.Top
@@ -815,16 +815,16 @@ try {
     # A too-small crop keeps Crop active; a committed crop switches to Select.
     [void](Click-VisibleButton -Parent $main.Handle -ExpectedTexts @('Zuschneiden (C)') -Description 'crop tool')
     [void](Wait-ForValue -Seconds 5 -Description 'crop tool activation' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Crop*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Zuschneiden*' } | Select-Object -First 1
     })
     Invoke-CanvasDrag 30 30 30 30 $false
     [void](Wait-ForValue -Seconds 2 -Description 'small crop leaving Crop active' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Crop*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Zuschneiden*' } | Select-Object -First 1
     })
     Invoke-CanvasDrag 30 20 130 100 $false
     Confirm-RedoDiscard 1
     [void](Wait-ForValue -Seconds 5 -Description 'successful crop switching to Select' -Probe {
-        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug Select*' } | Select-Object -First 1
+        Get-MainWindow | Where-Object { $_.Title -like '*Werkzeug: Auswahl*' } | Select-Object -First 1
     })
     Save-FromToolbar $main.Handle
     [void](Wait-ForImageState -Path $inputPath -Description 'saved cropped image dimensions' -Predicate {

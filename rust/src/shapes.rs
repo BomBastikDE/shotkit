@@ -5,6 +5,7 @@ mod callout;
 mod cursor_sprite;
 mod geometry;
 mod spotlight_magnifier;
+mod tool_labels;
 pub use callout::{CalloutData, CalloutGeometry, CalloutTextLayout, MAX_CALLOUT_TEXT_BYTES};
 pub use cursor_sprite::CursorSprite;
 #[cfg(windows)]
