@@ -205,7 +205,7 @@ try {
     # C: File argument on a genuinely fresh profile suppresses the notice.
     Set-TestProfile 'argument'
     $png=Join-Path $testRoot 'argument.png'
-    [IO.File]::WriteAllBytes($png,[Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p0sAAAAASUVORK5CYII='))
+    [IO.File]::WriteAllBytes($png,[Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='))
     $argument=Start-ShotKit @($png)
     Assert-NoDialog $argument 'fresh start with image argument'
     $editorDeadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
