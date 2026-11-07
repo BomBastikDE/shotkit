@@ -40,7 +40,38 @@ namespace ShotKitFirstStartSmoke {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
-        static string Text(IntPtr hwnd) { var b=new StringBuilder(2048); GetWindowTextW(hwnd,b,b.Capacity); return b.ToString(); }
+        [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [StructLayout(LayoutKind.Sequential)]
+        struct CopyData { public UIntPtr Tag; public uint Bytes; public IntPtr Data; }
+        public static long CopyDataBusy(IntPtr hwnd, string path) {
+            // WM_COPYDATA requires a valid COPYDATASTRUCT even when the
+            // receiver rejects the request before reading its payload.
+            IntPtr payload=Marshal.StringToHGlobalUni(path);
+            IntPtr packet=IntPtr.Zero;
+            try {
+                var data=new CopyData { Tag=new UIntPtr(0x534b5255u), Bytes=checked((uint)((path.Length+1)*2)), Data=payload };
+                packet=Marshal.AllocHGlobal(Marshal.SizeOf<CopyData>());
+                Marshal.StructureToPtr(data,packet,false);
+                IntPtr result;
+                if(SendMessageTimeoutW(hwnd,0x004a,IntPtr.Zero,packet,2,1000,out result)==IntPtr.Zero) {
+                    int error=Marshal.GetLastWin32Error();
+                    throw new InvalidOperationException("WM_COPYDATA send failed; Win32 error="+error);
+                }
+                return result.ToInt64();
+            }
+            finally {
+                if(packet!=IntPtr.Zero) Marshal.FreeHGlobal(packet);
+                Marshal.FreeHGlobal(payload);
+            }
+        }
+        [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode)] static extern IntPtr ReadControlText(IntPtr hwnd, uint message, IntPtr w, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+        static string Text(IntPtr hwnd) {
+            var b=new StringBuilder(4096); GetWindowTextW(hwnd,b,b.Capacity);
+            // GetWindowText cannot read another process's EDIT content. WM_GETTEXT
+            // is a system message; Windows marshals this bounded output buffer.
+            if(b.Length==0) { IntPtr result; ReadControlText(hwnd,0x000d,new IntPtr(b.Capacity),b,2,1000,out result); }
+            return b.ToString();
+        }
         static string AllText(IntPtr hwnd) {
             var b=new StringBuilder(Text(hwnd));
             EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr ignored) {
@@ -201,6 +232,65 @@ try {
     Assert-NoDialog $existing 'existing settings'
     Write-Host "PASS existing settings suppress notice: PID=$($existing.Id)"
     Stop-ShotKit $existing
+
+    # Real release panic=abort remnant, generated only in an owned CI fixture.
+    $probe=Join-Path (Split-Path $ExePath -Parent) 'examples/atomic_save_abort_probe.exe'
+    $probeOutput=@(& $probe --ui-fixture)
+    if($LASTEXITCODE -ne 0) { throw 'Could not create real abort recovery fixture.' }
+    $fixtureLine=@($probeOutput | Where-Object { $_ -like 'RECOVERY_UI_FIXTURE=*' })
+    if($fixtureLine.Count -ne 1) { throw 'Abort helper did not identify its owned fixture.' }
+    $recoveryRoot=$fixtureLine[0].Substring('RECOVERY_UI_FIXTURE='.Length)
+    $candidate=@(Get-ChildItem -LiteralPath $recoveryRoot -Force -File | Where-Object { $_.Name -match '^\.shotkit-[0-9]+-[0-9]+-[0-9]+\.tmp$' })
+    if($candidate.Count -ne 1) { throw 'Expected one actual aborted writer remnant.' }
+    $candidateName=$candidate[0].Name
+    $candidate=$candidate[0].FullName
+    $controls=@{}
+    foreach($control in (Get-ChildItem -LiteralPath $recoveryRoot -Force -File | Where-Object { $_.FullName -ne $candidate })) {
+        $controls[$control.FullName]=[Convert]::ToBase64String([IO.File]::ReadAllBytes($control.FullName))
+    }
+    $young=Join-Path $recoveryRoot '.shotkit-123-456-8.tmp'
+    $decoy=Join-Path $recoveryRoot 'x.shotkit-123-456-7.tmp'
+    foreach($path in @($young,$decoy)) { [IO.File]::WriteAllText($path,'synthetic recovery control') }
+    [IO.File]::SetLastWriteTimeUtc($decoy,[DateTime]::UtcNow.AddMinutes(-11))
+    $preferences=Get-Content -LiteralPath $settingsB -Raw | ConvertFrom-Json
+    $preferences | Add-Member -NotePropertyName save_folder -NotePropertyValue $recoveryRoot -Force
+    [IO.File]::WriteAllText($settingsB,($preferences | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    foreach($choice in @(102,100)) {
+        $recovery=Start-ShotKit
+        $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $dialog=$null
+        do {
+            $dialog=Get-ModalDialogs $recovery | Where-Object { $_.Title -eq 'Temporäre Dateien nach einem Abbruch' } | Select-Object -First 1
+            if($null -ne $dialog) { break }
+            Start-Sleep -Milliseconds 100
+        } while([DateTime]::UtcNow -lt $deadline)
+        if($null -eq $dialog) { throw 'Recovery startup dialog missing.' }
+        foreach($text in @('1 Dateien', $candidateName,'Löschen','Ordner öffnen','Später','UTC')) {
+            if(-not $dialog.Text.Contains($text)) { throw "Recovery dialog missing '$text': $($dialog.Text)" }
+        }
+        if($dialog.Text.Contains('.shotkit-123-456-8.tmp') -or $dialog.Text.Contains('x.shotkit')) { throw 'Recovery offered young or foreign control.' }
+        $owner=Wait-ForMainWindow $recovery
+        if([ShotKitFirstStartSmoke.Native]::CopyDataBusy($owner.Handle,$candidate) -ne 3) { throw 'Recovery dialog did not reject WM_COPYDATA as busy.' }
+        [void][ShotKitFirstStartSmoke.Native]::PostMessageW($owner.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
+        Start-Sleep -Milliseconds 100
+        $recovery.Refresh()
+        if($recovery.HasExited -or (Get-ModalDialogs $recovery).Count -ne 1) { throw 'Owner close interrupted recovery.' }
+        # WM_COMMAND/BN_CLICKED, only to the dialog belonging to our process.
+        if(-not [ShotKitFirstStartSmoke.Native]::PostMessageW($dialog.Handle,0x0111,[IntPtr]$choice,[IntPtr]::Zero)) { throw 'Recovery click failed.' }
+        $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        do {
+            if((Get-ModalDialogs $recovery).Count -eq 0) { break }
+            Start-Sleep -Milliseconds 100
+        } while([DateTime]::UtcNow -lt $deadline)
+        Assert-NoDialog $recovery 'after recovery choice'
+        if(([IO.File]::Exists($candidate)) -ne ($choice -eq 102)) { throw 'Recovery choice produced wrong file state.' }
+        foreach($path in @($young,$decoy,$settingsB)) { if(-not [IO.File]::Exists($path)) { throw "Recovery changed control: $path" } }
+        foreach($control in $controls.Keys) {
+            if([Convert]::ToBase64String([IO.File]::ReadAllBytes($control)) -cne $controls[$control]) { throw "Recovery changed abort control: $control" }
+        }
+        Stop-ShotKit $recovery
+    }
+    Write-Host 'PASS recovery startup prompt: Later retains, restart offers again, Delete removes only confirmed candidate.'
 
     # C: File argument on a genuinely fresh profile suppresses the notice.
     Set-TestProfile 'argument'

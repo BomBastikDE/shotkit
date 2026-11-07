@@ -205,9 +205,12 @@ pub(super) unsafe fn save(h: H, save_as: bool) -> bool {
     match result {
         Ok(()) => {
             editor(h).document_mut().mark_saved();
-            window_state(h).current_path = Some(path);
+            window_state(h).current_path = Some(path.clone());
             window_state(h).protected_original = false;
             refresh_title(h);
+            // The save is complete; a remnant check of a network folder (#67)
+            // cannot change its result.
+            temp_recovery::after_save(h, &path);
             true
         }
         Err(e) => {

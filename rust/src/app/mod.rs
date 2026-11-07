@@ -4,6 +4,7 @@ mod mouse_history;
 mod preview_scaling;
 mod region;
 mod scroll_completion;
+mod temp_recovery;
 mod window_commands;
 mod window_mouse;
 use region::*;
@@ -872,6 +873,7 @@ unsafe fn run_application() {
         return;
     }
     hotkeys::register(h);
+    temp_recovery::check(h);
     let arguments: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     for path in &arguments {
         let result = absolute_argument_path(path.clone()).and_then(|path| open_image_path(h, path));

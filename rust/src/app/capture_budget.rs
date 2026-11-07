@@ -46,6 +46,8 @@ pub(super) unsafe fn capture_ordinary_rect(
     let prefs = active_settings();
     let mut output = CaptureOutputState::new(&prefs);
     let mut saved = None;
+    // Kept separately: `saved` may be handed to the editor (#67).
+    let mut auto_saved: Option<PathBuf> = None;
     let mut opened = None;
     while let Some(action) = output.next_action() {
         let result = match action {
@@ -63,6 +65,7 @@ pub(super) unsafe fn capture_ordinary_rect(
             _ => output_windows::execute_action(action, &prefs, initialization.image().image(), h)
                 .map(|result| {
                     if result.saved_path.is_some() {
+                        auto_saved.clone_from(&result.saved_path);
                         saved = result.saved_path;
                     }
                 }),
@@ -110,6 +113,10 @@ pub(super) unsafe fn capture_ordinary_rect(
     }
     drop(initialization.complete());
     drop(opened);
+    // After all output and notices: check a network save folder once (#67).
+    if let Some(path) = auto_saved {
+        temp_recovery::after_save(h, &path);
+    }
     Ok(())
 }
 

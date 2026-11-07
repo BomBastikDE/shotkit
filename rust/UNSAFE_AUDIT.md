@@ -177,6 +177,32 @@ Audit-Statuswerte werden durch die Titelkorrektur nicht angehoben.
 | `src/uia_picker.rs:286` | `create_automation` | Beleg fehlt | Nachzuweisen: COM ist im passenden Apartment initialisiert; die Referenz wird dort verwendet und freigegeben. |
 | `src/uia_picker.rs:305` | `inspect` | belegt | Enger COM-Apartment-Vertrag: MTA-Initialisierung, Interface-Nutzung und Freigabe bleiben im Worker; der UIA-Auswahlpfad mit Tastaturkorrektur bestand im [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41523039080); Providerqualität und Handle-Identität sind nicht damit belegt. |
 
+## Temporäre Dateien: bestätigte Wiederherstellung (#67)
+
+- `src/temp_recovery_windows.rs`: `GetFileInformationByHandle` erhält einen lebenden eigenen Handle und eine
+  `repr(C)`-Struktur des SDK-Layouts. Der Handle hat DELETE-Zugriff, Share-Modus 0 und OPEN_REPARSE_POINT;
+  regulärer Dateityp, Attribute, Linkzahl und Alter werden am selben Handle geprüft. `SetFileInformationByHandle`
+  Klasse 4 erhält genau ein BOOLEAN; nur eine ausdrückliche Löschentscheidung führt dorthin. Der Handle bleibt
+  bis danach offen. Abbruch-/Später-Fälle schließen ohne Disposition. Keine erneute Pfadauflösung zur Löschung.
+  Grenze: stabile Vorfahren, kein Schutz gegen privilegierten Austausch oder schon vorhandene Mappings.
+- `src/app/temp_recovery.rs`: `DialogBoxIndirectParamW` erhält eine DWORD-ausgerichtete eigene Standard-
+  Dialogvorlage und UTF-16-Inhalt, die bis zur synchronen Rückkehr leben. Der Callback liest den Inhalt nur
+  bei WM_INITDIALOG; keine Rust-Referenzen oder Zeiger werden im Fenster gespeichert. EndDialog verarbeitet
+  nur die drei eigenen IDs, Escape und Schließen. Owner ist das initialisierte Hauptfenster. Der vorhandene
+  ModalGuard blockiert dessen Schließen, neue Operationen und WM_COPYDATA während aller Dialoge. Die Vorlage
+  benutzt eingebaute EDIT/BUTTON-Klassen; keine Aktivierung von Common Controls v6. `MessageBoxW` und
+  `ShellExecuteW` verwenden lebende Puffer und denselben Owner.
+- Nachweis: Windows-Release-Probe `atomic_save_abort_probe` prüft echte Abort-Reste, jung/gesperrt, Später,
+  exklusiv verhinderte Umbenennung und bestätigte Löschung bei unveränderten Ziel-/Fremddateikontrollen.
+  Die UI-Prüfung erfolgt im Windows-Smoke; CI-Resultate separat berichten.
+
+### Offener Abgleich mit #67
+
+Für Netzwerkordner und unbekannte Laufwerkstypen wird vor dem Scan ausdrücklich gefragt. Das schützt die
+bestehende Warnpolicy vor automatischer Windows-Authentifizierung, ist aber eine Abweichung von
+„Nichts gefunden: kein Dialog“: Ohne Netzwerk-I/O lässt sich das Vorhandensein von Resten nicht prüfen.
+Diese Kombination der Kriterien benötigt Owner-/PR-Prüfung; sie wird hier nicht als vollständig erfüllt gemeldet.
+
 ## Geänderte native Aufrufe für Cursorposition und DPI (#6)
 
 - `src/scroll_windows.rs`, `WindowsScrollIo::scroll`: `SetCursorPos` erhält nur die zuvor auf überlauffreie Grenzen geprüfte Sollposition. Der unmittelbar folgende synchrone `GetCursorPos` schreibt in einen exklusiven lokalen `Point` mit Win32-Layout; kein Rust-Zustandsborrow wird an Windows übergeben. Beide Aufrufe laufen auf demselben Worker mit unverändertem DPI-Kontext. Vor `SendInput` muss die tatsächlich gelesene Position im halboffenen Aufnahmebereich liegen. Danach bleibt der exakte Vergleich für echte Bewegung erhalten. Nachweis: `clamped_cursor_must_remain_within_half_open_capture_bounds` (negative Desktopkoordinaten und alle Grenzen); die Windows-Szenarien `windows-scroll-smoke.ps1 -CursorClip Inside`/`Outside` prüfen vollständiges Bild bzw. erhaltenen ersten Viewport mit passendem Grund. Die eigene Zieloberfläche setzt die Begrenzung im synchronen `WM_NULL`-Aktivierungsbarrier vor dem Workerstart; ein Barrier-Beleg und Cursor-/Clip-Koordinaten jedes Wheel-Ereignisses belegen die Testbedingung. Outside verlangt zusätzlich null Wheel-Ereignisse. `windows-shared-log-reader-contract.ps1` führt das tatsächliche Warteprädikat auf einem einzelnen vollständigen Beleg aus, damit ein fehlender weiterer Logeintrag den Nachweis nicht blockiert; unvollständige und Fehlerbelege bleiben abgelehnt. Die Fixture stellt die ursprüngliche Begrenzung im `finally` nach dem Stoppen beider eigener Prozesse wieder her. Der unveränderte `windows-scroll-abort-smoke.ps1 -MouseAbort` prüft echten Mausabbruch mit pixelgenauem 520-Zeilen-Teilstand. Ausführung dieser Desktop-Szenarien und echte gemischte DPI sind noch ausstehend.

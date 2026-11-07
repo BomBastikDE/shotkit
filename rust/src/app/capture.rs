@@ -9,6 +9,8 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
     let mut output = CaptureOutputState::new(&prefs);
     let mut image = Some(image);
     let mut saved = None;
+    // Kept separately: `saved` may be handed to the editor (#67).
+    let mut auto_saved: Option<PathBuf> = None;
     let mut opened = false;
     while let Some(action) = output.next_action() {
         let result = match action {
@@ -41,6 +43,7 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
                 match result {
                     Ok(result) => {
                         if result.saved_path.is_some() {
+                            auto_saved.clone_from(&result.saved_path);
                             saved = result.saved_path;
                         }
                         Ok(())
@@ -93,6 +96,10 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
             wide("ShotKit").as_ptr(),
             0x30,
         );
+    }
+    // After all output and notices: check a network save folder once (#67).
+    if let Some(path) = auto_saved {
+        temp_recovery::after_save(h, &path);
     }
     Ok(())
 }

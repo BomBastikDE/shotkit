@@ -2,6 +2,8 @@
 
 ## Version 2.0.0 – Änderungen seit Beta 1
 
+- Nach einem Absturz beim Speichern zeigt ShotKit zurückgebliebene eigene temporäre Dateien an und löscht sie nur nach Bestätigung. Lokale Ordner werden beim Start geprüft, ein Speicherordner im Netzwerk erst nach dem nächsten Speichern dorthin, höchstens einmal pro Sitzung ([#67](https://github.com/BomBastikDE/shotkit/issues/67)).
+
 - Der Editor zeigt im Fenstertitel die Werkzeugnamen aus der deutschen Werkzeugleiste. Beim Werkzeugwechsel bleiben der Dateipfad und der Stern für ungespeicherte Änderungen erhalten ([#79](https://github.com/BomBastikDE/shotkit/issues/79)).
 
 - Verpixeln verwendet mindestens 48 px große Blöcke und Rauschen. Für vertrauliche Inhalte weiterhin Schwärzen (S) verwenden ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).

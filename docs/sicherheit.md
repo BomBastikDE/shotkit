@@ -47,10 +47,32 @@ nach der Fehlersuche, bevor du den Ordner weitergibst.
 
 ## Temporäre Dateien nach einem Absturz
 
-Beim Speichern schreibt ShotKit zuerst in eine temporäre Datei und ersetzt erst nach Erfolg das Ziel. Bricht
-ShotKit oder Windows dabei abrupt ab, können im Zielordner Dateien der Form `.shotkit-….tmp` zurückbleiben. Sie
-können Bilddaten enthalten. Prüfe sie und die vorhandene Zieldatei; lösche solche Dateien nur, wenn Herkunft und
-Inhalt geklärt sind. Ab Version 2.0.0 weist ShotKit beim nächsten Start darauf hin. <!-- TODO #67: prüfen, sobald umgesetzt -->
+Beim Speichern schreibt ShotKit zuerst in eine temporäre Datei. Bricht ShotKit oder Windows abrupt ab,
+können diese Dateien mit Bilddaten zurückbleiben. Beim nächsten Start prüft ShotKit direkt den eingestellten
+Speicherordner und den Einstellungsordner; Unterordner werden nicht durchsucht.
+
+Liegt der Speicherordner **im Netzwerk** (Netzlaufwerk, Netzwerkpfad oder Laufwerk unbekannten Typs), greift
+ShotKit beim Start nicht darauf zu: Windows könnte dabei Anmeldedaten an den Server übertragen, und ein nicht
+erreichbares Laufwerk würde den Start verzögern. Stattdessen prüft ShotKit den Netzwerkordner nach dem nächsten
+erfolgreichen Speichern dorthin, weil es den Server dann ohnehin kontaktiert hat – höchstens einmal pro Sitzung
+und Ordner.
+
+Angeboten werden ausschließlich normale Dateien mit genau diesen Namensmustern: `.shotkit-<pid>-<stamp>-<seq>.tmp`,
+`.ShotKit-<pid>-<stamp>-<seq>.tmp` und im Einstellungsordner zusätzlich `.shotkit-settings-<pid>-<seq>.tmp`.
+Die Zahlen entsprechen dem erzeugten Format. Die letzte Änderung muss mehr als zehn Minuten zurückliegen.
+Gesperrte Dateien, Verknüpfungen, Reparse-Punkte und Dateien mit mehreren Hardlinks werden übersprungen.
+
+Der Hinweis zeigt Anzahl, Ordner sowie Name, Größe und Änderungsdatum in UTC (bei vielen Dateien die ersten zehn).
+**Löschen** entfernt erst nach diesem ausdrücklichen Klick alle gezählten Dateien. **Ordner öffnen** öffnet den
+betroffenen Ordner, **Später** lässt alles bestehen und fragt beim nächsten Start erneut, bei einem Netzwerkordner nach dem
+nächsten Speichern in einer späteren Sitzung. Auch Schließen oder Escape
+löschen nichts. Fehler beim Löschen werden gesammelt angezeigt. Der exklusive Datei-Handle bleibt von der Prüfung
+bis zur Entscheidung offen; die Löschung erfolgt über diesen Handle, nicht durch erneutes Auflösen des Namens.
+
+**Bekannte Grenze:** Ein passender Name beweist nicht die Herkunft. Prüfe den Hinweis vor der Bestätigung.
+Junge, gesperrte oder außerhalb der beiden Ordner liegende Reste bleiben bestehen und können Bilddaten enthalten.
+Die Prüfung setzt wie das Speichern stabile übergeordnete Verzeichnisse voraus; sie schützt nicht gegen einen
+privilegierten Angreifer, der diese währenddessen austauscht. Es gibt keine automatische Löschung.
 
 ## Dateien von Netzlaufwerken
 
