@@ -13,30 +13,59 @@ fn area(image: &Image) -> Result<usize, String> {
         .ok_or_else(|| "Ungültige Bilddaten für den Effekt.".into())
 }
 
+#[cfg(test)]
 pub(super) fn spotlight(
     pixels: &mut [u8],
     source: &Image,
     effect: &Spotlight,
 ) -> Result<(), String> {
-    effect
-        .validate()
-        .map_err(|e| format!("Ungültiger Spotlight: {e:?}"))?;
+    spotlights(pixels, source, &[effect])
+}
+
+/// Apply all spotlights of a document as **one** effect: a pixel is dimmed
+/// exactly once if its centre lies outside every focus, using the strongest
+/// dimming among the spotlights. Pixels inside any focus stay unchanged.
+///
+/// Applying each spotlight separately would dim the background once per
+/// spotlight and every focus by all other spotlights, so the image grew darker
+/// with each additional spotlight.
+pub(super) fn spotlights(
+    pixels: &mut [u8],
+    source: &Image,
+    effects: &[&Spotlight],
+) -> Result<(), String> {
+    for effect in effects {
+        effect
+            .validate()
+            .map_err(|e| format!("Ungültiger Spotlight: {e:?}"))?;
+    }
     if pixels.len() != area(source)? {
         return Err("Ungültiges Effektziel.".into());
     }
-    let r = effect.focus;
-    let alpha = (effect.dim_opacity * 255.0).round() as u8;
+    let opacity = effects
+        .iter()
+        .map(|effect| effect.dim_opacity)
+        .fold(0.0_f32, f32::max);
+    let alpha = (opacity * 255.0).round() as u8;
     if alpha == 0 {
         return Ok(());
     }
-    // Pixel centres inside [near, far) stay unchanged. Compute the two
-    // horizontal spans once rather than dividing and testing every pixel.
+    // Pixel centres inside [near, far) stay unchanged. Each focus becomes an
+    // integer rectangle once rather than dividing and testing every pixel.
     let clip =
         |value: f32, limit: usize| -> usize { ((value - 0.5).ceil().max(0.0) as usize).min(limit) };
-    let left = clip(r.x, source.width);
-    let right = clip(r.x + r.width, source.width);
-    let top = clip(r.y, source.height);
-    let bottom = clip(r.y + r.height, source.height);
+    let foci: Vec<(usize, usize, usize, usize)> = effects
+        .iter()
+        .map(|effect| {
+            let r = effect.focus;
+            let left = clip(r.x, source.width);
+            let right = clip(r.x + r.width, source.width).max(left);
+            let top = clip(r.y, source.height);
+            let bottom = clip(r.y + r.height, source.height).max(top);
+            (left, right, top, bottom)
+        })
+        .filter(|(left, right, top, bottom)| left < right && top < bottom)
+        .collect();
     let mut opaque_table = [0u8; 256];
     for (value, result) in opaque_table.iter_mut().enumerate() {
         *result = ((value as u16 * u16::from(255 - alpha) + 127) / 255) as u8;
@@ -54,14 +83,25 @@ pub(super) fn spotlight(
             }
         }
     };
+    let mut spans = Vec::with_capacity(foci.len());
     for (y, row) in pixels.chunks_exact_mut(source.width * 4).enumerate() {
-        if y >= top && y < bottom {
-            let (before, rest) = row.split_at_mut(left * 4);
-            let (_, after) = rest.split_at_mut((right - left) * 4);
-            dim(before);
-            dim(after);
-        } else {
-            dim(row);
+        // Horizontal focus spans covering this row, merged where they overlap.
+        spans.clear();
+        spans.extend(
+            foci.iter()
+                .filter(|(_, _, top, bottom)| y >= *top && y < *bottom)
+                .map(|(left, right, _, _)| (*left, *right)),
+        );
+        spans.sort_unstable();
+        let mut x = 0;
+        for &(left, right) in &spans {
+            if left > x {
+                dim(&mut row[x * 4..left * 4]);
+            }
+            x = x.max(right);
+        }
+        if x < source.width {
+            dim(&mut row[x * 4..]);
         }
     }
     Ok(())
@@ -558,5 +598,105 @@ mod tests {
             render_preview(&image, &shapes, 1, &mut cache).unwrap(),
             expected
         );
+    }
+
+    fn focus(x: f32, y: f32, width: f32, height: f32, opacity: f32) -> Spotlight {
+        Spotlight::new(
+            Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            opacity,
+        )
+        .unwrap()
+    }
+
+    fn pixel(image: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+        let offset = (y * width + x) * 4;
+        image[offset..offset + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn several_spotlights_dim_the_background_exactly_once() {
+        // Owner report: each additional spotlight made the whole image darker.
+        let image = solid(10, 3, [100, 100, 100, 255]);
+        let a = focus(0.0, 0.0, 2.0, 1.0, 0.5);
+        let b = focus(4.0, 1.0, 2.0, 1.0, 0.5);
+        let c = focus(8.0, 2.0, 2.0, 1.0, 0.5);
+        let mut pixels = image.pixels.clone();
+        spotlights(&mut pixels, &image, &[&a, &b, &c]).unwrap();
+        for (x, y) in [(0, 0), (1, 0), (4, 1), (5, 1), (8, 2), (9, 2)] {
+            assert_eq!(
+                pixel(&pixels, 10, x, y),
+                [100, 100, 100, 255],
+                "focus {x},{y}"
+            );
+        }
+        for (x, y) in [(3, 0), (9, 0), (0, 1), (7, 1), (0, 2), (5, 2)] {
+            assert_eq!(
+                pixel(&pixels, 10, x, y),
+                [50, 50, 50, 255],
+                "background {x},{y}"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_spotlights_in_one_row_leave_their_union_unchanged() {
+        let image = solid(8, 1, [200, 200, 200, 255]);
+        let a = focus(1.0, 0.0, 3.0, 1.0, 0.5);
+        let b = focus(2.0, 0.0, 4.0, 1.0, 0.5);
+        let mut pixels = image.pixels.clone();
+        spotlights(&mut pixels, &image, &[&b, &a]).unwrap();
+        let row: Vec<u8> = (0..8).map(|x| pixel(&pixels, 8, x, 0)[0]).collect();
+        assert_eq!(row, [100, 200, 200, 200, 200, 200, 100, 100]);
+    }
+
+    #[test]
+    fn the_strongest_dimming_applies_once() {
+        let image = solid(4, 1, [200, 200, 200, 255]);
+        let weak = focus(0.0, 0.0, 1.0, 1.0, 0.25);
+        let strong = focus(1.0, 0.0, 1.0, 1.0, 0.75);
+        let mut combined = image.pixels.clone();
+        spotlights(&mut combined, &image, &[&weak, &strong]).unwrap();
+        let mut expected = image.pixels.clone();
+        spotlight(&mut expected, &image, &focus(0.0, 0.0, 2.0, 1.0, 0.75)).unwrap();
+        assert_eq!(combined, expected);
+        assert_eq!(pixel(&combined, 4, 0, 0), [200, 200, 200, 255]);
+        assert_eq!(pixel(&combined, 4, 1, 0), [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn document_and_preview_combine_spotlights_for_every_cached_prefix() {
+        let image = ImageHandle::from_image(solid(10, 3, [100, 100, 100, 255]));
+        let shapes: Vec<Shape> = [
+            focus(0.0, 0.0, 2.0, 1.0, 0.5),
+            focus(4.0, 1.0, 2.0, 1.0, 0.5),
+            focus(8.0, 2.0, 2.0, 1.0, 0.5),
+        ]
+        .into_iter()
+        .map(|data| Shape::new(ShapeKind::Spotlight { data }))
+        .collect();
+        let document = render_document(&image, &shapes).unwrap();
+        let mut expected = image.pixels.clone();
+        let data: Vec<&Spotlight> = shapes
+            .iter()
+            .map(|shape| match &shape.kind {
+                ShapeKind::Spotlight { data } => data,
+                _ => unreachable!(),
+            })
+            .collect();
+        spotlights(&mut expected, &image, &data).unwrap();
+        assert_eq!(document.pixels, expected);
+        for stable in 0..=shapes.len() {
+            let mut cache = None;
+            assert_eq!(
+                render_preview(&image, &shapes, stable, &mut cache).unwrap(),
+                document,
+                "stable prefix {stable}"
+            );
+        }
     }
 }
