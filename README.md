@@ -1,7 +1,7 @@
 # ShotKit
 
 Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
-Geschrieben in Rust, eine einzige EXE, keine Installation nötig.
+Geschrieben in Rust, eine einzige EXE, keine Installation nötig. Die Entwicklung erfolgt auf `main`.
 
 > **Status: Beta.** ShotKit wird in Rust neu entwickelt; der Code liegt in [`rust/`](rust/).
 > Funktionsumfang und Windows-Verhalten sind noch nicht vollständig geprüft – siehe
