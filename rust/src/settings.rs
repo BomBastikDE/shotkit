@@ -80,6 +80,9 @@ pub struct Settings {
     pub auto_save: bool,
     #[serde(default)]
     pub scroll_direction: ScrollDirection,
+    /// Insert the mouse cursor as an editable object into captures (#36).
+    #[serde(default)]
+    pub capture_cursor: bool,
 }
 
 fn default_open_editor() -> bool {
@@ -100,6 +103,7 @@ impl Default for Settings {
             exclude_from_clipboard_history: true,
             auto_save: false,
             scroll_direction: ScrollDirection::Down,
+            capture_cursor: false,
         }
     }
 }
