@@ -5,6 +5,11 @@
 //! `discard` resolve it. The slot remains busy throughout recovery, including
 //! nested and parallel attempts. Transitions move values without allocation.
 //!
+//! Reserve with `try_reserve` BEFORE decoding when a later rejection must have
+//! a guaranteed destination. Its image-free RAII reservation blocks all other
+//! entrants until dropped or consumed by infallible `SlotReservation::store`.
+//! No decoder or callback runs under the slot mutex.
+//!
 //! Callers must handle `try_store`'s returned value on Busy: this slot cannot
 //! retain two rejected imports. It neither validates nor changes the original
 //! admission error, image or lease. Read-only Image access can still be cloned
@@ -19,6 +24,7 @@ use std::sync::{Mutex, MutexGuard};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectedImportState {
     Empty,
+    Reserved,
     Recoverable,
     Recovering,
 }
@@ -31,6 +37,7 @@ pub enum RecoveryError {
 
 enum Slot {
     Empty,
+    Reserved,
     Recoverable(RejectedImport),
     Recovering,
 }
@@ -60,9 +67,24 @@ impl RejectedImportSlot {
     pub fn state(&self) -> RejectedImportState {
         match &*self.lock() {
             Slot::Empty => RejectedImportState::Empty,
+            Slot::Reserved => RejectedImportState::Reserved,
             Slot::Recoverable(_) => RejectedImportState::Recoverable,
             Slot::Recovering => RejectedImportState::Recovering,
         }
+    }
+
+    /// Claim the sole recovery destination before decoding. No image or lease
+    /// is retained yet; dropping the ticket cancels this empty reservation.
+    pub fn try_reserve(&self) -> Result<SlotReservation<'_>, RecoveryError> {
+        let mut slot = self.lock();
+        if !matches!(*slot, Slot::Empty) {
+            return Err(RecoveryError::Busy);
+        }
+        *slot = Slot::Reserved;
+        Ok(SlotReservation {
+            owner: self,
+            active: true,
+        })
     }
 
     /// Busy returns the exact original value, including its admission error.
@@ -80,7 +102,7 @@ impl RejectedImportSlot {
         let mut slot = self.lock();
         match &*slot {
             Slot::Empty => return Err(RecoveryError::Empty),
-            Slot::Recovering => return Err(RecoveryError::Busy),
+            Slot::Reserved | Slot::Recovering => return Err(RecoveryError::Busy),
             Slot::Recoverable(_) => {}
         }
         let Slot::Recoverable(rejected) = std::mem::replace(&mut *slot, Slot::Recovering) else {
@@ -98,7 +120,7 @@ impl RejectedImportSlot {
             let mut slot = self.lock();
             match &*slot {
                 Slot::Empty => return Err(RecoveryError::Empty),
-                Slot::Recovering => return Err(RecoveryError::Busy),
+                Slot::Reserved | Slot::Recovering => return Err(RecoveryError::Busy),
                 Slot::Recoverable(_) => {}
             }
             std::mem::replace(&mut *slot, Slot::Empty)
@@ -107,6 +129,33 @@ impl RejectedImportSlot {
         // Destruction happens outside the slot mutex.
         drop(rejected);
         Ok(())
+    }
+}
+
+/// Exclusive, image-free destination for an import rejected after decode.
+/// All fields are private: safe callers cannot forge or duplicate this ticket.
+#[must_use = "hold the reservation across decode, then store a rejection or drop it"]
+pub struct SlotReservation<'a> {
+    owner: &'a RejectedImportSlot,
+    active: bool,
+}
+
+impl SlotReservation<'_> {
+    /// Atomically consume the exclusive reservation. This cannot be Busy and
+    /// needs no allocation: only this ticket can replace its Reserved state.
+    /// The complete original rejected value becomes recoverable unchanged.
+    pub fn store(mut self, rejected: RejectedImport) {
+        let mut slot = self.owner.lock();
+        *slot = Slot::Recoverable(rejected);
+        self.active = false;
+    }
+}
+
+impl Drop for SlotReservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            *self.owner.lock() = Slot::Empty;
+        }
     }
 }
 
@@ -177,6 +226,83 @@ mod tests {
             lease,
             error: AdmissionError::DifferentBudget,
         }
+    }
+
+    #[test]
+    fn reservation_excludes_nested_and_parallel_operations_until_cancelled() {
+        let budget = ResourceBudget::new(16, 0).unwrap();
+        let slot = RejectedImportSlot::new();
+        let ticket = slot.try_reserve().ok().unwrap();
+        assert_eq!(slot.state(), RejectedImportState::Reserved);
+        assert!(matches!(slot.try_reserve(), Err(RecoveryError::Busy)));
+        assert!(matches!(slot.try_recover(), Err(RecoveryError::Busy)));
+        assert_eq!(slot.discard(), Err(RecoveryError::Busy));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(matches!(slot.try_reserve(), Err(RecoveryError::Busy)));
+                assert!(matches!(slot.try_recover(), Err(RecoveryError::Busy)));
+                assert_eq!(slot.discard(), Err(RecoveryError::Busy));
+                let value = rejected(&budget, 17);
+                let pointer = value.image.pixels.as_ptr();
+                let value = slot.try_store(value).unwrap_err();
+                assert_eq!(value.image.pixels.as_ptr(), pointer);
+                assert_eq!(value.error, AdmissionError::DifferentBudget);
+                assert_eq!(value.lease.bytes(), 4);
+            });
+        });
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        drop(ticket);
+        assert_eq!(slot.state(), RejectedImportState::Empty);
+        drop(slot.try_reserve().ok().unwrap());
+    }
+
+    #[test]
+    fn reservation_unwind_cancels_without_an_image() {
+        let slot = RejectedImportSlot::new();
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _ticket = slot.try_reserve().ok().unwrap();
+            panic!("decode failed before a rejected import existed");
+        }))
+        .is_err());
+        assert_eq!(slot.state(), RejectedImportState::Empty);
+        drop(slot.try_reserve().ok().unwrap());
+        assert!(matches!(slot.try_recover(), Err(RecoveryError::Empty)));
+    }
+
+    #[test]
+    fn reserved_store_preserves_pixels_error_and_full_original_lease() {
+        let budget = ResourceBudget::new(32, 0).unwrap();
+        let slot = RejectedImportSlot::new();
+        let ticket = slot.try_reserve().ok().unwrap();
+        // Simulate decode only after the recovery destination is reserved.
+        let image = Image::new(1, 1, vec![23; 4]).unwrap();
+        let pointer = image.pixels.as_ptr();
+        let lease = budget.try_acquire(12, AdmissionClass::Normal).unwrap();
+        assert!(catch_unwind(AssertUnwindSafe(move || {
+            ticket.store(RejectedImport {
+                error: AdmissionError::InsufficientLease,
+                image,
+                lease,
+            });
+            panic!("caller unwound after storing its rejection");
+        }))
+        .is_err());
+        assert_eq!(slot.state(), RejectedImportState::Recoverable);
+        assert!(matches!(slot.try_reserve(), Err(RecoveryError::Busy)));
+        assert_eq!(budget.snapshot().used_bytes, 12);
+        let guard = slot.try_recover().ok().unwrap();
+        assert!(matches!(slot.try_reserve(), Err(RecoveryError::Busy)));
+        assert_eq!(guard.image().pixels.as_ptr(), pointer);
+        assert_eq!(guard.image().pixels, [23; 4]);
+        assert_eq!(guard.error(), AdmissionError::InsufficientLease);
+        assert_eq!(guard.reserved_bytes(), 12);
+        drop(guard);
+        let guard = slot.try_recover().ok().unwrap();
+        assert_eq!(guard.image().pixels.as_ptr(), pointer);
+        assert_eq!(guard.reserved_bytes(), 12);
+        guard.commit_saved();
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        drop(slot.try_reserve().ok().unwrap());
     }
 
     #[test]

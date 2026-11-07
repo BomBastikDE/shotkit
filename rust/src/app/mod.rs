@@ -17,6 +17,8 @@ mod rendering;
 use rendering::*;
 mod document;
 use document::*;
+mod import_budget;
+use import_budget::*;
 mod actions;
 use actions::*;
 mod hotkeys;
@@ -346,6 +348,7 @@ impl Drop for BusyGuard {
 struct WindowState {
     generation: usize,
     initialization_close_blocked: Option<Rc<Cell<bool>>>,
+    initialization_lifetime: Option<Rc<Cell<H>>>,
     toolbar: Option<Rc<toolbar::Toolbar>>,
     editor: Option<EditorController>,
     preview_cache: Rc<RefCell<Option<shotkit::alpha_document::PreviewCache>>>,
@@ -373,6 +376,7 @@ impl WindowState {
                 })
                 .unwrap_or(0),
             initialization_close_blocked: None,
+            initialization_lifetime: None,
             toolbar: None,
             editor: None,
             preview_cache: Rc::new(RefCell::new(None)),
@@ -394,10 +398,104 @@ impl WindowState {
 }
 
 // Passed only by the protected editor constructor. WM_NCCREATE copies the
-// token before any subsequent creation messages; the stack marker is never
+// token before any subsequent creation messages; the marker pointer is never
 // retained by the HWND. Ordinary editor/primary creation passes null.
 struct EditorCreationProtection {
     close_blocked: Rc<Cell<bool>>,
+    lifetime: Rc<Cell<H>>,
+}
+
+enum ProtectedEditorCleanup {
+    Idle,
+    Creating(Rc<EditorCreationProtection>),
+    Pending(Rc<EditorCreationProtection>),
+    Retrying,
+}
+thread_local! {
+    // Fixed ownership slot, independent of editor-list allocation and HWND reuse.
+    static PROTECTED_EDITOR_CLEANUP: RefCell<ProtectedEditorCleanup> =
+        const { RefCell::new(ProtectedEditorCleanup::Idle) };
+}
+
+fn retry_protected_editor_cleanup_with(mut destroy: impl FnMut(H)) -> Result<(), String> {
+    let pending = PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match &*slot {
+            ProtectedEditorCleanup::Idle => Ok(None),
+            ProtectedEditorCleanup::Pending(token) => {
+                let token = token.clone();
+                *slot = ProtectedEditorCleanup::Retrying;
+                Ok(Some(token))
+            }
+            ProtectedEditorCleanup::Creating(_) | ProtectedEditorCleanup::Retrying => {
+                Err("Geschützte Editoranlage oder Bereinigung läuft bereits.".to_owned())
+            }
+        }
+    })?;
+    let Some(token) = pending else {
+        return Ok(());
+    };
+    let h = token.lifetime.get();
+    if !h.is_null() {
+        // No slot/state borrow crosses this reentrant call. WM_NCDESTROY is
+        // the authority: a return code or IsWindow cannot detect HWND reuse.
+        destroy(h);
+    }
+    let complete = token.lifetime.get().is_null();
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        *slot.borrow_mut() = if complete {
+            ProtectedEditorCleanup::Idle
+        } else {
+            ProtectedEditorCleanup::Pending(token)
+        };
+    });
+    if complete {
+        Ok(())
+    } else {
+        Err(
+            "Ein unvollständiges Editorfenster konnte nicht geschlossen werden. Erneut versuchen."
+                .into(),
+        )
+    }
+}
+
+unsafe fn retry_protected_editor_cleanup() -> Result<(), String> {
+    retry_protected_editor_cleanup_with(|h| {
+        DestroyWindow(h);
+    })
+}
+
+unsafe fn begin_protected_editor_creation() -> Result<Rc<EditorCreationProtection>, String> {
+    retry_protected_editor_cleanup()?;
+    let token = Rc::new(EditorCreationProtection {
+        close_blocked: Rc::new(Cell::new(true)),
+        lifetime: Rc::new(Cell::new(null_mut())),
+    });
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        *slot.borrow_mut() = ProtectedEditorCleanup::Creating(token.clone());
+    });
+    Ok(token)
+}
+
+fn finish_protected_editor_creation(token: &Rc<EditorCreationProtection>, success: bool) {
+    if success {
+        // Reserve the failure slot throughout the handoff. Guard completion
+        // releases it; another reentrant creation cannot consume this slot.
+        return;
+    }
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if matches!(&*slot, ProtectedEditorCleanup::Creating(current) if Rc::ptr_eq(current, token))
+        {
+            *slot = if token.lifetime.get().is_null() {
+                ProtectedEditorCleanup::Idle
+            } else {
+                // Retain the live HWND and close protection after constructor
+                // cleanup failed; no guard has yet been created or dropped.
+                ProtectedEditorCleanup::Pending(token.clone())
+            };
+        }
+    });
 }
 
 // CREATESTRUCTW starts with lpCreateParams on both Windows architectures.
@@ -407,14 +505,49 @@ struct CreateStructParams {
 }
 
 /// Keep this guard until the complete import/editor handoff is initialized.
-/// It owns no HWND or WindowState borrow: destruction/failure of the window
-/// before the guard is dropped is safe, including HWND reuse.
+/// Drop only touches owned tokens and the UI-thread slot, never an HWND or
+/// WindowState: prior destruction is safe, including HWND reuse.
 #[must_use = "keep the guard alive until editor initialization is complete"]
-pub(super) struct EditorInitializationGuard(Rc<Cell<bool>>);
+pub(super) struct EditorInitializationGuard(Option<Rc<EditorCreationProtection>>);
+impl EditorInitializationGuard {
+    fn still_owns(&self, window: H) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|token| token.lifetime.get() == window && !window.is_null())
+    }
+}
 impl Drop for EditorInitializationGuard {
     fn drop(&mut self) {
-        self.0.set(false);
+        if let Some(token) = self.0.take() {
+            token.close_blocked.set(false);
+            PROTECTED_EDITOR_CLEANUP.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if matches!(&*slot, ProtectedEditorCleanup::Creating(current) if Rc::ptr_eq(current, &token)) {
+                    *slot = ProtectedEditorCleanup::Idle;
+                }
+            });
+        }
     }
+}
+
+// Consume failed initialization (including post-creation Vec::try_reserve)
+// without releasing close protection. The guard already reserved this slot.
+pub(super) unsafe fn abandon_protected_editor(
+    guard: EditorInitializationGuard,
+) -> Result<(), String> {
+    abandon_protected_editor_with(guard, |h| {
+        DestroyWindow(h);
+    })
+}
+
+fn abandon_protected_editor_with(
+    mut guard: EditorInitializationGuard,
+    destroy: impl FnMut(H),
+) -> Result<(), String> {
+    if let Some(token) = guard.0.take() {
+        finish_protected_editor_creation(&token, false);
+    }
+    retry_protected_editor_cleanup_with(destroy)
 }
 static mut PRIMARY: H = null_mut();
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
@@ -568,6 +701,9 @@ unsafe fn show_editors() {
 // Warum erfüllt: die Liste enthält ausschließlich von der Anwendung erzeugte Fenster.
 // Nachrichten: Dialoge und DestroyWindow können reentrieren; Fensterliste und Modal-Tiefe werden vor den Aufrufen als Werte übernommen.
 unsafe fn quit_application(h: H) {
+    if retry_protected_editor_cleanup().is_err() {
+        return;
+    }
     if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
         MessageBoxW(
             h,

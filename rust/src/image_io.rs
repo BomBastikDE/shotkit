@@ -1,5 +1,5 @@
 //! Image loading/encoding independently of Windows. Internal pixels are BGRA.
-use crate::resource_budget::{AdmissionClass, BudgetLease, ResourceBudget};
+use crate::resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget};
 use crate::stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION};
 #[cfg(test)]
 use image::RgbImage;
@@ -15,6 +15,10 @@ use std::{
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 // Policy allowance, not a measured or enforced bound on external codec memory.
 const IMPORT_WORKSPACE_ALLOWANCE: usize = 16 * 1024 * 1024;
+
+fn import_budget_error(error: BudgetError) -> String {
+    format!("Das Bild kann mit dem verfügbaren Importbudget nicht geöffnet werden. Schließen Sie andere importierte Bilder und versuchen Sie es erneut. Bereits geöffnete Bilder bleiben erhalten. ({error})")
+}
 
 mod bounded_reader;
 
@@ -103,7 +107,7 @@ pub fn decode_file_with_budget(
 ) -> Result<(Image, Option<ImageFormat>, BudgetLease), String> {
     let mut lease = budget
         .try_acquire(IMPORT_WORKSPACE_ALLOWANCE, AdmissionClass::Normal)
-        .map_err(|error| error.to_string())?;
+        .map_err(import_budget_error)?;
     let (image, format) = decode_file_inner(path, Some(&mut lease))?;
     // Decoder, orientation/conversion temporaries and file reader are gone.
     lease
@@ -191,7 +195,7 @@ fn decode_reader_admitted<R: BufRead + Seek>(
                 height,
                 decoder.total_bytes(),
             )?)
-            .map_err(|error| error.to_string())?;
+            .map_err(import_budget_error)?;
     }
     // Mirror ImageReader::decode's allocation reservation before decoding.
     limits

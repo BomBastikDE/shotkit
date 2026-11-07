@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Dateiimporte prüfen vor der Dekodierung und nach dem Lesen der Bildabmessungen ein gemeinsames Budget für geschätzte Importpuffer und bereits importierte Originalbilder. Ein abgelehnter Import verändert vorhandene Dokumente nicht. Vorschau, Bearbeitung, Bildschirmaufnahmen, GDI und interne Decoderpuffer sind nicht vollständig erfasst; das ist keine feste Grenze für den gesamten Prozessspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Scrollaufnahmen können auch bei ausschließlich randnaher Struktur einen eindeutigen, pixelgenauen Bildversatz erkennen. Nach Nutzung dieses Abgleichs bleibt bei unklaren Folgebildern die Teilaufnahme erhalten; bildidentische Überlagerungen lassen sich allein anhand der Pixel nicht sicher von Seiteninhalt unterscheiden ([#60](https://github.com/BomBastikDE/shotkit/issues/60)).
 
 - Bei Bild- und Objektbearbeitungen fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Passt selbst der einzelne neue Schritt nicht ins Limit, kann die Bearbeitung nur nach ausdrücklicher Warnung ohne Rückgängigmöglichkeit erfolgen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).

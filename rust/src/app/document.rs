@@ -4,7 +4,7 @@ use super::*;
 use shotkit::atomic_save_windows::write_atomic;
 use shotkit::atomic_save_windows::write_atomic_with;
 
-fn write_image_atomic(
+pub(super) fn write_image_atomic(
     path: &Path,
     image: &Image,
     format: image::ImageFormat,
@@ -37,7 +37,10 @@ fn requires_save_as(path: &Path) -> bool {
     )
 }
 
-fn opened_original_requires_save_as(path: &Path, format: Option<image::ImageFormat>) -> bool {
+pub(super) fn opened_original_requires_save_as(
+    path: &Path,
+    format: Option<image::ImageFormat>,
+) -> bool {
     requires_save_as(path)
         || !matches!(
             format,
@@ -284,6 +287,9 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
     let _resolving = RecoveryResolveGuard;
     let _modal = ModalGuard::new(h);
     loop {
+        if import_transfer_active() {
+            return false;
+        }
         let scroll_pending = scroll_recovery_pending();
         if !scroll_pending
             && RECOVERY
@@ -291,7 +297,7 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
                 .unwrap_or_else(|p| p.into_inner())
                 .is_empty()
         {
-            return true;
+            return resolve_import_recovery(h);
         }
         let message = if scroll_pending {
             "Eine horizontale Scroll-Aufnahme ist noch im Speicher. Vor dem Speichern wird eine noch ausstehende Rückdrehung erneut versucht.\n\nJa = speichern\nNein = Aufnahme verwerfen\nAbbrechen = im Speicher behalten"
@@ -425,24 +431,7 @@ pub(super) unsafe fn open_image(h: H) {
 // Warum erfüllt: Aufrufer sind Einzelinstanz- und Editorabläufe; path ist ein besitzender Wert.
 // Nachrichten: Fensteranlage und SetWindowTextW können reentrieren; Bild und Pfad sind besitzend, State-Zuweisungen enden vor der Titelaktualisierung.
 pub(super) unsafe fn open_image_path(h: H, path: PathBuf) -> Result<(), String> {
-    let result = (|| -> Result<(Image, bool), String> {
-        let (image, format) = image_io::decode_file(&path)?;
-        let protected_original = opened_original_requires_save_as(&path, format);
-        Ok((image, protected_original))
-    })();
-    match result {
-        Ok((image, protected_original)) => match display_image(h, image) {
-            Ok(window) => {
-                editor(window).document_mut().mark_saved();
-                window_state(window).current_path = Some(path);
-                window_state(window).protected_original = protected_original;
-                refresh_title(window);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        },
-        Err(e) => Err(e),
-    }
+    open_budgeted_image(h, path)
 }
 // SAFETY CONTRACT:
 // Voraussetzung: Die Fensterklasse ist auf dem aktuellen UI-Thread registriert.
@@ -452,19 +441,18 @@ pub(super) unsafe fn create_editor_window() -> Result<H, String> {
     create_editor_window_with_protection(None)
 }
 
-// Foundation only: existing capture/import paths deliberately do not call it.
 // The returned guard must cover ALL initialization, registration and handoff
-// calls that can synchronously dispatch WM_CLOSE. It is safe to drop after an
-// explicit DestroyWindow on a failed initialization.
-#[allow(dead_code)]
+// calls that can synchronously dispatch WM_CLOSE. On initialization failure,
+// consume it with abandon_protected_editor; ordinary Drop commits the handoff.
 pub(super) unsafe fn create_editor_window_protected(
 ) -> Result<(H, EditorInitializationGuard), String> {
-    let token = Rc::new(Cell::new(true));
-    let guard = EditorInitializationGuard(token.clone());
-    let protection = EditorCreationProtection {
-        close_blocked: token,
-    };
-    create_editor_window_with_protection(Some(&protection)).map(|h| (h, guard))
+    if QUITTING.load(Ordering::SeqCst) {
+        return Err("ShotKit wird gerade beendet.".into());
+    }
+    let protection = begin_protected_editor_creation()?;
+    let result = create_editor_window_with_protection(Some(&protection));
+    finish_protected_editor_creation(&protection, result.is_ok());
+    result.map(|h| (h, EditorInitializationGuard(Some(protection))))
 }
 
 // No WindowState/toolbar reference crosses a Win32 call. The optional marker
@@ -492,16 +480,30 @@ unsafe fn create_editor_window_with_protection(
     if h.is_null() {
         return Err("Editorfenster konnte nicht erstellt werden.".into());
     }
+    if protection.is_some_and(|marker| marker.lifetime.get() != h) {
+        return Err("Editorfenster wurde während der Anlage geschlossen.".into());
+    }
     let bar = match toolbar::create(h) {
         Ok(bar) => Rc::new(bar),
         Err(error) => {
-            DestroyWindow(h);
+            // Child setup may have destroyed the original HWND reentrantly.
+            // Never destroy a recycled numeric handle on the protected path.
+            let live = protection.map_or(h, |marker| marker.lifetime.get());
+            if !live.is_null() {
+                DestroyWindow(live);
+            }
             return Err(error);
         }
     };
+    if protection.is_some_and(|marker| marker.lifetime.get() != h) {
+        return Err("Editorfenster wurde während der Toolbaranlage geschlossen.".into());
+    }
     // Drop replaced native objects only after the mutable state borrow ends.
     let previous = window_state(h).toolbar.replace(bar);
     drop(previous);
+    if protection.is_some_and(|marker| marker.lifetime.get() != h) {
+        return Err("Editorfenster wurde während der Toolbaranlage geschlossen.".into());
+    }
     Ok(h)
 }
 // SAFETY CONTRACT:
