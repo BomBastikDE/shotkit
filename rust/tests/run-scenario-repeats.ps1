@@ -24,10 +24,14 @@ $scriptPath = switch ($Scenario) {
     }
 }
 $pwsh = (Get-Process -Id $PID).Path
+$artifactDir = $env:SHOTKIT_SCENARIO_ARTIFACT_DIR
+if ([string]::IsNullOrWhiteSpace($artifactDir)) { $artifactDir = Join-Path (Get-Location) 'target/scenario-diagnostics' }
+[IO.Directory]::CreateDirectory($artifactDir) | Out-Null
+$logPath = Join-Path $artifactDir 'scenario.log'
 $repeatTotal = [int]$RepeatCount
 for ($iteration = 1; $iteration -le $repeatTotal; $iteration++) {
     Write-Output "SCENARIO_REPEAT_START: scenario=$Scenario iteration=$iteration/$repeatTotal"
-    & $pwsh -NoProfile -File $scriptPath -ExePath $ExePath @extra
+    & $pwsh -NoProfile -File $scriptPath -ExePath $ExePath @extra 2>&1 | Tee-Object -FilePath $logPath -Append
     if ($LASTEXITCODE -ne 0) { throw "SCENARIO_REPEAT_FAILED: scenario=$Scenario iteration=$iteration exit=$LASTEXITCODE" }
     Write-Output "SCENARIO_REPEAT_PASS: scenario=$Scenario iteration=$iteration/$repeatTotal"
 }

@@ -42,4 +42,13 @@ jobs:
         env:
           SHOTKIT_SCENARIO: ${{ inputs.scenario }}
           SHOTKIT_REPEAT: ${{ inputs.repeat }}
+          SHOTKIT_SCENARIO_ARTIFACT_DIR: ${{ github.workspace }}/rust/target/scenario-diagnostics
         run: ./tests/run-scenario-repeats.ps1 -ExePath target/release/shotkit.exe -Scenario $env:SHOTKIT_SCENARIO -RepeatCount $env:SHOTKIT_REPEAT
+      - name: Upload scenario diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-scenario-diagnostics
+          path: rust/target/scenario-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
