@@ -11,6 +11,8 @@ mod config;
 use config::*;
 mod instance;
 use instance::*;
+mod capture_budget;
+use capture_budget::*;
 mod capture;
 use capture::*;
 mod rendering;
@@ -342,6 +344,7 @@ fn source_recovery_pending() -> bool {
             .unwrap_or_else(|p| p.into_inner())
             .is_empty()
         || scroll_recovery_pending()
+        || capture_recovery_pending()
         || import_transfer_active()
         || import_recovery_pending()
 }

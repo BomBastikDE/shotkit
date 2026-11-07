@@ -300,7 +300,7 @@ pub(super) unsafe fn resolve_recovery(h: H) -> bool {
                 .unwrap_or_else(|p| p.into_inner())
                 .is_empty()
         {
-            return resolve_import_recovery(h);
+            return resolve_capture_recovery(h) && resolve_import_recovery(h);
         }
         let message = if scroll_pending {
             "Eine horizontale Scroll-Aufnahme ist noch im Speicher. Vor dem Speichern wird eine noch ausstehende Rückdrehung erneut versucht.\n\nJa = speichern\nNein = Aufnahme verwerfen\nAbbrechen = im Speicher behalten"

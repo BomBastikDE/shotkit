@@ -238,5 +238,47 @@ fn protection_starts_during_creation_is_local_and_outlives_destroy_safely() {
         assert!(!complete.close_blocked.get());
         retry_protected_editor_cleanup_with(|_| panic!("completed handoff cleaned up")).unwrap();
         assert_ne!(DestroyWindow(complete_h), 0);
+
+        // Captured pixels use the same protected HWND/controller ownership as
+        // imports. WM_CLOSE during handoff cannot drop pixels or their lease.
+        let budget = shotkit::resource_budget::ResourceBudget::new(8, 0).unwrap();
+        let captures = shotkit::import_admission::ImportAdmission::new(budget.clone());
+        let rejected = shotkit::rejected_import::RejectedImportSlot::new();
+        let captured = shotkit::capture_admission::acquire(&captures, &rejected, 1, 1, |pixels| {
+            pixels.copy_from_slice(&[8, 9, 10, 255]);
+            Ok(())
+        })
+        .unwrap();
+        let capture_protection = begin_protected_editor_creation().unwrap();
+        let captured_h = create(Some(&capture_protection));
+        assert!(!captured_h.is_null());
+        finish_protected_editor_creation(&capture_protection, true);
+        let protected = EditorInitializationGuard(Some(capture_protection));
+        let source = shotkit::image_handle::ImageHandle::from_imported(std::sync::Arc::clone(
+            captured.image(),
+        ));
+        let controller = EditorController::with_image_handle(source.clone()).unwrap();
+        let bitmap = create_bitmap(&source).unwrap();
+        install_bitmap(captured_h, bitmap, &source);
+        window_state(captured_h).editor = Some(controller);
+        SendMessageW(captured_h, 0x0010, 0, 0);
+        assert!(protected.still_owns(captured_h));
+        assert_eq!(budget.snapshot().used_bytes, 4);
+        // Simulate an error after installation: the slot retains the exact
+        // capture even if the protected HWND has already been destroyed.
+        drop(captured);
+        assert_ne!(DestroyWindow(captured_h), 0);
+        drop(protected);
+        assert_eq!(
+            captures.pending_state(),
+            shotkit::import_admission::PendingState::Recoverable
+        );
+        let retry = captures.try_recover().unwrap();
+        assert!(std::ptr::eq(retry.image().image(), source.image()));
+        drop(retry); // cancelled recovery
+        captures.discard_recoverable().unwrap();
+        assert_eq!(budget.snapshot().used_bytes, 4); // external source owner
+        drop(source);
+        assert_eq!(budget.snapshot().used_bytes, 0);
     }
 }

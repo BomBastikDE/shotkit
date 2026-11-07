@@ -43,6 +43,27 @@ jobs:
         timeout-minutes: 15
         if: runner.os == 'Windows'
         run: cargo test --locked --all-targets
+      - name: Require ordinary and legacy native capture buffer acceptance
+        timeout-minutes: 5
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          # This desktop-dependent test remains ignored for ordinary unit-test
+          # runs, but is mandatory here. Fail if renaming/removal makes Cargo
+          # match zero tests, as well as when capture itself fails.
+          $testName = 'scroll_windows::tests::supplied_and_legacy_capture_buffers_keep_geometry_and_opaque_alpha'
+          $listed = @(& cargo test --locked --bin shotkit $testName -- --ignored --exact --list)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native capture acceptance discovery failed (exit $LASTEXITCODE)."
+          }
+          $listed | ForEach-Object { Write-Host $_ }
+          if ($listed -notcontains "$($testName): test") {
+            throw "Required native capture acceptance test was not discovered: $testName"
+          }
+          & cargo test --locked --bin shotkit $testName -- --ignored --exact --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required native capture acceptance failed (exit $LASTEXITCODE)."
+          }
       - name: Measure preview redraw on Windows
         timeout-minutes: 15
         if: runner.os == 'Windows'

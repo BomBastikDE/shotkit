@@ -198,40 +198,20 @@ impl WindowsScrollIo {
         self.diagnostic_folder = folder;
     }
 
-    fn current_cursor(&mut self) -> Option<Point> {
-        let mut p = Point::default();
-        if unsafe { GetCursorPos(&mut p) } == 0 {
-            return None;
+    /// Fill an ordinary capture's already allocated and admitted BGRA output.
+    /// No image or budget lock is held across native calls.
+    pub fn capture_into(&mut self, pixels: &mut [u8]) -> Result<(), String> {
+        let (_, _, width, height) = self.rect;
+        let expected = shotkit::capture_buffer::bgra_len(width as usize, height as usize)?;
+        if pixels.len() != expected {
+            return Err("Aufnahmepuffer passt nicht zu den Bildschirmgrenzen.".into());
         }
-        if p.x != self.scroll_cursor.x || p.y != self.scroll_cursor.y {
-            self.cursor_moved = true;
-        }
-        Some(p)
+        self.capture_with_buffer(|| Ok(pixels)).map(|_| ())
     }
-}
-
-impl ScrollIo for WindowsScrollIo {
-    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
-        let folder = self.diagnostic_folder.as_ref()?;
-        let (x, y, width, height) = self.rect;
-        let dc = ScreenDc(unsafe { GetDC(null_mut()) });
-        let dpi = if dc.0.is_null() {
-            0
-        } else {
-            unsafe { GetDeviceCaps(dc.0, 88) }
-        };
-        let dpi = if dpi > 0 {
-            dpi.to_string()
-        } else {
-            "nicht verfügbar".into()
-        };
-        let info = format!("Bereich (Bildschirmkoordinaten): x={x}, y={y}, Breite={width}, Höhe={height}\nBildschirm-DPI X: {dpi}\n{details}");
-        shotkit::scroll_diagnostics::save(folder, before, after, &info)
-            .ok()
-            .map(|p| p.display().to_string())
-    }
-
-    fn capture(&mut self) -> Result<Image, String> {
+    fn capture_with_buffer<T: AsMut<[u8]>>(
+        &mut self,
+        buffer: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         let (x, y, width, height) = self.rect;
         let screen = ScreenDc(unsafe { GetDC(null_mut()) });
         if screen.0.is_null() {
@@ -272,7 +252,8 @@ impl ScrollIo for WindowsScrollIo {
             return Err("Bildschirmbereich konnte nicht kopiert werden.".into());
         }
 
-        let mut pixels = try_bgra_buffer(width as usize, height as usize)?;
+        let mut buffer = buffer()?;
+        let pixels = buffer.as_mut();
         let len = pixels.len();
         let mut info = BitmapInfo {
             header: BitmapInfoHeader {
@@ -310,6 +291,47 @@ impl ScrollIo for WindowsScrollIo {
         for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
+        Ok(buffer)
+    }
+
+    fn current_cursor(&mut self) -> Option<Point> {
+        let mut p = Point::default();
+        if unsafe { GetCursorPos(&mut p) } == 0 {
+            return None;
+        }
+        if p.x != self.scroll_cursor.x || p.y != self.scroll_cursor.y {
+            self.cursor_moved = true;
+        }
+        Some(p)
+    }
+}
+
+impl ScrollIo for WindowsScrollIo {
+    fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
+        let folder = self.diagnostic_folder.as_ref()?;
+        let (x, y, width, height) = self.rect;
+        let dc = ScreenDc(unsafe { GetDC(null_mut()) });
+        let dpi = if dc.0.is_null() {
+            0
+        } else {
+            unsafe { GetDeviceCaps(dc.0, 88) }
+        };
+        let dpi = if dpi > 0 {
+            dpi.to_string()
+        } else {
+            "nicht verfügbar".into()
+        };
+        let info = format!("Bereich (Bildschirmkoordinaten): x={x}, y={y}, Breite={width}, Höhe={height}\nBildschirm-DPI X: {dpi}\n{details}");
+        shotkit::scroll_diagnostics::save(folder, before, after, &info)
+            .ok()
+            .map(|p| p.display().to_string())
+    }
+
+    fn capture(&mut self) -> Result<Image, String> {
+        let (_, _, width, height) = self.rect;
+        let pixels = self.capture_with_buffer(|| {
+            try_bgra_buffer(width as usize, height as usize).map_err(str::to_owned)
+        })?;
         Image::new(width as usize, height as usize, pixels).map_err(str::to_owned)
     }
 
@@ -433,5 +455,46 @@ mod tests {
             assert_eq!(size_of::<MouseInput>(), 24);
             assert_eq!(size_of::<Input>(), 28);
         }
+    }
+    #[test]
+    fn ordinary_buffer_mismatch_is_rejected_before_any_native_acquisition() {
+        // Construct without GetCursorPos, and suppress Drop's cursor restore.
+        // The invalid slice must be rejected without touching the desktop.
+        let mut io = std::mem::ManuallyDrop::new(WindowsScrollIo {
+            rect: (0, 0, 2, 1),
+            target_window: 0,
+            original_cursor: Point::default(),
+            scroll_cursor: Point::default(),
+            cursor_moved: false,
+            escape_seen: false,
+            diagnostic_folder: None,
+        });
+        let mut invalid = [13; 4];
+        assert!(io.capture_into(&mut invalid).is_err());
+        assert_eq!(invalid, [13; 4]);
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop; explicitly run during capture acceptance"]
+    fn supplied_and_legacy_capture_buffers_keep_geometry_and_opaque_alpha() {
+        let mut io = WindowsScrollIo::new(0, 0, 2, 1, 0).unwrap();
+        let legacy = io.capture().unwrap();
+        let mut supplied = [0; 8];
+        io.capture_into(&mut supplied).unwrap();
+        assert_eq!(
+            (legacy.width, legacy.height, legacy.pixels.len()),
+            (2, 1, 8)
+        );
+        assert!(legacy
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255));
+        assert!(supplied
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255));
     }
 }

@@ -119,15 +119,14 @@ pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRe
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let image = scroll_windows::WindowsScrollIo::new(
+    match capture_ordinary_rect(
+        h,
         rect.left(),
         rect.top(),
         rect.width(),
         rect.height(),
-        0,
-    )
-    .and_then(|mut io| io.capture());
-    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        was_visible,
+    ) {
         Ok(()) => {}
         Err(e) => {
             if was_visible {

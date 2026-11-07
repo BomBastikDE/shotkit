@@ -71,15 +71,14 @@ pub(super) unsafe fn capture_region_rect(
             return;
         }
     }
-    let image = scroll_windows::WindowsScrollIo::new(
+    match capture_ordinary_rect(
+        h,
         rect.left,
         rect.top,
         rect.right - rect.left,
         rect.bottom - rect.top,
-        0,
-    )
-    .and_then(|mut io| io.capture());
-    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        was_visible,
+    ) {
         Ok(()) => {
             if remember_on_success {
                 *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);

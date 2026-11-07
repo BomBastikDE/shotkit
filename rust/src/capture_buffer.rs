@@ -6,6 +6,12 @@ const ALLOCATION_ERROR: &str = "Nicht genügend Speicher für die Bildschirmaufn
 /// Reserve the complete output before initializing it or passing it to GDI.
 /// A successful reservation does not guarantee physical memory under OS overcommit.
 pub fn try_bgra_buffer(width: usize, height: usize) -> Result<Vec<u8>, &'static str> {
+    let len = bgra_len(width, height)?;
+    try_zeroed_buffer(len)
+}
+
+/// Validate geometry without allocating or acquiring pixels.
+pub fn bgra_len(width: usize, height: usize) -> Result<usize, &'static str> {
     let len = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))
@@ -13,7 +19,7 @@ pub fn try_bgra_buffer(width: usize, height: usize) -> Result<Vec<u8>, &'static 
     if width == 0 || height == 0 || len > MAX_CAPTURE_BYTES || len > u32::MAX as usize {
         return Err("Aufnahmebereich überschreitet die zulässige Bildgröße.");
     }
-    try_zeroed_buffer(len)
+    Ok(len)
 }
 
 fn try_zeroed_buffer(len: usize) -> Result<Vec<u8>, &'static str> {
