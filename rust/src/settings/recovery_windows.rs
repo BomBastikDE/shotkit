@@ -9,13 +9,25 @@
 //! - The existing source is opened READ | DELETE, sharing READ only. Its bytes
 //!   and version are checked while the same handle stays open through backup
 //!   rename and publication. Source leaf reparse points are refused.
-//! - The backup rename uses that handle, FileRenameInfo, and no replacement.
-//!   Publication uses CreateNew only. No path is unlinked or rolled back.
+//! - Before moving the verified source, an exclusive sibling temp is created
+//!   READ | WRITE | DELETE with CreateNew and sharing disabled. The complete
+//!   replacement is written and synced while both source and temp stay held.
+//!   Preparation failure leaves the original name untouched and retains the temp.
+//! - Both renames use those held objects, FileRenameInfo, and no replacement.
+//!   Publication renames the prepared object; it never creates or writes the
+//!   destination by path. No path is unlinked or rolled back; publication is
+//!   never automatically retried. Backup naming alone skips up to 128 collisions.
 //!   An opt-in API returns the original backup handle after success; only the
 //!   explicit user-consent deletion method can then request native disposition.
-//! - These are two operations, not a transaction. On failure the backup and any
-//!   new/partial settings or competing file remain. Success describes this
-//!   operation, not future ownership or crash durability of directory entries.
+//! - These are two renames, not a transaction or compare-and-swap. There is a
+//!   destination-name gap; a competing creator wins without being overwritten.
+//!   Errors report the prepared path and backup/attempted backup where relevant.
+//!   Native rename errors require inspection of both endpoints; no endpoint is
+//!   asserted absent. Artifact paths are last-known diagnostics, not authority.
+//! - File sync covers prepared contents, not directory-entry crash durability.
+//!   Process/power loss between renames can leave only backup and temp names.
+//!   No automatic restart recovery, retention bound, or directory flush is
+//!   provided. Protection ends when handles close; namespace trust remains required.
 //!
 //! Win32 references:
 //! <https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew>
@@ -36,6 +48,7 @@ use std::{
 };
 
 const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
 const DELETE: u32 = 0x0001_0000;
 const FILE_SHARE_READ: u32 = 1;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -46,23 +59,33 @@ static BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Last completed stage, including material left behind on failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryState {
-    /// No mutation completed: preparation failed or all no-replace rename
-    /// attempts collided with existing files.
+    /// The original was not moved. Consult `prepared_path`: allocating backup
+    /// names can fail after a complete temp was created and retained.
     Unchanged,
-    /// Native rename failed; no publication was attempted. Inspect both paths
-    /// before retrying. This deliberately does not assert either path absent.
+    /// A temp was created, but writing/syncing it failed. The source was not
+    /// moved; the possibly partial temp is retained at `prepared_path`.
+    PreparationIncomplete,
+    /// Native rename failed; no publication was attempted. Inspect the source,
+    /// attempted backup, and prepared_path. Neither rename endpoint is asserted
+    /// absent; no automatic retry is performed.
     BackupMoveFailed { attempted_backup: PathBuf },
-    /// Rename succeeded; CreateNew did not succeed. A competing destination
-    /// may exist and must be left alone.
+    /// Backup rename succeeded; prepared-object publication failed. Inspect
+    /// the temp and destination as well as the backup. A competitor is retained.
     BackedUp { backup_path: PathBuf },
-    /// CreateNew succeeded, but writing or syncing failed. The new file may
-    /// be empty/partial. Both it and the backup are deliberately retained.
+    /// Legacy state retained for callers. Prepared-object recovery never emits
+    /// this state: no destination write occurs after moving the source.
     ReplacementIncomplete { backup_path: PathBuf },
 }
 
 #[derive(Debug)]
 pub struct RecoveryError {
     pub state: RecoveryState,
+    /// Last-known or attempted temp name, including partial preparation and
+    /// CREATE_NEW collision. A collided name belongs to another actor; this
+    /// diagnostic grants no ownership or cleanup permission. After a failed
+    /// publication rename inspect this AND the requested target path.
+    /// None means preparation did not reach temporary-name allocation.
+    pub prepared_path: Option<PathBuf>,
     pub operation: &'static str,
     pub source: io::Error,
 }
@@ -71,8 +94,8 @@ impl fmt::Display for RecoveryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "settings recovery {} failed ({:?}): {}",
-            self.operation, self.state, self.source
+            "settings recovery {} failed ({:?}, prepared={:?}): {}",
+            self.operation, self.state, self.prepared_path, self.source
         )
     }
 }
@@ -97,6 +120,7 @@ pub struct RetainedRecoverySuccess {
 fn failure(state: RecoveryState, operation: &'static str, source: io::Error) -> RecoveryError {
     RecoveryError {
         state,
+        prepared_path: None,
         operation,
         source,
     }
@@ -130,6 +154,36 @@ pub fn recover_v1_retaining_backup(
     expected_bytes: &[u8],
     replacement: &Settings,
 ) -> Result<RetainedRecoverySuccess, RecoveryError> {
+    recover_with(path, expected_bytes, replacement, flush_prepared, |_, _| {})
+}
+
+fn recover_with(
+    path: &Path,
+    expected_bytes: &[u8],
+    replacement: &Settings,
+    prepare: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
+    before_publication: impl FnOnce(&Path, &Path),
+) -> Result<RetainedRecoverySuccess, RecoveryError> {
+    recover_with_temp_name(
+        path,
+        expected_bytes,
+        replacement,
+        prepare,
+        before_publication,
+        prepared_name,
+    )
+}
+
+// Private callbacks permit deterministic fault/collision tests. Production
+// always uses flush_prepared, a no-op interleave, and generated sibling names.
+fn recover_with_temp_name(
+    path: &Path,
+    expected_bytes: &[u8],
+    replacement: &Settings,
+    prepare: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
+    before_publication: impl FnOnce(&Path, &Path),
+    allocate_name: impl FnOnce(&Path) -> PathBuf,
+) -> Result<RetainedRecoverySuccess, RecoveryError> {
     let unchanged = |operation, source| failure(RecoveryState::Unchanged, operation, source);
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(unchanged(
@@ -161,8 +215,41 @@ pub fn recover_v1_retaining_backup(
         open_protected(path).map_err(|error| unchanged("open expected source", error))?;
     verify_expected(&mut held, expected_bytes)
         .map_err(|error| unchanged("verify expected source", error))?;
-    let backup_path = move_to_unique_backup(&held, path)?;
-    publish_new(path, &backup_path, &replacement_bytes)?;
+    let temp_path = allocate_name(path);
+    let with_prepared = |mut error: RecoveryError| {
+        error.prepared_path = Some(temp_path.clone());
+        error
+    };
+    // CREATE_NEW and no sharing: a pre-existing object is never opened or
+    // truncated. Once created, the same object is held through publication.
+    let mut prepared = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+        .share_mode(0)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&temp_path)
+        .map_err(|error| with_prepared(unchanged("create prepared replacement", error)))?;
+    prepare(&mut prepared, &replacement_bytes).map_err(|source| {
+        with_prepared(failure(
+            RecoveryState::PreparationIncomplete,
+            "write/sync prepared replacement",
+            source,
+        ))
+    })?;
+    let backup_path = move_to_unique_backup(&held, path).map_err(&with_prepared)?;
+    before_publication(&temp_path, &backup_path);
+    rename_without_replace(&prepared, path).map_err(|source| {
+        with_prepared(failure(
+            RecoveryState::BackedUp {
+                backup_path: backup_path.clone(),
+            },
+            "publish prepared replacement",
+            source,
+        ))
+    })?;
+    drop(prepared);
     // Retain original object protection even after its name becomes the backup.
     Ok(RetainedRecoverySuccess {
         backup: HeldBackup::from_renamed_original(held, backup_path),
@@ -239,41 +326,26 @@ fn move_to_unique_backup(held: &File, path: &Path) -> Result<PathBuf, RecoveryEr
     ))
 }
 
-fn publish_new(path: &Path, backup_path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
-    publish_new_with(path, backup_path, |file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    })
+fn prepared_name(path: &Path) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut name = path
+        .file_name()
+        .expect("validated file name")
+        .to_os_string();
+    name.push(format!(
+        ".recovery-{}-{timestamp}-{sequence}.tmp",
+        std::process::id()
+    ));
+    path.with_file_name(name)
 }
 
-fn publish_new_with(
-    path: &Path,
-    backup_path: &Path,
-    write: impl FnOnce(&mut File) -> io::Result<()>,
-) -> Result<(), RecoveryError> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(path)
-        .map_err(|source| {
-            failure(
-                RecoveryState::BackedUp {
-                    backup_path: backup_path.to_owned(),
-                },
-                "create replacement",
-                source,
-            )
-        })?;
-    write(&mut file).map_err(|source| {
-        failure(
-            RecoveryState::ReplacementIncomplete {
-                backup_path: backup_path.to_owned(),
-            },
-            "write/sync replacement",
-            source,
-        )
-    })
+fn flush_prepared(file: &mut File, bytes: &[u8]) -> io::Result<()> {
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn rename_without_replace(held: &File, destination: &Path) -> io::Result<()> {
@@ -287,8 +359,8 @@ fn rename_without_replace(held: &File, destination: &Path) -> io::Result<()> {
         ) -> i32;
     }
     let name: Vec<u16> = destination.as_os_str().encode_wide().collect();
-    if name.contains(&0) {
-        return Err(invalid("backup path contains a NUL"));
+    if !destination.is_absolute() || name.contains(&0) {
+        return Err(invalid("rename destination must be absolute without NUL"));
     }
     // FILE_RENAME_INFO: BOOLEAN/flags union, aligned HANDLE, DWORD, WCHAR[].
     // Zero initialization means ReplaceIfExists=FALSE and RootDirectory=NULL.
@@ -311,7 +383,7 @@ fn rename_without_replace(held: &File, destination: &Path) -> io::Result<()> {
     let buffer = storage.as_mut_ptr().cast::<u8>();
     // SAFETY: allocation is zeroed, correctly aligned, and at least size bytes.
     // Both checked payload writes stay inside it. The UTF-16 NUL remains zero;
-    // FileNameLength excludes it. File owns a valid synchronous READ|DELETE
+    // FileNameLength excludes it. File owns a valid synchronous DELETE-capable
     // handle during the call. Pointers do not escape. Class 3 selects the
     // documented FILE_RENAME_INFO layout.
     let result = unsafe {
@@ -462,47 +534,168 @@ mod tests {
     }
 
     #[test]
-    fn partial_write_failure_preserves_backup_and_partial_file() {
+    fn temporary_name_collision_preserves_original_and_foreign_temp() {
         let (dir, path) = fixture();
-        let original = br#"{"version":1}"#;
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
         fs::write(&path, original).unwrap();
-        let held = open_protected(&path).unwrap();
-        let backup = move_to_unique_backup(&held, &path).unwrap();
-        let error = publish_new_with(&path, &backup, |file| {
-            file.write_all(b"partial")?;
-            Err(io::Error::other("injected write failure"))
-        })
+        let occupied = dir.join("occupied.tmp");
+        fs::write(&occupied, b"foreign temporary bytes").unwrap();
+        let error = recover_with_temp_name(
+            &path,
+            original,
+            &Settings::default(),
+            |_, _| panic!("must not prepare an existing temporary file"),
+            |_, _| panic!("must not move source or publish after temp collision"),
+            |_| occupied.clone(),
+        )
         .unwrap_err();
-        assert_eq!(
-            error.state,
-            RecoveryState::ReplacementIncomplete {
-                backup_path: backup.clone()
-            }
-        );
-        drop(held);
-        assert_eq!(fs::read(&path).unwrap(), b"partial");
-        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(error.state, RecoveryState::Unchanged);
+        assert_eq!(error.operation, "create prepared replacement");
+        assert!(matches!(error.source.raw_os_error(), Some(80 | 183)));
+        assert_eq!(error.prepared_path.as_deref(), Some(occupied.as_path()));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(&occupied).unwrap(), b"foreign temporary bytes");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn recreated_destination_and_backup_survive_failed_publication() {
+    fn preparation_failure_retains_partial_temp_and_untouched_original() {
         let (dir, path) = fixture();
-        let original = br#"{"version":1}"#;
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
         fs::write(&path, original).unwrap();
-        let held = open_protected(&path).unwrap();
-        let backup = move_to_unique_backup(&held, &path).unwrap();
-        fs::write(&path, b"foreign settings").unwrap();
-        let error = publish_new(&path, &backup, b"replacement").unwrap_err();
+        let error = recover_with(
+            &path,
+            original,
+            &Settings::default(),
+            |file, _| {
+                assert_eq!(fs::read(&path).unwrap(), original);
+                file.write_all(b"partial")?;
+                Err(io::Error::other("injected preparation failure"))
+            },
+            |_, _| panic!("preparation failure must not reach publication"),
+        )
+        .unwrap_err();
+        assert_eq!(error.state, RecoveryState::PreparationIncomplete);
+        assert_eq!(error.operation, "write/sync prepared replacement");
         assert_eq!(
-            error.state,
-            RecoveryState::BackedUp {
-                backup_path: backup.clone()
-            }
+            fs::read(error.prepared_path.as_ref().unwrap()).unwrap(),
+            b"partial"
         );
-        drop(held);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sync_failure_after_complete_write_does_not_move_original() {
+        let (dir, path) = fixture();
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
+        fs::write(&path, original).unwrap();
+        let error = recover_with(
+            &path,
+            original,
+            &Settings::default(),
+            |file, bytes| {
+                file.write_all(bytes)?;
+                Err(io::Error::other("injected sync failure"))
+            },
+            |_, _| panic!("sync failure must not move source or publish"),
+        )
+        .unwrap_err();
+        assert_eq!(error.state, RecoveryState::PreparationIncomplete);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let bytes = fs::read(error.prepared_path.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Settings>(&bytes).unwrap(),
+            Settings::default()
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recreated_destination_keeps_complete_prepared_object_and_backup() {
+        let (dir, path) = fixture();
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
+        fs::write(&path, original).unwrap();
+        let mut observed_temp = None;
+        let error = recover_with(
+            &path,
+            original,
+            &Settings::default(),
+            flush_prepared,
+            |temp, backup| {
+                assert!(!path.exists());
+                assert_eq!(fs::read(backup).unwrap(), original);
+                // Temp stays exclusive even after the old object has moved.
+                for access in [GENERIC_READ, GENERIC_WRITE, DELETE] {
+                    let blocked = OpenOptions::new()
+                        .access_mode(access)
+                        .share_mode(7)
+                        .open(temp)
+                        .unwrap_err();
+                    assert_eq!(blocked.raw_os_error(), Some(32));
+                }
+                observed_temp = Some(temp.to_owned());
+                fs::write(&path, b"foreign settings").unwrap();
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.operation, "publish prepared replacement");
+        assert!(matches!(error.source.raw_os_error(), Some(80 | 183)));
+        let RecoveryState::BackedUp { backup_path } = &error.state else {
+            panic!("expected preserved backup state");
+        };
+        assert_eq!(error.prepared_path, observed_temp);
+        let prepared = fs::read(error.prepared_path.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            prepared,
+            serde_json::to_vec_pretty(&Settings::default()).unwrap()
+        );
         assert_eq!(fs::read(&path).unwrap(), b"foreign settings");
-        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(fs::read(backup_path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepared_success_holds_both_objects_until_publication() {
+        let (dir, path) = fixture();
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
+        fs::write(&path, original).unwrap();
+        let mut observed_temp = None;
+        let recovered = recover_with(
+            &path,
+            original,
+            &Settings::default(),
+            |file, bytes| {
+                // A complete flush occurs while the verified original is still
+                // at its original name and held against competing writes/deletes.
+                assert_eq!(fs::read(&path).unwrap(), original);
+                flush_prepared(file, bytes)
+            },
+            |temp, backup| {
+                observed_temp = Some(temp.to_owned());
+                for name in [temp, backup] {
+                    for access in [GENERIC_WRITE, DELETE] {
+                        let blocked = OpenOptions::new()
+                            .access_mode(access)
+                            .share_mode(7)
+                            .open(name)
+                            .unwrap_err();
+                        assert_eq!(blocked.raw_os_error(), Some(32));
+                    }
+                }
+            },
+        )
+        .unwrap();
+        assert!(!observed_temp.unwrap().exists());
+        let backup_path = recovered.backup.last_known_path().to_owned();
+        drop(recovered);
+        assert_eq!(fs::read(backup_path).unwrap(), original);
+        assert_eq!(super::super::load(&path).unwrap(), Settings::default());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
 }
