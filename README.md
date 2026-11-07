@@ -1,20 +1,20 @@
 # ShotKit
 
 Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
-C# / WinForms / .NET 8, eine einzige EXE, keine Installation nötig.
+Die aktuelle Weiterentwicklung erfolgt in Rust; die C#-Fassung ist historisch abgeschlossen.
 
 > **Status: Beta.** Hobbyprojekt, bisher nur auf wenigen Rechnern getestet. Besonders die Scroll-Aufnahme
 > kann bei komplexen Seiten Fehler machen. Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 
-## Rust-Version testen und später umsteigen
+## Rust-Version und Umstieg von C#
 
-ShotKit wird zusätzlich in Rust entwickelt. Die **C#-Version v1.2.0 bleibt die stabile Hauptversion**; die Rust-Version ist eine Vorabversion und ihre Funktionsgleichheit ist noch nicht vollständig belegt. Den Entwicklungsstand der ersten Beta führt der Zweig `rust/development`; veröffentlichte Vorabversionen stehen auf der Releases-Seite. Entwicklungsstand, Tests und bekannte Grenzen stehen in der [Rust-Anleitung](rust/README.md), die einzelnen Funktionen in der [Paritätstabelle](rust/PARITY.md).
+Rust ist die künftig maßgebliche ShotKit-Version. Die **C#-Version v1.2.0 ist abgeschlossen** und wird nicht weiterentwickelt; sie bleibt als historische Version auf `csharp/1.x` und über den Tag `v1.2.0` verfügbar. Der Rust-Entwicklungsstand liegt auf `rust/development`; veröffentlichte Versionen stehen auf der Releases-Seite. Die vollständige Funktionsgleichheit und einzelne Windows-Praxistests sind noch nicht belegt. Entwicklungsstand, Tests und bekannte Grenzen stehen in der [Rust-Anleitung](rust/README.md), die einzelnen Funktionen in der [Paritätstabelle](rust/PARITY.md).
 
 Zum Testen ein Rust-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden, EXE und SHA256-Prüfsumme prüfen und die EXE starten. Die unsignierte EXE kann eine SmartScreen-Warnung auslösen; nach eigener Prüfung stehen dort „Weitere Informationen“ und „Trotzdem ausführen“ zur Verfügung. Die Prüfsumme lässt sich in PowerShell mit `Get-FileHash .\shotkit-*.exe -Algorithm SHA256` berechnen und mit der zugehörigen `.sha256`-Datei vergleichen. Vor dem Start eine laufende C#-Instanz beenden, damit sich globale Tastenkürzel nicht gegenseitig belegen. Eine ältere Rust-Version vor dem Testen einer neuen Vorabversion ebenfalls über das Tray-Menü vollständig beenden; sonst aktiviert der neue Start die bereits laufende Version.
 
 Rust liest seine Einstellungen getrennt unter `%APPDATA%\ShotKitRust\settings.json`; die C#-Einstellungen unter `%APPDATA%\ShotKit\settings.json` werden nicht übernommen oder verändert. Ausgabeoptionen und Autostart deshalb im Rust-Tray-Menü bewusst neu einstellen; beim Umstieg gegebenenfalls den C#-Autostart ausschalten, da beide Versionen getrennte Autostart-Einträge haben: Beim ersten Start sind automatisches Kopieren und Speichern ausgeschaltet, der Editor öffnet sich nach einer Aufnahme. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Einstellungen und vorhandene Bilder bleiben dabei erhalten.
 
-Über den späteren Wechsel des Hauptzweigs auf Rust und eine mögliche Verschiebung der C#-Quellen nach `legacy/` entscheidet der Owner nach Freigabe der Beta. Bis dahin bleiben Hauptzweig und C#-Version erhalten; die freigegebene Version ist über den bestehenden Tag `v1.2.0` erreichbar.
+Der Standardzweig enthält derzeit weiterhin die historische C#-Fassung. Eine Umstellung des Standardzweigs oder Verschiebung der C#-Quellen ist eine separate Entscheidung.
 
 ## Screenshots
 

@@ -1,10 +1,10 @@
-# ShotKit Rust – Vorabversion
+# ShotKit – Rust-Version
 
-Rust-Portierung von [ShotKit](https://github.com/BomBastikDE/shotkit) v1.2.0 (Referenzcommit `cd5fff3`). **Vorabversion für Tests:** Funktionsumfang und Windows-Verhalten sind nicht vollständig geprüft. Das C#-ShotKit 1.2.0 bleibt die stabile Hauptversion (Branch `csharp/1.x`). Der Entwicklungsstand der ersten Rust-Beta liegt auf `rust/development`; veröffentlichte Vorabversionen stehen auf der Releases-Seite.
+Rust ist die künftig maßgebliche Fassung von [ShotKit](https://github.com/BomBastikDE/shotkit). Die C#-Version 1.2.0 (Referenzcommit `cd5fff3`, Branch `csharp/1.x`) ist abgeschlossen und bleibt als historische Version verfügbar; sie wird nicht weiterentwickelt. Der Rust-Entwicklungsstand liegt auf `rust/development`. Windows-Verhalten und Funktionsumfang sind noch nicht vollständig auf realen Rechnern geprüft; veröffentlichte Versionen stehen auf der Releases-Seite.
 
 ## Umstieg von C#
 
-Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach das gewünschte Rust-Pre-Release von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
+Zum Testen die C#-Instanz und gegebenenfalls eine ältere Rust-Version vollständig über das Tray-Menü beenden; sonst kann ein erneuter Start die bereits laufende Version aktivieren. Danach die gewünschte Rust-Version von der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) laden und EXE sowie SHA256-Datei prüfen. Die Versionen verwenden getrennte Einstellungen; Rust übernimmt die C#-Einstellungen nicht. Ausgabeoptionen und Autostart im Rust-Tray-Menü neu prüfen. Für die Rückkehr Rust beenden und die bisherige C#-EXE starten. Die vollständige Migrationsbeschreibung steht in der [Haupt-README](../README.md#rust-version-testen-und-später-umsteigen).
 
 Die Rust-EXE läuft ohne Installer und kann in einem selbst gewählten Ordner liegen. Zum Entfernen zuerst einen gegebenenfalls aktivierten Rust-Autostart im Tray-Menü ausschalten und ShotKit über das Tray-Menü beenden; danach kann die EXE gelöscht werden. Die separaten Rust-Einstellungen liegen unter `%APPDATA%\ShotKitRust\settings.json` (falls `APPDATA` fehlt, unter `%LOCALAPPDATA%\ShotKitRust\settings.json`). Sie können für eine spätere Nutzung erhalten oder bei Bedarf separat entfernt werden. Bereits gespeicherte Bilder liegen im jeweils gewählten Speicherordner und werden dadurch nicht entfernt.
 
@@ -38,9 +38,11 @@ Für registrierte Bildpuffer gilt ein gemeinsames Speicherbudget von 1 GiB; 128 
 
 Ein unerwarteter Programmabbruch beendet alle offenen Editorfenster; nicht gespeicherte Änderungen und nur im Arbeitsspeicher zurückgehaltene Aufnahmen gehen verloren. Die Wiederherstellungsfunktion im Tray hält solche Aufnahmen nur während der laufenden Sitzung vor. Wichtige Bearbeitungen daher regelmäßig speichern.
 
+Bei einem abrupten Abbruch während des Speicherns können im gewählten Zielordner temporäre Dateien nach dem Muster `.shotkit-….tmp` zurückbleiben; sie können Bilddaten enthalten. Die vorhandene Zieldatei und solche Reste nach einem Abbruch prüfen. Dateien nur entfernen, wenn ihre Herkunft und ihr Inhalt geklärt sind; ShotKit bereinigt diese Reste nicht automatisch. Normale gemeldete Schreibfehler werden gesondert behandelt.
+
 Beim ersten Start öffnet sich nach einer Aufnahme der Editor; automatisches Speichern und Kopieren in die Zwischenablage sind zunächst ausgeschaltet. Diese Ausgaben und der optionale Autostart können im Tray-Menü eingestellt werden. Standardmäßig fordert ShotKit Windows beim Kopieren auf, Bilder vom Zwischenablageverlauf und der Cloud-Synchronisierung auszunehmen; dies lässt sich im Tray-Menü ändern. Diese Anforderung bietet keine Garantie und entfernt keine bereits vorhandenen Einträge. Die Rust-Version verwendet `%APPDATA%\ShotKitRust` und ändert die Einstellungen der C#-Version nicht.
 
-Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert und ausschließlich für Testzwecke gedacht. Im Entwicklungsstand nur mit Kopien wichtiger Bilder arbeiten.
+Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert; Windows SmartScreen kann eine Warnung anzeigen. Einzelne Windows-Praxistests und Teile der Sicherheitsprüfung stehen noch aus.
 
 Für einen manuellen Test auf Windows-Geräten siehe [WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md).
 
@@ -63,7 +65,7 @@ cargo build --locked --release
 pwsh -NoProfile -File .\tests\run-all.ps1 -ExePath .\target\release\shotkit.exe -AllowLocalInteractive
 ```
 
-Das Skript führt derzeit 43 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test und der zusätzliche Test der schmalen Leiste sind in der CI verbindlich. Die vorherige Ausnahme für den Toolbar-Test wurde nach wiederholten erfolgreichen CI-Läufen entfernt ([42004167628](https://github.com/BomBastikDE/shotkit/actions/runs/42004167628), [42006367024](https://github.com/BomBastikDE/shotkit/actions/runs/42006367024), [42007837556](https://github.com/BomBastikDE/shotkit/actions/runs/42007837556), [42015861642](https://github.com/BomBastikDE/shotkit/actions/runs/42015861642), [42017257158](https://github.com/BomBastikDE/shotkit/actions/runs/42017257158)).
+Das Skript führt derzeit 63 Szenarien getrennt und nacheinander aus, meldet jeden Fehler und beendet sich bei blockierenden Fehlern mit einem Fehlercode. Der Toolbar-Test und der zusätzliche Test der schmalen Leiste sind in der CI verbindlich. Die vorherige Ausnahme für den Toolbar-Test wurde nach wiederholten erfolgreichen CI-Läufen entfernt ([42004167628](https://github.com/BomBastikDE/shotkit/actions/runs/42004167628), [42006367024](https://github.com/BomBastikDE/shotkit/actions/runs/42006367024), [42007837556](https://github.com/BomBastikDE/shotkit/actions/runs/42007837556), [42015861642](https://github.com/BomBastikDE/shotkit/actions/runs/42015861642), [42017257158](https://github.com/BomBastikDE/shotkit/actions/runs/42017257158)).
 
 ## Lizenz
 

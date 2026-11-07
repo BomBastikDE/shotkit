@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish an alpha or beta only after the workflow's blocking checks pass."""
+"""Publish an alpha, beta, or v2.0.0 stable release only after the workflow's blocking checks pass."""
 import hashlib
 import json
 import os
@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
-TAG_PATTERN = re.compile(r"v2\.\d+\.\d+-(?:alpha|beta)\.\d+\Z")
+TAG_PATTERN = re.compile(r"(?:v2\.0\.0|v2\.\d+\.\d+-(?:alpha|beta)\.\d+)\Z")
 
 
 class NoAuthenticatedRedirect(urllib.request.HTTPRedirectHandler):
@@ -65,7 +65,7 @@ def api(url, token, method="GET", data=None, content_type="application/json"):
 
 def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=None):
     if not TAG_PATTERN.fullmatch(tag):
-        raise ValueError("Only v2 alpha or beta tags may create a release")
+        raise ValueError("Only v2 alpha, beta, or v2.0.0 stable tags may create a release")
     manifest_path = manifest_path or Path(__file__).resolve().parent.parent / "Cargo.toml"
     with Path(manifest_path).open("rb") as manifest:
         version = tomllib.load(manifest).get("package", {}).get("version")
@@ -88,7 +88,9 @@ def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=Non
         raise ValueError("Release already exists; refusing to change it")
     filename = f"shotkit-{tag}-windows-x64.exe"
     checksum = f"{hashlib.sha256(exe).hexdigest()}  {filename}\n".encode()
-    stage = "Beta" if "-beta." in tag else "Alpha"
+    prerelease = tag != "v2.0.0"
+    make_latest = "false" if prerelease else "true"
+    stage = ("Beta" if "-beta." in tag else "Alpha") if prerelease else "stabile Version"
     body = (
         f"Automatisch getestete {stage}. CI: {run_url}\n\n"
         "Die EXE ist nicht signiert. Windows SmartScreen kann eine Warnung zeigen; "
@@ -96,11 +98,21 @@ def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=Non
         "‚Trotzdem ausführen‘ gestartet werden. Die SHA256-Datei dient zur "
         "Integritätsprüfung."
     )
+    if not prerelease:
+        body += (
+            "\n\nRust ist die neue maßgebliche Version von ShotKit. "
+            "C# v1.2.0 bleibt als historische, abgeschlossene Version erhalten. "
+            "Echte Mixed-DPI- und Mehrmonitor-Tests stehen noch aus. "
+            "Verpixelung ist keine sichere Schwärzung. "
+            "Bei abruptem Abbruch beim Speichern können temporäre Dateien mit Bilddaten zurückbleiben. "
+            "Diese Veröffentlichung ist kein vollständiges Security-Audit.\n\n"
+            f"[Änderungen und bekannte Grenzen](https://github.com/{repository}/blob/{tag}/rust/CHANGELOG.md)"
+        )
     payload = json.dumps({"tag_name": tag, "name": f"ShotKit {tag}", "body": body,
-                          "draft": True, "prerelease": True, "make_latest": "false"}).encode()
+                          "draft": True, "prerelease": prerelease, "make_latest": make_latest}).encode()
     release = api(f"{base}/releases", token, "POST", payload)
-    if not release["draft"] or not release["prerelease"]:
-        raise ValueError("GitHub did not create a draft prerelease")
+    if release["draft"] is not True or release["prerelease"] is not prerelease:
+        raise ValueError("GitHub did not create the expected draft release")
     upload_url = validated_upload_url(release["upload_url"], repository, release["id"])
     for name, content, content_type in (
         (filename, exe, "application/vnd.microsoft.portable-executable"),
@@ -110,9 +122,10 @@ def publish(exe_path, tag, commit, repository, token, run_url, manifest_path=Non
         expected = "sha256:" + hashlib.sha256(content).hexdigest()
         if asset["name"] != name or asset["size"] != len(content) or asset.get("digest") != expected:
             raise ValueError(f"Upload verification failed for {name}; draft retained")
-    result = api(f"{base}/releases/{release['id']}", token, "PATCH", b'{"draft":false}')
-    if result["draft"] or not result["prerelease"]:
-        raise ValueError("Release was not published as a prerelease")
+    publish_payload = json.dumps({"draft": False, "make_latest": make_latest}).encode()
+    result = api(f"{base}/releases/{release['id']}", token, "PATCH", publish_payload)
+    if result["draft"] is not False or result["prerelease"] is not prerelease:
+        raise ValueError("Release was not published with the expected prerelease status")
     return result["html_url"]
 
 
