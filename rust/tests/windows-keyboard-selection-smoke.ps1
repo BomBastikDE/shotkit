@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
@@ -133,8 +134,8 @@ namespace ShotKitKeyboardSurface {
     catch {
         $ownedWindows=@([ShotKitKeyboardSmoke.Native]::WindowsForProcess($surface.Id) | ForEach-Object {"HWND=0x$($_.Handle.ToInt64().ToString('X')) Class='$($_.ClassName)' Title='$($_.Title)' Visible=$($_.Visible)"}) -join '; '
         if(-not $ownedWindows){$ownedWindows='no enumerated top-level windows'}
-        $stdout=if(Test-Path -LiteralPath $surfaceStdout){Get-Content -LiteralPath $surfaceStdout -Raw}else{''}
-        $stderr=if(Test-Path -LiteralPath $surfaceStderr){Get-Content -LiteralPath $surfaceStderr -Raw}else{''}
+        $stdout=Read-SharedText -Path $surfaceStdout
+        $stderr=Read-SharedText -Path $surfaceStderr
         throw "Fixture startup failed. PID=$($surface.Id) Exited=$($surface.HasExited) ExitCode=$(if($surface.HasExited){$surface.ExitCode}else{'running'}); windows=[$ownedWindows]; stdout=[$stdout]; stderr=[$stderr]. Cause: $($_.Exception.Message)"
     }
     $ready=Wait-ForCondition -TimeoutSeconds 10 -Description 'fixture client coordinates' -OwnedProcess $surface -Condition {if(Test-Path -LiteralPath $readyFile){Get-Content -LiteralPath $readyFile -Raw}}

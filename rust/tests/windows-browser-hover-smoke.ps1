@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($KeyboardAdjustment -and $EnterAccept) { throw 'INVALID_OPTIONS: -KeyboardAdjustment and -EnterAccept are separate scenarios.' }
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') {
     throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.'
@@ -266,15 +267,8 @@ function Read-ProbeStderr {
     # especially after Kill(). Keep the probe failure primary while allowing
     # a short, bounded window for Windows to release the stderr file.
     if (-not (Test-Path -LiteralPath $uiaProbeStderr)) { return '' }
-    $lastReadError = $null
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
-        try { return [IO.File]::ReadAllText($uiaProbeStderr).Trim() }
-        catch [IO.IOException] {
-            $lastReadError = $_.Exception
-            if ($attempt -lt 19) { Start-Sleep -Milliseconds 50 }
-        }
-    }
-    return "Could not read probe stderr after 20 attempts: $($lastReadError.Message)"
+    try { return (Read-SharedText -Path $uiaProbeStderr -RetryCount 19 -RetryDelayMilliseconds 50).Trim() }
+    catch { return "Could not read probe stderr after 20 attempts: $($_.Exception.Message)" }
 }
 function Test-FullyDecodablePng {
     param([Parameter(Mandatory = $true)][string] $Path)
@@ -374,7 +368,7 @@ function Get-LoggedSelectionRect {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "SELECTION_DIAGNOSTICS_MISSING: no selection trace was written."
     }
-    $lines = @(Get-Content -LiteralPath $Path)
+    $lines = @(Read-SharedLines -Path $Path)
     if ($Phase -eq 'mouse_down') {
         $line = $lines | Where-Object { $_ -match 'selection mouse_down point=' } | Select-Object -Last 1
         $pattern = 'selection mouse_down point=\((?<x>-?\d+), (?<y>-?\d+)\).*?frozen_rect=Some\(\((?<left>-?\d+), (?<top>-?\d+), (?<right>-?\d+), (?<bottom>-?\d+)\)\)'
@@ -866,7 +860,7 @@ catch {
                 [Math]::Abs($uiaSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
                 throw "UIA_BASE_BOUNDS_MISMATCH: UIA suggestion $($uiaWidth)x$($uiaHeight) at ($($uiaSelection.Left),$($uiaSelection.Top),$($uiaSelection.Right),$($uiaSelection.Bottom)) does not match fractional bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height)) within one pixel."
             }
-            $trace = [IO.File]::ReadAllText($diagnosticsFile)
+            $trace = Read-SharedText -Path $diagnosticsFile
             if ($trace -match 'selection mouse_(down|up)') {
                 throw 'ENTER_PATH_MOUSE_GESTURE: Enter acceptance unexpectedly recorded a mouse selection gesture.'
             }
@@ -906,7 +900,7 @@ catch {
                 [Math]::Abs($uiaSelection.Bottom - ($bounds.Y + $bounds.Height)) -gt 1) {
                 throw "UIA_BASE_BOUNDS_MISMATCH: UIA suggestion $($baseWidth)x$($baseHeight) at ($($uiaSelection.Left),$($uiaSelection.Top),$($uiaSelection.Right),$($uiaSelection.Bottom)) does not match fractional bounds ($($bounds.X),$($bounds.Y),$($bounds.Width),$($bounds.Height)) within one pixel."
             }
-            $trace = [IO.File]::ReadAllText($diagnosticsFile)
+            $trace = Read-SharedText -Path $diagnosticsFile
             if ($trace -match 'selection mouse_(down|up)') {
                 throw 'KEYBOARD_PATH_MOUSE_GESTURE: keyboard adjustment unexpectedly recorded a mouse selection gesture.'
             }
@@ -1080,7 +1074,7 @@ finally {
 
     if ($null -ne $testFailure -and (Test-Path -LiteralPath $diagnosticsFile)) {
         Write-Output 'DIAGNOSTICS: UIA and selection trace from failed browser hover test:'
-        Get-Content -LiteralPath $diagnosticsFile
+        Read-SharedLines -Path $diagnosticsFile
     }
     if (Test-Path -LiteralPath $testRoot) {
         try { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop }

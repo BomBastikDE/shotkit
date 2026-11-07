@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
@@ -185,7 +186,7 @@ function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [u
     # cannot satisfy the wait for this action.
     $script:traySaveBaseline=0
     if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
-        $script:traySaveBaseline=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'}).Count
+        $script:traySaveBaseline=@(Read-SharedLines -Path $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'}).Count
     }
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($Main,0x8001,[IntPtr]1,[IntPtr]0x0205)) { throw 'Could not post tray callback.' }
     $popup=Wait-ForCondition -Seconds 10 -Description 'native tray menu' -OwnedProcess $Process -Condition {
@@ -208,7 +209,7 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
         if(-not $saveComplete) {
             $events=@()
             if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
-                $events=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'})
+                $events=@(Read-SharedLines -Path $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'})
             }
             if($events.Count -gt $script:traySaveBaseline) {
                 $newEvents=@($events | Select-Object -Skip $script:traySaveBaseline)
@@ -224,7 +225,7 @@ function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool
     } while([DateTime]::UtcNow -lt $deadline)
     $appDiagnostic=''
     if($script:trayDiagnosticsPath -and (Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf)) {
-        $appDiagnostic=(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {
+        $appDiagnostic=(Read-SharedLines -Path $script:trayDiagnosticsPath | Where-Object {
             $_ -match '^tray_track_popup_choice=\d+$' -or $_ -match '^settings_save=(success|failed)$' -or
             $_ -match '^settings_save_stage=(attempt|success)$' -or
             $_ -match '^settings_save_stage=blocked reason=settings_not_writable$' -or
