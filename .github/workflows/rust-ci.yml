@@ -64,6 +64,11 @@ jobs:
           } catch {
             Write-Host "CLIPBOARD_HISTORY_CAPABILITY: unavailable or probe failed: $($_.Exception.Message); actual history and exclusion are not tested."
           }
+      - name: Verify Windows smoke suite deadline contract
+        timeout-minutes: 2
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-suite-budget-contract.ps1
       - name: Run all interactive Windows smoke tests
         timeout-minutes: 50
         if: ${{ !cancelled() && runner.os == 'Windows' }}
