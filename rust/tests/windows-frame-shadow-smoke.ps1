@@ -167,6 +167,12 @@ try{
  $frameMenu=Popup 'frame menu for torn edge';Menu-Item $frameMenu 5 'Rissrand…' 'torn edge action'
  $sideMenu=Popup 'torn edge side menu';Menu-Item $sideMenu 3 'Rissrand links und rechts' 'left and right torn edge'
  $shadowMenu=Popup 'torn edge shadow menu';Menu-Item $shadowMenu 2 'Ohne Schatten' 'torn edge without shadow'
+ # The undone frame is still redoable; a new edit asks before discarding it.
+ $history=Wait-For {Owned-Dialogs|Where-Object{$_.Title -eq 'Rückgängig-Verlauf'}|Select-Object -First 1} 'history confirmation before torn edge' 10
+ $yes=@([ShotKitFrameShadowSmoke.N]::Buttons($history.H)|Where-Object{$_.Visible -and $_.Id -eq 6})
+ if($yes.Count -ne 1){throw "HISTORY_CONFIRM_YES_MISSING: $(([ShotKitFrameShadowSmoke.N]::Buttons($history.H)|ForEach-Object{"ID=$($_.Id) text='$($_.Text)'"}) -join '; ')"}
+ [ShotKitFrameShadowSmoke.N]::ClickButton($yes[0].H)
+ [void](Wait-For {if(-not [ShotKitFrameShadowSmoke.N]::IsWindow($history.H)){return $true};return $null} 'history confirmation close' 8)
  Start-Sleep -Milliseconds 150
  Save-Editor
  $torn=Wait-Png {param($im)$im.Width -eq 32 -and $im.Height -eq 24 -and $im.Pixels[23*32+31].A -eq 0} 'torn left/right edge output'

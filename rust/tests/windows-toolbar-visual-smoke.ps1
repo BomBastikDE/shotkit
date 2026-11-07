@@ -353,7 +353,7 @@ try {
   Click-ToolbarButton $frameButton
   Wait-ToolbarCondition { $null -ne (Read-ToolbarPopup) } 'POPUP_FRAME_MENU_FIRST_OPEN_FAILED'
   $entries=@(Read-ToolbarPopup)
-  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4' -or (@($entries|ForEach-Object{$_.Text}) -join '|') -ne 'Rahmen hinzufügen|Schlagschatten hinzufügen|Rahmen und Schlagschatten hinzufügen|Leinwandgröße ändern…'){throw "POPUP_FRAME_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
+  if((@($entries|ForEach-Object{$_.Id}) -join ',') -ne '1,2,3,4,5' -or (@($entries|ForEach-Object{$_.Text}) -join '|') -ne 'Rahmen hinzufügen|Schlagschatten hinzufügen|Rahmen und Schlagschatten hinzufügen|Leinwandgröße ändern…|Rissrand…'){throw "POPUP_FRAME_MENU_CONTENT_FAILED: $(@($entries|ForEach-Object{"$($_.Id):$($_.Text)"}) -join ', ')"}
   Click-OutsideToolbarPopup
   Wait-ToolbarCondition { $null -eq (Read-ToolbarPopup) } 'POPUP_FRAME_OUTSIDE_DISMISS_FAILED'
 
