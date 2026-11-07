@@ -176,10 +176,20 @@ Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe
   Klasse 4 erhält genau ein BOOLEAN; nur eine ausdrückliche Löschentscheidung führt dorthin. Der Handle bleibt
   bis danach offen. Abbruch-/Später-Fälle schließen ohne Disposition. Keine erneute Pfadauflösung zur Löschung.
   Grenze: stabile Vorfahren, kein Schutz gegen privilegierten Austausch oder schon vorhandene Mappings.
-- `src/app/temp_recovery.rs`: `TaskDialogIndirect` erhält SDK-pack(1)-Strukturen und UTF-16-Puffer, die bis zur
-  synchronen Rückkehr leben. Keine Callbackpointer; kein geliehener Appzustand über den modalen Aufruf.
-  Owner ist das gerade erzeugte Hauptfenster. Fehler, Escape und Schließen sind Später. `MessageBoxW` und
-  `ShellExecuteW` verwenden lebende Puffer und denselben Owner. Common-Controls-v6-Manifest ist eingebettet.
+- `src/app/temp_recovery.rs`: `DialogBoxIndirectParamW` erhält eine DWORD-ausgerichtete eigene Standard-
+  Dialogvorlage und UTF-16-Inhalt, die bis zur synchronen Rückkehr leben. Der Callback liest den Inhalt nur
+  bei WM_INITDIALOG; keine Rust-Referenzen oder Zeiger werden im Fenster gespeichert. EndDialog verarbeitet
+  nur die drei eigenen IDs, Escape und Schließen. Owner ist das initialisierte Hauptfenster. Der vorhandene
+  ModalGuard blockiert dessen Schließen, neue Operationen und WM_COPYDATA während aller Dialoge. Die Vorlage
+  benutzt eingebaute EDIT/BUTTON-Klassen; keine Aktivierung von Common Controls v6. `MessageBoxW` und
+  `ShellExecuteW` verwenden lebende Puffer und denselben Owner.
 - Nachweis: Windows-Release-Probe `atomic_save_abort_probe` prüft echte Abort-Reste, jung/gesperrt, Später,
   exklusiv verhinderte Umbenennung und bestätigte Löschung bei unveränderten Ziel-/Fremddateikontrollen.
   Die UI-Prüfung erfolgt im Windows-Smoke; CI-Resultate separat berichten.
+
+### Offener Abgleich mit #67
+
+Für Netzwerkordner und unbekannte Laufwerkstypen wird vor dem Scan ausdrücklich gefragt. Das schützt die
+bestehende Warnpolicy vor automatischer Windows-Authentifizierung, ist aber eine Abweichung von
+„Nichts gefunden: kein Dialog“: Ohne Netzwerk-I/O lässt sich das Vorhandensein von Resten nicht prüfen.
+Diese Kombination der Kriterien benötigt Owner-/PR-Prüfung; sie wird hier nicht als vollständig erfüllt gemeldet.

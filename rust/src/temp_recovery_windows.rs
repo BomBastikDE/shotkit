@@ -189,6 +189,27 @@ mod tests {
             .arg(root.join("nested"))
             .status()?;
         assert!(status.success(), "junction fixture creation failed");
+        let link_target = root.join("link-target.bin");
+        let file = File::create(&link_target)?;
+        file.set_times(fs::FileTimes::new().set_modified(old))?;
+        drop(file);
+        let hardlink = root.join(".shotkit-1-2-10.tmp");
+        fs::hard_link(&link_target, &hardlink)?;
+        // Separate singly-linked, old regular target: following this link
+        // would otherwise offer it, so this exercises the no-follow check.
+        let symlink_target = root.join("symlink-target.bin");
+        let file = File::create(&symlink_target)?;
+        file.set_times(fs::FileTimes::new().set_modified(old))?;
+        drop(file);
+        let symlink = root.join(".shotkit-1-2-11.tmp");
+        let symlink_created = match std::os::windows::fs::symlink_file(&symlink_target, &symlink) {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!("FILE_SYMLINK_PRIVILEGE_UNAVAILABLE: junction and hardlink checks still mandatory");
+                false
+            }
+            Err(error) => return Err(error),
+        };
         let image_only = scan(&root, false, SystemTime::now())?;
         assert_eq!(image_only.len(), 2);
         assert!(scan(&root, true, SystemTime::now())?.iter().all(|file| file
@@ -202,6 +223,15 @@ mod tests {
         assert!(complete(all, Choice::Delete).is_empty());
         // Only this test's create_new root and explicitly created fixtures.
         fs::remove_dir(&junction)?;
+        assert!(link_target.is_file() && hardlink.is_file());
+        if symlink_created {
+            assert!(fs::symlink_metadata(&symlink)?.file_type().is_symlink());
+            fs::remove_file(&symlink)?;
+        }
+        fs::remove_file(&hardlink)?;
+        fs::remove_file(&link_target)?;
+        assert!(symlink_target.is_file());
+        fs::remove_file(&symlink_target)?;
         for name in [
             ".shotkit-abc.tmp",
             "x.shotkit-1-2-3.tmp",

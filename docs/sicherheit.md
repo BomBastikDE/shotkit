@@ -49,7 +49,9 @@ nach der Fehlersuche, bevor du den Ordner weitergibst.
 
 Beim Speichern schreibt ShotKit zuerst in eine temporäre Datei. Bricht ShotKit oder Windows abrupt ab,
 können diese Dateien mit Bilddaten zurückbleiben. Beim nächsten Start prüft ShotKit direkt den eingestellten
-Speicherordner und den Einstellungsordner; Unterordner werden nicht durchsucht.
+Speicherordner und den Einstellungsordner; Unterordner werden nicht durchsucht. Bei Netzwerkordnern oder
+unbekanntem Laufwerkstyp fragt ShotKit vor dieser Prüfung nach, weil Windows dabei Anmeldedaten übertragen
+kann und die Prüfung bei Nichterreichbarkeit dauern kann. „Nein“ überspringt den Ordner bis zum nächsten Start.
 
 Angeboten werden ausschließlich normale Dateien mit genau diesen Namensmustern: `.shotkit-<pid>-<stamp>-<seq>.tmp`,
 `.ShotKit-<pid>-<stamp>-<seq>.tmp` und im Einstellungsordner zusätzlich `.shotkit-settings-<pid>-<seq>.tmp`.

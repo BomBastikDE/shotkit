@@ -69,7 +69,7 @@ fn normalize_instance_path(path: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
-fn drive_location(path: &Path) -> shotkit::network_path::DriveLocation {
+pub(super) fn drive_location(path: &Path) -> shotkit::network_path::DriveLocation {
     let units: Vec<u16> = path.as_os_str().encode_wide().collect();
     shotkit::network_path::classify_drive_utf16(&units, |root| {
         // SAFETY CONTRACT: root is a NUL-terminated UTF-16 drive root owned

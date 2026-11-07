@@ -40,7 +40,20 @@ namespace ShotKitFirstStartSmoke {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
-        static string Text(IntPtr hwnd) { var b=new StringBuilder(2048); GetWindowTextW(hwnd,b,b.Capacity); return b.ToString(); }
+        [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        public static long CopyDataBusy(IntPtr hwnd) {
+            IntPtr result;
+            if(SendMessageTimeoutW(hwnd,0x004a,IntPtr.Zero,IntPtr.Zero,2,1000,out result)==IntPtr.Zero) throw new InvalidOperationException("WM_COPYDATA timeout");
+            return result.ToInt64();
+        }
+        [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode)] static extern IntPtr ReadControlText(IntPtr hwnd, uint message, IntPtr w, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+        static string Text(IntPtr hwnd) {
+            var b=new StringBuilder(4096); GetWindowTextW(hwnd,b,b.Capacity);
+            // GetWindowText cannot read another process's EDIT content. WM_GETTEXT
+            // is a system message; Windows marshals this bounded output buffer.
+            if(b.Length==0) { IntPtr result; ReadControlText(hwnd,0x000d,new IntPtr(b.Capacity),b,2,1000,out result); }
+            return b.ToString();
+        }
         static string AllText(IntPtr hwnd) {
             var b=new StringBuilder(Text(hwnd));
             EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr ignored) {
@@ -238,8 +251,14 @@ try {
             if(-not $dialog.Text.Contains($text)) { throw "Recovery dialog missing '$text': $($dialog.Text)" }
         }
         if($dialog.Text.Contains('.shotkit-123-456-8.tmp') -or $dialog.Text.Contains('x.shotkit')) { throw 'Recovery offered young or foreign control.' }
-        # TDM_CLICK_BUTTON, only to the dialog belonging to our process.
-        if(-not [ShotKitFirstStartSmoke.Native]::PostMessageW($dialog.Handle,1126,[IntPtr]$choice,[IntPtr]::Zero)) { throw 'Recovery click failed.' }
+        $owner=Wait-ForMainWindow $recovery
+        if([ShotKitFirstStartSmoke.Native]::CopyDataBusy($owner.Handle) -ne 3) { throw 'Recovery dialog did not reject WM_COPYDATA as busy.' }
+        [void][ShotKitFirstStartSmoke.Native]::PostMessageW($owner.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
+        Start-Sleep -Milliseconds 100
+        $recovery.Refresh()
+        if($recovery.HasExited -or (Get-ModalDialogs $recovery).Count -ne 1) { throw 'Owner close interrupted recovery.' }
+        # WM_COMMAND/BN_CLICKED, only to the dialog belonging to our process.
+        if(-not [ShotKitFirstStartSmoke.Native]::PostMessageW($dialog.Handle,0x0111,[IntPtr]$choice,[IntPtr]::Zero)) { throw 'Recovery click failed.' }
         $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         do {
             if((Get-ModalDialogs $recovery).Count -eq 0) { break }

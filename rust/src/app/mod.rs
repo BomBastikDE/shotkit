@@ -856,12 +856,12 @@ unsafe fn run_application() {
     }
     PRIMARY = h;
     load_settings(h);
-    temp_recovery::check(h);
     if !tray::install(h, inst) {
         DestroyWindow(h);
         return;
     }
     hotkeys::register(h);
+    temp_recovery::check(h);
     let arguments: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     for path in &arguments {
         let result = absolute_argument_path(path.clone()).and_then(|path| open_image_path(h, path));

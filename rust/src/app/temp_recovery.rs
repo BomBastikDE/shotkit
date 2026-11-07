@@ -3,50 +3,24 @@ use super::*;
 use shotkit::temp_recovery_windows::{self as recovery, Choice};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// TASKDIALOGCONFIG and TASKDIALOG_BUTTON use the Windows SDK's pack(1).
-#[repr(C, packed)]
-struct Button {
-    id: i32,
-    text: *const u16,
-}
-#[repr(C, packed)]
-struct Config {
-    size: u32,
-    parent: H,
-    instance: H,
-    flags: u32,
-    common: u32,
-    title: *const u16,
-    icon: H,
-    instruction: *const u16,
-    content: *const u16,
-    count: u32,
-    buttons: *const Button,
-    default: i32,
-    radio_count: u32,
-    radios: *const Button,
-    radio_default: i32,
-    verification: *const u16,
-    expanded: *const u16,
-    expanded_control: *const u16,
-    collapsed_control: *const u16,
-    footer_icon: H,
-    footer: *const u16,
-    callback: H,
-    callback_data: isize,
-    width: u32,
-}
-#[link(name = "comctl32")]
+#[link(name = "user32")]
 extern "system" {
-    fn TaskDialogIndirect(
-        config: *const Config,
-        button: *mut i32,
-        radio: *mut i32,
-        verification: *mut i32,
-    ) -> i32;
+    fn DialogBoxIndirectParamW(
+        instance: H,
+        template: *const u16,
+        parent: H,
+        callback: Option<unsafe extern "system" fn(H, u32, usize, isize) -> isize>,
+        parameter: isize,
+    ) -> isize;
+    fn EndDialog(dialog: H, result: isize) -> i32;
+    fn SetDlgItemTextW(dialog: H, id: i32, text: *const u16) -> i32;
+    fn GetDlgItem(dialog: H, id: i32) -> H;
 }
 
 pub(super) fn check(h: H) {
+    // SAFETY: startup supplies the live initialized main window. This guard
+    // blocks owner close, capture/menu operations and WM_COPYDATA reentrancy.
+    let _modal = unsafe { ModalGuard::new(h) };
     let mut directories = Vec::new();
     if let Ok(path) = settings::settings_path() {
         if let Some(parent) = path.parent() {
@@ -61,6 +35,21 @@ pub(super) fn check(h: H) {
     // Each directory is presented separately, making the destination of
     // "Ordner öffnen" and the scope of confirmation unambiguous.
     for (directory, settings) in directories {
+        if drive_location(&directory) != shotkit::network_path::DriveLocation::KnownDrive {
+            let text = wide(&format!("Der Ordner liegt im Netzwerk oder sein Laufwerkstyp ist unbekannt:\n{}\n\nDie Prüfung kann den Server kontaktieren, Windows-Anmeldedaten übertragen und bei Nichterreichbarkeit dauern. Ordner jetzt auf temporäre Dateien prüfen?", directory.display()));
+            // SAFETY: owner protected by ModalGuard; owned UTF-16 buffers.
+            if unsafe {
+                MessageBoxW(
+                    h,
+                    text.as_ptr(),
+                    wide("Netzwerkordner prüfen").as_ptr(),
+                    0x134,
+                )
+            } != 6
+            {
+                continue;
+            }
+        }
         let Ok(files) = recovery::scan(&directory, settings, SystemTime::now()) else {
             continue;
         };
@@ -122,65 +111,108 @@ fn report(h: H, text: &str) {
     }
 }
 
-fn prompt(h: H, content: &str) -> Choice {
-    let title = wide("Temporäre Dateien nach einem Abbruch");
-    let instruction = wide("Zurückgebliebene Dateien prüfen");
-    let content = wide(content);
-    let labels = [wide("Löschen"), wide("Ordner öffnen"), wide("Später")];
-    let buttons = [
-        Button {
-            id: 100,
-            text: labels[0].as_ptr(),
-        },
-        Button {
-            id: 101,
-            text: labels[1].as_ptr(),
-        },
-        Button {
-            id: 102,
-            text: labels[2].as_ptr(),
-        },
-    ];
-    let config = Config {
-        size: size_of::<Config>() as u32,
-        parent: h,
-        instance: null_mut(),
-        flags: 8,
-        common: 0,
-        title: title.as_ptr(),
-        icon: null_mut(),
-        instruction: instruction.as_ptr(),
-        content: content.as_ptr(),
-        count: 3,
-        buttons: buttons.as_ptr(),
-        default: 102,
-        radio_count: 0,
-        radios: null_mut(),
-        radio_default: 0,
-        verification: null_mut(),
-        expanded: null_mut(),
-        expanded_control: null_mut(),
-        collapsed_control: null_mut(),
-        footer_icon: null_mut(),
-        footer: null_mut(),
-        callback: null_mut(),
-        callback_data: 0,
-        width: 0,
-    };
-    let mut button = 0;
-    // SAFETY: SDK pack(1) structures, valid startup owner and all pointees live
-    // until the synchronous modal call returns. No callback or borrowed state.
-    let result = unsafe { TaskDialogIndirect(&config, &mut button, null_mut(), null_mut()) };
-    if result < 0 {
-        report(
-            h,
-            "Der Hinweisdialog konnte nicht geöffnet werden. Es wurde nichts gelöscht.",
-        );
-        return Choice::Later;
+// A standard Win32 dialog template uses only built-in EDIT/BUTTON classes;
+// it requires no Common Controls v6 activation or process-wide visual changes.
+fn template() -> Vec<u32> {
+    fn dword(words: &mut Vec<u16>, value: u32) {
+        words.extend([value as u16, (value >> 16) as u16]);
     }
-    match button {
+    fn text(words: &mut Vec<u16>, value: &str) {
+        words.extend(wide(value));
+    }
+    let mut words = Vec::new();
+    dword(&mut words, 0x80C8_00C0); // popup, caption, system menu, modal font dialog
+    dword(&mut words, 0);
+    words.extend([4, 0, 0, 360, 245]); // controls, x/y/cx/cy in dialog units
+    words.extend([0, 0]); // no menu; standard dialog class
+    text(&mut words, "Temporäre Dateien nach einem Abbruch");
+    words.push(9);
+    text(&mut words, "Segoe UI");
+    let controls = [
+        (200, 0x50A1_0844, [12, 12, 336, 190], 0x81, ""), // scrolling, read-only multiline edit
+        (100, 0x5001_0000, [60, 215, 72, 18], 0x80, "Löschen"),
+        (101, 0x5001_0000, [140, 215, 100, 18], 0x80, "Ordner öffnen"),
+        (102, 0x5001_0001, [248, 215, 100, 18], 0x80, "Später"),
+    ];
+    for (id, style, bounds, class, label) in controls {
+        if words.len() % 2 != 0 {
+            words.push(0);
+        } // DWORD-aligned item header
+        dword(&mut words, style);
+        dword(&mut words, 0);
+        words.extend(bounds);
+        words.extend([id, 0xFFFF, class]);
+        text(&mut words, label);
+        words.push(0); // no creation data
+    }
+    if words.len() % 2 != 0 {
+        words.push(0);
+    }
+    words
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|w| u32::from(w[0]) | (u32::from(w[1]) << 16))
+        .collect()
+}
+
+// SAFETY: registered only for our synchronous DialogBoxIndirectParamW call.
+// WM_INITDIALOG receives its live UTF-16 content pointer. No pointer is retained
+// in window data; all subsequent messages use only the owned dialog HWND.
+unsafe extern "system" fn dialog_proc(dialog: H, message: u32, w: usize, l: isize) -> isize {
+    match message {
+        0x0110 => {
+            SetDlgItemTextW(dialog, 200, l as *const u16);
+            SetFocus(GetDlgItem(dialog, 102));
+            0 // focus already assigned to Später
+        }
+        0x0111 => {
+            match w & 0xFFFF {
+                id @ 100..=102 => {
+                    EndDialog(dialog, id as isize);
+                }
+                2 => {
+                    EndDialog(dialog, 102);
+                } // Escape/IDCANCEL
+                _ => {
+                    return 0;
+                }
+            }
+            1
+        }
+        0x0010 => {
+            EndDialog(dialog, 102);
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn prompt(h: H, content: &str) -> Choice {
+    let template = template();
+    let content = wide(content);
+    // SAFETY: Vec<u32> supplies DWORD alignment for the validated SDK dialog
+    // layout. Both buffers live through the synchronous modal call; its callback
+    // only reads content during initialization and retains no Rust references.
+    let result = unsafe {
+        DialogBoxIndirectParamW(
+            GetModuleHandleW(null_mut()),
+            template.as_ptr().cast(),
+            h,
+            Some(dialog_proc),
+            content.as_ptr() as isize,
+        )
+    };
+    match result {
         100 => Choice::Delete,
         101 => Choice::OpenFolder,
+        -1 => {
+            report(
+                h,
+                "Der Hinweisdialog konnte nicht geöffnet werden. Es wurde nichts gelöscht.",
+            );
+            Choice::Later
+        }
         _ => Choice::Later,
     }
 }
