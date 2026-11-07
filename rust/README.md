@@ -45,6 +45,7 @@ Beim ersten Start öffnet sich nach einer Aufnahme der Editor; automatisches Spe
 Keine OCR oder Texterkennung aus Bildern. Die EXE ist unsigniert; Windows SmartScreen kann eine Warnung anzeigen. Einzelne Windows-Praxistests und Teile der Sicherheitsprüfung stehen noch aus.
 
 Für einen manuellen Test auf Windows-Geräten siehe [WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md).
+Was bereits geprüft wurde, steht im [Testprotokoll](TESTPROTOKOLL.md).
 
 ## Bauen und testen
 
