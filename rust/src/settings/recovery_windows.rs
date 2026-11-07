@@ -11,6 +11,8 @@
 //!   rename and publication. Source leaf reparse points are refused.
 //! - The backup rename uses that handle, FileRenameInfo, and no replacement.
 //!   Publication uses CreateNew only. No path is unlinked or rolled back.
+//!   An opt-in API returns the original backup handle after success; only the
+//!   explicit user-consent deletion method can then request native disposition.
 //! - These are two operations, not a transaction. On failure the backup and any
 //!   new/partial settings or competing file remain. Success describes this
 //!   operation, not future ownership or crash durability of directory entries.
@@ -19,8 +21,7 @@
 //! <https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew>
 //! <https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_rename_info>
 
-use super::{Settings, CURRENT_VERSION};
-use serde::Deserialize;
+use super::{guarded_save_windows::HeldBackup, Settings, CURRENT_VERSION};
 use std::{
     error::Error,
     ffi::c_void,
@@ -87,6 +88,12 @@ pub struct RecoverySuccess {
     pub backup_path: PathBuf,
 }
 
+/// Successful recovery retaining the moved original object's handle.
+#[derive(Debug)]
+pub struct RetainedRecoverySuccess {
+    pub backup: HeldBackup,
+}
+
 fn failure(state: RecoveryState, operation: &'static str, source: io::Error) -> RecoveryError {
     RecoveryError {
         state,
@@ -109,6 +116,20 @@ pub fn recover_v1(
     expected_bytes: &[u8],
     replacement: &Settings,
 ) -> Result<RecoverySuccess, RecoveryError> {
+    let recovered = recover_v1_retaining_backup(path, expected_bytes, replacement)?;
+    Ok(RecoverySuccess {
+        backup_path: recovered.backup.last_known_path().to_owned(),
+    })
+}
+
+/// Opt-in recovery retaining the original backup handle across publication and
+/// return. Explicit cleanup is available only after success and caller-obtained
+/// user consent. Failure artifacts remain retained; no path-based cleanup exists.
+pub fn recover_v1_retaining_backup(
+    path: &Path,
+    expected_bytes: &[u8],
+    replacement: &Settings,
+) -> Result<RetainedRecoverySuccess, RecoveryError> {
     let unchanged = |operation, source| failure(RecoveryState::Unchanged, operation, source);
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(unchanged(
@@ -143,8 +164,9 @@ pub fn recover_v1(
     let backup_path = move_to_unique_backup(&held, path)?;
     publish_new(path, &backup_path, &replacement_bytes)?;
     // Retain original object protection even after its name becomes the backup.
-    drop(held);
-    Ok(RecoverySuccess { backup_path })
+    Ok(RetainedRecoverySuccess {
+        backup: HeldBackup::from_renamed_original(held, backup_path),
+    })
 }
 
 fn open_protected(path: &Path) -> io::Result<File> {
@@ -174,26 +196,7 @@ fn verify_expected(held: &mut File, expected: &[u8]) -> io::Result<()> {
     if actual != expected {
         return Err(invalid("source bytes changed since the recovery decision"));
     }
-    #[derive(Deserialize)]
-    struct VersionHeader {
-        version: u32,
-    }
-    // Reject absent, duplicate, noninteger and malformed headers. A textual
-    // occurrence of version 1 is never sufficient authorization.
-    if actual
-        .iter()
-        .copied()
-        .find(|byte| !byte.is_ascii_whitespace())
-        != Some(b'{')
-    {
-        return Err(invalid("source must be a JSON object with a version field"));
-    }
-    let header: VersionHeader = serde_json::from_slice(&actual)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if header.version != 1 {
-        return Err(invalid("source is not unambiguously version 1"));
-    }
-    Ok(())
+    super::recovery_version::validate_v1_source(&actual)
 }
 
 fn move_to_unique_backup(held: &File, path: &Path) -> Result<PathBuf, RecoveryError> {
@@ -362,6 +365,39 @@ mod tests {
         fs::write(&path, original).unwrap();
         let recovered = recover_v1(&path, original, &Settings::default()).unwrap();
         assert_eq!(fs::read(&recovered.backup_path).unwrap(), original);
+        assert_eq!(super::super::load(&path).unwrap(), Settings::default());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retained_recovery_backup_survives_drop_and_blocks_foreign_deletion() {
+        let (dir, path) = fixture();
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
+        fs::write(&path, original).unwrap();
+        let recovered = recover_v1_retaining_backup(&path, original, &Settings::default()).unwrap();
+        let backup_path = recovered.backup.last_known_path().to_owned();
+        assert_eq!(fs::read(&backup_path).unwrap(), original);
+        let blocked = OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(7)
+            .open(&backup_path)
+            .unwrap_err();
+        assert_eq!(blocked.raw_os_error(), Some(32));
+        drop(recovered);
+        assert_eq!(fs::read(&backup_path).unwrap(), original);
+        assert_eq!(super::super::load(&path).unwrap(), Settings::default());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retained_recovery_backup_can_be_explicitly_deleted_after_publication() {
+        let (dir, path) = fixture();
+        let original = br#"{"version":1,"scroll_direction":"unknown"}"#;
+        fs::write(&path, original).unwrap();
+        let recovered = recover_v1_retaining_backup(&path, original, &Settings::default()).unwrap();
+        let backup_path = recovered.backup.last_known_path().to_owned();
+        recovered.backup.delete_after_user_consent().unwrap();
+        assert!(!backup_path.exists());
         assert_eq!(super::super::load(&path).unwrap(), Settings::default());
         fs::remove_dir_all(dir).unwrap();
     }

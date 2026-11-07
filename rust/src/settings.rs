@@ -23,6 +23,8 @@ use std::{
 /// Pure fail-closed planning; not yet connected to filesystem recovery.
 pub mod transaction_model;
 
+mod recovery_version;
+
 #[cfg(windows)]
 pub mod guarded_save_windows;
 #[cfg(windows)]
@@ -328,6 +330,66 @@ pub fn load_snapshot(path: impl AsRef<Path>) -> Result<(Settings, Option<Vec<u8>
     }
 }
 
+/// Source-format eligibility only. This is not approval to recover, a file
+/// identity check, or a promise that Windows recovery will succeed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryEligibility {
+    UnambiguousVersion1,
+    Ineligible,
+}
+
+/// A complete, bounded read which failed normal settings validation.
+/// Raw bytes are intentionally not included in Debug output or diagnostics.
+pub struct RejectedSettings {
+    bytes: Vec<u8>,
+    pub error: SettingsError,
+    pub recovery_eligibility: RecoveryEligibility,
+}
+
+impl RejectedSettings {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Read outcome for a caller that must distinguish missing, valid, and rejected
+/// settings. Rejected bytes are retained exactly, without reparsing or encoding.
+/// I/O failures and oversized reads return Err and retain no partial snapshot.
+pub enum SettingsLoadOutcome {
+    Missing,
+    Loaded { settings: Settings, bytes: Vec<u8> },
+    Rejected(RejectedSettings),
+}
+
+/// Read at most 1 MiB plus a sentinel byte. No recovery, save or default-selection
+/// side effect occurs; existing load/load_snapshot behavior is unchanged.
+pub fn load_outcome(path: impl AsRef<Path>) -> Result<SettingsLoadOutcome, SettingsError> {
+    let path = path.as_ref();
+    let bytes = match read_settings_file(path) {
+        Ok(bytes) => bytes,
+        Err(SettingsError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(SettingsLoadOutcome::Missing);
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(match parse_settings(path, &bytes) {
+        Ok(settings) => SettingsLoadOutcome::Loaded { settings, bytes },
+        Err(error) => {
+            let recovery_eligibility =
+                if CURRENT_VERSION == 1 && recovery_version::validate_v1_source(&bytes).is_ok() {
+                    RecoveryEligibility::UnambiguousVersion1
+                } else {
+                    RecoveryEligibility::Ineligible
+                };
+            SettingsLoadOutcome::Rejected(RejectedSettings {
+                bytes,
+                error,
+                recovery_eligibility,
+            })
+        }
+    })
+}
+
 /// Persist settings using a sibling temporary file and an atomic replace.
 /// On any error before replacement, an existing destination remains intact.
 pub fn save_atomic(path: impl AsRef<Path>, settings: &Settings) -> Result<(), SettingsError> {
@@ -585,6 +647,148 @@ mod tests {
         let (settings, bytes) = load_snapshot(&path).unwrap();
         assert!(!settings.open_editor);
         assert_eq!(bytes.as_deref(), Some(original.as_slice()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_outcome_distinguishes_absence_valid_and_exact_rejected_bytes() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        assert!(matches!(
+            load_outcome(&path).unwrap(),
+            SettingsLoadOutcome::Missing
+        ));
+        assert!(!path.exists());
+
+        let valid = b"{\n \"version\": 1, \"open_editor\": false\n}";
+        fs::write(&path, valid).unwrap();
+        match load_outcome(&path).unwrap() {
+            SettingsLoadOutcome::Loaded { settings, bytes } => {
+                assert!(!settings.open_editor);
+                assert_eq!(bytes, valid);
+            }
+            _ => panic!("expected a complete valid snapshot"),
+        }
+        let invalid = b"{\n \"version\": 1, \"open_editor\": \"wrong type\"\n}";
+        fs::write(&path, invalid).unwrap();
+        match load_outcome(&path).unwrap() {
+            SettingsLoadOutcome::Rejected(rejected) => {
+                assert_eq!(rejected.bytes(), invalid);
+                assert!(matches!(rejected.error, SettingsError::Json { .. }));
+                assert_eq!(
+                    rejected.recovery_eligibility,
+                    RecoveryEligibility::UnambiguousVersion1
+                );
+            }
+            _ => panic!("expected rejected snapshot"),
+        }
+        // Existing APIs still expose the original error instead of defaults.
+        assert!(matches!(
+            load_snapshot(&path),
+            Err(SettingsError::Json { .. })
+        ));
+        assert!(matches!(
+            load_or_default(&path),
+            Err(SettingsError::Json { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), invalid);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejected_outcome_uses_strict_shared_recovery_version_check() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let cases: &[(&[u8], RecoveryEligibility)] = &[
+            (
+                br#"{"version":1,"unknown":true}"#,
+                RecoveryEligibility::UnambiguousVersion1,
+            ),
+            (
+                br#"{"version":1,"scroll_direction":"diagonal"}"#,
+                RecoveryEligibility::UnambiguousVersion1,
+            ),
+            (
+                br#"{"version":2,"unknown":true}"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (br#"{"version":0}"#, RecoveryEligibility::Ineligible),
+            (
+                br#"{"unknown":{"version":1}}"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (
+                br#"{"version":1,"version":1}"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (
+                br#"{"version":1,"version":2}"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (br#"{"version":"1"}"#, RecoveryEligibility::Ineligible),
+            (br#"{"version":1.0}"#, RecoveryEligibility::Ineligible),
+            (br#"{"version":-1}"#, RecoveryEligibility::Ineligible),
+            (
+                br#"{"version":4294967296}"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (br#"{"version":null}"#, RecoveryEligibility::Ineligible),
+            (br#"{"version":1,"bad": }"#, RecoveryEligibility::Ineligible),
+            (
+                br#"{"version":1} trailing"#,
+                RecoveryEligibility::Ineligible,
+            ),
+            (br#"[]"#, RecoveryEligibility::Ineligible),
+            (
+                b"{\"version\":1,\"bad\":\"\xff\"}",
+                RecoveryEligibility::Ineligible,
+            ),
+        ];
+        for &(bytes, expected) in cases {
+            fs::write(&path, bytes).unwrap();
+            match load_outcome(&path).unwrap() {
+                SettingsLoadOutcome::Rejected(rejected) => {
+                    assert_eq!(rejected.bytes(), bytes);
+                    assert_eq!(rejected.recovery_eligibility, expected);
+                    assert_eq!(
+                        expected == RecoveryEligibility::UnambiguousVersion1,
+                        recovery_version::validate_v1_source(bytes).is_ok()
+                    );
+                }
+                _ => panic!("expected rejected snapshot"),
+            }
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_source_check_refuses_arrays_even_if_deserializable_as_structs() {
+        assert!(recovery_version::validate_v1_source(br#"[1]"#).is_err());
+        assert!(recovery_version::validate_v1_source(br#" [1, false] "#).is_err());
+    }
+
+    #[test]
+    fn rejected_outcome_retains_only_complete_bounded_reads() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let mut bytes = br#"{"version":1,"bad":true}"#.to_vec();
+        bytes.resize(MAX_SETTINGS_BYTES, b' ');
+        fs::write(&path, &bytes).unwrap();
+        match load_outcome(&path).unwrap() {
+            SettingsLoadOutcome::Rejected(rejected) => assert_eq!(rejected.bytes(), bytes),
+            _ => panic!("expected rejected snapshot at limit"),
+        }
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            load_outcome(&path),
+            Err(SettingsError::TooLarge { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(load_outcome(&path), Err(SettingsError::Io { .. })));
         fs::remove_dir_all(dir).unwrap();
     }
 

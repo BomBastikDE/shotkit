@@ -20,6 +20,8 @@
 //!   destination-name gap. A competing new destination wins; publication fails
 //!   without changing it. This is not a compare-and-swap or an atomic transaction.
 //! - No failure deletes a file, rolls back, or automatically retries publication.
+//!   The opt-in retaining API can return the original backup handle after success;
+//!   only an explicit delete_after_user_consent call requests its deletion.
 //!   Errors report the target and retained or uncertain artifact paths. After a
 //!   native rename error, inspect both endpoints: failure is not asserted to
 //!   prove either endpoint absent. Paths describe this operation's last known
@@ -59,6 +61,7 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_RENAME_INFO: i32 = 3;
+const FILE_DISPOSITION_INFO: i32 = 4;
 static NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// The actual load result, never a default inferred from malformed/unreadable
@@ -125,6 +128,131 @@ pub struct SaveSuccess {
     pub backup_path: Option<PathBuf>,
 }
 
+/// A capability for only the original object moved by this operation. Its
+/// DELETE-capable handle stays held after publication; it cannot be constructed
+/// from a path, cloned, serialized, or restored after restart. Ordinary drop
+/// closes the handle without requesting deletion. Namespace trust remains required.
+#[derive(Debug)]
+#[must_use = "retain this capability until the user decides whether to keep the backup"]
+pub struct HeldBackup {
+    original: File,
+    last_known_path: PathBuf,
+}
+
+/// Native disposition failed. The original capability is returned for retaining
+/// protection or an explicitly chosen retry. No path-based fallback is attempted.
+/// A failed native call is not proof of an unchanged filesystem state.
+#[derive(Debug)]
+pub struct BackupDeleteError {
+    pub backup: HeldBackup,
+    pub source: io::Error,
+}
+
+impl fmt::Display for BackupDeleteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "request backup deletion at {} failed: {}",
+            self.backup.last_known_path.display(),
+            self.source
+        )
+    }
+}
+
+impl Error for BackupDeleteError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// FileDispositionInfo was accepted and our original handle has been closed.
+/// Other handles can delay actual removal. This is not unlink/crash-durability
+/// proof; the path is diagnostic and is never a deletion authority.
+#[derive(Debug)]
+pub struct BackupDeletionRequested {
+    pub last_known_path: PathBuf,
+}
+
+impl HeldBackup {
+    // Only successful backup-rename code in these sibling primitives constructs
+    // this capability. The File is moved directly, never reopened by name.
+    pub(super) fn from_renamed_original(original: File, last_known_path: PathBuf) -> Self {
+        Self {
+            original,
+            last_known_path,
+        }
+    }
+
+    /// A diagnostic name, valid only under the caller's stable-namespace contract.
+    pub fn last_known_path(&self) -> &Path {
+        &self.last_known_path
+    }
+
+    /// Call only after explicit user consent for this backup. The capability is
+    /// consumed on success, with native FileDispositionInfo applied to the SAME
+    /// held original object; no filename is opened or deleted. Ordinary drop
+    /// never calls this. On failure ownership is returned to the caller.
+    pub fn delete_after_user_consent(self) -> Result<BackupDeletionRequested, BackupDeleteError> {
+        self.delete_with(request_delete)
+    }
+
+    fn delete_with(
+        self,
+        request: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<BackupDeletionRequested, BackupDeleteError> {
+        if let Err(source) = request(&self.original) {
+            return Err(BackupDeleteError {
+                backup: self,
+                source,
+            });
+        }
+        let Self {
+            original,
+            last_known_path,
+        } = self;
+        drop(original);
+        Ok(BackupDeletionRequested { last_known_path })
+    }
+}
+
+fn request_delete(original: &File) -> io::Result<()> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            handle: *mut c_void,
+            class: i32,
+            info: *const c_void,
+            size: u32,
+        ) -> i32;
+    }
+    // FILE_DISPOSITION_INFO contains one BOOLEAN DeleteFile. Use the classic
+    // information class (4), without POSIX semantics or ignore-readonly flags.
+    let delete_file: u8 = 1;
+    // SAFETY: the synchronous original File owns the DELETE-capable handle,
+    // kept open from verification through rename and publication. Class 4 takes
+    // precisely this one-byte BOOLEAN; the pointer remains live for the call.
+    let result = unsafe {
+        SetFileInformationByHandle(
+            original.as_raw_handle(),
+            FILE_DISPOSITION_INFO,
+            (&delete_file as *const u8).cast(),
+            size_of::<u8>() as u32,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Successful publication with optional, still-held original backup capability.
+#[derive(Debug)]
+pub struct RetainedSaveSuccess {
+    pub target_path: PathBuf,
+    pub backup: Option<HeldBackup>,
+}
+
 fn failure(path: &Path, state: SaveState, operation: &'static str, source: io::Error) -> SaveError {
     SaveError {
         target_path: path.to_owned(),
@@ -148,6 +276,22 @@ pub fn save_guarded(
     baseline: &Baseline,
     replacement_bytes: &[u8],
 ) -> Result<SaveSuccess, SaveError> {
+    let saved = save_guarded_retaining_backup(path, baseline, replacement_bytes)?;
+    Ok(SaveSuccess {
+        target_path: saved.target_path,
+        backup_path: saved.backup.map(|backup| backup.last_known_path.clone()),
+    })
+}
+
+/// Opt-in save retaining the backup's original handle across publication and
+/// return. Only a successful save offers explicit deletion. Failure artifacts
+/// remain on disk and are never offered as path-derived deletion capabilities.
+/// The caller/UI must obtain user consent before invoking explicit deletion.
+pub fn save_guarded_retaining_backup(
+    path: &Path,
+    baseline: &Baseline,
+    replacement_bytes: &[u8],
+) -> Result<RetainedSaveSuccess, SaveError> {
     save_with(
         path,
         baseline,
@@ -169,7 +313,7 @@ fn save_with(
     bytes: &[u8],
     prepare: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
     before_publish: impl FnOnce(&Path, Option<&Path>),
-) -> Result<SaveSuccess, SaveError> {
+) -> Result<RetainedSaveSuccess, SaveError> {
     let initial = |operation, source| failure(path, SaveState::NoMutation, operation, source);
     validate_path(path).map_err(|error| initial("validate target path", error))?;
     validate_json(bytes).map_err(|error| initial("validate replacement", error))?;
@@ -222,10 +366,14 @@ fn save_with(
         )
     })?;
     drop(temporary);
-    drop(original);
-    Ok(SaveSuccess {
+    let backup = match (original, backup_path) {
+        (Some(original), Some(path)) => Some(HeldBackup::from_renamed_original(original, path)),
+        (None, None) => None,
+        _ => unreachable!("successful existing backup rename returns its path"),
+    };
+    Ok(RetainedSaveSuccess {
         target_path: path.to_owned(),
-        backup_path,
+        backup,
     })
 }
 
@@ -461,6 +609,127 @@ mod tests {
             | SaveState::PublicationFailed { temp_path, .. } => temp_path,
             SaveState::NoMutation => panic!("expected retained temporary file"),
         }
+    }
+
+    #[test]
+    fn retained_backup_blocks_write_delete_and_rename_until_ordinary_drop() {
+        let (dir, path) = fixture();
+        fs::write(&path, OLD).unwrap();
+        let saved =
+            save_guarded_retaining_backup(&path, &Baseline::Existing(OLD.to_vec()), NEW).unwrap();
+        let backup = saved.backup.unwrap();
+        let backup_path = backup.last_known_path().to_owned();
+        assert_eq!(fs::read(&backup_path).unwrap(), OLD);
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        for access in [GENERIC_WRITE, DELETE] {
+            let error = OpenOptions::new()
+                .access_mode(access)
+                .share_mode(7)
+                .open(&backup_path)
+                .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(32));
+        }
+        assert!(fs::remove_file(&backup_path).is_err());
+        assert!(fs::rename(&backup_path, dir.join("moved.bak")).is_err());
+        drop(backup);
+        // Ordinary cancellation / scope exit never opts into disposition.
+        assert_eq!(fs::read(&backup_path).unwrap(), OLD);
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn explicit_delete_uses_retained_backup_and_preserves_target_and_foreign_file() {
+        let (dir, path) = fixture();
+        fs::write(&path, OLD).unwrap();
+        let foreign_path = dir.join("foreign.bak");
+        fs::write(&foreign_path, b"foreign backup").unwrap();
+        let saved =
+            save_guarded_retaining_backup(&path, &Baseline::Existing(OLD.to_vec()), NEW).unwrap();
+        let backup = saved.backup.unwrap();
+        let backup_path = backup.last_known_path().to_owned();
+        let deleted = backup.delete_after_user_consent().unwrap();
+        assert_eq!(deleted.last_known_path, backup_path);
+        assert!(!backup_path.exists());
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        assert_eq!(fs::read(&foreign_path).unwrap(), b"foreign backup");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_save_returns_no_cleanup_capability() {
+        let (dir, path) = fixture();
+        let saved = save_guarded_retaining_backup(&path, &Baseline::Missing, NEW).unwrap();
+        assert!(saved.backup.is_none());
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejected_disposition_returns_same_protected_capability_without_fallback() {
+        let (dir, path) = fixture();
+        fs::write(&path, OLD).unwrap();
+        let saved =
+            save_guarded_retaining_backup(&path, &Baseline::Existing(OLD.to_vec()), NEW).unwrap();
+        let backup = saved.backup.unwrap();
+        let original_handle = backup.original.as_raw_handle();
+        let backup_path = backup.last_known_path().to_owned();
+        let error = backup
+            .delete_with(|_| Err(io::Error::other("injected disposition failure")))
+            .unwrap_err();
+        assert_eq!(error.backup.original.as_raw_handle(), original_handle);
+        assert_eq!(fs::read(&backup_path).unwrap(), OLD);
+        let blocked = OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(7)
+            .open(&backup_path)
+            .unwrap_err();
+        assert_eq!(blocked.raw_os_error(), Some(32));
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        // A deliberate retry continues with the same capability, not a reopen.
+        error.backup.delete_after_user_consent().unwrap();
+        assert!(!backup_path.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_disposition_without_delete_access_fails_without_path_fallback() {
+        let (dir, path) = fixture();
+        fs::write(&path, OLD).unwrap();
+        let read_only_handle = OpenOptions::new()
+            .access_mode(GENERIC_READ)
+            .share_mode(7)
+            .open(&path)
+            .unwrap();
+        assert!(request_delete(&read_only_handle).is_err());
+        drop(read_only_handle);
+        assert_eq!(fs::read(&path).unwrap(), OLD);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_shared_reader_can_delay_removal_after_delete_is_requested() {
+        let (dir, path) = fixture();
+        fs::write(&path, OLD).unwrap();
+        let saved =
+            save_guarded_retaining_backup(&path, &Baseline::Existing(OLD.to_vec()), NEW).unwrap();
+        let backup = saved.backup.unwrap();
+        let backup_path = backup.last_known_path().to_owned();
+        // FILE_SHARE_DELETE permits disposition; our open reader keeps the
+        // object alive until its handle closes. No immediate-unlink promise.
+        let mut reader = OpenOptions::new()
+            .read(true)
+            .share_mode(7)
+            .open(&backup_path)
+            .unwrap();
+        backup.delete_after_user_consent().unwrap();
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, OLD);
+        assert_eq!(fs::read(&path).unwrap(), NEW);
+        drop(reader);
+        assert!(!backup_path.exists());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
