@@ -1,5 +1,19 @@
 # Änderungsprotokoll der Rust-Version
 
+## Version 2.0.1
+
+Fehlerkorrekturen aus dem Praxistest von 2.0.0.
+
+- **Spotlight:** Mehrere Spotlights dunkeln das Bild nicht mehr mit jedem weiteren Spotlight erneut ab. Alles außerhalb der hervorgehobenen Bereiche wird genau einmal abgedunkelt, alle Bereiche bleiben hell ([#94](https://github.com/BomBastikDE/shotkit/issues/94)).
+- **Sprechblase und Text:** Nach dem Bestätigen der Texteingabe bleibt ShotKit im Vordergrund; zuvor wurde ein anderes Programm aktiv ([#95](https://github.com/BomBastikDE/shotkit/issues/95)).
+
+### Bekannte Grenzen
+- **Verpixeln und Weichzeichnen sind keine sichere Schwärzung.** Für vertrauliche Inhalte das Werkzeug **Schwärzen (S)** verwenden.
+- **Automatisches Speichern und Kopieren** passieren vor dem Editor, also vor einer Schwärzung.
+- **Die EXE ist nicht signiert**; Windows SmartScreen kann warnen.
+
+Alle Neuerungen von 2.0.0 und die vollständige Liste der bekannten Grenzen: [Release 2.0.0](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0).
+
 ## Version 2.0.0
 
 ShotKit 2.0 ist die erste stabile Version in Rust und löst die C#-Version 1.2.0 ab. Weiterhin eine einzelne EXE ohne Installation. Die Einstellungen liegen getrennt von der C#-Version unter `%APPDATA%\ShotKitRust`. Die C#-Version 1.2.0 bleibt unter [v1.2.0](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0) erhältlich und erhält nur noch Sicherheitskorrekturen.

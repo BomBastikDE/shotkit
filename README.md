@@ -3,14 +3,14 @@
 Schlankes Screenshot- und Bildbearbeitungswerkzeug für Windows 10/11 mit deutscher Oberfläche.
 Geschrieben in Rust, eine einzige EXE, keine Installation nötig. Die Entwicklung erfolgt auf `main`.
 
-> **Status: stabil – Version 2.0.0.** Erste stabile Rust-Version; der Code liegt in [`rust/`](rust/).
+> **Status: stabil – Version 2.0.1.** Rust-Version; der Code liegt in [`rust/`](rust/).
 > Was neu ist und welche Grenzen bekannt sind, steht im [Änderungsprotokoll](rust/CHANGELOG.md); der Ausblick in der
 > [Roadmap](rust/ROADMAP.md). Rückmeldungen und Fehlermeldungen sind willkommen (Issues).
 > Sicherheitslücken bitte vertraulich melden, siehe [SECURITY.md](SECURITY.md).
 
 ## Download
 
-Die neueste Version (z. B. `shotkit-v2.0.0-windows-x64.exe`) von der
+Die neueste Version (z. B. `shotkit-v2.0.1-windows-x64.exe`) von der
 [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases/latest) laden und mit der zugehörigen `.sha256`-Datei prüfen:
 
 ```powershell
