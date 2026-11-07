@@ -1,6 +1,9 @@
-//! Startup-only modal prompt. No borrowed application state crosses the dialog.
+//! Modal prompt for remnants of aborted saves: at startup for local folders,
+//! after a save for network folders. No borrowed application state crosses the dialog.
 use super::*;
+use shotkit::temp_recovery_session::NetworkRecoveryChecks;
 use shotkit::temp_recovery_windows::{self as recovery, Choice};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[link(name = "user32")]
@@ -17,6 +20,18 @@ extern "system" {
     fn GetDlgItem(dialog: H, id: i32) -> H;
 }
 
+/// Network folders already checked after a save in this session (UI thread only).
+static NETWORK_CHECKS: Mutex<NetworkRecoveryChecks> = Mutex::new(NetworkRecoveryChecks::new());
+
+fn is_local(directory: &Path) -> bool {
+    drive_location(directory) == shotkit::network_path::DriveLocation::KnownDrive
+}
+
+/// Startup check of the settings folder and a **local** save folder.
+///
+/// A save folder on a network share, a mapped drive or a drive of unknown type
+/// is not touched at startup: no server contact, no prompt, no startup delay.
+/// It is checked by [`after_save`] once ShotKit has saved there anyway.
 pub(super) fn check(h: H) {
     // SAFETY: startup supplies the live initialized main window. This guard
     // blocks owner close, capture/menu operations and WM_COPYDATA reentrancy.
@@ -35,67 +50,88 @@ pub(super) fn check(h: H) {
     // Each directory is presented separately, making the destination of
     // "Ordner öffnen" and the scope of confirmation unambiguous.
     for (directory, settings) in directories {
-        if drive_location(&directory) != shotkit::network_path::DriveLocation::KnownDrive {
-            let text = wide(&format!("Der Ordner liegt im Netzwerk oder sein Laufwerkstyp ist unbekannt:\n{}\n\nDie Prüfung kann den Server kontaktieren, Windows-Anmeldedaten übertragen und bei Nichterreichbarkeit dauern. Ordner jetzt auf temporäre Dateien prüfen?", directory.display()));
-            // SAFETY: owner protected by ModalGuard; owned UTF-16 buffers.
-            if unsafe {
-                MessageBoxW(
-                    h,
-                    text.as_ptr(),
-                    wide("Netzwerkordner prüfen").as_ptr(),
-                    0x134,
-                )
-            } != 6
-            {
-                continue;
-            }
+        if is_local(&directory) {
+            check_directory(h, &directory, settings, false);
         }
-        let Ok(files) = recovery::scan(&directory, settings, SystemTime::now()) else {
-            continue;
-        };
-        if files.is_empty() {
-            continue;
-        }
-        let mut content = format!("{} Dateien in {}\n\n", files.len(), directory.display());
-        for file in files.iter().take(10) {
-            content.push_str(&format!(
-                "{} — {} Bytes — {} UTC\n",
-                file.path.file_name().unwrap_or_default().to_string_lossy(),
-                file.size,
-                date(file.modified)
-            ));
-        }
-        if files.len() > 10 {
-            content.push_str(&format!("… und {} weitere Dateien\n", files.len() - 10));
-        }
-        content.push_str("\nDiese Dateien können Bilddaten enthalten. Ein passender Name beweist die Herkunft nicht. „Löschen“ löscht alle oben gezählten Dateien endgültig. „Später“ fragt beim nächsten Start erneut.");
-        let choice = prompt(h, &content);
-        let errors = recovery::complete(files, choice);
-        if choice == Choice::OpenFolder {
-            // SAFETY: live startup owner; all UTF-16 temporaries survive the call.
-            let result = unsafe {
-                ShellExecuteW(
-                    h,
-                    wide("open").as_ptr(),
-                    wide(&directory.to_string_lossy()).as_ptr(),
-                    null_mut(),
-                    null_mut(),
-                    1,
-                )
-            };
-            if result as usize <= 32 {
-                report(h, "Der Ordner konnte nicht geöffnet werden.");
-            }
-        }
-        if !errors.is_empty() {
-            report(
+    }
+}
+
+/// After a successful save to `saved`: check its folder once per session if it
+/// is a network folder. Local folders are covered by the startup check.
+///
+/// Runs after the save has completed and never affects its result; scan
+/// errors are ignored like at startup.
+pub(super) fn after_save(h: H, saved: &Path) {
+    let Some(directory) = saved.parent() else {
+        return;
+    };
+    if is_local(directory) {
+        return;
+    }
+    let first = NETWORK_CHECKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .first_check(directory);
+    if !first {
+        return;
+    }
+    // SAFETY: callers pass a live window on the UI thread; the guard blocks
+    // owner close and WM_COPYDATA reentrancy while the dialog is open.
+    let _modal = unsafe { ModalGuard::new(h) };
+    check_directory(h, directory, false, true);
+}
+
+fn check_directory(h: H, directory: &Path, settings: bool, network: bool) {
+    let Ok(files) = recovery::scan(directory, settings, SystemTime::now()) else {
+        return;
+    };
+    if files.is_empty() {
+        return;
+    }
+    let mut content = format!("{} Dateien in {}\n\n", files.len(), directory.display());
+    for file in files.iter().take(10) {
+        content.push_str(&format!(
+            "{} — {} Bytes — {} UTC\n",
+            file.path.file_name().unwrap_or_default().to_string_lossy(),
+            file.size,
+            date(file.modified)
+        ));
+    }
+    if files.len() > 10 {
+        content.push_str(&format!("… und {} weitere Dateien\n", files.len() - 10));
+    }
+    content.push_str("\nDiese Dateien können Bilddaten enthalten. Ein passender Name beweist die Herkunft nicht. „Löschen“ löscht alle oben gezählten Dateien endgültig. ");
+    content.push_str(if network {
+        "„Später“ fragt erneut, wenn in einer späteren Sitzung wieder in diesen Netzwerkordner gespeichert wird."
+    } else {
+        "„Später“ fragt beim nächsten Start erneut."
+    });
+    let choice = prompt(h, &content);
+    let errors = recovery::complete(files, choice);
+    if choice == Choice::OpenFolder {
+        // SAFETY: live owner window; all UTF-16 temporaries survive the call.
+        let result = unsafe {
+            ShellExecuteW(
                 h,
-                &format!(
-                    "Einige Dateien konnten nicht gelöscht werden:\n{}",
-                    errors.join("\n")
-                ),
-            );
+                wide("open").as_ptr(),
+                wide(&directory.to_string_lossy()).as_ptr(),
+                null_mut(),
+                null_mut(),
+                1,
+            )
+        };
+        if result as usize <= 32 {
+            report(h, "Der Ordner konnte nicht geöffnet werden.");
         }
+    }
+    if !errors.is_empty() {
+        report(
+            h,
+            &format!(
+                "Einige Dateien konnten nicht gelöscht werden:\n{}",
+                errors.join("\n")
+            ),
+        );
     }
 }
 

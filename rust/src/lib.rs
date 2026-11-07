@@ -46,5 +46,6 @@ pub mod toolbar_layout;
 pub mod view;
 
 pub mod temp_recovery_names;
+pub mod temp_recovery_session;
 #[cfg(windows)]
 pub mod temp_recovery_windows;
