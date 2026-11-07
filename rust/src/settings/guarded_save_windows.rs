@@ -174,6 +174,10 @@ pub struct BackupDeletionRequested {
 }
 
 impl HeldBackup {
+    pub(super) fn original_file(&self) -> &File {
+        &self.original
+    }
+
     // Only successful backup-rename code in these sibling primitives constructs
     // this capability. The File is moved directly, never reopened by name.
     pub(super) fn from_renamed_original(original: File, last_known_path: PathBuf) -> Self {

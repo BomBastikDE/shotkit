@@ -24,11 +24,24 @@ use std::{
 pub mod transaction_model;
 
 mod recovery_version;
+#[cfg(any(windows, test))]
+mod reset_receipt;
 
 #[cfg(windows)]
 pub mod guarded_save_windows;
 #[cfg(windows)]
 pub mod recovery_windows;
+#[cfg(windows)]
+pub mod reset_windows;
+
+/// Only an explicit Yes for a complete, rejected, unambiguous v1 snapshot
+/// authorizes the UI reset. Closing the prompt has the same effect as No.
+pub fn reset_approved(eligibility: RecoveryEligibility, dialog_result: i32) -> bool {
+    eligibility == RecoveryEligibility::UnambiguousVersion1 && dialog_result == 6
+}
+
+/// Windows MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2: No is the default.
+pub const RESET_CONFIRM_FLAGS: u32 = 0x134;
 
 pub const CURRENT_VERSION: u32 = 1;
 /// More than sufficient for the supported preferences and a Windows path,
@@ -167,6 +180,8 @@ impl SettingsError {
                     "create temporary file for" => "create_temporary_file",
                     "write" => "write",
                     "replace" => "replace",
+                    "inspect recovery artifacts" => "inspect_recovery_artifacts",
+                    "explicit reset" => "explicit_reset",
                     _ => "unknown",
                 };
                 ("Io", operation, Some(source))
@@ -495,6 +510,22 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(windows)]
     use std::{fs::OpenOptions, io::Write};
+
+    #[test]
+    fn reset_requires_explicit_yes_for_the_exact_eligible_class() {
+        for answer in [0, 1, 2, 5, 7, 8, -1] {
+            assert!(!reset_approved(
+                RecoveryEligibility::UnambiguousVersion1,
+                answer
+            ));
+        }
+        assert!(reset_approved(RecoveryEligibility::UnambiguousVersion1, 6));
+        for answer in [-1, 0, 6, 7] {
+            assert!(!reset_approved(RecoveryEligibility::Ineligible, answer));
+        }
+        assert_eq!(RESET_CONFIRM_FLAGS & 0x300, 0x100); // default button 2: No
+        assert_eq!(RESET_CONFIRM_FLAGS & 0xf, 4); // Yes/No, with no implicit OK
+    }
 
     #[test]
     fn diagnostic_fields_have_fixed_format_and_follow_nested_os_error() {

@@ -157,7 +157,7 @@ pub fn recover_v1_retaining_backup(
     recover_with(path, expected_bytes, replacement, flush_prepared, |_, _| {})
 }
 
-fn recover_with(
+pub(super) fn recover_with(
     path: &Path,
     expected_bytes: &[u8],
     replacement: &Settings,
@@ -348,7 +348,7 @@ fn flush_prepared(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-fn rename_without_replace(held: &File, destination: &Path) -> io::Result<()> {
+pub(super) fn rename_without_replace(held: &File, destination: &Path) -> io::Result<()> {
     #[link(name = "kernel32")]
     extern "system" {
         fn SetFileInformationByHandle(

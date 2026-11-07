@@ -124,20 +124,69 @@ pub(super) fn active_settings() -> Settings {
 // Warum erfüllt: Aufruf nach erfolgreicher Erstellung des Hauptfensters.
 // Nachrichten: MessageBoxW kann reentrieren; der SETTINGS-Guard der Zuweisung endet vor dem Fehlerdialog.
 pub(super) unsafe fn load_settings(h: H) {
-    let result = settings::settings_path().and_then(settings::load_or_default);
+    // A modal prompt can dispatch menu messages. Keep writes disabled until
+    // loading, explicit recovery and completion verification have all finished.
+    SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
+    *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
+    let result = settings::settings_path().and_then(|path| {
+        settings::reset_windows::ensure_clear(&path).map_err(|source| settings::SettingsError::Io {
+            operation: "inspect recovery artifacts",
+            path: path.clone(),
+            source,
+        })?;
+        match settings::load_outcome(&path)? {
+            settings::SettingsLoadOutcome::Missing => Ok(Settings::default()),
+            settings::SettingsLoadOutcome::Loaded { settings, .. } => Ok(settings),
+            settings::SettingsLoadOutcome::Rejected(rejected) => {
+                if rejected.recovery_eligibility != settings::RecoveryEligibility::UnambiguousVersion1 {
+                    return Err(rejected.error);
+                }
+                let answer = MessageBoxW(
+                    h,
+                    wide("Die vorhandenen Einstellungen sind ungültig, enthalten aber eindeutig Version 1. Möchten Sie sie ausdrücklich auf Standardwerte zurücksetzen?\n\nDas unveränderte Original und ein kleiner Abschlussbeleg bleiben im Einstellungsordner erhalten. Jeder bestätigte Reset kann ein weiteres Backup erzeugen; es gibt keine automatische Bereinigung.\n\nBei Nein bleiben die Datei unverändert und das Speichern deaktiviert. Nach einer unterbrochenen Wiederherstellung ist eine manuelle Prüfung nötig.").as_ptr(),
+                    wide("Einstellungen zurücksetzen?").as_ptr(),
+                    settings::RESET_CONFIRM_FLAGS,
+                );
+                if !settings::reset_approved(rejected.recovery_eligibility, answer) {
+                    crate::uia_picker::log_diagnostic("settings_reset_stage=declined");
+                    return Err(rejected.error);
+                }
+                crate::uia_picker::log_diagnostic("settings_reset_stage=approved");
+                let backup = settings::reset_windows::reset_rejected(&path, &rejected)
+                    .map_err(|source| settings::SettingsError::Io {
+                        operation: "explicit reset",
+                        path: path.clone(),
+                        source,
+                    })?;
+                crate::uia_picker::log_diagnostic("settings_reset_stage=success");
+                MessageBoxW(
+                    h,
+                    wide(&format!("Die Einstellungen wurden auf Standardwerte zurückgesetzt. Das unveränderte Original bleibt erhalten:\n{}\n\nDer zugehörige .complete-Beleg gehört zum Backup. Beide Dateien werden zur Prüfung beim nächsten Start benötigt. Aufbewahrung und spätere Entfernung müssen manuell gemeinsam geprüft werden.", backup.display())).as_ptr(),
+                    wide("Einstellungen zurückgesetzt").as_ptr(),
+                    0x40,
+                );
+                // Recheck after the modal dialog before enabling writes; no
+                // SETTINGS guard or file handle spans the user-facing dialog.
+                settings::reset_windows::ensure_clear(&path).map_err(|source| settings::SettingsError::Io {
+                    operation: "inspect recovery artifacts",
+                    path: path.clone(),
+                    source,
+                })?;
+                settings::load(&path)
+            }
+        }
+    });
     match result {
         Ok(value) => {
             *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
             SETTINGS_WRITABLE.store(true, Ordering::SeqCst);
         }
         Err(e) => {
-            *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(Settings::default());
-            SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
             crate::uia_picker::log_diagnostic(&format!(
                 "settings_load_stage=failed {}",
                 e.diagnostic_summary()
             ));
-            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert; die vorhandene Datei bleibt unverändert.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+            MessageBoxW(h,wide(&format!("Einstellungen konnten nicht geladen werden: {e}\nDie Standardwerte werden vorübergehend verwendet. Speichern der Einstellungen ist deaktiviert. Vorhandene Dateien bleiben erhalten; bei einer unterbrochenen Wiederherstellung müssen Einstellungsdatei, .reset-pending-Datei sowie Recovery-Backups, Belege und temporäre Dateien vor einem weiteren Versuch manuell geprüft werden.")).as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
         }
     }
 }
@@ -151,10 +200,22 @@ pub(super) unsafe fn save_settings(h: H, new: Settings) -> bool {
         crate::uia_picker::log_diagnostic(
             "settings_save_stage=blocked reason=settings_not_writable",
         );
-        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die vorhandene Datei nicht lesbar ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
+        MessageBoxW(h,wide("Einstellungen können nicht gespeichert werden, solange die Einstellungsdatei oder eine Wiederherstellung ungeklärt ist.").as_ptr(),wide("ShotKit Rust").as_ptr(),0x30);
         return false;
     }
-    let result = settings::settings_path().and_then(|path| settings::save_atomic(path, &new));
+    let result = settings::settings_path().and_then(|path| {
+        settings::reset_windows::ensure_clear(&path).map_err(|source| {
+            SETTINGS_WRITABLE.store(false, Ordering::SeqCst);
+            settings::SettingsError::Io {
+                operation: "inspect recovery artifacts",
+                path: path.clone(),
+                source,
+            }
+        })?;
+        // Ordinary saves retain their existing atomic-save implementation and
+        // create no backup or receipt. Recovery is exclusively an approved UI action.
+        settings::save_atomic(path, &new)
+    });
     match result {
         Ok(()) => {
             *SETTINGS.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);

@@ -95,6 +95,11 @@ $cases = @(
     @{ Name = 'Interactive Edge browser scroll smoke test with fixed header and footer'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-FixedHeaderFooter'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows multi-editor lifecycle smoke test'; Script = 'windows-multi-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false }
 )
+# The reset fixture drives the real tray menu and deliberately has no local
+# owner-session opt-in. Existing local suite behavior stays unchanged.
+if ($isCi) {
+    $cases = @(@{ Name = 'Interactive Windows explicit settings reset UI smoke test'; Script = 'windows-settings-reset-smoke.ps1'; Extra = @(); TimeoutSeconds = 300; Toolbar = $false }) + $cases
+}
 # There is deliberately no production CLI/environment override for the CI budget.
 . (Join-Path $PSScriptRoot 'suite-budget-contract.ps1')
 $budgetSeconds = if ($isCi) { 47 * 60 } else { 0 }
