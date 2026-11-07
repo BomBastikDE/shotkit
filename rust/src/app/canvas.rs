@@ -266,12 +266,13 @@ pub(super) unsafe fn resize(h: H) {
             .document_mut()
             .begin_edit()
             .map_err(|e| e.to_string())?;
-        if let Err(error) = editor(h).document_mut().resize_canvas(
+        if let Err(error) = editor(h).document_mut().resize_canvas_with_budget(
             options.width,
             options.height,
             options.horizontal,
             options.vertical,
             options.fill,
+            &shared_image_budget(),
         ) {
             let _ = editor(h).document_mut().abort_edit();
             return Err(error.to_string());

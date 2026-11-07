@@ -9,6 +9,8 @@
 use crate::{
     image_edit::{self, CropRect, FrameOptions, ImageEditError},
     image_handle::ImageHandle,
+    import_admission::TrackedImage,
+    resource_budget::{AdmissionClass, ResourceBudget},
     shapes::{Color, Point, Shape},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
@@ -30,6 +32,7 @@ pub enum DocumentError {
     NoTransaction,
     InvalidShapeIndex,
     AllocationFailed,
+    ImageBudgetExceeded,
     HistoryEvictionNotApproved,
     IrreversibleEditNotApproved,
     StaleHistoryPlan,
@@ -51,6 +54,9 @@ impl std::fmt::Display for DocumentError {
                 f.write_str("Das ausgewählte Objekt ist nicht mehr vorhanden")
             }
             Self::AllocationFailed => f.write_str("Es steht nicht genügend Speicher zur Verfügung"),
+            Self::ImageBudgetExceeded => f.write_str(
+                "Das Speicherlimit für Bilddaten reicht für diese Leinwandänderung nicht aus",
+            ),
             Self::HistoryEvictionNotApproved => f.write_str(
                 "Das Entfernen von Rückgängig- oder Wiederherstellen-Schritten wurde nicht bestätigt",
             ),
@@ -686,17 +692,58 @@ impl Document {
         vertical: CanvasAlignment,
         fill: Color,
     ) -> Result<(), DocumentError> {
+        self.resize_canvas_inner(width, height, horizontal, vertical, fill, None)
+    }
+
+    /// Resize the canvas while registering the replacement pixel allocation
+    /// in the caller's shared image budget. The lease follows the image through
+    /// current state and undo/redo history.
+    pub fn resize_canvas_with_budget(
+        &mut self,
+        width: usize,
+        height: usize,
+        horizontal: CanvasAlignment,
+        vertical: CanvasAlignment,
+        fill: Color,
+        budget: &ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.resize_canvas_inner(width, height, horizontal, vertical, fill, Some(budget))
+    }
+
+    fn resize_canvas_inner(
+        &mut self,
+        width: usize,
+        height: usize,
+        horizontal: CanvasAlignment,
+        vertical: CanvasAlignment,
+        fill: Color,
+        budget: Option<&ResourceBudget>,
+    ) -> Result<(), DocumentError> {
         let bytes = checked_edit_size(width, height)?;
         let source = &self.current.image;
         if source.width == width && source.height == height {
             return Ok(());
         }
+        // Admission precedes the large allocation. The temporary lease is
+        // dropped on every failure path and transferred into the image below.
+        let mut lease = budget
+            .map(|budget| {
+                budget
+                    .try_acquire(bytes, AdmissionClass::Reserved)
+                    .map_err(|_| DocumentError::ImageBudgetExceeded)
+            })
+            .transpose()?;
         let (source_x, dest_x, copy_width) = canvas_axis(source.width, width, horizontal);
         let (source_y, dest_y, copy_height) = canvas_axis(source.height, height, vertical);
         let mut pixels = Vec::new();
         pixels
             .try_reserve_exact(bytes)
             .map_err(|_| DocumentError::AllocationFailed)?;
+        if let Some(lease) = &mut lease {
+            lease
+                .try_resize(pixels.capacity())
+                .map_err(|_| DocumentError::ImageBudgetExceeded)?;
+        }
         let bgra = [fill.b, fill.g, fill.r, fill.a];
         for _ in 0..bytes / 4 {
             pixels.extend_from_slice(&bgra);
@@ -708,11 +755,17 @@ impl Document {
             pixels[dst..dst + count].copy_from_slice(&source.pixels[src..src + count]);
         }
         let mut next = self.current.clone();
-        next.image = ImageHandle::from_image(Image {
+        let image = Image {
             width,
             height,
             pixels,
-        });
+        };
+        next.image = match lease {
+            Some(lease) => {
+                ImageHandle::from_imported(Arc::new(TrackedImage::from_reserved(image, lease)))
+            }
+            None => ImageHandle::from_image(image),
+        };
         let dx = dest_x as f32 - source_x as f32;
         let dy = dest_y as f32 - source_y as f32;
         for shape in &mut next.shapes {

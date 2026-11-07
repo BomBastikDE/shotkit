@@ -611,6 +611,131 @@ fn canvas_limits_and_history_failure_are_atomic() {
     assert!(!d.can_undo());
 }
 
+#[test]
+fn canvas_budget_rejection_is_atomic_and_keeps_existing_reservations() {
+    use crate::resource_budget::{AdmissionClass, ResourceBudget};
+
+    let mut document = Document::new(image()).unwrap();
+    document.add_shape(shape()).unwrap();
+    assert!(document.mark_saved());
+    document.add_shape(shape()).unwrap();
+    assert!(document.undo());
+    let before = document.image().clone();
+    // The 32-byte output fits the 39-byte ceiling alone; the existing 8-byte
+    // reservation is what makes admission fail (40 bytes total).
+    let budget = ResourceBudget::new(39, 0).unwrap();
+    let blocker = budget.try_acquire(8, AdmissionClass::Reserved).unwrap();
+
+    assert_eq!(
+        document.resize_canvas_with_budget(
+            4,
+            2,
+            CanvasAlignment::Start,
+            CanvasAlignment::Start,
+            Color::RED,
+            &budget,
+        ),
+        Err(DocumentError::ImageBudgetExceeded)
+    );
+    assert_eq!(document.image(), &before);
+    assert_eq!(document.shapes().len(), 1);
+    assert!(!document.is_dirty());
+    assert!(document.can_undo());
+    assert!(document.can_redo());
+    assert_eq!(budget.snapshot().used_bytes, 8);
+
+    drop(blocker);
+    assert_eq!(budget.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn canvas_budget_lease_follows_history_and_releases_on_staged_abort() {
+    use crate::resource_budget::ResourceBudget;
+
+    let mut document = Document::new(image()).unwrap();
+    let budget = ResourceBudget::new(256, 0).unwrap();
+    document
+        .resize_canvas_with_budget(
+            4,
+            3,
+            CanvasAlignment::Center,
+            CanvasAlignment::End,
+            Color::rgba(1, 2, 3, 4),
+            &budget,
+        )
+        .unwrap();
+    let first_allocation = document.image().pixels.capacity();
+    assert!(first_allocation >= 48);
+    assert_eq!(budget.snapshot().used_bytes, first_allocation);
+
+    assert!(document.undo());
+    assert_eq!(budget.snapshot().used_bytes, first_allocation);
+    assert!(document.redo());
+    assert_eq!(budget.snapshot().used_bytes, first_allocation);
+
+    let before = document.image().clone();
+    document.begin_edit().unwrap();
+    document
+        .resize_canvas_with_budget(
+            5,
+            4,
+            CanvasAlignment::Start,
+            CanvasAlignment::Start,
+            Color::rgba(0, 0, 0, 0),
+            &budget,
+        )
+        .unwrap();
+    let second_allocation = document.image().pixels.capacity();
+    assert!(second_allocation >= 80);
+    assert_eq!(
+        budget.snapshot().used_bytes,
+        first_allocation + second_allocation
+    );
+    document.abort_edit().unwrap();
+    assert_eq!(document.image(), &before);
+    assert_eq!(budget.snapshot().used_bytes, first_allocation);
+    drop(document);
+    assert_eq!(budget.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn budgeted_canvas_resize_matches_legacy_pixels_and_shapes() {
+    use crate::resource_budget::ResourceBudget;
+
+    let mut legacy = Document::new(image()).unwrap();
+    let mut budgeted = Document::new(image()).unwrap();
+    legacy.add_shape(shape()).unwrap();
+    budgeted.add_shape(shape()).unwrap();
+    let budget = ResourceBudget::new(256, 0).unwrap();
+
+    legacy
+        .resize_canvas(
+            5,
+            4,
+            CanvasAlignment::Center,
+            CanvasAlignment::End,
+            Color::rgba(9, 17, 31, 73),
+        )
+        .unwrap();
+    budgeted
+        .resize_canvas_with_budget(
+            5,
+            4,
+            CanvasAlignment::Center,
+            CanvasAlignment::End,
+            Color::rgba(9, 17, 31, 73),
+            &budget,
+        )
+        .unwrap();
+
+    assert_eq!(budgeted.image(), legacy.image());
+    assert_eq!(budgeted.shapes(), legacy.shapes());
+    assert_eq!(
+        budget.snapshot().used_bytes,
+        budgeted.image().pixels.capacity()
+    );
+}
+
 // Include identities and allocation capacities as well as logical contents:
 // rejected plans must preserve staged rollback, save state and both branches.
 fn plan_observation(d: &Document) -> (String, Vec<usize>) {
