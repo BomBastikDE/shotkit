@@ -12,7 +12,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ExePath,
-    [ValidateRange(10, 120)][int] $TimeoutSeconds = 30
+    [ValidateRange(10, 120)][int] $TimeoutSeconds = 30,
+    [ValidateSet('Admission', 'Boundary', 'JustOver')][string] $Fixture = 'Admission'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,23 +54,37 @@ namespace ShotKitImportBudgetSmoke {
    uint crc=0xffffffff;foreach(byte b in name){crc^=b;for(int k=0;k<8;k++)crc=(crc&1)!=0?(crc>>1)^0xedb88320:crc>>1;}
    foreach(byte b in data){crc^=b;for(int k=0;k<8;k++)crc=(crc&1)!=0?(crc>>1)^0xedb88320:crc>>1;}Be(s,crc^0xffffffff);
   }
-  public static void BudgetPng(string path){
-   var clock=System.Diagnostics.Stopwatch.StartNew();byte[] row=new byte[40001];
+  public static void BudgetPng(string path,int width,int height){
+   var clock=System.Diagnostics.Stopwatch.StartNew();byte[] row=new byte[checked(width*4+1)];long rasterBytes=checked((long)row.Length*height);
    // PNG filter byte=0; opaque black RGBA pixels (not an invalid/missing payload).
    for(int x=4;x<row.Length;x+=4)row[x]=255;
+   // .NET Fastest exceeded the existing 4-MiB fixture guard at 16384x8192
+   // on Windows. Optimal changes only the encoding, not a single raster byte.
+   // Keep the same size/time guards and validate every decompressed byte.
    using(var compressed=new System.IO.MemoryStream()){
-    using(var z=new System.IO.Compression.ZLibStream(compressed,System.IO.Compression.CompressionLevel.Fastest,true)){
-     for(int y=0;y<10000;y++){z.Write(row,0,row.Length);if(clock.Elapsed.TotalSeconds>30||compressed.Length>4194304)throw new Exception("FIXTURE_GENERATION_LIMIT");}
+    using(var z=new System.IO.Compression.ZLibStream(compressed,System.IO.Compression.CompressionLevel.Optimal,true)){
+     for(int y=0;y<height;y++){
+      z.Write(row,0,row.Length);
+      if(clock.Elapsed.TotalSeconds>30)throw new Exception("FIXTURE_GENERATION_TIMEOUT: elapsed_ms="+clock.ElapsedMilliseconds+", compressed_bytes="+compressed.Length);
+      if(compressed.Length>4194304)throw new Exception("FIXTURE_GENERATION_SIZE_LIMIT: compressed_bytes="+compressed.Length+", limit=4194304, elapsed_ms="+clock.ElapsedMilliseconds);
+     }
     }
-    byte[] data=compressed.ToArray();if(data.Length>4194304)throw new Exception("FIXTURE_TOO_LARGE");
+    byte[] data=compressed.ToArray();if(data.Length>4194304)throw new Exception("FIXTURE_TOO_LARGE: compressed_bytes="+data.Length+", limit=4194304");
+    if(clock.Elapsed.TotalSeconds>30)throw new Exception("FIXTURE_GENERATION_TIMEOUT_AFTER_FINISH: elapsed_ms="+clock.ElapsedMilliseconds);
+    Console.WriteLine("FIXTURE_ENCODED: dimensions="+width+"x"+height+", rgba_bytes="+((long)width*height*4)+", zlib_bytes="+data.Length+", elapsed_ms="+clock.ElapsedMilliseconds+", compression=Optimal");
     // Verify full decompression length with bounded buffers, independently of app import.
     using(var input=new System.IO.MemoryStream(data))using(var z=new System.IO.Compression.ZLibStream(input,System.IO.Compression.CompressionMode.Decompress)){
-     long count=0;int n;while((n=z.Read(row,0,row.Length))>0){count+=n;if(count>400010000||clock.Elapsed.TotalSeconds>45)throw new Exception("FIXTURE_VALIDATION_LIMIT");}
-     if(count!=400010000)throw new Exception("FIXTURE_RASTER_LENGTH");
+     byte[] check=new byte[row.Length];long count=0;int n;
+     while((n=z.Read(check,0,check.Length))>0){
+      if(count+n>rasterBytes||clock.Elapsed.TotalSeconds>45)throw new Exception("FIXTURE_VALIDATION_LIMIT");
+      for(int i=0;i<n;i++)if(check[i]!=row[(int)((count+i)%row.Length)])throw new Exception("FIXTURE_RASTER_CONTENT at filtered byte "+(count+i));
+      count+=n;
+     }
+     if(count!=rasterBytes)throw new Exception("FIXTURE_RASTER_LENGTH");
     }
     using(var file=System.IO.File.Create(path)){
      file.Write(new byte[]{137,80,78,71,13,10,26,10},0,8);
-     using(var header=new System.IO.MemoryStream()){Be(header,10000);Be(header,10000);header.Write(new byte[]{8,6,0,0,0},0,5);Chunk(file,"IHDR",header.ToArray());}
+     using(var header=new System.IO.MemoryStream()){Be(header,(uint)width);Be(header,(uint)height);header.Write(new byte[]{8,6,0,0,0},0,5);Chunk(file,"IHDR",header.ToArray());}
      Chunk(file,"IDAT",data);Chunk(file,"IEND",new byte[0]);
     }
    }
@@ -115,7 +130,11 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Import-Budget-' + [Guid]:
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'
 $settingsDir = Join-Path $appData 'ShotKitRust'
 $fixturePath = Join-Path $root 'existing-document.png'
-$oversizedPath = Join-Path $root 'budget-10000x10000.png'
+$fixtureWidth = if ($Fixture -eq 'Admission') { 10000 } else { 16384 }
+$fixtureHeight = switch ($Fixture) { 'Admission' { 10000 } 'Boundary' { 8192 } 'JustOver' { 8193 } }
+$rgbaBytes = [long]$fixtureWidth*$fixtureHeight*4
+$expectedPeak = 16MB+3*$rgbaBytes
+$oversizedPath = Join-Path $root "budget-${fixtureWidth}x${fixtureHeight}.png"
 $oldAppData = $env:APPDATA; $oldLocalAppData = $env:LOCALAPPDATA
 $mouseDown = $false
 $runClock = [Diagnostics.Stopwatch]::StartNew()
@@ -250,7 +269,7 @@ try {
         $small.Save($fixturePath,[Drawing.Imaging.ImageFormat]::Png)
     } finally { $small.Dispose() }
 
-    [ShotKitImportBudgetSmoke.Native]::BudgetPng($oversizedPath)
+    [ShotKitImportBudgetSmoke.Native]::BudgetPng($oversizedPath,$fixtureWidth,$fixtureHeight)
     $inputHash = (Get-FileHash -LiteralPath $oversizedPath -Algorithm SHA256).Hash
 
     $env:APPDATA = $appData; $env:LOCALAPPDATA = $localAppData
@@ -272,7 +291,7 @@ try {
     Assert-History $editor.H $originalCopy $beforeCopy
     $originalTitle = (Get-OwnedWindows | Where-Object { $_.H -eq $editor.H }).Title
     $originalEditorHandle = $editor.H
-    Write-Host "Owned PID=$($process.Id) editor HWND=$originalEditorHandle; fixture=$((Get-Item -LiteralPath $oversizedPath).Length) bytes; expected import peak=1216777216, normal limit=939524096."
+    Write-Host "Owned PID=$($process.Id) editor HWND=$originalEditorHandle; fixture=$((Get-Item -LiteralPath $oversizedPath).Length) bytes; expected import peak=$expectedPeak decoded_rgba_bytes=$rgbaBytes, normal limit=939524096."
     $firstAdmission = $null
     for ($attempt=1; $attempt -le 2; $attempt++) {
         # Use the editor's exact Open toolbar command so this exercises the existing-document path.
@@ -291,12 +310,16 @@ try {
         $errorDialog = Wait-For { Get-OwnedWindows | Where-Object { $_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'Bild öffnen' } | Select-Object -First 1 } 'expected image import error' 10
         if ([ShotKitImportBudgetSmoke.Native]::Owner($errorDialog.H) -ne [uint32]$process.Id) { throw 'ERROR_DIALOG_OWNER_MISMATCH.' }
         $errorText = [ShotKitImportBudgetSmoke.Native]::WindowText($errorDialog.H)
-        if ($errorText -notlike '*Bereits geöffnete Bilder bleiben erhalten.*') { throw "IMPORT_MESSAGE_NOT_ACTIONABLE: '$errorText'." }
-        if ($errorText -match 'cannot reserve ([0-9]+) additional bytes: ([0-9]+) used, admission limit 939524096') {
-            $admission = "$($Matches[1]):$($Matches[2])"
-        } else { throw "WRONG_IMPORT_ERROR: expected normal-budget admission rejection, got '$errorText'." }
-        if ($null -eq $firstAdmission) { $firstAdmission = $admission }
-        elseif ($admission -cne $firstAdmission) { throw "BUDGET_RESERVATION_NOT_RELEASED: first=$firstAdmission, later=$admission." }
+        if ($Fixture -eq 'JustOver') {
+            if ($errorText -notlike '*Das dekodierte Bild überschreitet 512 MiB.*') { throw "WRONG_IMPORT_ERROR: expected exact 512-MiB raster limit, got '$errorText'." }
+        } else {
+            if ($errorText -notlike '*Bereits geöffnete Bilder bleiben erhalten.*') { throw "IMPORT_MESSAGE_NOT_ACTIONABLE: '$errorText'." }
+            if ($errorText -match 'cannot reserve ([0-9]+) additional bytes: ([0-9]+) used, admission limit 939524096') {
+                $admission = "$($Matches[1]):$($Matches[2])"
+            } else { throw "WRONG_IMPORT_ERROR: expected normal-budget admission rejection, got '$errorText'." }
+            if ($null -eq $firstAdmission) { $firstAdmission = $admission }
+            elseif ($admission -cne $firstAdmission) { throw "BUDGET_RESERVATION_NOT_RELEASED: first=$firstAdmission, later=$admission." }
+        }
         [void][ShotKitImportBudgetSmoke.Native]::PostMessageW($errorDialog.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
         [void](Wait-For { -not @(Get-OwnedWindows | Where-Object { $_.ClassName -eq '#32770' -and $_.Title -eq 'Bild öffnen' }).Count } 'expected import error close' 8)
 
@@ -315,7 +338,8 @@ try {
     }
     $afterInputHash = (Get-FileHash -LiteralPath $oversizedPath -Algorithm SHA256).Hash
     if ($inputHash -cne $afterInputHash) { throw "INPUT_MODIFIED: SHA256 before=$inputHash after=$afterInputHash." }
-    Write-Host "PASS: two 10000x10000 RGBA PNG imports rejected by 896-MiB normal admission; the same dirty editor, byte-identical CF_DIBV5 export and undo/redo states survived (SHA256 $($beforeCopy.Hash)); source files unchanged."
+    Write-Host "PASS: two ${fixtureWidth}x${fixtureHeight} RGBA PNG imports rejected ($Fixture); the same dirty editor, byte-identical CF_DIBV5 export and undo/redo states survived (SHA256 $($beforeCopy.Hash)); source files unchanged."
+    if ($Fixture -eq 'Boundary') { Write-Host 'SCENARIO_2B: exact 512-MiB RGBA raster rejected by normal admission; dirty document, pixels, history and source files preserved. Scenario 2a separately covers the owner-specified 8192-square RGBA image.' }
 } catch { $failure = $_ }
 finally {
     if ($mouseDown) { [ShotKitImportBudgetSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero) }
