@@ -48,6 +48,8 @@ Neue Funktionen erst beginnen, wenn keine Issues mit `security` und `priorität:
 
 ## Versionen und Releases
 
+CHANGELOG-Abschnitte heißen `## Version X.Y.Z` beziehungsweise `## Version X.Y.Z-beta.N`; andernfalls bricht die Release-Pipeline ab.
+
 - Releases werden **nur von `main`** getaggt (`v2.X.Y-beta.N`, später `v2.X.Y`).
 - Vor dem Tag im selben PR: Version in `rust/Cargo.toml` erhöhen und den Abschnitt in `rust/CHANGELOG.md` mit der Versionsnummer abschließen.
 - Zeitnah veröffentlichen: Liegen auf `main` nennenswerte Änderungen für Nutzer, folgt eine neue Vorabversion, statt Dutzende Commits ungetaggt zu sammeln.
