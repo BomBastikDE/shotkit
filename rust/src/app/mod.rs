@@ -1,3 +1,5 @@
+mod callout;
+mod canvas;
 mod mouse_history;
 mod preview_scaling;
 mod region;
@@ -9,12 +11,16 @@ mod config;
 use config::*;
 mod instance;
 use instance::*;
+mod capture_budget;
+use capture_budget::*;
 mod capture;
 use capture::*;
 mod rendering;
 use rendering::*;
 mod document;
 use document::*;
+mod import_budget;
+use import_budget::*;
 mod actions;
 use actions::*;
 mod hotkeys;
@@ -25,16 +31,13 @@ use crate::{
     overlay, scroll_windows, text_dialog, toolbar,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::c_void,
-    fs::OpenOptions,
-    io::Write,
     mem::{size_of, zeroed},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
     rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use shotkit::{
@@ -43,11 +46,13 @@ use shotkit::{
     editor::EditorController,
     image_edit::{FrameOptions, ShadowOptions},
     image_io, output_windows,
-    scroll_capture::{self, Direction, Outcome, ScrollIo},
+    recovery_admission::{self, AdmissionError as SourceAdmissionError, Permit as SourcePermit},
+    recovery_images::RecoveryImages,
+    scroll_capture::{self, Direction, Outcome},
     scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
     shapes::{Point as ShapePoint, Tool},
-    stitch::Image,
+    stitch::{Image, Rotation},
     view,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -172,6 +177,7 @@ extern "system" {
     fn ReleaseDC(h: H, dc: H) -> i32;
     fn BeginPaint(h: H, p: *mut Paint) -> H;
     fn EndPaint(h: H, p: *const Paint) -> i32;
+    fn FillRect(dc: H, rect: *const Rect, brush: H) -> i32;
     fn GetClientRect(h: H, r: *mut Rect) -> i32;
     fn InvalidateRect(h: H, r: *const Rect, erase: i32) -> i32;
     fn SetWindowTextW(h: H, t: *const u16) -> i32;
@@ -278,6 +284,7 @@ extern "system" {
     ) -> i32;
     fn CreatePen(style: i32, width: i32, color: u32) -> H;
     fn Rectangle(dc: H, l: i32, t: i32, r: i32, b: i32) -> i32;
+    fn PatBlt(dc: H, x: i32, y: i32, width: i32, height: i32, rop: u32) -> i32;
     fn TextOutW(dc: H, x: i32, y: i32, text: *const u16, len: i32) -> i32;
     fn GetStockObject(index: i32) -> H;
 }
@@ -288,7 +295,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> H;
-    fn MoveFileExW(old: *const u16, new: *const u16, flags: u32) -> i32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
     fn CreateMutexW(attributes: *mut c_void, initial_owner: i32, name: *const u16) -> H;
     fn SetLastError(error: u32);
     fn GetLastError() -> u32;
@@ -315,7 +322,49 @@ static SCROLL_COMPLETION: Mutex<ScrollCompletion<Result<Outcome, String>>> =
     Mutex::new(ScrollCompletion::new());
 const SCROLL_POLL_TIMER: usize = 0x5343_524c;
 static NEXT_WINDOW_GENERATION: AtomicUsize = AtomicUsize::new(1);
-static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
+static RECOVERY: Mutex<RecoveryImages<Image>> = Mutex::new(RecoveryImages::new());
+// A failed horizontal return rotation must not grow RECOVERY's overflow while the
+// image allocator is already under pressure. This inline slot needs no queue
+// allocation. start_scroll refuses another job until it has been resolved.
+static SCROLL_RECOVERY: Mutex<Option<PendingScrollRecovery>> = Mutex::new(None);
+static RECOVERY_RESOLVING: AtomicBool = AtomicBool::new(false);
+struct PendingScrollRecovery {
+    image: Image,
+    pending_rotation: Option<Rotation>,
+}
+fn scroll_recovery_pending() -> bool {
+    SCROLL_RECOVERY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_some()
+}
+
+fn source_recovery_pending() -> bool {
+    RECOVERY_RESOLVING.load(Ordering::SeqCst)
+        || !RECOVERY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty()
+        || scroll_recovery_pending()
+        || capture_recovery_pending()
+        || import_transfer_active()
+        || import_recovery_pending()
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h is a live dialog owner on the UI thread.
+// Warum erfüllt: callers are owned window handlers guarded against closure.
+// Nachrichten: MessageBoxW can reenter; all recovery locks are released first.
+unsafe fn acquire_recovery_safe_source(h: H) -> Option<SourcePermit<'static>> {
+    match recovery_admission::acquire_source(&SCROLL_BUSY, source_recovery_pending) {
+        Ok(permit) => Some(permit),
+        Err(SourceAdmissionError::Busy) => None,
+        Err(SourceAdmissionError::PendingRecovery) => {
+            MessageBoxW(h, wide("Ein Bild wartet noch auf seine Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(), wide("Ungesichertes Bild").as_ptr(), 0x30);
+            None
+        }
+    }
+}
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);
 static LAST_REGION: Mutex<Option<last_region::Rect>> = Mutex::new(None);
@@ -331,6 +380,8 @@ impl Drop for BusyGuard {
 // GWLP_USERDATA; no active-window swapping is used, including during modal loops.
 struct WindowState {
     generation: usize,
+    initialization_close_blocked: Option<Rc<Cell<bool>>>,
+    initialization_lifetime: Option<Rc<Cell<H>>>,
     toolbar: Option<Rc<toolbar::Toolbar>>,
     editor: Option<EditorController>,
     preview_cache: Rc<RefCell<Option<shotkit::alpha_document::PreviewCache>>>,
@@ -357,6 +408,8 @@ impl WindowState {
                     value.checked_add(1)
                 })
                 .unwrap_or(0),
+            initialization_close_blocked: None,
+            initialization_lifetime: None,
             toolbar: None,
             editor: None,
             preview_cache: Rc::new(RefCell::new(None)),
@@ -376,9 +429,169 @@ impl WindowState {
         }
     }
 }
+
+// Passed only by the protected editor constructor. WM_NCCREATE copies the
+// token before any subsequent creation messages; the marker pointer is never
+// retained by the HWND. Ordinary editor/primary creation passes null.
+struct EditorCreationProtection {
+    close_blocked: Rc<Cell<bool>>,
+    lifetime: Rc<Cell<H>>,
+}
+
+enum ProtectedEditorCleanup {
+    Idle,
+    Creating(Rc<EditorCreationProtection>),
+    Pending(Rc<EditorCreationProtection>),
+    Retrying,
+}
+thread_local! {
+    // Fixed ownership slot, independent of editor-list allocation and HWND reuse.
+    static PROTECTED_EDITOR_CLEANUP: RefCell<ProtectedEditorCleanup> =
+        const { RefCell::new(ProtectedEditorCleanup::Idle) };
+}
+
+fn retry_protected_editor_cleanup_with(mut destroy: impl FnMut(H)) -> Result<(), String> {
+    let pending = PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match &*slot {
+            ProtectedEditorCleanup::Idle => Ok(None),
+            ProtectedEditorCleanup::Pending(token) => {
+                let token = token.clone();
+                *slot = ProtectedEditorCleanup::Retrying;
+                Ok(Some(token))
+            }
+            ProtectedEditorCleanup::Creating(_) | ProtectedEditorCleanup::Retrying => {
+                Err("Geschützte Editoranlage oder Bereinigung läuft bereits.".to_owned())
+            }
+        }
+    })?;
+    let Some(token) = pending else {
+        return Ok(());
+    };
+    let h = token.lifetime.get();
+    if !h.is_null() {
+        // No slot/state borrow crosses this reentrant call. WM_NCDESTROY is
+        // the authority: a return code or IsWindow cannot detect HWND reuse.
+        destroy(h);
+    }
+    let complete = token.lifetime.get().is_null();
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        *slot.borrow_mut() = if complete {
+            ProtectedEditorCleanup::Idle
+        } else {
+            ProtectedEditorCleanup::Pending(token)
+        };
+    });
+    if complete {
+        Ok(())
+    } else {
+        Err(
+            "Ein unvollständiges Editorfenster konnte nicht geschlossen werden. Erneut versuchen."
+                .into(),
+        )
+    }
+}
+
+unsafe fn retry_protected_editor_cleanup() -> Result<(), String> {
+    retry_protected_editor_cleanup_with(|h| {
+        DestroyWindow(h);
+    })
+}
+
+unsafe fn begin_protected_editor_creation() -> Result<Rc<EditorCreationProtection>, String> {
+    retry_protected_editor_cleanup()?;
+    let token = Rc::new(EditorCreationProtection {
+        close_blocked: Rc::new(Cell::new(true)),
+        lifetime: Rc::new(Cell::new(null_mut())),
+    });
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        *slot.borrow_mut() = ProtectedEditorCleanup::Creating(token.clone());
+    });
+    Ok(token)
+}
+
+fn finish_protected_editor_creation(token: &Rc<EditorCreationProtection>, success: bool) {
+    if success {
+        // Reserve the failure slot throughout the handoff. Guard completion
+        // releases it; another reentrant creation cannot consume this slot.
+        return;
+    }
+    PROTECTED_EDITOR_CLEANUP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if matches!(&*slot, ProtectedEditorCleanup::Creating(current) if Rc::ptr_eq(current, token))
+        {
+            *slot = if token.lifetime.get().is_null() {
+                ProtectedEditorCleanup::Idle
+            } else {
+                // Retain the live HWND and close protection after constructor
+                // cleanup failed; no guard has yet been created or dropped.
+                ProtectedEditorCleanup::Pending(token.clone())
+            };
+        }
+    });
+}
+
+// CREATESTRUCTW starts with lpCreateParams on both Windows architectures.
+#[repr(C)]
+struct CreateStructParams {
+    create_params: *mut c_void,
+}
+
+/// Keep this guard until the complete import/editor handoff is initialized.
+/// Drop only touches owned tokens and the UI-thread slot, never an HWND or
+/// WindowState: prior destruction is safe, including HWND reuse.
+#[must_use = "keep the guard alive until editor initialization is complete"]
+pub(super) struct EditorInitializationGuard(Option<Rc<EditorCreationProtection>>);
+impl EditorInitializationGuard {
+    fn still_owns(&self, window: H) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|token| token.lifetime.get() == window && !window.is_null())
+    }
+}
+impl Drop for EditorInitializationGuard {
+    fn drop(&mut self) {
+        if let Some(token) = self.0.take() {
+            token.close_blocked.set(false);
+            PROTECTED_EDITOR_CLEANUP.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if matches!(&*slot, ProtectedEditorCleanup::Creating(current) if Rc::ptr_eq(current, &token)) {
+                    *slot = ProtectedEditorCleanup::Idle;
+                }
+            });
+        }
+    }
+}
+
+// Consume failed initialization (including post-creation Vec::try_reserve)
+// without releasing close protection. The guard already reserved this slot.
+pub(super) unsafe fn abandon_protected_editor(
+    guard: EditorInitializationGuard,
+) -> Result<(), String> {
+    abandon_protected_editor_with(guard, |h| {
+        DestroyWindow(h);
+    })
+}
+
+fn abandon_protected_editor_with(
+    mut guard: EditorInitializationGuard,
+    destroy: impl FnMut(H),
+) -> Result<(), String> {
+    if let Some(token) = guard.0.take() {
+        finish_protected_editor_creation(&token, false);
+    }
+    retry_protected_editor_cleanup_with(destroy)
+}
 static mut PRIMARY: H = null_mut();
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
 static QUITTING: AtomicBool = AtomicBool::new(false);
+// Set only after every document has been approved and its window closed.
+static FINISH_QUIT_READY: AtomicBool = AtomicBool::new(false);
+
+fn take_quit_completion(ready: &AtomicBool, modal_depth: usize) -> bool {
+    modal_depth == 0 && ready.swap(false, Ordering::SeqCst)
+}
+
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster mit initialisiertem Zustand;
 // Zugriff nur auf dem UI-Thread, ohne überlappenden Borrow oder Reentranz.
@@ -424,6 +637,16 @@ impl Drop for ModalGuard {
     fn drop(&mut self) {
         unsafe {
             window_state(self.0).modal_depth -= 1;
+            // A nested message loop may have consumed the posted wakeup while
+            // this guard was active. Queue another after the outermost guard.
+            if self.0 == PRIMARY
+                && window_state(self.0).modal_depth == 0
+                && FINISH_QUIT_READY.load(Ordering::SeqCst)
+                && PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0) == 0
+            {
+                FINISH_QUIT_READY.store(false, Ordering::SeqCst);
+                QUITTING.store(false, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -511,6 +734,9 @@ unsafe fn show_editors() {
 // Warum erfüllt: die Liste enthält ausschließlich von der Anwendung erzeugte Fenster.
 // Nachrichten: Dialoge und DestroyWindow können reentrieren; Fensterliste und Modal-Tiefe werden vor den Aufrufen als Werte übernommen.
 unsafe fn quit_application(h: H) {
+    if retry_protected_editor_cleanup().is_err() {
+        return;
+    }
     if SCROLL_BUSY.load(Ordering::SeqCst) || delayed_capture_pending() {
         MessageBoxW(
             h,
@@ -531,9 +757,16 @@ unsafe fn quit_application(h: H) {
         && windows.iter().all(|w| confirm_replace(*w));
     if approved {
         for window in windows {
-            DestroyWindow(window);
+            if DestroyWindow(window) == 0 {
+                QUITTING.store(false, Ordering::SeqCst);
+                return;
+            }
         }
-        PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0);
+        FINISH_QUIT_READY.store(true, Ordering::SeqCst);
+        if PostMessageW(PRIMARY, WM_FINISH_QUIT, 0, 0) == 0 {
+            FINISH_QUIT_READY.store(false, Ordering::SeqCst);
+            QUITTING.store(false, Ordering::SeqCst);
+        }
     } else {
         QUITTING.store(false, Ordering::SeqCst);
     }
@@ -584,7 +817,8 @@ unsafe fn run_application() {
         cls_extra: 0,
         wnd_extra: 0,
         instance: inst,
-        icon: LoadIconW(inst, 1usize as *const u16),
+        // Win32 integer resource ID 1, encoded as a pointer without dereferencing.
+        icon: LoadIconW(inst, std::ptr::without_provenance::<u16>(1)),
         cursor: LoadCursorW(null_mut(), 32512usize as *const u16),
         background: (6usize as H),
         menu: std::ptr::null(),
@@ -626,7 +860,8 @@ unsafe fn run_application() {
     }
     hotkeys::register(h);
     for path in std::env::args_os().skip(1).map(PathBuf::from) {
-        if let Err(error) = open_image_path(h, absolute_argument_path(path)) {
+        let result = absolute_argument_path(path).and_then(|path| open_image_path(h, path));
+        if let Err(error) = result {
             MessageBoxW(h, wide(&error).as_ptr(), wide("Bild öffnen").as_ptr(), 0x10);
         }
     }
@@ -635,5 +870,26 @@ unsafe fn run_application() {
     while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+}
+
+#[cfg(test)]
+mod quit_completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_requires_approval_and_is_consumed_once() {
+        let ready = AtomicBool::new(false);
+        assert!(!take_quit_completion(&ready, 0));
+        ready.store(true, Ordering::SeqCst);
+        assert!(take_quit_completion(&ready, 0));
+        assert!(!take_quit_completion(&ready, 0));
+    }
+
+    #[test]
+    fn modal_handler_defers_without_consuming_completion() {
+        let ready = AtomicBool::new(true);
+        assert!(!take_quit_completion(&ready, 1));
+        assert!(take_quit_completion(&ready, 0));
     }
 }

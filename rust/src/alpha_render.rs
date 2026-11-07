@@ -1,11 +1,17 @@
-//! Windows GDI+ rendering of one annotation into a transparent straight-BGRA layer.
+//! Original symbol rasterization and Windows GDI+ rendering of one annotation into a transparent straight-BGRA layer.
 //!
 //! The output is an independent full-size image; untouched pixels remain fully
 //! transparent. Blur/pixelation is deliberately rejected because it needs the
 //! original image as a sampling source and is a document-level operation.
 
+use crate::resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget};
 use crate::shapes::{Shape, ShapeKind};
 use crate::stitch::Image;
+mod callout;
+mod stamps;
+pub use callout::measure_callout_text;
+#[cfg(windows)]
+mod styles;
 #[cfg(windows)]
 use std::{ffi::c_void, ptr};
 
@@ -23,6 +29,7 @@ pub enum RenderError {
     UnsupportedShape(&'static str),
     InvalidDimensions,
     AllocationFailed,
+    BudgetRejected(BudgetError),
     PlatformUnavailable,
     GdiPlusStatus(i32),
 }
@@ -30,12 +37,74 @@ pub enum RenderError {
 /// Render a shape to a transparent straight-alpha BGRA layer of `width` x `height`.
 /// Shape coordinates are image-space pixels. Output bounds are clipped by GDI+.
 pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image, RenderError> {
+    let bytes = validate_request(width, height, shape)?;
+    render_validated_shape(width, height, shape, bytes, None)
+}
+
+/// A temporary layer keeps its admitted pixel capacity through rendering and
+/// document composition. Fields drop in declaration order: pixels before lease.
+/// No mutable pixels or detached image escape from a budgeted layer.
+pub(crate) struct ShapeLayer {
+    image: Image,
+    pixel_lease: Option<BudgetLease>,
+}
+
+impl ShapeLayer {
+    pub(crate) fn image(&self) -> &Image {
+        if let Some(lease) = &self.pixel_lease {
+            debug_assert_eq!(lease.bytes(), self.image.pixels.capacity());
+        }
+        &self.image
+    }
+}
+
+/// Admission uses the caller's existing pool, including reserved headroom.
+/// The optional pool preserves the unbudgeted document API's existing behavior.
+pub(crate) fn render_shape_layer(
+    width: usize,
+    height: usize,
+    shape: &Shape,
+    budget: Option<&ResourceBudget>,
+) -> Result<ShapeLayer, RenderError> {
+    let bytes = validate_request(width, height, shape)?;
+    // The lease is owned before the inner renderer allocates. It survives GDI
+    // startup, drawing, flush, every native disposer and session shutdown.
+    let mut pixel_lease = budget
+        .map(|budget| {
+            budget
+                .try_acquire(bytes, AdmissionClass::Reserved)
+                .map_err(RenderError::BudgetRejected)
+        })
+        .transpose()?;
+    let image = render_validated_shape(width, height, shape, bytes, pixel_lease.as_mut())?;
+    Ok(ShapeLayer { image, pixel_lease })
+}
+
+fn validate_request(width: usize, height: usize, shape: &Shape) -> Result<usize, RenderError> {
+    if matches!(
+        shape.kind,
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } | ShapeKind::Cursor { .. }
+    ) {
+        return Err(RenderError::UnsupportedShape(
+            "Effekt benötigt Dokumentkomposition",
+        ));
+    }
+    if matches!(shape.kind, ShapeKind::Redact { .. }) {
+        return Err(RenderError::UnsupportedShape(
+            "Schwärzen ist eine Dokumentoperation",
+        ));
+    }
     if matches!(shape.kind, ShapeKind::Blur { .. }) {
         return Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
         ));
     }
-    let bytes = width
+    if matches!(shape.kind, ShapeKind::GaussianBlur { .. }) {
+        return Err(RenderError::UnsupportedShape(
+            "Weichzeichnen benötigt das Originalbild als Quelle",
+        ));
+    }
+    width
         .checked_mul(height)
         .and_then(|n| n.checked_mul(4))
         .filter(|n| {
@@ -45,34 +114,81 @@ pub fn render_shape(width: usize, height: usize, shape: &Shape) -> Result<Image,
                 && width <= i32::MAX as usize
                 && height <= i32::MAX as usize
         })
-        .ok_or(RenderError::InvalidDimensions)?;
-    let mut pargb = Vec::new();
-    pargb
-        .try_reserve_exact(bytes)
-        .map_err(|_| RenderError::AllocationFailed)?;
-    pargb.resize(bytes, 0);
+        .ok_or(RenderError::InvalidDimensions)
+}
+
+fn render_validated_shape(
+    width: usize,
+    height: usize,
+    shape: &Shape,
+    bytes: usize,
+    lease: Option<&mut BudgetLease>,
+) -> Result<Image, RenderError> {
+    let mut pargb = allocate_layer_pixels(bytes, lease)?;
+
+    if let ShapeKind::Stamp { center, kind } = shape.kind {
+        stamps::render(width, height, center, kind, &shape.style, &mut pargb)?;
+        return Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions);
+    }
 
     #[cfg(windows)]
     {
         render_gdiplus(width, height, shape, &mut pargb)?;
         // GDI+ PARGB stores premultiplied channels. Convert back to straight BGRA.
-        for pixel in pargb.chunks_exact_mut(4) {
+        for pixel in pargb.as_chunks_mut::<4>().0 {
             let a = pixel[3];
             if a != 0 {
-                for c in 0..3 {
-                    pixel[c] = ((u16::from(pixel[c]) * 255 + u16::from(a) / 2) / u16::from(a))
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * 255 + u16::from(a) / 2) / u16::from(a))
                         .min(255) as u8;
                 }
             } else {
                 pixel[..3].fill(0);
             }
         }
-        return Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions);
+        Image::new(width, height, pargb).map_err(|_| RenderError::InvalidDimensions)
     }
     #[cfg(not(windows))]
     {
         let _ = (width, height, shape, pargb);
         Err(RenderError::PlatformUnavailable)
+    }
+}
+
+// Reconcile actual capacity BEFORE zeroing or any backend/GDI call. On a
+// rejected growth this local Vec drops while the outer caller still owns lease.
+fn allocate_layer_pixels(
+    bytes: usize,
+    lease: Option<&mut BudgetLease>,
+) -> Result<Vec<u8>, RenderError> {
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(bytes)
+        .map_err(|_| RenderError::AllocationFailed)?;
+    reconcile_layer_capacity(&pixels, lease)?;
+    pixels.resize(bytes, 0);
+    Ok(pixels)
+}
+
+fn reconcile_layer_capacity(
+    pixels: &Vec<u8>,
+    lease: Option<&mut BudgetLease>,
+) -> Result<(), RenderError> {
+    if let Some(lease) = lease {
+        lease
+            .try_resize(pixels.capacity())
+            .map_err(RenderError::BudgetRejected)?;
+    }
+    Ok(())
+}
+
+// Preserve the previous max/min behavior for NaN: use the minimum size.
+#[cfg(any(windows, test))]
+fn bounded_size(value: f32, maximum: f32) -> f32 {
+    if value.is_nan() {
+        1.0
+    } else {
+        value.clamp(1.0, maximum)
     }
 }
 
@@ -244,6 +360,7 @@ extern "system" {
     fn GdipFlush(graphics: *mut c_void, intention: i32) -> i32;
     fn GdipCreatePen1(color: u32, width: f32, unit: i32, pen: *mut *mut c_void) -> i32;
     fn GdipDeletePen(pen: *mut c_void) -> i32;
+    fn GdipSetPenDashStyle(pen: *mut c_void, dash_style: i32) -> i32;
     fn GdipCreateSolidFill(color: u32, brush: *mut *mut c_void) -> i32;
     fn GdipDeleteBrush(brush: *mut c_void) -> i32;
     fn GdipDrawLine(
@@ -402,11 +519,21 @@ unsafe fn render_started(
 // Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
 unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
     use crate::shapes::ShapeKind;
-    let width = shape.style.width.max(1.0).min(256.0);
+    let width = bounded_size(shape.style.width, 256.0);
     let pen_color = argb(shape.style.color, 255);
     let mut pen_raw = ptr::null_mut();
     status(GdipCreatePen1(pen_color, width, UNIT_PIXEL, &mut pen_raw))?;
     let pen = GdiResource::new(pen_raw, GdipDeletePen)?;
+    if matches!(
+        shape.kind,
+        ShapeKind::Line { .. }
+            | ShapeKind::Arrow { .. }
+            | ShapeKind::Rectangle { .. }
+            | ShapeKind::Ellipse { .. }
+            | ShapeKind::Freehand { .. }
+    ) {
+        styles::set_line_style(pen.as_ptr(), shape.style.line_style)?;
+    }
     match &shape.kind {
         ShapeKind::Line { start, end } => status(GdipDrawLine(
             g,
@@ -416,6 +543,9 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             end.x,
             end.y,
         )),
+        ShapeKind::Arrow { .. } if shape.style.arrow_ends != crate::shapes::ArrowEnds::Single => {
+            styles::draw_arrow(g, pen.as_ptr(), shape)
+        }
         ShapeKind::Arrow { start, end } => {
             let Some(geometry) = arrow_geometry(*start, *end, width) else {
                 return Ok(());
@@ -434,12 +564,26 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             let brush = create_brush(pen_color)?;
             status(GdipFillPolygon(g, brush.as_ptr(), pts.as_ptr(), 3, 0))
         }
+        ShapeKind::Rectangle { start, end }
+            if shape.style.rectangle_corners == crate::shapes::RectangleCorners::Rounded
+                && !crate::shapes::rectangle_has_zero_axis(*start, *end) =>
+        {
+            styles::draw_rounded_rectangle(g, pen.as_ptr(), shape, *start, *end)
+        }
         ShapeKind::Rectangle { start, end } => {
             let (x, y, w, h) = rect(*start, *end);
+            if let Some(alpha) = shape.style.fill.alpha_scale() {
+                let brush = create_brush(argb(shape.style.color, alpha))?;
+                status(GdipFillRectangle(g, brush.as_ptr(), x, y, w, h))?;
+            }
             status(GdipDrawRectangle(g, pen.as_ptr(), x, y, w, h))
         }
         ShapeKind::Ellipse { start, end } => {
             let (x, y, w, h) = rect(*start, *end);
+            if let Some(alpha) = shape.style.fill.alpha_scale() {
+                let brush = create_brush(argb(shape.style.color, alpha))?;
+                status(GdipFillEllipse(g, brush.as_ptr(), x, y, w, h))?;
+            }
             status(GdipDrawEllipse(g, pen.as_ptr(), x, y, w, h))
         }
         ShapeKind::Highlight { start, end } => {
@@ -463,6 +607,12 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
                 pen.as_ptr(),
                 pts.as_ptr(),
                 pts.len() as i32,
+            ))
+        }
+        ShapeKind::Callout { data } => callout::draw(g, pen.as_ptr(), data),
+        ShapeKind::Spotlight { .. } | ShapeKind::Magnifier { .. } | ShapeKind::Cursor { .. } => {
+            Err(RenderError::UnsupportedShape(
+                "Effekt benötigt Dokumentkomposition",
             ))
         }
         ShapeKind::Text { location, text } => {
@@ -499,8 +649,18 @@ unsafe fn draw_shape(g: *mut c_void, shape: &Shape) -> Result<(), RenderError> {
             let text_color = step_text_color(shape.style.color);
             draw_centered_text(g, *center, radius, &text, text_color)
         }
+        // Stamp is dispatched to the shared rasterizer before GDI+ starts.
+        ShapeKind::Stamp { .. } => Err(RenderError::UnsupportedShape(
+            "Stempel verwendet den eigenen Rasterrenderer",
+        )),
+        ShapeKind::Redact { .. } => Err(RenderError::UnsupportedShape(
+            "Schwärzen ist eine Dokumentoperation",
+        )),
         ShapeKind::Blur { .. } => Err(RenderError::UnsupportedShape(
             "Verpixeln benötigt das Originalbild als Quelle",
+        )),
+        ShapeKind::GaussianBlur { .. } => Err(RenderError::UnsupportedShape(
+            "Weichzeichnen benötigt das Originalbild als Quelle",
         )),
     }
 }
@@ -526,148 +686,13 @@ fn rect(a: crate::shapes::Point, b: crate::shapes::Point) -> (f32, f32, f32, f32
     )
 }
 #[cfg(any(windows, test))]
-fn step_text_color(color: crate::shapes::Color) -> u32 {
-    let luminance =
-        f32::from(color.r) * 0.299 + f32::from(color.g) * 0.587 + f32::from(color.b) * 0.114;
-    let (r, g, b) = if luminance > 150.0 {
-        (40, 40, 40)
-    } else {
-        (255, 255, 255)
-    };
-    (255u32 << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
-}
-
-#[cfg(any(windows, test))]
-fn step_font_size(radius: f32, digits: usize) -> f32 {
-    let digits = digits.max(1) as f32;
-    radius
-        * if digits == 1.0 {
-            1.05
-        } else {
-            // Roughly 0.65 em per digit. Keep the full label within the circle's
-            // inner area as step numbers grow beyond two digits.
-            1.7f32.min(1.8 / digits)
-        }
-}
-
+mod text;
+#[cfg(test)]
+use text::step_font_size;
+#[cfg(all(test, not(windows)))]
+use text::step_text_color;
 #[cfg(windows)]
-// SAFETY CONTRACT:
-// Voraussetzung: Die aktive GDI+-Session überlebt den Pen; width ist für GDI+ gültig.
-// Warum erfüllt bzw. offen: Status und Disposer werden gebunden; Aufrufe erfolgen innerhalb der Session.
-// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
-unsafe fn create_pen(color: u32, width: f32) -> Result<GdiResource, RenderError> {
-    let mut raw = ptr::null_mut();
-    status(GdipCreatePen1(color, width, UNIT_PIXEL, &mut raw))?;
-    GdiResource::new(raw, GdipDeletePen)
-}
-
-#[cfg(windows)]
-// SAFETY CONTRACT:
-// Voraussetzung: g ist gültig, die GDI+-Session lebt und die UTF-16-Länge passt in i32.
-// Warum erfüllt bzw. offen: Aktuell wird eine kurze Schrittnummer gezeichnet; Text und Ressourcen leben bis zur FFI-Rückkehr.
-// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
-unsafe fn draw_centered_text(
-    g: *mut c_void,
-    center: crate::shapes::Point,
-    radius: f32,
-    text: &str,
-    color: u32,
-) -> Result<(), RenderError> {
-    let wide: Vec<u16> = text.encode_utf16().collect();
-    let mut family_raw = ptr::null_mut();
-    let name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
-    status(GdipCreateFontFamilyFromName(
-        name.as_ptr(),
-        ptr::null_mut(),
-        &mut family_raw,
-    ))?;
-    let family = GdiResource::new(family_raw, GdipDeleteFontFamily)?;
-    let mut font_raw = ptr::null_mut();
-    status(GdipCreateFont(
-        family.as_ptr(),
-        step_font_size(radius, text.chars().count()).max(1.0),
-        1,
-        UNIT_PIXEL,
-        &mut font_raw,
-    ))?;
-    let font = GdiResource::new(font_raw, GdipDeleteFont)?;
-    let brush = create_brush(color)?;
-    let mut format_raw = ptr::null_mut();
-    status(GdipCreateStringFormat(0, 0, &mut format_raw))?;
-    let format = GdiResource::new(format_raw, GdipDeleteStringFormat)?;
-    status(GdipSetStringFormatAlign(format.as_ptr(), 1))?;
-    status(GdipSetStringFormatLineAlign(format.as_ptr(), 1))?;
-    // Text anti-aliasing is independent of the graphics smoothing mode.
-    status(GdipSetTextRenderingHint(g, 4))?;
-    let layout = RectF {
-        x: center.x - radius,
-        y: center.y - radius,
-        width: radius * 2.0,
-        height: radius * 2.0,
-    };
-    status(GdipDrawString(
-        g,
-        wide.as_ptr(),
-        wide.len() as i32,
-        font.as_ptr(),
-        &layout,
-        format.as_ptr(),
-        brush.as_ptr(),
-    ))
-}
-#[cfg(windows)]
-// SAFETY CONTRACT:
-// Voraussetzung: g ist gültig und die GDI+-Session lebt während der Zeichnung.
-// Warum erfüllt bzw. offen: Textlänge ist begrenzt und alle Pointer zeigen auf lebende lokale Werte und Ressourcen.
-// Nachrichten: GDI+-Aufrufe; allgemeine Reentranzfreiheit nicht belegt.
-unsafe fn draw_text(
-    g: *mut c_void,
-    location: crate::shapes::Point,
-    text: &str,
-    size: f32,
-    color: u32,
-) -> Result<(), RenderError> {
-    if text.len() > 16 * 1024 * 1024 {
-        return Err(RenderError::InvalidDimensions);
-    }
-    let mut wide = Vec::new();
-    wide.try_reserve_exact(text.encode_utf16().count())
-        .map_err(|_| RenderError::AllocationFailed)?;
-    wide.extend(text.encode_utf16());
-    let mut family_raw = ptr::null_mut();
-    let name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
-    status(GdipCreateFontFamilyFromName(
-        name.as_ptr(),
-        ptr::null_mut(),
-        &mut family_raw,
-    ))?;
-    let family = GdiResource::new(family_raw, GdipDeleteFontFamily)?;
-    let mut font_raw = ptr::null_mut();
-    status(GdipCreateFont(
-        family.as_ptr(),
-        size.max(1.0).min(512.0),
-        0,
-        UNIT_PIXEL,
-        &mut font_raw,
-    ))?;
-    let font = GdiResource::new(font_raw, GdipDeleteFont)?;
-    let brush = create_brush(color)?;
-    let layout = RectF {
-        x: location.x,
-        y: location.y,
-        width: 100_000.0,
-        height: 100_000.0,
-    };
-    status(GdipDrawString(
-        g,
-        wide.as_ptr(),
-        wide.len() as i32,
-        font.as_ptr(),
-        &layout,
-        ptr::null_mut(),
-        brush.as_ptr(),
-    ))
-}
+use text::{create_pen, draw_centered_text, draw_text, step_text_color};
 
 #[cfg(test)]
 mod tests;

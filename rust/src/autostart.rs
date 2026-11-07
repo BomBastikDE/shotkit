@@ -46,10 +46,10 @@ fn quote_windows_argument(argument: &[u16]) -> Vec<u16> {
         }
 
         if unit == b'"' as u16 {
-            quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2 + 1));
+            quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2 + 1));
             quoted.push(unit);
         } else {
-            quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes));
+            quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes));
             quoted.push(unit);
         }
         slashes = 0;
@@ -57,7 +57,7 @@ fn quote_windows_argument(argument: &[u16]) -> Vec<u16> {
 
     // Backslashes immediately before the closing quote must be doubled so
     // CommandLineToArgvW keeps them as part of the argument.
-    quoted.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2));
+    quoted.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
     quoted.push(b'"' as u16);
     quoted
 }
@@ -273,7 +273,7 @@ mod win32 {
         if queried != ERROR_SUCCESS {
             return Err(status("RegQueryValueExW(size)", queried));
         }
-        if value_type != REG_SZ || byte_count as usize % size_of::<u16>() != 0 {
+        if value_type != REG_SZ || !(byte_count as usize).is_multiple_of(size_of::<u16>()) {
             return Err(status(
                 "Invalid ShotKitRust registry value",
                 ERROR_INVALID_DATA,
@@ -297,7 +297,7 @@ mod win32 {
         if read != ERROR_SUCCESS {
             return Err(status("RegQueryValueExW(data)", read));
         }
-        if value_type != REG_SZ || byte_count as usize % size_of::<u16>() != 0 {
+        if value_type != REG_SZ || !(byte_count as usize).is_multiple_of(size_of::<u16>()) {
             return Err(status(
                 "Invalid ShotKitRust registry value",
                 ERROR_INVALID_DATA,
@@ -305,7 +305,9 @@ mod win32 {
         }
         bytes.truncate(byte_count as usize);
         let mut stored: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
             .collect();
         if stored.pop() != Some(0) || stored.contains(&0) {
@@ -495,7 +497,9 @@ mod win32 {
             assert_eq!(expected.last(), Some(&(b'"' as u16)));
             expected.push(0);
             let actual: Vec<u16> = data
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
                 .collect();
             assert_eq!(actual, expected);

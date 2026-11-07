@@ -5,13 +5,9 @@ use super::*;
 // Warum erfüllt bzw. offen: Die Funktion wird vom Fensterhandler aufgerufen; vollständiger Reentranznachweis steht noch aus.
 // Nachrichten: ShowWindow, MessageBoxW und overlay::select können reentrieren; Koordinaten und BusyGuard sind eigene Werte, kein State-Borrow bleibt aktiv.
 pub(super) unsafe fn capture_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, w, height)) = overlay::select() else {
@@ -75,15 +71,14 @@ pub(super) unsafe fn capture_region_rect(
             return;
         }
     }
-    let image = scroll_windows::WindowsScrollIo::new(
+    match capture_ordinary_rect(
+        h,
         rect.left,
         rect.top,
         rect.right - rect.left,
         rect.bottom - rect.top,
-        0,
-    )
-    .and_then(|mut io| io.capture());
-    match image.and_then(|image| handle_capture(h, image, was_visible)) {
+        was_visible,
+    ) {
         Ok(()) => {
             if remember_on_success {
                 *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);
@@ -163,13 +158,9 @@ pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, S
 // Warum erfüllt bzw. offen: Der Handler übergibt h; Monitorgrenzen werden vor Wiederholung geprüft.
 // Nachrichten: MessageBoxW, ShowWindow und capture_region_rect können reentrieren; LAST_REGION wird kopiert und der MutexGuard vor dem Dialog beendet.
 pub(super) unsafe fn repeat_last_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     // Drop the mutex guard before the dialog can dispatch nested messages.
     let previous_region = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner());
     let Some(rect) = previous_region else {
@@ -194,13 +185,9 @@ pub(super) unsafe fn repeat_last_region(h: H) {
 // Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow, SendMessageTimeoutW
 // und overlay::select können reentrieren; kein State-Borrow bleibt dabei aktiv.
 pub(super) unsafe fn start_scroll(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(mut busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let mut busy = BusyGuard(true);
+    };
     let previous_direction = active_settings().scroll_direction;
     let previous_label = match previous_direction {
         settings::ScrollDirection::Down => "nach unten",
@@ -242,14 +229,16 @@ pub(super) unsafe fn start_scroll(h: H) {
         _ => return,
     };
     let mut prefs = active_settings();
-    prefs.scroll_direction = match direction {
+    let selected_direction = match direction {
         Direction::Down => settings::ScrollDirection::Down,
         Direction::Right => settings::ScrollDirection::Right,
         Direction::Left => settings::ScrollDirection::Left,
     };
-    // save_settings refuses to replace unreadable or unsupported settings
-    // files; a persistence error must not prevent the requested capture.
-    let _ = save_settings(h, prefs);
+    if prefs.scroll_direction != selected_direction {
+        prefs.scroll_direction = selected_direction;
+        // A persistence error must not prevent the requested capture.
+        let _ = save_settings(h, prefs);
+    }
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, width, height)) = overlay::select() else {
@@ -345,7 +334,7 @@ pub(super) unsafe fn start_scroll(h: H) {
     let diagnostic_folder = active_settings().save_folder;
     let coordinator = PRIMARY as usize;
     let target_window = root as usize;
-    busy.0 = false;
+    busy.disarm();
     let worker = std::thread::Builder::new()
         .name("scroll-capture".into())
         .spawn(move || {

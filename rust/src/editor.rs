@@ -7,15 +7,16 @@
 //! controller intentionally does not own a text-entry widget. Image operations
 //! and annotation edits share the same `Document` history.
 
+mod effects;
 mod history;
 
 use crate::{
-    document::{Document, DocumentError},
+    document::{CommitApproval, Document, DocumentError, HistoryCommitMode, HistorySnapshotPlan},
     image_edit::{CropRect, FrameOptions},
-    shapes::{Color, Point, Shape, ShapeKind, Style, Tool},
+    image_handle::ImageHandle,
+    shapes::{Color, Point, Shape, ShapeKind, StampKind, Style, Tool},
     stitch::Image,
 };
-use std::sync::Arc;
 
 const MIN_STYLE_WIDTH: f32 = 0.25;
 const MAX_STYLE_WIDTH: f32 = 256.0;
@@ -62,6 +63,7 @@ pub fn compose_preview_shapes(
 enum Drag {
     Create {
         shape: Shape,
+        origin: Point,
         selection_before: Option<usize>,
     },
     Move {
@@ -87,8 +89,90 @@ pub struct EditorController {
     last_position: Option<Point>,
     hit_tolerance: f32,
     next_step: i32,
+    stamp_kind: StampKind,
+    spotlight_opacity: f32,
+    magnifier_zoom: f32,
+    magnifier_frame: crate::shapes::MagnifierFrame,
     current_style: Style,
     last_error: Option<DocumentError>,
+}
+
+/// Controller metadata accompanying a document transaction. Image pixels and
+/// history remain owned by Document; preparing an annotation never clones the
+/// controller or its complete undo/redo history.
+#[derive(Clone, Debug, PartialEq)]
+struct AnnotationState {
+    tool: Tool,
+    selected: Option<usize>,
+    hit_tolerance: f32,
+    next_step: i32,
+    stamp_kind: StampKind,
+    spotlight_opacity: f32,
+    magnifier_zoom: f32,
+    magnifier_frame: crate::shapes::MagnifierFrame,
+    current_style: Style,
+    last_error: Option<DocumentError>,
+}
+
+impl AnnotationState {
+    fn capture(editor: &EditorController) -> Self {
+        Self {
+            tool: editor.tool,
+            selected: editor.selected,
+            hit_tolerance: editor.hit_tolerance,
+            next_step: editor.next_step,
+            stamp_kind: editor.stamp_kind,
+            spotlight_opacity: editor.spotlight_opacity,
+            magnifier_zoom: editor.magnifier_zoom,
+            magnifier_frame: editor.magnifier_frame,
+            current_style: editor.current_style.clone(),
+            last_error: editor.last_error.clone(),
+        }
+    }
+
+    fn restore(self, editor: &mut EditorController) {
+        editor.tool = self.tool;
+        editor.selected = self.selected;
+        editor.hit_tolerance = self.hit_tolerance;
+        editor.next_step = self.next_step;
+        editor.stamp_kind = self.stamp_kind;
+        editor.spotlight_opacity = self.spotlight_opacity;
+        editor.magnifier_zoom = self.magnifier_zoom;
+        editor.magnifier_frame = self.magnifier_frame;
+        editor.current_style = self.current_style;
+        editor.last_error = self.last_error;
+        // Pointer capture belongs to the UI and cannot be restored here.
+        editor.drag = None;
+        editor.last_position = None;
+    }
+}
+
+/// A suspended annotation plus its checked history allocation. Dropping this
+/// value rejects the action; the editor already displays its original state.
+#[derive(Debug)]
+#[must_use = "commit the prepared annotation or drop it to reject the action"]
+pub struct PreparedAnnotationEdit {
+    history: HistorySnapshotPlan,
+    before: AnnotationState,
+    after: AnnotationState,
+}
+
+impl PreparedAnnotationEdit {
+    pub fn mode(&self) -> HistoryCommitMode {
+        self.history.mode()
+    }
+    pub fn undo_entries_to_evict(&self) -> usize {
+        self.history.undo_entries_to_evict()
+    }
+    pub fn redo_entries_to_discard(&self) -> usize {
+        self.history.redo_entries_to_discard()
+    }
+    pub fn history_bytes(&self) -> usize {
+        self.history.history_bytes()
+    }
+    pub fn history_budget(&self) -> usize {
+        self.history.history_budget()
+    }
 }
 
 impl Default for EditorController {
@@ -109,7 +193,17 @@ impl EditorController {
     /// validation fails.
     pub fn with_image_recover(image: Image) -> Result<Self, (DocumentError, Image)> {
         let document = Document::new_recover(image)?;
-        Ok(Self {
+        Ok(Self::from_document(document))
+    }
+
+    /// Retain the original shared image and its accounting on failure.
+    pub fn with_image_handle(image: ImageHandle) -> Result<Self, (DocumentError, ImageHandle)> {
+        let document = Document::from_image_handle(image)?;
+        Ok(Self::from_document(document))
+    }
+
+    fn from_document(document: Document) -> Self {
+        Self {
             document,
             tool: Tool::Select,
             selected: None,
@@ -117,9 +211,13 @@ impl EditorController {
             last_position: None,
             hit_tolerance: 6.0,
             next_step: 1,
+            stamp_kind: StampKind::default(),
+            spotlight_opacity: 0.5,
+            magnifier_zoom: 2.0,
+            magnifier_frame: crate::shapes::MagnifierFrame::Circle,
             current_style: Style::default(),
             last_error: None,
-        })
+        }
     }
     /// Compatibility constructor. Prefer `with_image` for a controller tied
     /// to the actual canvas image.
@@ -132,7 +230,7 @@ impl EditorController {
     pub fn document_mut(&mut self) -> &mut Document {
         &mut self.document
     }
-    pub fn image_arc(&self) -> Arc<Image> {
+    pub fn image_arc(&self) -> ImageHandle {
         self.document.image_arc()
     }
     /// Return and clear the last failed document mutation. Boolean/void UI
@@ -140,13 +238,143 @@ impl EditorController {
     pub fn take_error(&mut self) -> Option<DocumentError> {
         self.last_error.take()
     }
+    /// Run an annotation action inside one rollback-safe document transaction.
+    /// A returned plan suspends both the document and controller metadata before
+    /// a UI asks permission to discard history. `None` means the document did
+    /// not change: intended selection/default changes remain, and redo survives.
+    /// The closure may finish an existing pointer gesture; rejection restores
+    /// its pre-gesture selection, but never restores a drag or pointer capture.
+    /// Use annotation methods in the closure, rather than navigating history or
+    /// manually opening/closing the document transaction.
+    pub fn prepare_annotation_edit(
+        &mut self,
+        edit: impl FnOnce(&mut Self),
+    ) -> Result<Option<PreparedAnnotationEdit>, DocumentError> {
+        let mut before = AnnotationState::capture(self);
+        if let Some(drag) = &self.drag {
+            before.selected = match drag {
+                Drag::Create {
+                    selection_before, ..
+                }
+                | Drag::Move {
+                    selection_before, ..
+                }
+                | Drag::Handle {
+                    selection_before, ..
+                } => *selection_before,
+            };
+        }
+        if let Err(error) = self.document.begin_edit() {
+            self.cancel_drag();
+            return Err(error);
+        }
+        // A pre-existing failure belongs to the caller. Only a fresh failure
+        // from this closure aborts the staged action.
+        self.last_error = None;
+        edit(self);
+        self.cancel_drag();
+        if let Some(error) = self.last_error.take() {
+            self.document.abort_edit()?;
+            before.restore(self);
+            return Err(error);
+        }
+        self.last_error = before.last_error.clone();
+        let history = match self.document.plan_commit_edit_with_fallback() {
+            Ok(Some(history)) => history,
+            Ok(None) => {
+                self.document.abort_edit()?;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.document.abort_edit()?;
+                before.restore(self);
+                return Err(error);
+            }
+        };
+        let after = AnnotationState::capture(self);
+        let history = match self.document.suspend_edit_with_plan(history) {
+            Ok(history) => history,
+            Err(error) => {
+                self.document.abort_edit()?;
+                before.restore(self);
+                return Err(error);
+            }
+        };
+        before.clone().restore(self);
+        Ok(Some(PreparedAnnotationEdit {
+            history,
+            before,
+            after,
+        }))
+    }
+
+    /// Consume this exact prepared action. Permission is required for either
+    /// undo eviction or redo discard. Rejection/staleness leaves all current
+    /// state untouched, including changes made while a confirmation was open.
+    pub fn commit_annotation_edit(
+        &mut self,
+        plan: PreparedAnnotationEdit,
+        allow_history_discard: bool,
+    ) -> Result<bool, DocumentError> {
+        let approval = if allow_history_discard {
+            CommitApproval::DiscardOldHistory
+        } else {
+            CommitApproval::PreserveHistory
+        };
+        self.commit_annotation_edit_with_approval(plan, approval)
+    }
+
+    /// Commit a prepared action using a specific, explicit history approval.
+    pub fn commit_annotation_edit_with_approval(
+        &mut self,
+        plan: PreparedAnnotationEdit,
+        approval: CommitApproval,
+    ) -> Result<bool, DocumentError> {
+        if self.drag.is_some()
+            || self.last_position.is_some()
+            || AnnotationState::capture(self) != plan.before
+        {
+            return Err(DocumentError::StaleHistoryPlan);
+        }
+        let changed = self
+            .document
+            .commit_edit_with_approval(plan.history, approval)?;
+        plan.after.restore(self);
+        Ok(changed)
+    }
+
     pub fn crop(&mut self, rect: CropRect) -> Result<(), DocumentError> {
         self.cancel_drag();
         self.document.crop(rect)
     }
+    pub fn crop_with_budget(
+        &mut self,
+        rect: CropRect,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.crop_with_budget(rect, budget)
+    }
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
         self.cancel_drag();
         self.document.add_frame(options)
+    }
+    pub fn add_frame_with_budget(
+        &mut self,
+        options: FrameOptions,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.add_frame_with_budget(options, budget)
+    }
+    pub fn stamp_kind(&self) -> StampKind {
+        self.stamp_kind
+    }
+    /// Select the symbol for subsequent Stamp-tool clicks. Existing objects
+    /// retain their own kind, and an unfinished gesture is discarded.
+    pub fn set_stamp_kind(&mut self, kind: StampKind) {
+        self.cancel_drag();
+        self.stamp_kind = kind;
     }
     pub fn tool(&self) -> Tool {
         self.tool
@@ -255,7 +483,7 @@ impl EditorController {
             .document
             .shapes()
             .get(index)
-            .is_none_or(|shape| shape.style == style)
+            .is_none_or(|shape| shape.style == style || matches!(&shape.kind, ShapeKind::Callout { data } if data.layout.font_size != style.font_size))
         {
             return false;
         }
@@ -472,17 +700,48 @@ impl EditorController {
             Tool::Ellipse => ShapeKind::Ellipse { start: at, end: at },
             Tool::Highlight => ShapeKind::Highlight { start: at, end: at },
             Tool::Blur => ShapeKind::Blur { start: at, end: at },
+            Tool::GaussianBlur => ShapeKind::GaussianBlur { start: at, end: at },
+            Tool::Spotlight => ShapeKind::Spotlight {
+                data: crate::shapes::Spotlight {
+                    focus: crate::shapes::Rect {
+                        x: at.x,
+                        y: at.y,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    dim_opacity: self.spotlight_opacity,
+                },
+            },
+            Tool::Magnifier => ShapeKind::Magnifier {
+                data: crate::shapes::Magnifier {
+                    viewport: crate::shapes::Rect {
+                        x: at.x,
+                        y: at.y,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    focus: at,
+                    zoom: self.magnifier_zoom,
+                    frame: self.magnifier_frame,
+                },
+            },
+            Tool::Redact => ShapeKind::Redact { start: at, end: at },
             Tool::Pen => ShapeKind::Freehand { points: vec![at] },
+            Tool::Stamp => ShapeKind::Stamp {
+                center: at,
+                kind: self.stamp_kind,
+            },
             Tool::Step => ShapeKind::Step {
                 center: at,
                 number: self.next_step,
             },
-            Tool::Select | Tool::Text | Tool::Crop => return,
+            Tool::Select | Tool::Text | Tool::Callout | Tool::Crop => return,
         };
         let mut shape = Shape::new(kind);
         shape.style = self.current_style.clone();
         self.drag = Some(Drag::Create {
             shape,
+            origin: at,
             selection_before: self.selected,
         });
         self.last_position = Some(at);
@@ -499,7 +758,7 @@ impl EditorController {
             return;
         }
         self.last_position = Some(at);
-        if let Some(Drag::Create { shape, .. }) = self.drag.as_mut() {
+        if let Some(Drag::Create { shape, origin, .. }) = self.drag.as_mut() {
             match &mut shape.kind {
                 ShapeKind::Line { start, end } | ShapeKind::Arrow { start, end } => {
                     *end = if shift {
@@ -511,12 +770,37 @@ impl EditorController {
                 ShapeKind::Rectangle { start, end }
                 | ShapeKind::Ellipse { start, end }
                 | ShapeKind::Highlight { start, end }
-                | ShapeKind::Blur { start, end } => {
+                | ShapeKind::Blur { start, end }
+                | ShapeKind::GaussianBlur { start, end }
+                | ShapeKind::Redact { start, end } => {
                     *end = if shift {
                         constrain_endpoint(*start, at, true)
                     } else {
                         at
                     };
+                }
+                ShapeKind::Spotlight { data } => {
+                    let end = if shift {
+                        constrain_endpoint(*origin, at, true)
+                    } else {
+                        at
+                    };
+                    let mut rect = crate::shapes::Rect::from_points(*origin, end);
+                    rect.width = rect.width.max(0.001);
+                    rect.height = rect.height.max(0.001);
+                    data.focus = rect;
+                }
+                ShapeKind::Magnifier { data } => {
+                    let end = if shift {
+                        constrain_endpoint(*origin, at, true)
+                    } else {
+                        at
+                    };
+                    let mut rect = crate::shapes::Rect::from_points(*origin, end);
+                    rect.width = rect.width.max(0.001);
+                    rect.height = rect.height.max(0.001);
+                    data.viewport = rect;
+                    data.focus = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
                 }
                 ShapeKind::Freehand { points }
                     if points.last().is_none_or(|p| distance(*p, at) >= 1.0) =>

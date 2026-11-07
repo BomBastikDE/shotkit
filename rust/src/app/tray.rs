@@ -46,6 +46,11 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
             (101, "Nach Aufnahme Editor öffnen", prefs.open_editor),
             (102, "In Zwischenablage kopieren", prefs.copy_to_clipboard),
             (103, "Automatisch als PNG speichern", prefs.auto_save),
+            (
+                106,
+                "Aufnahmen von Zwischenablageverlauf und Cloud ausschließen",
+                prefs.exclude_from_clipboard_history,
+            ),
         ] {
             AppendMenuW(
                 submenu,
@@ -88,6 +93,7 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
     }
     SetForegroundWindow(h);
     let choice = TrackPopupMenu(menu, 0x0100 | 0x0002, pos.x, pos.y, 0, h, std::ptr::null());
+    crate::uia_picker::log_diagnostic(&format!("tray_track_popup_choice={choice}"));
     // Windows requires a posted no-op after a notification-icon menu so the
     // next invocation is not dismissed immediately.
     let _ = PostMessageW(h, 0, 0, 0); // WM_NULL
@@ -113,11 +119,12 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
         8 => {
             resolve_recovery(h);
         }
-        101 | 102 | 103 => {
+        101 | 102 | 103 | 106 => {
             let mut prefs = active_settings();
             match choice {
                 101 => prefs.open_editor = !prefs.open_editor,
                 102 => prefs.copy_to_clipboard = !prefs.copy_to_clipboard,
+                106 => prefs.exclude_from_clipboard_history = !prefs.exclude_from_clipboard_history,
                 103 => {
                     if !prefs.auto_save && prefs.save_folder.is_none() {
                         match folder_dialog::choose_folder(h) {
@@ -138,7 +145,11 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
                 }
                 _ => {}
             }
-            save_settings(h, prefs);
+            let saved = save_settings(h, prefs);
+            crate::uia_picker::log_diagnostic(&format!(
+                "settings_save={}",
+                if saved { "success" } else { "failed" }
+            ));
         }
         105 => {
             let result = autostart::get().and_then(|value| autostart::set(!value));
@@ -173,7 +184,8 @@ pub(super) unsafe fn install(h: H, inst: H) -> bool {
     n.id = 1;
     n.flags = 1 | 2 | 4;
     n.callback = TRAY;
-    n.icon = LoadIconW(inst, 1usize as *const u16);
+    // Win32 integer resource ID 1, encoded as a pointer without dereferencing.
+    n.icon = LoadIconW(inst, std::ptr::without_provenance::<u16>(1));
     let tip = wide("ShotKit Rust: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
     n.tip[..tip.len()].copy_from_slice(&tip);
     if Shell_NotifyIconW(0, &n) == 0 {

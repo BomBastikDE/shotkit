@@ -8,9 +8,11 @@ use super::*;
 /// | --- | --- |
 /// | `ID_SELECT` / `ID_ARROW` / `ID_LINE` | Auswahl / Pfeil / Linie |
 /// | `ID_RECTANGLE` / `ID_ELLIPSE` / `ID_TEXT` | Rechteck / Ellipse / Text |
-/// | `ID_MARKER` / `ID_BLUR` / `ID_STEP` / `ID_PEN` | Marker / Verpixeln / Nummer / Stift |
-/// | `ID_CROP` | Zuschneiden |
-/// | `ID_COLOR` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` / `ID_FRAME` | Farbe / Linienbreite / Schriftgröße / Rahmen und Schatten |
+/// | `ID_CALLOUT` | Sprechblase |
+/// | `ID_MARKER` / `ID_BLUR` / `ID_GAUSSIAN_BLUR` | Marker / Verpixeln / Weichzeichnen |
+/// | `ID_REDACT` / `ID_STEP` / `ID_PEN` | Schwärzen / Nummer / Stift |
+/// | `ID_STAMP` / `ID_CROP` | Stempelauswahl / Zuschneiden |
+/// | `ID_COLOR` / `ID_FORM_STYLE` / `ID_LINE_WIDTH` / `ID_FONT_SIZE` / `ID_FRAME` | Farbe / Formstil / Linienbreite / Schrift- und Stempelgröße / Rahmen und Schatten |
 /// | `ID_SAVE` / `ID_CAPTURE` / `ID_COPY` / `ID_UNDO` / `ID_REDO` | Speichern / Aufnahme / Kopieren / Zurück / Wiederholen |
 ///
 /// `WM_COMMAND.wParam` contains the ID in its low word and `BN_CLICKED` in its
@@ -87,6 +89,7 @@ pub unsafe fn create(parent: *mut c_void) -> Result<Toolbar, String> {
             ID_SAVE => "Speichern (Strg+S)",
             ID_UNDO => "Zurück (Strg+Z)",
             ID_REDO => "Wiederholen (Strg+Y)",
+            ID_FONT_SIZE => "Schriftgröße / Stempelgröße…",
             _ => action.label,
         });
         let button_style = BS_PUSHBUTTON;

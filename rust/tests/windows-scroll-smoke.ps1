@@ -337,6 +337,11 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         scroll_direction = 'down'
     } | ConvertTo-Json
     [IO.File]::WriteAllText($settingsPath, $settings, [System.Text.UTF8Encoding]::new($false))
+    # An unchanged direction must not rewrite the settings file. Use a past
+    # timestamp as well as exact bytes so even an identical rewrite is caught.
+    [IO.File]::SetLastWriteTimeUtc($settingsPath, [DateTime]::UtcNow.AddDays(-1))
+    $initialSettingsBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($settingsPath))
+    $initialSettingsWriteTicks = [IO.File]::GetLastWriteTimeUtc($settingsPath).Ticks
 
     try {
         $env:APPDATA = $appData
@@ -377,6 +382,10 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
 
     $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
+    }
+    if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settingsPath)) -cne $initialSettingsBytes -or
+        [IO.File]::GetLastWriteTimeUtc($settingsPath).Ticks -ne $initialSettingsWriteTicks) {
+        throw 'Unchanged scroll direction unexpectedly rewrote the settings file.'
     }
     $originX = $geometry[0]
     $originY = $geometry[1]

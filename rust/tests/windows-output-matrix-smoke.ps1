@@ -162,7 +162,8 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Output-Matrix-' + [Guid]::N
 
 $surfaceScript=Join-Path $root 'surface.ps1'; $readyFile=Join-Path $root 'surface-ready.txt'
 $surfaceStdout=Join-Path $root 'surface-stdout.txt'; $surfaceStderr=Join-Path $root 'surface-stderr.txt'
-$shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $failure=$null; $mouseDown=$false; $allExited=$true
+$compilerTemp=Join-Path $root 'surface-compiler'
+$shotKit=$null; $surface=$null; $oldAppData=$env:APPDATA; $oldLocalAppData=$env:LOCALAPPDATA; $oldTrayDiagnosticsPath=$env:SHOTKIT_UIA_DIAGNOSTICS_PATH; $failure=$null; $mouseDown=$false; $allExited=$true
 
 function Get-OwnWindows([Diagnostics.Process] $p) { [ShotKitOutputMatrixSmoke.Native]::Windows($p.Id) }
 function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Description,[Diagnostics.Process] $OwnedProcess) {
@@ -179,6 +180,12 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
 # native menu is built; it never selects or writes the autostart entry.
 function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [uint32] $Id, [string] $Label, [bool] $Before) {
     if ($env:GITHUB_ACTIONS -cne 'true') { throw 'TRAY_SETTINGS_CI_ONLY: refusing to open the menu outside GitHub Actions.' }
+    # Record the terminal save events before this click, so an earlier save
+    # cannot satisfy the wait for this action.
+    $script:traySaveBaseline=0
+    if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
+        $script:traySaveBaseline=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'}).Count
+    }
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($Main,0x8001,[IntPtr]1,[IntPtr]0x0205)) { throw 'Could not post tray callback.' }
     $popup=Wait-ForCondition -Seconds 10 -Description 'native tray menu' -OwnedProcess $Process -Condition {
         Get-OwnWindows $Process | Where-Object {$_.Visible -and $_.ClassName -eq '#32768'} | Select-Object -First 1
@@ -192,16 +199,39 @@ function Set-TrayOutputOption([Diagnostics.Process] $Process, [IntPtr] $Main, [u
     $afterClick=[ShotKitOutputMatrixSmoke.Native]::MenuAfterClick($popup.Handle,$child.Handle)
     $script:trayDiagnostic="before click: $beforeClick; after dismissal: $afterClick"
 }
-function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder) {
+function Assert-TraySettings([string] $Path, [bool] $Editor, [bool] $Copy, [bool] $Save, [string] $Folder, [bool] $WaitForSave = $false) {
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
+    $saveComplete=($WaitForSave -eq $false)
     do {
         if($shotKit.HasExited){throw 'ShotKit exited while waiting for persisted settings.'}
+        if(-not $saveComplete) {
+            $events=@()
+            if(Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf) {
+                $events=@(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {$_ -match '^settings_save_stage=(success|failed|blocked)(\s|$)'})
+            }
+            if($events.Count -gt $script:traySaveBaseline) {
+                $newEvents=@($events | Select-Object -Skip $script:traySaveBaseline)
+                if(@($newEvents | Where-Object {$_ -match '^settings_save_stage=(failed|blocked)(\s|$)'}).Count -gt 0) { throw 'ShotKit reported a settings save failure after the tray click.' }
+                $saveComplete=@($newEvents | Where-Object {$_ -ceq 'settings_save_stage=success'}).Count -gt 0
+            }
+            if(-not $saveComplete) { Start-Sleep -Milliseconds 100; continue }
+        }
         $raw=Get-Content -LiteralPath $Path -Raw
         $value=$raw | ConvertFrom-Json
         if ($value.version -eq 1 -and $value.open_editor -ceq $Editor -and $value.copy_to_clipboard -ceq $Copy -and $value.auto_save -ceq $Save -and $value.save_folder -ceq $Folder -and $value.scroll_direction -ceq 'down') { return }
         Start-Sleep -Milliseconds 100
     } while([DateTime]::UtcNow -lt $deadline)
-    throw "Timed out waiting for expected persisted settings; last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic"
+    $appDiagnostic=''
+    if($script:trayDiagnosticsPath -and (Test-Path -LiteralPath $script:trayDiagnosticsPath -PathType Leaf)) {
+        $appDiagnostic=(Get-Content -LiteralPath $script:trayDiagnosticsPath | Where-Object {
+            $_ -match '^tray_track_popup_choice=\d+$' -or $_ -match '^settings_save=(success|failed)$' -or
+            $_ -match '^settings_save_stage=(attempt|success)$' -or
+            $_ -match '^settings_save_stage=blocked reason=settings_not_writable$' -or
+            $_ -match '^settings_(save|load)_stage=failed category=(Io|Json|UnsupportedVersion|TooLarge|NoConfigDirectory) operation=(read|create_settings_directory|create_temporary_file|write|replace|unknown|none) io_kind=([A-Za-z]+|none) os_code=(-?\d+|none)$'
+        }) -join '; '
+    }
+    $visibleOwnDialogs=@(Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'}).Count
+    throw "Timed out waiting for expected persisted settings; saveComplete=$saveComplete last version=$($value.version) editor=$($value.open_editor) copy=$($value.copy_to_clipboard) save=$($value.auto_save) folderMatches=$($value.save_folder -ceq $Folder) direction=$($value.scroll_direction). Tray diagnostic: $script:trayDiagnostic; app diagnostic: $appDiagnostic; visibleOwnDialogs=$visibleOwnDialogs"
 }
 function Send-Key([byte] $Key,[bool] $Down) { $flags=if($Down){0}else{2}; [ShotKitOutputMatrixSmoke.Native]::keybd_event($Key,0,$flags,[UIntPtr]::Zero) }
 function Assert-PatternPng([IO.FileInfo] $File,[int] $Width,[int] $Height,[int] $SourceX,[int] $SourceY,[string] $Description) {
@@ -258,9 +288,18 @@ try {
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Add-Type -AssemblyName System.Drawing
     $surfaceSource=@'
-param([string]$ReadyFile)
+param([string]$ReadyFile,[string]$CompilerTemp)
 $ErrorActionPreference='Stop'
-function Write-Stage([string]$Name) { [Console]::Out.WriteLine("FIXTURE_STAGE: $Name"); [Console]::Out.Flush() }
+# Windows PowerShell uses an out-of-process CodeDom compiler for Add-Type.
+# Isolate its temporary files so a startup failure can identify the pending
+# compiler invocation without inspecting unrelated runner temporary files.
+$env:TEMP=$CompilerTemp; $env:TMP=$CompilerTemp
+$startupClock=[Diagnostics.Stopwatch]::StartNew()
+function Write-Stage([string]$Name) {
+    [Console]::Out.WriteLine("FIXTURE_STAGE: $Name")
+    [Console]::Out.WriteLine("FIXTURE_TIMING: elapsedMs={0} stage={1}", $startupClock.ElapsedMilliseconds, $Name)
+    [Console]::Out.Flush()
+}
 Write-Stage 'loading assemblies'
 Write-Stage 'loading System.Windows.Forms'
 Add-Type -AssemblyName System.Windows.Forms
@@ -308,13 +347,15 @@ namespace ShotKitOutputMatrixSurface {
  }
 }
 "@
+Write-Stage 'surface compilation completed'
 Write-Stage 'constructing surface and entering message loop'
 [System.Windows.Forms.Application]::Run([ShotKitOutputMatrixSurface.Surface]::new($ReadyFile))
 '@
     [IO.File]::WriteAllText($surfaceScript,$surfaceSource,[Text.UTF8Encoding]::new($false))
     $powershellExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)){throw 'Windows PowerShell 5.1 is required for the isolated fixture window.'}
-    $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $surfaceScript,$readyFile
+    New-Item -ItemType Directory -Path $compilerTemp -Force | Out-Null
+    $surfaceArgs='-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}" -CompilerTemp "{2}"' -f $surfaceScript,$readyFile,$compilerTemp
     $surface=Start-Process -FilePath $powershellExe -ArgumentList $surfaceArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
     try {
         $fixtureWindow=Wait-ForCondition -Seconds 20 -Description 'the deterministic fixture surface' -OwnedProcess $surface -Condition {
@@ -334,6 +375,36 @@ Write-Stage 'constructing surface and entering message loop'
             }) -join '; '
             Write-Output "FIXTURE_DIAGNOSTIC: cpuSeconds=$($surface.TotalProcessorTime.TotalSeconds) threads=[$threads]"
         } catch { Write-Output 'FIXTURE_DIAGNOSTIC: process/thread inspection failed.' }
+        # Snapshot before terminating the fixture: CodeDom may be waiting on a
+        # compiler process rather than consuming CPU in the surface constructor.
+        # Do not infer a compiler/Defender deadlock from a waiting parent alone.
+        try {
+            $children=@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $($surface.Id)" -OperationTimeoutSec 3)
+            Write-Output "FIXTURE_DIAGNOSTIC: directChildCount=$($children.Count)"
+            foreach($child in $children) {
+                $detail="pid=$($child.ProcessId) parent=$($child.ParentProcessId) name=$($child.Name) created=$($child.CreationDate)"
+                if($env:GITHUB_ACTIONS -ceq 'true'){$detail+=" commandLine=$($child.CommandLine)"}
+                Write-Output "FIXTURE_COMPILER_PROCESS: $detail"
+                try {
+                    $compiler=Get-Process -Id $child.ProcessId -ErrorAction Stop
+                    $waits=@($compiler.Threads | ForEach-Object {
+                        $wait=if($_.ThreadState -eq [Diagnostics.ThreadState]::Wait){$_.WaitReason}else{'n/a'}
+                        "id=$($_.Id) state=$($_.ThreadState) wait=$wait"
+                    }) -join '; '
+                    Write-Output "FIXTURE_COMPILER_PROCESS: pid=$($child.ProcessId) cpuSeconds=$($compiler.TotalProcessorTime.TotalSeconds) threads=[$waits]"
+                } catch { Write-Output "FIXTURE_COMPILER_PROCESS: pid=$($child.ProcessId) exited or unavailable during snapshot." }
+            }
+        } catch { Write-Output "FIXTURE_DIAGNOSTIC: compiler child snapshot failed ($($_.Exception.GetType().Name))." }
+        try {
+            foreach($artifact in @(Get-ChildItem -LiteralPath $compilerTemp -File | Sort-Object Name | Select-Object -First 20)) {
+                Write-Output "FIXTURE_COMPILER_FILE: name=$($artifact.Name) bytes=$($artifact.Length) modifiedUtc=$($artifact.LastWriteTimeUtc.ToString('o'))"
+                if($env:GITHUB_ACTIONS -ceq 'true' -and $artifact.Extension -in @('.cmdline','.out','.err')) {
+                    $text=[IO.File]::ReadAllText($artifact.FullName)
+                    if($text.Length -gt 8192){$text=$text.Substring(0,8192)+' [truncated]'}
+                    Write-Output "FIXTURE_COMPILER_FILE: $($artifact.Name): $text"
+                }
+            }
+        } catch { Write-Output "FIXTURE_DIAGNOSTIC: compiler temporary-file snapshot failed ($($_.Exception.GetType().Name))." }
         throw $startupFailure
     }
     $ready=Wait-ForCondition -Seconds 10 -Description 'complete fixture client coordinates' -OwnedProcess $surface -Condition {
@@ -352,6 +423,7 @@ Write-Stage 'constructing surface and entering message loop'
     $appData=Join-Path $caseRoot 'appdata'; $localAppData=Join-Path $caseRoot 'localappdata'; $saveFolder=Join-Path $caseRoot 'captures'
     New-Item -ItemType Directory -Path $appData,$localAppData,$saveFolder -Force | Out-Null
     $settingsPath=Join-Path (Join-Path $appData 'ShotKitRust') 'settings.json'
+    $script:trayDiagnosticsPath=Join-Path $caseRoot 'tray-diagnostics.txt'
     New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
     # One matrix case derives every output option from actual native tray clicks.
     # Local opt-in matrix runs remain unchanged; the tray path is CI-only.
@@ -361,8 +433,8 @@ Write-Stage 'constructing surface and entering message loop'
     $initialSave=if($trayCase){-not $save}else{$save}
     $settings=@{version=1;save_folder=$saveFolder;open_editor=$initialEditor;copy_to_clipboard=$initialCopy;auto_save=$initialSave;scroll_direction='down'} | ConvertTo-Json
     [IO.File]::WriteAllText($settingsPath,$settings,[Text.UTF8Encoding]::new($false))
-    try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
-    finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+    try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$script:trayDiagnosticsPath;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
+    finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath}
     [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
     $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
     if (-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
@@ -371,16 +443,16 @@ Write-Stage 'constructing surface and entering message loop'
         $owner=Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1
         if($null -eq $owner){throw 'ShotKit owner window missing.'}
         Set-TrayOutputOption $shotKit $owner.Handle 101 'Nach Aufnahme Editor öffnen' $true
-        Assert-TraySettings $settingsPath $false $true $false $saveFolder
+        Assert-TraySettings $settingsPath $false $true $false $saveFolder $true
         Set-TrayOutputOption $shotKit $owner.Handle 102 'In Zwischenablage kopieren' $true
-        Assert-TraySettings $settingsPath $false $false $false $saveFolder
+        Assert-TraySettings $settingsPath $false $false $false $saveFolder $true
         Set-TrayOutputOption $shotKit $owner.Handle 103 'Automatisch als PNG speichern' $false
-        Assert-TraySettings $settingsPath $false $false $true $saveFolder
+        Assert-TraySettings $settingsPath $false $false $true $saveFolder $true
         $shotKit.Kill()
         if(-not $shotKit.WaitForExit(5000) -or -not $shotKit.HasExited){throw 'ShotKit did not exit before persistence restart.'}
         $shotKit.Dispose(); $shotKit=$null
-        try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
-        finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
+        try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$script:trayDiagnosticsPath;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $caseRoot -PassThru}
+        finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData;$env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath}
         [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
         $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'restarted ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
         if(-not [ShotKitOutputMatrixSmoke.Native]::PostMessageW($welcome.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Could not close restarted startup dialog.'}
@@ -478,7 +550,7 @@ Write-Stage 'constructing surface and entering message loop'
 catch {$failure=$_}
 finally {
     if($mouseDown){[ShotKitOutputMatrixSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero);$mouseDown=$false}
-    $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData
+    $env:APPDATA=$oldAppData; $env:LOCALAPPDATA=$oldLocalAppData; $env:SHOTKIT_UIA_DIAGNOSTICS_PATH=$oldTrayDiagnosticsPath
     foreach($owned in @($shotKit,$surface)) {
         if($null -ne $owned) {
             try {if (-not $owned.HasExited){$owned.Kill();if (-not $owned.WaitForExit(5000) -or -not $owned.HasExited){throw 'Owned process did not exit after termination request.'}}}
@@ -494,7 +566,7 @@ finally {
                     if($env:GITHUB_ACTIONS -ceq 'true') {
                         Write-Output "FIXTURE_DIAGNOSTIC: $([IO.Path]::GetFileName($log)): $content"
                     } elseif($log -eq $surfaceStdout) {
-                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: loading System.Windows.Forms','FIXTURE_STAGE: loaded System.Windows.Forms','FIXTURE_STAGE: loading System.Drawing','FIXTURE_STAGE: loaded System.Drawing','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
+                        $phases=@('FIXTURE_STAGE: loading assemblies','FIXTURE_STAGE: loading System.Windows.Forms','FIXTURE_STAGE: loaded System.Windows.Forms','FIXTURE_STAGE: loading System.Drawing','FIXTURE_STAGE: loaded System.Drawing','FIXTURE_STAGE: compiling surface','FIXTURE_STAGE: surface compilation completed','FIXTURE_STAGE: constructing surface and entering message loop','FIXTURE_STAGE: surface constructor entered','FIXTURE_STAGE: surface properties configured','FIXTURE_STAGE: surface bitmap allocated','FIXTURE_STAGE: surface bitmap populated','FIXTURE_STAGE: surface shown','FIXTURE_STAGE: surface ready file written')
                         foreach($line in @($content -split "`r?`n")) { if($line -cin $phases) { Write-Output $line } }
                     } else {
                         Write-Output "FIXTURE_DIAGNOSTIC: stderr nonempty=$(-not [string]::IsNullOrWhiteSpace($content))"

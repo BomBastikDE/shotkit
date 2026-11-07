@@ -8,9 +8,12 @@ use crate::{
 };
 #[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(any(test, not(windows)))]
+use std::fs::OpenOptions;
+#[cfg(test)]
+use std::io::Write;
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs, io,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -93,7 +96,11 @@ pub fn execute_action(
             }
             #[cfg(windows)]
             {
-                copy_image_to_clipboard(clipboard_owner, image)?;
+                copy_image_to_clipboard(
+                    clipboard_owner,
+                    image,
+                    settings.exclude_from_clipboard_history,
+                )?;
                 Ok(OutputResult { saved_path: None })
             }
             #[cfg(not(windows))]
@@ -111,47 +118,66 @@ pub fn execute_action(
 
 fn save_png(folder: &std::path::Path, image: &Image) -> io::Result<PathBuf> {
     fs::create_dir_all(folder)?;
-    let png = image_io::encode(image, image::ImageFormat::Png)
-        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
 
+    #[cfg(windows)]
+    {
+        crate::atomic_save_windows::write_new_unique_with(
+            folder,
+            256,
+            || {
+                let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                folder.join(format!("ShotKit-{stamp}-{sequence}.png"))
+            },
+            |file| {
+                image_io::write_png_file(image, file)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))
+            },
+        )
+    }
+
     // Create the sibling temp exclusively. Publish the final name without
     // replacement only after the complete PNG has been written and synced.
-    for _ in 0..256 {
-        let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = folder.join(format!("ShotKit-{stamp}-{sequence}.png"));
-        let temp_path = folder.join(format!(
-            ".ShotKit-{}-{stamp}-{sequence}.tmp",
-            std::process::id()
-        ));
-        let file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        let result = write_and_publish(&temp_path, &path, file, |file| {
-            file.write_all(&png)?;
-            file.sync_all()
-        });
-        match result {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+    #[cfg(not(windows))]
+    {
+        for _ in 0..256 {
+            let sequence = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = folder.join(format!("ShotKit-{stamp}-{sequence}.png"));
+            let temp_path = folder.join(format!(
+                ".ShotKit-{}-{stamp}-{sequence}.tmp",
+                std::process::id()
+            ));
+            let file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            };
+            let result = write_and_publish(&temp_path, &path, file, |file| {
+                image_io::write_png_file(image, file)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+                file.sync_all()
+            });
+            match result {
+                Ok(()) => return Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
         }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique PNG filename",
+        ))
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique PNG filename",
-    ))
 }
 
+#[cfg(any(test, not(windows)))]
 fn write_and_publish(
     temp_path: &std::path::Path,
     final_path: &std::path::Path,
@@ -193,7 +219,7 @@ fn write_and_publish(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn publish_no_replace(source: &std::path::Path, destination: &std::path::Path) -> io::Result<bool> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -356,6 +382,29 @@ pub fn encode_legacy_dib(image: &Image) -> Result<Vec<u8>, String> {
 /// Supports 24-bit BI_RGB and 32-bit BI_RGB/BI_BITFIELDS/BI_ALPHABITFIELDS;
 /// unsupported compression or profiles are rejected for the caller's fallback.
 pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
+    decode_dib_admitted(bytes, require_v5, None)
+}
+
+/// Budget the output before allocation, including actual Vec capacity before
+/// converting source pixels. A pre-conversion refusal leaves no acquired image.
+/// Existing unbudgeted callers retain the same layout/alpha/fallback behavior.
+pub fn decode_dib_with_budget(
+    bytes: &[u8],
+    require_v5: bool,
+    budget: &crate::resource_budget::ResourceBudget,
+) -> Result<image_io::BudgetedImage, String> {
+    let mut lease = budget
+        .try_acquire(0, crate::resource_budget::AdmissionClass::Normal)
+        .map_err(|error| error.to_string())?;
+    let image = decode_dib_admitted(bytes, require_v5, Some(&mut lease))?;
+    Ok(image_io::BudgetedImage::from_decoded(image, lease))
+}
+
+fn decode_dib_admitted(
+    bytes: &[u8],
+    require_v5: bool,
+    mut lease: Option<&mut crate::resource_budget::BudgetLease>,
+) -> Result<Image, String> {
     const BI_RGB: u32 = 0;
     const BI_BITFIELDS: u32 = 3;
     const BI_ALPHABITFIELDS: u32 = 6;
@@ -497,10 +546,20 @@ pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
         let value = (pixel & mask) >> shift;
         ((u64::from(value) * 255 + u64::from(max) / 2) / u64::from(max)) as u8
     }
+    if let Some(lease) = lease.as_mut() {
+        lease
+            .try_resize(output_bytes)
+            .map_err(|error| format!("Kein freies Bildbudget für DIB-Pixel: {error}"))?;
+    }
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(output_bytes)
         .map_err(|e| format!("DIB-Bildspeicher konnte nicht reserviert werden: {e}"))?;
+    if let Some(lease) = lease.as_mut() {
+        lease
+            .try_resize(pixels.capacity())
+            .map_err(|error| format!("DIB-Puffer überschreitet das freie Bildbudget: {error}"))?;
+    }
     pixels.resize(output_bytes, 255);
     for y in 0..height {
         let source_y = if height_i < 0 { y } else { height - 1 - y };
@@ -525,7 +584,13 @@ pub fn decode_dib(bytes: &[u8], require_v5: bool) -> Result<Image, String> {
             }
         }
     }
-    Image::new(width, height, pixels).map_err(str::to_owned)
+    // Layout, initialized length and capacity were checked before conversion.
+    // No fallible operation after successful acquisition may discard pixels.
+    Ok(Image {
+        width,
+        height,
+        pixels,
+    })
 }
 
 #[cfg(any(windows, test))]

@@ -38,6 +38,11 @@ unsafe fn drain_scroll(
     ticket: ScrollTicket,
     consume: impl FnOnce(H, Result<Outcome, String>),
 ) -> bool {
+    // Keep the coordinator's owned result if a recovery is already present;
+    // the timer can retry after the user resolves that slot. Never overwrite it.
+    if scroll_recovery_pending() {
+        return false;
+    }
     let completion = SCROLL_COMPLETION
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -60,26 +65,54 @@ unsafe fn drain_scroll(
     true
 }
 
+fn route_outcome(
+    outcome: Outcome,
+    ready: impl FnOnce(Image, String),
+    recovery: impl FnOnce(Image, Rotation, String),
+) {
+    match outcome.pending_rotation {
+        Some(rotation) => recovery(outcome.image, rotation, outcome.reason),
+        None => ready(outcome.image, outcome.reason),
+    }
+}
+
 pub(super) unsafe fn finish_scroll(ticket: ScrollTicket) {
     drain_scroll(ticket, |h, result| match result {
-        Ok(outcome) => {
-            let message = outcome.reason;
-            if let Err(error) = handle_capture(h, outcome.image, false) {
+        Ok(outcome) => route_outcome(
+            outcome,
+            |image, message| {
+                if let Err(error) = handle_capture(h, image, false) {
+                    MessageBoxW(
+                        h,
+                        wide(&error).as_ptr(),
+                        wide("ShotKit Rust").as_ptr(),
+                        0x10,
+                    );
+                } else {
+                    MessageBoxW(
+                        h,
+                        wide(&message).as_ptr(),
+                        wide("Scroll-Aufnahme beendet").as_ptr(),
+                        0,
+                    );
+                }
+            },
+            |image, rotation, message| {
+                // SCROLL_BUSY blocks a new job until this drain ends, and the
+                // slot gate above excludes an unresolved previous recovery.
+                *SCROLL_RECOVERY.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(PendingScrollRecovery {
+                        image,
+                        pending_rotation: Some(rotation),
+                    });
                 MessageBoxW(
                     h,
-                    wide(&error).as_ptr(),
-                    wide("ShotKit Rust").as_ptr(),
-                    0x10,
+                    wide(&format!("{message}\n\nDie Rückdrehung der horizontalen Aufnahme konnte nicht abgeschlossen werden. Das Bild bleibt mit der nötigen Drehrichtung im Speicher. Bitte im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen; vor dem Speichern wird die Drehung erneut versucht.")).as_ptr(),
+                    wide("Scroll-Aufnahme sichern").as_ptr(),
+                    0x30,
                 );
-            } else {
-                MessageBoxW(
-                    h,
-                    wide(&message).as_ptr(),
-                    wide("Scroll-Aufnahme beendet").as_ptr(),
-                    0,
-                );
-            }
-        }
+            },
+        ),
         Err(error) => {
             MessageBoxW(
                 h,
@@ -115,6 +148,34 @@ pub(super) unsafe fn dispatch(h: H, m: u32, w: W, finish: impl FnOnce(ScrollTick
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn pending_rotation_never_routes_to_automatic_output() {
+        use std::cell::Cell;
+        for rotation in [Rotation::Clockwise, Rotation::Counterclockwise] {
+            let sent_to_output = Cell::new(false);
+            let recovered = Cell::new(false);
+            let image = Image::new(1, 2, vec![1, 2, 3, 255, 4, 5, 6, 255]).unwrap();
+            let expected = image.clone();
+            route_outcome(
+                Outcome {
+                    image,
+                    reason: "rotation failed".to_owned(),
+                    fallback_count: 0,
+                    pending_rotation: Some(rotation),
+                },
+                |_, _| sent_to_output.set(true),
+                |image, direction, reason| {
+                    assert_eq!(image, expected);
+                    assert_eq!(direction, rotation);
+                    assert_eq!(reason, "rotation failed");
+                    recovered.set(true);
+                },
+            );
+            assert!(!sent_to_output.get());
+            assert!(recovered.get());
+        }
+    }
 
     #[link(name = "user32")]
     extern "system" {
@@ -253,12 +314,27 @@ mod tests {
                         image: Image::new(1, 1, vec![1, 2, 3, 255]).unwrap(),
                         reason: "test".into(),
                         fallback_count: 0,
+                        pending_rotation: None,
                     }),
                     || 0,
                 ); // deterministic permanent notification failure
             })
             .join()
             .unwrap();
+            // An occupied recovery slot keeps a newer coordinator payload
+            // pending, rather than overwriting or dropping either image.
+            *SCROLL_RECOVERY.lock().unwrap() = Some(PendingScrollRecovery {
+                image: Image::new(1, 1, vec![9, 8, 7, 255]).unwrap(),
+                pending_rotation: Some(Rotation::Counterclockwise),
+            });
+            assert!(!test_drain(ticket));
+            assert_eq!(
+                SCROLL_COMPLETION.lock().unwrap().ready_ticket(),
+                Some(ticket)
+            );
+            let retained = SCROLL_RECOVERY.lock().unwrap().take().unwrap();
+            assert_eq!(retained.image.pixels, vec![9, 8, 7, 255]);
+            assert_eq!(retained.pending_rotation, Some(Rotation::Counterclockwise));
             let observed = await_completion();
             assert_eq!(observed.thread, ui_thread);
             assert_eq!(observed.owner, original as usize);
@@ -293,6 +369,7 @@ mod tests {
                     image: Image::new(1, 1, vec![4, 5, 6, 255]).unwrap(),
                     reason: "posted completion".into(),
                     fallback_count: 0,
+                    pending_rotation: None,
                 }),
                 || {
                     post_result = PostMessageW(PRIMARY, SCROLL_DONE, posted.to_wire(), 0);
@@ -322,6 +399,7 @@ mod tests {
                     image: Image::new(2, 1, dead_pixels.clone()).unwrap(),
                     reason: "owner destroyed".into(),
                     fallback_count: 0,
+                    pending_rotation: None,
                 }),
                 || 0,
             );
@@ -350,6 +428,7 @@ mod tests {
                     image: Image::new(1, 2, recycled_pixels.clone()).unwrap(),
                     reason: "recycled owner".into(),
                     fallback_count: 0,
+                    pending_rotation: None,
                 }),
                 || 0,
             );

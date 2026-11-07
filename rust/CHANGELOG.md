@@ -1,6 +1,96 @@
 # Änderungsprotokoll der Rust-Version
 
+## In Entwicklung nach Beta 1
+
+- Auch das Rendern annotierter Bilder zum Speichern verwendet das gemeinsame Bildbudget; das Ergebnis behält seine Reservierung bis zum Ende der Ausgabe. Bei knappem Budget wird das Speichern vor dem Schreiben mit einer Meldung abgebrochen, das Dokument bleibt erhalten. Bilder ohne Anmerkungen verwenden weiterhin das vorhandene Bild ohne zusätzliche Pixelkopie. Native GDI-/Zwischenablagepuffer, Encoder-Konvertierungen und Hilfsspeicher sowie RSS bleiben außerhalb dieser Grenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Bei Gauß-Weichzeichnung in der budgetierten Editor-Komposition werden die drei gleichzeitig benötigten Arbeitsbuffer im gemeinsamen Bildbudget berücksichtigt. Bei knappen Ressourcen kann die Vorschau daher früher kontrolliert abbrechen; native GDI-Puffer und Encoder-Hilfsspeicher bleiben gesondert zu betrachten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Der Vorschau-Cache berücksichtigt beim Neuaufbau die tatsächliche Pufferkapazität bereits vor dem Zeichnen. Ein ausgeschöpftes Cache-Budget nutzt weiterhin die ungecachte Darstellung; andere Renderfehler werden weitergegeben ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Während der Editor-Komposition werden auch temporäre Formenebenen im gemeinsamen Bildbudget berücksichtigt. Sehr große Bilder können dadurch beim Zeichnen oder Kopieren früher eine Speichermeldung erhalten; die Anleitung nennt Beispiele und verbleibende Grenzen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Die für bestimmte Effekte benötigte bereits geschwärzte Quellkopie wird während der Editor-Komposition im Bildbudget gehalten. Reicht das Budget nicht, wird die Darstellung abgebrochen; es erfolgt kein Rückfall auf eine ungeschwärzte Effektquelle ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Der vorübergehende Ausgabepuffer der Editorvorschau und Bildkomposition wird im gemeinsamen Bildbudget berücksichtigt. Bei fehlendem Budget bleibt der Dokumentzustand erhalten; GDI und andere Render-Zwischenpuffer sind nicht vollständig erfasst ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Schlägt das Zeichnen der Vorschau fehl, wird der betroffene Bereich vor der Fehlermeldung nach Möglichkeit deckend neutralisiert. Damit sollen vorher sichtbare Bildinhalte nicht unter einer fehlgeschlagenen Aktualisierung stehen bleiben; ein vollständiger Ausfall beider Windows-Grafikoperationen kann nicht abgefangen werden.
+
+- Beim TIFF-Import werden Größe und Anzahl der Einträge im ersten Verzeichnis vor dem Start des Decoders begrenzt. Dadurch können auch gültige Spezialdateien mit sehr großen Metadaten oder vielen Strips/Kacheln abgelehnt werden; eine vollständige Prozessspeichergrenze ist damit nicht verbunden ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Das gemeinsame Bildbudget berücksichtigt zusätzlich Zwischenablageimporte, gewöhnliche Bildschirmaufnahmen sowie neue Bildpuffer für Zuschnitt, Rahmen, Schatten und Leinwandänderungen. Bei nicht ausreichendem Budget bleibt der bisherige Dokumentzustand erhalten. GDI, weitere Bearbeitungen, Codec-Hilfsspeicher und der gesamte Prozessspeicher bleiben außerhalb einer festen Gesamtgrenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Bei JPEG-Importen wird die vom Decoder benötigte Eingabekopie zusätzlich im Bildbudget berücksichtigt. PNG begrenzt interne Decoderbuchungen auf 16 MiB; dadurch können auch gültige PNG-Dateien mit umfangreichen Metadaten oder anderen großen internen Decoderbuchungen abgewiesen werden. Dies ist keine feste Speicherobergrenze für den Decoderprozess ([#65](https://github.com/BomBastikDE/shotkit/issues/65), [#52](https://github.com/BomBastikDE/shotkit/issues/52)).
+
+- Eine abgelehnte Einstellungsdatei mit eindeutig erkannter Version 1 kann nach ausdrücklicher Zustimmung zurückgesetzt werden. Das unveränderte Original wird gesichert; eine unterbrochene Wiederherstellung erfordert weiterhin eine manuelle Prüfung. Gesicherte Fassungen werden nicht automatisch bereinigt ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
+
+- Dateiimporte prüfen vor der Dekodierung und nach dem Lesen der Bildabmessungen ein gemeinsames Budget für geschätzte Importpuffer und bereits importierte Originalbilder. Ein abgelehnter Import verändert vorhandene Dokumente nicht. Vorschau, Bearbeitung, Bildschirmaufnahmen, GDI und interne Decoderpuffer sind nicht vollständig erfasst; das ist keine feste Grenze für den gesamten Prozessspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Scrollaufnahmen können auch bei ausschließlich randnaher Struktur einen eindeutigen, pixelgenauen Bildversatz erkennen. Nach Nutzung dieses Abgleichs bleibt bei unklaren Folgebildern die Teilaufnahme erhalten; bildidentische Überlagerungen lassen sich allein anhand der Pixel nicht sicher von Seiteninhalt unterscheiden ([#60](https://github.com/BomBastikDE/shotkit/issues/60)).
+
+- Bei Bild- und Objektbearbeitungen fragt ShotKit vor dem Entfernen von Rückgängig- oder Wiederholen-Schritten. Ein Abbruch erhält das Bild und den Verlauf. Passt selbst der einzelne neue Schritt nicht ins Limit, kann die Bearbeitung nur nach ausdrücklicher Warnung ohne Rückgängigmöglichkeit erfolgen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+
+- Beim Speichern werden BMP, JPEG und GIF in eine geschützte temporäre Datei kodiert, ohne die vollständige kodierte Datei zusätzlich im Speicher zu halten. Beim GIF-Abschluss werden auch Schreibfehler am Trailer berücksichtigt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- JPEG vermeidet beim Kodieren einen vollständigen RGB-Zwischenpuffer; GIF vermeidet eine zusätzliche RGBA-Kopie. Ungültige GIF-Bilddaten werden kontrolliert abgelehnt ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Beim Rendern von Schwärzungen mit quellunabhängigen Formen entfällt eine weitere Bildkopie. Verpixelung, Weichzeichnung und Bildlupe verwenden weiterhin eine zuvor geschwärzte Quelle ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Rückgängig und Wiederholen werden mit einer Meldung abgelehnt, wenn der vollständige resultierende Verlauf nicht in das Verlaufslimit passt; das Bild und alle bestehenden Verlaufsschritte bleiben erhalten ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+
+- PNG-Dateien werden direkt in eine geschützte temporäre Datei kodiert und erst nach erfolgreichem Schreiben und Synchronisieren veröffentlicht. Das vermeidet beim Datei-Export einen vollständigen kodierten PNG-Puffer im Arbeitsspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Der Edge-Scrolltest protokolliert begrenzt Scrollposition und Ereigniszähler; beim Aufräumen seines eigenen Testprofils werden vorübergehende Dateisperren mit begrenzten Wiederholungen behandelt ([#58](https://github.com/BomBastikDE/shotkit/issues/58)).
+
+- Bilddateien werden beim Öffnen aus einem größenbegrenzten Dateileser dekodiert. Der JPEG-Decoder hält intern eine vollständige Eingabekopie, die separat im Bildbudget berücksichtigt wird. Unter Windows schützt der geöffnete Lesehandle die Datei während des Imports vor gleichzeitigen Schreib- und Ersetzungsvorgängen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Die Anleitung erklärt, dass automatische Datei- und Zwischenablageausgabe vor einer Schwärzung im Editor erfolgen und vorher ausgeschaltet werden müssen, wenn nur die geschwärzte Aufnahme ausgegeben werden soll ([#52](https://github.com/BomBastikDE/shotkit/issues/52)).
+
+- Der Windows-Ausgabetest wartet nach Änderungen im Tray-Menü auf den Abschluss des jeweiligen Speichervorgangs, bevor er die Einstellungsdatei prüft ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+
+- Ein Windows-Test prüft das Verhalten beim Ersetzen der Einstellungsdatei, während ein Leser auch die Löschfreigabe erteilt ([#25](https://github.com/BomBastikDE/shotkit/issues/25)).
+
+- Bei horizontalen Scrollaufnahmen bleibt das zuletzt gültige Bild erhalten, wenn eine Drehung nicht reserviert werden kann. Muss die Schlussdrehung nachgeholt werden, wird die Aufnahme ausdrücklich zur Wiederherstellung zurückgehalten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Verpixelung schreibt direkt in das vorhandene Ergebnis und vermeidet ein vollständiges Zwischenbild. Zuschneiden und Rahmen melden fehlgeschlagene Reservierungen des Ausgabepuffers verständlich ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Scrollaufnahmen reservieren vor einem neuen Stitch-Schritt Platz für den bisherigen Teilstand; bei einem Reservierungsfehler bleibt dieser abschließbar. Beim BMP-/GIF-Export wird die zusätzliche Pixelkopie fallibel reserviert ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Der Eingabepuffer beim Bildimport wächst in kleineren geometrischen Schritten und kann dadurch weniger Adressraum reservieren ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Beim Speichern eines Bildes ohne Anmerkungen wird das vorhandene Bild gemeinsam genutzt, statt es für den Export vollständig zu kopieren ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
+
+- Beim Rendern ausschließlich geschwärzter Bereiche entfiel bereits eine unnötige Kopie des gesamten Originalbilds; Effektquellen bleiben geschützt ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
+
+- Die Bildvorschau vermeidet zwei unnötige Bildpuffer, wenn das stabile Formenpräfix leer ist beziehungsweise die Transparenzdarstellung vorbereitet wird ([#51](https://github.com/BomBastikDE/shotkit/issues/51)).
+
+- Die Windows-Einstellungsspeicherung hält die temporäre Datei bis zur Veröffentlichung geöffnet; bei unklarem Veröffentlichungsfehler wird sie zur Prüfung erhalten ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
+
+- Eine unveränderte Scrollrichtung schreibt die Einstellungsdatei nicht erneut; geänderte Richtungen werden weiterhin gespeichert ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
+
+- Fehlermeldungen bei Bearbeitungen erklären das Speicherlimit der Rückgängig-Historie statt interner Fehlernamen ([#64](https://github.com/BomBastikDE/shotkit/issues/64)).
+
+- Beim erzwungenen „Speichern unter“ für ein geschütztes Original bleibt die geprüfte Originaldatei bis zum Ende des Speichervorgangs gegen Schreiben und Ersetzen geöffnet ([#62](https://github.com/BomBastikDE/shotkit/issues/62)).
+
+- Die automatische PNG-Ausgabe hält ihre temporäre Datei während des Schreibens und der Suche nach einem freien Dateinamen geöffnet. Bereits vorhandene Aufnahmen werden dabei weiterhin nicht ersetzt ([#63](https://github.com/BomBastikDE/shotkit/issues/63)).
+
+- Beim Speichern hält ShotKit die temporäre Bilddatei bis zur Veröffentlichung geöffnet. Bei einem Fehler der Veröffentlichung bleibt die vorbereitete Datei zur Prüfung erhalten; ihre Position wird gemeldet ([#61](https://github.com/BomBastikDE/shotkit/issues/61)).
+
+- Bearbeitbares Spotlight und Bildlupe mit einstellbarer Stärke beziehungsweise Vergrößerung ergänzt ([#29](https://github.com/BomBastikDE/shotkit/issues/29)); die Lupe verwendet eine durch sämtliche Schwärzungen bereinigte Bildquelle.
+
+- Die Release-Automatik prüft das GitHub-Uploadziel und lehnt authentisierte HTTP-Weiterleitungen ab ([#57](https://github.com/BomBastikDE/shotkit/issues/57)).
+
+- Einstellungsdateien werden beim Lesen auf 1 MiB begrenzt; übergroße Dateien bleiben unverändert und erzeugen eine Fehlermeldung ([#56](https://github.com/BomBastikDE/shotkit/issues/56)).
+
+- Bearbeitbare Sprechblasen mit mehrzeiligem Text, eigener Text- und Füllfarbe sowie verschiebbarer Spitze ergänzt ([#28](https://github.com/BomBastikDE/shotkit/issues/28)).
+
+- Das Menü „Formstil…“ ergänzt Füllung, gestrichelte und gepunktete Linien, gerundete Rechtecke sowie doppelte Pfeilspitzen oder einen Punkt am Pfeilende ([#31](https://github.com/BomBastikDE/shotkit/issues/31)).
+
+- Beim Öffnen über eine zweite Instanz erhalten erkannte Netzlaufwerke mit Laufwerksbuchstaben eine Warnung vor möglicher Netzwerk-Authentifizierung; unbestimmbare Laufwerke erhalten einen Unsicherheitshinweis ([#55](https://github.com/BomBastikDE/shotkit/issues/55)). Die Laufwerksprüfung erkennt nicht jede Verzeichnisverknüpfung auf ein Netzwerkziel.
+
 ## Beta 1 – Stand vor Veröffentlichung
+
+Die [Beta 1](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0-beta.1) wurde am 5. November 2026 als Vorabversion mit Windows-EXE und SHA256-Datei veröffentlicht. Der folgende Absatz beschreibt den früheren Vorbereitungsstand.
 
 Der Entwicklungszweig wird für `v2.0.0-beta.1` vorbereitet. Seit Alpha 20 wurden unter anderem Auswahlkorrektur und Scroll-Diagnose ergänzt sowie Fehler und Tests bearbeitet. Der [CI-Lauf 42056863647](https://github.com/BomBastikDE/shotkit/actions/runs/42056863647) bestand auf Linux und Windows mit 43 Windows-Szenarien für den Vorbereitungscommit `db5372e`. Die Freigabe des Release-Tags steht noch aus. Gemischte DPI, mehrere Monitore und visuelle Owner-Abnahmen bleiben offen; Verpixelung ist keine sichere Schwärzung.
 
@@ -70,6 +160,14 @@ Die Korrektur für [Issue #1](https://github.com/BomBastikDE/shotkit/issues/1) s
 - Reale Tests mit gemischter DPI, mehreren Monitoren und weiteren Browsern sowie Entscheidungen zu main, legacy und Code-Signing bleiben beim Owner.
 
 ## Nach Alpha 20 – in Entwicklung
+
+- Das Undo-Speicherbudget berücksichtigt nach Bildänderungen auch das bisherige Bild ([#47](https://github.com/BomBastikDE/shotkit/issues/47)); schmaler bewegter Inhalt wird bei der Scrollaufnahme nicht mehr als sicherer Stillstand gewertet ([#48](https://github.com/BomBastikDE/shotkit/issues/48)).
+- Der Bildimport begrenzt die tatsächlich gelesenen Bytes; die Messung des Spitzenbedarfs bleibt offen ([#51](https://github.com/BomBastikDE/shotkit/issues/51)). Der interne Beenden-Ablauf nimmt Abschlussnachrichten nur nach bestätigtem Beenden an; Windows-Nachweis folgt ([#49](https://github.com/BomBastikDE/shotkit/issues/49)).
+- Eine standardmäßig aktive Einstellung fordert Windows auf, kopierte Bilder vom Zwischenablageverlauf und der Cloud-Synchronisierung auszunehmen. Sie bietet keine Garantie; bereits vorhandene Einträge bleiben erhalten.
+- Das neue Werkzeug „Schwärzen“ ist über `S` erreichbar. Es schwärzt den gerenderten Export, während Originalbild und editierbarer Editorzustand erhalten bleiben. Verpixeln ist weiterhin keine sichere Schwärzung.
+- Das Werkzeug „Weichzeichnen“ (`W`) ergänzt Verpixeln; seine Stärke folgt der Linienbreite. Beide Filter sind keine sichere Schwärzung und beachten deckende Schwärzungen beim Rendern ([#30](https://github.com/BomBastikDE/shotkit/issues/30)).
+- Die Leinwand kann mit Ausrichtung und transparenter oder einfarbiger Füllung vergrößert und verkleinert werden; die Änderung unterstützt Undo/Redo ([#32](https://github.com/BomBastikDE/shotkit/issues/32)). Die separate Bildskalierung ist noch offen.
+- Eigene skalierbare Stempel für Haken, Kreuz, Warnung, Information und Mauszeiger ergänzen das vorhandene Nummernwerkzeug ([#35](https://github.com/BomBastikDE/shotkit/issues/35)).
 
 - Eine waagerechte oder senkrechte Ziehbewegung ohne Fläche lässt die Bereichsauswahl offen; danach wird der Vorschlag am Endpunkt neu ermittelt ([#27](https://github.com/BomBastikDE/shotkit/issues/27), [#43](https://github.com/BomBastikDE/shotkit/issues/43)).
 - Die Auswahllupe zeigt den vergrößerten Bildinhalt wieder statt einer weißen Fläche ([#41](https://github.com/BomBastikDE/shotkit/issues/41)).

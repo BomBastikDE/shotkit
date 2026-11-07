@@ -39,12 +39,103 @@ pub fn is_unc_path_utf16(path: &[u16]) -> bool {
         && path.get(7).copied().map(is_sep).unwrap_or(false)
 }
 
+/// Classification based on an absolute Windows path and a drive-type query.
+/// A known drive type does not prove the target is local: reparse points and
+/// changing mappings can redirect it. Unknown paths also may access a network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveLocation {
+    Network,
+    KnownDrive,
+    Unknown,
+}
+
+/// Classify UNC lexically, or query only an absolute drive root such as `Z:\\`.
+/// The callback receives a NUL-terminated UTF-16 drive root.
+pub fn classify_drive_utf16(path: &[u16], query: impl FnOnce(&[u16; 4]) -> u32) -> DriveLocation {
+    if is_unc_path_utf16(path) {
+        return DriveLocation::Network;
+    }
+    let sep = |u| u == u16::from(b'\\') || u == u16::from(b'/');
+    let start = if path.len() >= 4
+        && sep(path[0])
+        && sep(path[1])
+        && path[2] == u16::from(b'?')
+        && sep(path[3])
+    {
+        4
+    } else {
+        0
+    };
+    let rest = &path[start..];
+    if rest.len() < 3
+        || !(rest[0] <= 0x7f && (rest[0] as u8).is_ascii_alphabetic())
+        || rest[1] != u16::from(b':')
+        || !sep(rest[2])
+    {
+        return DriveLocation::Unknown;
+    }
+    let root = [
+        u16::from((rest[0] as u8).to_ascii_uppercase()),
+        u16::from(b':'),
+        u16::from(b'\\'),
+        0,
+    ];
+    match query(&root) {
+        4 => DriveLocation::Network,
+        2 | 3 | 5 | 6 => DriveLocation::KnownDrive,
+        _ => DriveLocation::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_unc_path_utf16;
 
     fn classify(path: &str) -> bool {
         is_unc_path_utf16(&path.encode_utf16().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn mapped_drives_and_unknown_paths_are_distinguished_without_opening_files() {
+        use super::{classify_drive_utf16, DriveLocation};
+        let utf16 = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        for path in [r"z:\image.png", "z:/image.png", r"\\?\z:\image.png"] {
+            assert_eq!(
+                classify_drive_utf16(&utf16(path), |root| {
+                    assert_eq!(*root, [b'Z' as u16, b':' as u16, b'\\' as u16, 0]);
+                    4
+                }),
+                DriveLocation::Network
+            );
+        }
+        assert_eq!(
+            classify_drive_utf16(&utf16(r"C:\local.png"), |_| 3),
+            DriveLocation::KnownDrive
+        );
+        for result in [0, 1, 7, u32::MAX] {
+            assert_eq!(
+                classify_drive_utf16(&utf16(r"X:\missing.png"), |_| result),
+                DriveLocation::Unknown
+            );
+        }
+        for path in [
+            r"C:relative.png",
+            r"\\?\GLOBALROOT\Device\Mup\server\share\a.png",
+            "relative.png",
+        ] {
+            assert_eq!(
+                classify_drive_utf16(&utf16(path), |_| panic!(
+                    "unknown paths must not be queried"
+                )),
+                DriveLocation::Unknown
+            );
+        }
+        assert_eq!(
+            classify_drive_utf16(&utf16(r"\\server\share\a.png"), |_| panic!(
+                "UNC needs no drive query"
+            )),
+            DriveLocation::Network
+        );
     }
 
     #[test]

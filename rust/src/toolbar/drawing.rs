@@ -292,6 +292,13 @@ pub(super) unsafe fn draw_icon(
             icon_line(hdc, ox + 4, oy + 4, ox + 16, oy + 4);
             icon_line(hdc, ox + 10, oy + 4, ox + 10, oy + 17);
         }
+        Icon::Callout => {
+            // Compact outlined speech bubble with a lower-left pointer.
+            Rectangle(hdc, ox + 3, oy + 3, ox + 17, oy + 13);
+            icon_line(hdc, ox + 6, oy + 13, ox + 4, oy + 17);
+            icon_line(hdc, ox + 4, oy + 17, ox + 10, oy + 13);
+            icon_line(hdc, ox + 6, oy + 7, ox + 14, oy + 7);
+        }
         Icon::Marker => {
             let (fill, ink) = if high_contrast_enabled() {
                 (GetSysColor(13), GetSysColor(14))
@@ -317,6 +324,21 @@ pub(super) unsafe fn draw_icon(
                 }
             }
         }
+        Icon::GaussianBlur => {
+            // Concentric soft bands distinguish blur from the pixel grid.
+            let high_contrast = high_contrast_enabled();
+            for (inset, gray) in [(1, 210u32), (4, 155), (7, 100)] {
+                let color = if high_contrast {
+                    GetSysColor(18)
+                } else {
+                    gray | (gray << 8) | (gray << 16)
+                };
+                icon_fill_ellipse(hdc, rect(inset, inset, 20 - inset, 20 - inset), color);
+            }
+        }
+        Icon::Redact => {
+            icon_fill_rect(hdc, rect(2, 5, 18, 15), 0x00000000);
+        }
         Icon::Step => {
             let hc = high_contrast_enabled();
             let circle = if hc { GetSysColor(13) } else { 0x000000FF };
@@ -330,6 +352,14 @@ pub(super) unsafe fn draw_icon(
             SelectObject(hdc, previous);
             DeleteObject(number_pen);
         }
+        Icon::Stamp => {
+            // A distinct check badge plus chevron advertises symbol selection.
+            Ellipse(hdc, ox + 1, oy + 2, ox + 15, oy + 16);
+            icon_line(hdc, ox + 4, oy + 9, ox + 7, oy + 12);
+            icon_line(hdc, ox + 7, oy + 12, ox + 12, oy + 6);
+            icon_line(hdc, ox + 14, oy + 16, ox + 17, oy + 19);
+            icon_line(hdc, ox + 17, oy + 19, ox + 20, oy + 16);
+        }
         Icon::Pen => {
             let curve = [p(3, 15), p(6, 3), p(12, 20), p(17, 5)];
             PolyBezier(hdc, curve.as_ptr(), curve.len() as u32);
@@ -340,6 +370,26 @@ pub(super) unsafe fn draw_icon(
             icon_line(hdc, ox + 2, oy + 6, ox + 14, oy + 6);
             icon_line(hdc, ox + 14, oy + 6, ox + 14, oy + 18);
         }
+        Icon::Spotlight => {
+            // Four open corner brackets frame the target area; center dot marks focus.
+            icon_line(hdc, ox + 3, oy + 7, ox + 3, oy + 3);
+            icon_line(hdc, ox + 3, oy + 3, ox + 7, oy + 3);
+            icon_line(hdc, ox + 13, oy + 3, ox + 17, oy + 3);
+            icon_line(hdc, ox + 17, oy + 3, ox + 17, oy + 7);
+            icon_line(hdc, ox + 3, oy + 13, ox + 3, oy + 17);
+            icon_line(hdc, ox + 3, oy + 17, ox + 7, oy + 17);
+            icon_line(hdc, ox + 13, oy + 17, ox + 17, oy + 17);
+            icon_line(hdc, ox + 17, oy + 13, ox + 17, oy + 17);
+            icon_fill_ellipse(hdc, rect(8, 8, 12, 12), color);
+        }
+        Icon::Magnifier => {
+            // Lens and angled handle read as a magnifying glass at toolbar scale.
+            Ellipse(hdc, ox + 2, oy + 2, ox + 14, oy + 14);
+            icon_line(hdc, ox + 11, oy + 12, ox + 18, oy + 19);
+            icon_line(hdc, ox + 10, oy + 13, ox + 17, oy + 20);
+            icon_line(hdc, ox + 5, oy + 8, ox + 11, oy + 8);
+            icon_line(hdc, ox + 8, oy + 5, ox + 8, oy + 11);
+        }
         Icon::Color => {
             draw_swatch(hdc, bounds, current_color);
         }
@@ -347,6 +397,13 @@ pub(super) unsafe fn draw_icon(
         Icon::SwatchBlack => draw_swatch(hdc, bounds, 0x00000000),
         Icon::SwatchYellow => draw_swatch(hdc, bounds, 0x0000D6FF), // RGB 255, 214, 0
         Icon::SwatchBlue => draw_swatch(hdc, bounds, 0x00D77800),   // RGB 0, 120, 215
+        Icon::FormStyle => {
+            Rectangle(hdc, ox + 3, oy + 3, ox + 15, oy + 15);
+            icon_line(hdc, ox + 5, oy + 12, ox + 12, oy + 5);
+            icon_line(hdc, ox + 8, oy + 13, ox + 13, oy + 8);
+            icon_line(hdc, ox + 15, oy + 16, ox + 17, oy + 18);
+            icon_line(hdc, ox + 17, oy + 18, ox + 19, oy + 16);
+        }
         Icon::LineWidth => {
             icon_line(hdc, ox + 3, oy + 5, ox + 17, oy + 5);
             icon_line(hdc, ox + 3, oy + 10, ox + 17, oy + 10);

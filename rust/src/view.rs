@@ -206,10 +206,15 @@ pub fn dirty_shape_region(
     if shapes.is_empty() {
         return None;
     }
-    if shapes
-        .iter()
-        .any(|shape| matches!(shape.kind, ShapeKind::Text { .. }))
-    {
+    // Redaction changes sampling outside its rectangle; spotlight changes
+    // everything outside its focus. Text bounds are approximate. Repaint the
+    // full image view for each of these cases.
+    if shapes.iter().any(|shape| {
+        matches!(
+            shape.kind,
+            ShapeKind::Text { .. } | ShapeKind::Redact { .. } | ShapeKind::Spotlight { .. }
+        )
+    }) {
         return Some(view);
     }
     let sx = f64::from(view.width) / f64::from(image.0.max(1));
@@ -375,6 +380,18 @@ mod tests {
         assert!(region.width >= 300 && region.width < v.width);
         assert!(region.height >= 110 && region.height < v.height);
         assert_eq!(dirty_shape_region(v, (1000, 500), None, None), None);
+        let redact = Shape::new(ShapeKind::Redact {
+            start: Point::new(10.0, 10.0),
+            end: Point::new(20.0, 20.0),
+        });
+        assert_eq!(
+            dirty_shape_region(v, (1000, 500), None, Some(&redact)),
+            Some(v)
+        );
+        assert_eq!(
+            dirty_shape_region(v, (1000, 500), Some(&redact), None),
+            Some(v)
+        );
         let text = Shape::new(ShapeKind::Text {
             location: Point::new(1.0, 1.0),
             text: "text".into(),
@@ -449,6 +466,8 @@ mod tests {
             ShapeKind::Ellipse { start: a, end: b },
             ShapeKind::Highlight { start: a, end: b },
             ShapeKind::Blur { start: a, end: b },
+            ShapeKind::GaussianBlur { start: a, end: b },
+            ShapeKind::Redact { start: a, end: b },
             ShapeKind::Freehand {
                 points: vec![a, Point::new(48.0, 70.0), b],
             },
@@ -631,6 +650,34 @@ mod tests {
         assert_eq!(
             pan_after_wheel(image, viewport, 1.5, (40, 99), 120, false),
             (40, 0)
+        );
+    }
+    #[test]
+    fn moving_spotlight_invalidates_the_entire_image_view() {
+        use crate::shapes::{Rect, Shape, ShapeKind, Spotlight};
+        let view = View {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+        };
+        let mut before = Shape::new(ShapeKind::Spotlight {
+            data: Spotlight::new(
+                Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+                0.5,
+            )
+            .unwrap(),
+        });
+        let after = before.clone();
+        before.offset(5.0, 0.0);
+        assert_eq!(
+            dirty_shape_region(view, (300, 200), Some(&before), Some(&after)),
+            Some(view)
         );
     }
 }

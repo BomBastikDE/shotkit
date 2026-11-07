@@ -260,6 +260,21 @@ function Wait-ForCondition {
     }
     throw "Timed out after ${TimeoutSeconds}s waiting for $Description."
 }
+function Read-ProbeStderr {
+    # Redirected output handles can remain briefly locked as the child exits,
+    # especially after Kill(). Keep the probe failure primary while allowing
+    # a short, bounded window for Windows to release the stderr file.
+    if (-not (Test-Path -LiteralPath $uiaProbeStderr)) { return '' }
+    $lastReadError = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try { return [IO.File]::ReadAllText($uiaProbeStderr).Trim() }
+        catch [IO.IOException] {
+            $lastReadError = $_.Exception
+            if ($attempt -lt 19) { Start-Sleep -Milliseconds 50 }
+        }
+    }
+    return "Could not read probe stderr after 20 attempts: $($lastReadError.Message)"
+}
 function Test-FullyDecodablePng {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -658,7 +673,8 @@ catch {
             if (-not $probeCompleted -and (Test-Path -LiteralPath $uiaProbeResult)) { continue }
             if ($null -eq $probeDeadline -and (Test-Path -LiteralPath $uiaProbeReady)) { continue }
             try { $uiaProbe.Kill(); [void]$uiaProbe.WaitForExit(3000) } catch { }
-            $probeTrace = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { 'No probe diagnostics available.' }
+            $probeTrace = Read-ProbeStderr
+            if ([string]::IsNullOrWhiteSpace($probeTrace)) { $probeTrace = 'No probe diagnostics available.' }
             if ($startupTimedOut) {
                 throw "UIA_PROBE_STARTUP_TIMEOUT: $Browser probe did not finish PowerShell/assembly initialization within 15 seconds. Probe trace: $probeTrace"
             }
@@ -669,7 +685,7 @@ catch {
             # The result may have been published after this iteration's first
             # observation but before process exit. Recheck it with its deadline.
             if (Test-Path -LiteralPath $uiaProbeResult) { continue }
-            $probeError = if (Test-Path -LiteralPath $uiaProbeStderr) { [IO.File]::ReadAllText($uiaProbeStderr).Trim() } else { '' }
+            $probeError = Read-ProbeStderr
             if ([string]::IsNullOrWhiteSpace($probeError)) { $probeError = 'No UIA result was written.' }
             throw "UIA_PRECHECK_FAILED: $probeError"
         }

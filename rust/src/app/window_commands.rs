@@ -13,7 +13,9 @@ pub(super) unsafe fn dispatch_system(h: H, m: u32, w: W, l: L) -> Option<L> {
     }
     Some(match m {
         WM_FINISH_QUIT if h == PRIMARY => {
-            DestroyWindow(h);
+            if take_quit_completion(&FINISH_QUIT_READY, window_state(h).modal_depth) {
+                DestroyWindow(h);
+            }
             0
         }
         WM_COPYDATA => handle_instance_file(h, l),
@@ -195,7 +197,11 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
             0
         }
         0x0100 if w == 0x2e || w == 0x08 => {
-            if editor(h).delete_selected() {
+            if window_state(h).drawing {
+                cancel_gesture(h);
+            }
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.delete_selected()) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -232,7 +238,8 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x27 => (step, 0.0),
                 _ => (0.0, step),
             };
-            if editor(h).nudge_selected(dx, dy) {
+            let mut changed = false;
+            if apply_annotation_edit(h, |state| changed = state.nudge_selected(dx, dy)) && changed {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
             report_editor_error(h);
@@ -248,6 +255,8 @@ pub(super) unsafe fn dispatch_editor_keys(h: H, m: u32, w: W, _l: L) -> Option<L
                 0x54 => Some(Tool::Text),
                 0x4d => Some(Tool::Highlight),
                 0x42 => Some(Tool::Blur),
+                0x57 => Some(Tool::GaussianBlur),
+                0x53 => Some(Tool::Redact),
                 0x4e => Some(Tool::Step),
                 0x50 => Some(Tool::Pen),
                 0x43 => Some(Tool::Crop),

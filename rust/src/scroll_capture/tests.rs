@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn settled_capture_returns_newest_sample_when_few_edge_rows_change() {
+    struct Frames(std::collections::VecDeque<Image>);
+    impl ScrollIo for Frames {
+        fn capture(&mut self) -> Result<Image, String> {
+            self.0
+                .pop_front()
+                .ok_or_else(|| "unexpected capture".into())
+        }
+        fn scroll(&mut self, _: Direction, _: i32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+    let first = Image::new(120, 200, [0, 0, 0, 255].repeat(120 * 200)).unwrap();
+    let mut latest = first.clone();
+    for y in 0..20 {
+        latest.pixels[(y * 120 + 119) * 4] = 255;
+    }
+    let mut io = Frames([first, latest.clone()].into());
+    let captured = capture_settled(&mut io, Direction::Down).unwrap();
+    assert_eq!(captured.image, latest);
+    assert!(io.0.is_empty());
+}
+
 /// Virtual scrollable surface. In horizontal mode the screen viewport is
 /// moved across page columns; otherwise it moves across page rows.
 struct FakeScrollIo {
@@ -375,6 +407,234 @@ fn static_page_is_detected_as_end_after_two_attempts() {
 }
 
 #[test]
+fn conflicting_matchers_never_authorize_estimated_fallback() {
+    let regular = MatchResult {
+        dy: 30,
+        top: 3,
+        bottom: 4,
+    };
+    let exact = MatchResult {
+        dy: 50,
+        top: 0,
+        bottom: 0,
+    };
+    let (result, strict) = reconcile_matches(Some(regular), Some(exact), false);
+    assert!(result.is_none());
+    assert!(
+        strict,
+        "conflict must latch strict mode before fallback selection"
+    );
+    let agreeing = MatchResult { dy: 50, ..regular };
+    assert_eq!(
+        reconcile_matches(Some(agreeing), Some(exact), false),
+        (Some(agreeing), false)
+    );
+    assert_eq!(
+        reconcile_matches(Some(agreeing), Some(exact), true),
+        (Some(exact), true)
+    );
+}
+
+#[test]
+fn moving_irregular_content_only_at_outer_edge_stitches_exactly() {
+    const WIDTH: usize = 120;
+    const HEIGHT: usize = 220;
+    const PAGE_LEN: usize = 700;
+
+    struct EdgeOnlyPage {
+        offset: usize,
+        edge: usize,
+        ambiguous_after: Option<usize>,
+        scrollbar_after: Option<usize>,
+    }
+    impl EdgeOnlyPage {
+        fn frame(&self) -> Image {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                // A deterministic, irregular pattern moves with the page in
+                // one outermost eight-pixel strip; the interior is uniform.
+                let row = y + self.offset;
+                let value = if self.ambiguous_after.is_some_and(|at| self.offset >= at) {
+                    if y % 2 == 0 {
+                        0
+                    } else {
+                        255
+                    }
+                } else if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                    0
+                } else {
+                    255
+                };
+                for x in self.edge..self.edge + 8 {
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+                if self.scrollbar_after.is_some_and(|at| self.offset >= at)
+                    && (30..100).contains(&y)
+                {
+                    let x = if self.edge == 0 { WIDTH - 1 } else { 0 };
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(127);
+                }
+            }
+            Image::new(WIDTH, HEIGHT, pixels).unwrap()
+        }
+    }
+    impl ScrollIo for EdgeOnlyPage {
+        fn capture(&mut self) -> Result<Image, String> {
+            Ok(self.frame())
+        }
+        fn scroll(&mut self, direction: Direction, notches: i32) -> Result<(), String> {
+            if direction != Direction::Down {
+                return Err("unexpected fake scroll direction".into());
+            }
+            let max_offset = PAGE_LEN - HEIGHT;
+            self.offset = (self.offset as isize + notches.saturating_mul(50) as isize)
+                .clamp(0, max_offset as isize) as usize;
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+
+    for edge in [0, WIDTH - 8] {
+        let mut io = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: None,
+            scrollbar_after: None,
+        };
+        let out = run(&mut io, Direction::Down).unwrap();
+        assert_eq!(io.offset, PAGE_LEN - HEIGHT);
+        assert_eq!(out.reason, "Ende des scrollbaren Bereichs erreicht.");
+        assert_eq!(out.fallback_count, 0);
+        assert_eq!((out.image.width, out.image.height), (WIDTH, PAGE_LEN));
+        let mut expected = vec![255; WIDTH * PAGE_LEN * 4];
+        for row in 0..PAGE_LEN {
+            let value = if (row.wrapping_mul(73) ^ (row >> 2)) % 7 < 3 {
+                0
+            } else {
+                255
+            };
+            for x in edge..edge + 8 {
+                let p = (row * WIDTH + x) * 4;
+                expected[p..p + 3].fill(value);
+            }
+        }
+        assert_eq!(out.image.pixels, expected);
+
+        let mut ambiguous = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: Some(100),
+            scrollbar_after: None,
+        };
+        let partial = run(&mut ambiguous, Direction::Down).unwrap();
+        assert!(
+            partial.reason.contains("Aufnahme bis hierhin übernommen"),
+            "{}",
+            partial.reason
+        );
+        assert_eq!(partial.fallback_count, 0);
+        assert_eq!(
+            (partial.image.width, partial.image.height),
+            (WIDTH, HEIGHT + 50)
+        );
+        assert_eq!(partial.image.pixels, expected[..WIDTH * (HEIGHT + 50) * 4]);
+
+        let mut with_scrollbar = EdgeOnlyPage {
+            offset: 0,
+            edge,
+            ambiguous_after: None,
+            scrollbar_after: Some(100),
+        };
+        let partial = run(&mut with_scrollbar, Direction::Down).unwrap();
+        assert!(
+            partial.reason.contains("Aufnahme bis hierhin übernommen"),
+            "{}",
+            partial.reason
+        );
+        assert_eq!(partial.fallback_count, 0);
+        assert_eq!(
+            (partial.image.width, partial.image.height),
+            (WIDTH, HEIGHT + 50)
+        );
+        assert_eq!(partial.image.pixels, expected[..WIDTH * (HEIGHT + 50) * 4]);
+    }
+}
+
+#[test]
+fn unconfirmed_zero_vote_after_progress_preserves_prefix_without_fallback() {
+    const WIDTH: usize = 120;
+    const HEIGHT: usize = 300;
+    struct Page {
+        offset: usize,
+    }
+    impl Page {
+        fn frame(&self) -> Image {
+            let mut pixels = vec![255; WIDTH * HEIGHT * 4];
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let value = if !(12..108).contains(&x) {
+                        let row = y + self.offset;
+                        if ((row * 73) ^ (row >> 2)) % 7 < 3 {
+                            0
+                        } else {
+                            255
+                        }
+                    } else {
+                        let row = y + self.offset.min(30);
+                        let bin = (x - 12) / 12;
+                        (25 + (row * 73 + bin * 41 + row * bin * 19 + row * row % 251) % 200
+                            + if self.offset > 30 { 2 } else { 0 }) as u8
+                    };
+                    let p = (y * WIDTH + x) * 4;
+                    pixels[p..p + 3].fill(value);
+                }
+            }
+            Image::new(WIDTH, HEIGHT, pixels).unwrap()
+        }
+    }
+    impl ScrollIo for Page {
+        fn capture(&mut self) -> Result<Image, String> {
+            Ok(self.frame())
+        }
+        fn scroll(&mut self, _: Direction, notches: i32) -> Result<(), String> {
+            self.offset = (self.offset as i32 + notches * 30).max(0) as usize;
+            Ok(())
+        }
+        fn wait_ms(&mut self, _: u64) {}
+        fn cancelled(&mut self) -> bool {
+            false
+        }
+        fn mouse_moved(&mut self) -> bool {
+            false
+        }
+        fn progress(&mut self, _: usize) {}
+    }
+    let mut page = Page { offset: 0 };
+    let first = page.frame();
+    let second = Page { offset: 30 }.frame();
+    let out = run(&mut page, Direction::Down).unwrap();
+    assert!(
+        out.reason.contains("nicht sicher nachweisbar"),
+        "{}",
+        out.reason
+    );
+    assert_eq!(out.fallback_count, 0);
+    assert_eq!((out.image.width, out.image.height), (WIDTH, HEIGHT + 30));
+    let mut expected = first.pixels;
+    expected.extend_from_slice(&second.pixels[(HEIGHT - 30) * WIDTH * 4..]);
+    assert_eq!(out.image.pixels, expected);
+}
+
+#[test]
 fn animated_page_end_bounds_fallbacks_and_keeps_the_pixel_exact_prefix() {
     const VIEW_H: usize = 220;
     const COMMITTED_PREFIX: usize = 485;
@@ -460,6 +720,158 @@ fn leftward_capture_starts_at_right_edge_and_stitches_back_in_page_order() {
         out.reason
     );
     assert!(io.scroll_calls >= 3);
+}
+
+#[test]
+fn horizontal_rotation_failures_preserve_the_last_accepted_capture() {
+    for direction in [Direction::Right, Direction::Left] {
+        for fail_at in [1, 2, 3, 4, 5] {
+            let make_io = || match direction {
+                Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+                Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+                Direction::Down => unreachable!(),
+            };
+            let mut expected_io = make_io();
+            let first = expected_io.capture().unwrap();
+            let mut io = make_io();
+            let mut calls = 0;
+            let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+                calls += 1;
+                if calls == fail_at {
+                    Err(RotationFailure {
+                        image,
+                        error: "simulierter Speichermangel",
+                    })
+                } else {
+                    image.try_rotate(rotation)
+                }
+            })
+            .unwrap();
+            assert!(out.reason.contains("simulierter Speichermangel"));
+            assert_eq!(out.pending_rotation, None);
+            if fail_at <= 4 {
+                assert_eq!(
+                    out.image, first,
+                    "direction={direction:?}, failure={fail_at}"
+                );
+            } else {
+                assert!(out.image.width >= first.width && out.image.width <= 610);
+                assert_eq!(out.image.height, first.height);
+                let origin = if direction == Direction::Left {
+                    610 - out.image.width
+                } else {
+                    0
+                };
+                for y in 0..out.image.height {
+                    for x in 0..out.image.width {
+                        let value = FakeScrollIo::pixel(origin + x, y);
+                        let offset = (y * out.image.width + x) * 4;
+                        assert_eq!(
+                            &out.image.pixels[offset..offset + 4],
+                            &[value, value, value, 255]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn persistent_rotation_failure_preserves_matcher_image_for_recovery() {
+    for direction in [Direction::Right, Direction::Left] {
+        for fail_at in [2, 3, 4, 5] {
+            let mut io = match direction {
+                Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+                Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+                Direction::Down => unreachable!(),
+            };
+            let mut calls = 0;
+            let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+                calls += 1;
+                if calls >= fail_at {
+                    Err(RotationFailure {
+                        image,
+                        error: "simulierter Speichermangel",
+                    })
+                } else {
+                    image.try_rotate(rotation)
+                }
+            })
+            .unwrap();
+            let required = out
+                .pending_rotation
+                .expect("failed final rotation must be recoverable");
+            assert!(out.reason.contains("Wiederherstellung"));
+            let image = out.image.try_rotate(required).unwrap();
+            let origin = if direction == Direction::Left {
+                610 - image.width
+            } else {
+                0
+            };
+            assert!(image.width >= 260 && image.width <= 610);
+            assert_eq!(image.height, 220);
+            for y in 0..image.height {
+                for x in 0..image.width {
+                    let value = FakeScrollIo::pixel(origin + x, y);
+                    let offset = (y * image.width + x) * 4;
+                    assert_eq!(
+                        &image.pixels[offset..offset + 4],
+                        &[value, value, value, 255]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_initial_rotation_image_is_not_delivered_as_a_capture() {
+    let mut io = FakeScrollIo::horizontal(220, 260, 610);
+    let result = run_with_rotation(&mut io, Direction::Right, &mut |_, _| {
+        Err(RotationFailure {
+            image: Image {
+                width: 2,
+                height: 2,
+                pixels: vec![],
+            },
+            error: "Ungültige Bildgröße",
+        })
+    });
+    assert_eq!(result.unwrap_err(), "Ungültige Bildgröße");
+    assert_eq!(io.scroll_calls, 0);
+}
+
+#[test]
+fn failed_final_rotation_retains_image_and_required_orientation() {
+    for direction in [Direction::Right, Direction::Left] {
+        let mut io = match direction {
+            Direction::Right => FakeScrollIo::horizontal(220, 260, 610),
+            Direction::Left => FakeScrollIo::horizontal_left(220, 260, 610),
+            Direction::Down => unreachable!(),
+        };
+        let final_rotation = match direction {
+            Direction::Right => Rotation::Counterclockwise,
+            Direction::Left => Rotation::Clockwise,
+            Direction::Down => unreachable!(),
+        };
+        let out = run_with_rotation(&mut io, direction, &mut |image, rotation| {
+            if rotation == final_rotation {
+                Err(RotationFailure {
+                    image,
+                    error: "simulierter Speichermangel",
+                })
+            } else {
+                image.try_rotate(rotation)
+            }
+        })
+        .unwrap();
+        assert_eq!(out.pending_rotation, Some(final_rotation));
+        assert!(out.reason.contains("Wiederherstellung"));
+        let restored = out.image.try_rotate(final_rotation).unwrap();
+        assert_eq!((restored.width, restored.height), (610, 220));
+        assert_eq!(restored.pixels, io.capture_page_horizontal(610));
+    }
 }
 
 #[test]
