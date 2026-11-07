@@ -256,7 +256,7 @@ function Drag-Image([int]$X1,[int]$Y1,[int]$X2,[int]$Y2) {
 }
 function Select-Tool([int]$Id,[string]$Name) {
     Click-Button $Id
-    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like "*Werkzeug $Name*"}} 5 "$Name tool selected")
+    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like "*Werkzeug: $Name*"}} 5 "$Name tool selected")
 }
 function Maximize-Editor {
     [void][ShotKitEffectsSmoke.Native]::ShowWindow($main.Handle,3)
@@ -284,7 +284,7 @@ function Save-Export([scriptblock]$Predicate,[string]$What) {
 }
 
 function Canvas-Click([int]$X,[int]$Y) {$p=Image-Point $X $Y;Pointer $p.X $p.Y;Mouse-Click}
-function Select-Effect([int]$X,[int]$Y) {Select-Tool 0x5101 'Select';Canvas-Click $X $Y}
+function Select-Effect([int]$X,[int]$Y) {Select-Tool 0x5101 'Auswahl';Canvas-Click $X $Y}
 function Choose-EffectStyle([int]$Id,[string]$Label) {
     if($Id -le 0x5183){Select-Effect 70 100}else{Select-Effect 160 120}
     $menu=Open-Menu 0x5128;$position=-1
@@ -378,7 +378,7 @@ try {
         [void](Save-Export {param($v)$v.Hash -eq $expected.Hash} "undo spotlight state $i")
     }
 
-    Select-Tool 0x5116 'Magnifier';Drag-Image 80 60 240 180
+    Select-Tool 0x5116 'Bildlupe';Drag-Image 80 60 240 180
     Confirm-RedoDiscard 5 # creation plus four Spotlight strength changes are undone
     $created=Save-Export {param($v)$v.Hash -ne $baseline.Hash} 'magnifier creation'
     Assert-History $baseline $created 'magnifier creation'
@@ -420,7 +420,7 @@ try {
     # This lies outside the redaction's own x=144..176 destination, so black
     # here can only be explained by sanitized sampling, not its final overlay.
     Assert-Patch $roundAgain 120 88 126 94 255
-    Select-Tool 0x510C 'Redact';Drag-Image 144 104 176 134
+    Select-Tool 0x510C 'Schwärzen';Drag-Image 144 104 176 134
     $redacted=Save-Export {param($v)$v.Hash -ne $roundAgain.Hash} 'magnifier source redacted after magnifier creation'
     Assert-Patch $redacted 120 88 126 94 0
     Assert-Patch $redacted 150 114 170 126 0

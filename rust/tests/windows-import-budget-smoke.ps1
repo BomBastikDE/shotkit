@@ -216,7 +216,7 @@ function Assert-History([IntPtr] $Editor, $Original, $Edited) {
 }
 function Edit-Document([IntPtr] $Editor) {
     Click-OwnedButton $Editor 'Verpixeln (B) – keine sichere Schwärzung'
-    [void](Wait-For { Get-OwnedWindows | Where-Object { $_.H -eq $Editor -and $_.Title -like '*Werkzeug Blur*' } } 'pixelate tool')
+    [void](Wait-For { Get-OwnedWindows | Where-Object { $_.H -eq $Editor -and $_.Title -like '*Werkzeug: Verpixeln*' } } 'pixelate tool')
     $client=[ShotKitImportBudgetSmoke.Rect]::new()
     if (-not [ShotKitImportBudgetSmoke.Native]::GetClientRect($Editor,[ref]$client)) { throw 'CLIENT_RECT_FAILED.' }
     $toolbars=@([ShotKitImportBudgetSmoke.Native]::Children($Editor) | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar' })

@@ -226,7 +226,7 @@ function Choose-Stamp([int]$Index,[switch]$Overflow) {
     }
     Hover-MenuItem $menu $Index;Mouse-Click
     [void](Wait-For {-not @(Get-OwnedWindows|Where-Object {$_.Visible -and $_.ClassName -eq '#32768'}).Count} 5 'stamp popup close')
-    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug Stamp*'}} 5 'Stamp tool selected')
+    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Stempel*'}} 5 'Stamp tool selected')
 }
 function Image-Point([int]$X,[int]$Y) {
     $r=[ShotKitStampSmoke.Rect]::new();$tr=[ShotKitStampSmoke.Rect]::new()

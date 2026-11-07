@@ -327,13 +327,7 @@ pub(super) unsafe fn activate_tool(h: H, tool: Tool) {
         toolbar::set_color(h, color.r, color.g, color.b);
     }
     toolbar::set_active(h, toolbar_id_for_tool(tool));
-    SetWindowTextW(
-        h,
-        wide(&format!(
-            "ShotKit – Werkzeug {tool:?} · Strg+S speichern · F10 Scroll"
-        ))
-        .as_ptr(),
-    );
+    refresh_title(h);
     InvalidateRect(h, std::ptr::null(), 0);
 }
 

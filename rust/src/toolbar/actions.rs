@@ -1,4 +1,5 @@
 use super::*;
+use shotkit::shapes::Tool;
 
 #[derive(Clone, Copy)]
 pub(super) struct Action {
@@ -47,103 +48,103 @@ pub(super) enum Icon {
 pub(super) const ACTIONS: [Action; 34] = [
     Action {
         id: ID_SELECT,
-        label: "Auswahl (V)",
+        label: Tool::Select.toolbar_label(),
         icon: Icon::Select,
         tool: true,
     },
     Action {
         id: ID_ARROW,
-        label: "Pfeil (A)",
+        label: Tool::Arrow.toolbar_label(),
         icon: Icon::Arrow,
         tool: true,
     },
     Action {
         id: ID_LINE,
-        label: "Linie (L)",
+        label: Tool::Line.toolbar_label(),
         icon: Icon::Line,
         tool: true,
     },
     Action {
         id: ID_RECTANGLE,
-        label: "Rechteck (R)",
+        label: Tool::Rectangle.toolbar_label(),
         icon: Icon::Rectangle,
         tool: true,
     },
     Action {
         id: ID_ELLIPSE,
-        label: "Ellipse (E)",
+        label: Tool::Ellipse.toolbar_label(),
         icon: Icon::Ellipse,
         tool: true,
     },
     Action {
         id: ID_TEXT,
-        label: "Text (T)",
+        label: Tool::Text.toolbar_label(),
         icon: Icon::Text,
         tool: true,
     },
     Action {
         id: ID_CALLOUT,
-        label: "Sprechblase",
+        label: Tool::Callout.toolbar_label(),
         icon: Icon::Callout,
         tool: true,
     },
     Action {
         id: ID_MARKER,
-        label: "Marker (M)",
+        label: Tool::Highlight.toolbar_label(),
         icon: Icon::Marker,
         tool: true,
     },
     Action {
         id: ID_BLUR,
-        label: "Verpixeln (B) – keine sichere Schwärzung",
+        label: Tool::Blur.toolbar_label(),
         icon: Icon::Pixelate,
         tool: true,
     },
     Action {
         id: ID_GAUSSIAN_BLUR,
-        label: "Weichzeichnen (W) – keine sichere Schwärzung",
+        label: Tool::GaussianBlur.toolbar_label(),
         icon: Icon::GaussianBlur,
         tool: true,
     },
     Action {
         id: ID_REDACT,
-        label: "Schwärzen (S)",
+        label: Tool::Redact.toolbar_label(),
         icon: Icon::Redact,
         tool: true,
     },
     Action {
         id: ID_STEP,
-        label: "Nummer (N)",
+        label: Tool::Step.toolbar_label(),
         icon: Icon::Step,
         tool: true,
     },
     Action {
         id: ID_STAMP,
-        label: "Stempel auswählen…",
+        label: Tool::Stamp.toolbar_label(),
         icon: Icon::Stamp,
         tool: true,
     },
     Action {
         id: ID_PEN,
-        label: "Stift (P)",
+        label: Tool::Pen.toolbar_label(),
         icon: Icon::Pen,
         tool: true,
     },
     Action {
         id: ID_CROP,
-        label: "Zuschneiden (C)",
+        label: Tool::Crop.toolbar_label(),
         icon: Icon::Crop,
         tool: true,
     },
     Action {
         id: ID_SPOTLIGHT,
-        label: "Spotlight – Bereich hervorheben",
+        label: Tool::Spotlight.toolbar_label(),
         icon: Icon::Spotlight,
         tool: true,
     },
     Action {
         id: ID_MAGNIFIER,
-        label: "Bildlupe – Ausschnitt vergrößern",
+        label: Tool::Magnifier.toolbar_label(),
         icon: Icon::Magnifier,
         tool: true,
     },
