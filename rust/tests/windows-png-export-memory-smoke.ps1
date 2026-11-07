@@ -4,7 +4,8 @@ param(
     [ValidateRange(30, 300)][int] $TimeoutSeconds = 90,
     [ValidateRange(1, 100)][int] $SampleIntervalMs = 10,
     [ValidateSet(1, 5)][int] $DocumentCount = 1,
-    [switch] $ScrollHeight
+    [switch] $ScrollHeight,
+    [switch] $LargeAnnotated
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,8 +37,10 @@ foreach ($name in (@([IO.Path]::GetFileNameWithoutExtension($ExePath), 'ShotKit'
 }
 
 # ScrollHeight exercises the export of a synthetic 30,000-row result, not acquisition.
-$width = if ($ScrollHeight) { 256 } else { 6000 }
-$height = if ($ScrollHeight) { 30000 } else { 4000 }
+if ($ScrollHeight -and $LargeAnnotated) { throw 'INCOMPATIBLE_FIXTURES.' }
+if ($LargeAnnotated -and $DocumentCount -ne 1) { throw 'ANNOTATED_FIXTURE_REQUIRES_ONE_DOCUMENT.' }
+$width = if ($LargeAnnotated) { 8192 } elseif ($ScrollHeight) { 256 } else { 6000 }
+$height = if ($LargeAnnotated) { 8192 } elseif ($ScrollHeight) { 30000 } else { 4000 }
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
@@ -46,6 +49,8 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 namespace ShotKitPngExportMemorySmoke {
+ public struct Rect { public int Left,Top,Right,Bottom; }
+ public struct Point { public int X,Y; }
  public sealed class Win { public IntPtr H; public int Id, Pid; public string ClassName, Title; public bool Visible, Enabled; }
  [StructLayout(LayoutKind.Sequential)] struct CountersEx {
   public uint cb, PageFaultCount;
@@ -54,6 +59,13 @@ namespace ShotKitPngExportMemorySmoke {
  }
  public sealed class Stat { public ulong PrivateBytesMax, PrivateBytesFirst, PrivateBytesLast; public long Samples; }
  public static class Native {
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int cmd);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e);
   delegate bool EnumProc(IntPtr h, IntPtr d);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr d);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr d);
@@ -136,20 +148,35 @@ namespace ShotKitPngExportMemorySmoke {
  }
  public static class Pixels {
   public static int Width=6000, Height=4000;
-  public static bool ScrollPattern;
+  public static bool ScrollPattern, LargePattern;
+  public static int AnnotationState;
   static uint Next(ref uint state) { state^=state<<13;state^=state>>17;state^=state<<5;return state; }
   static void Row(byte[] row,ref uint state,int y) {
-   for(int x=0;x<Width;x++){uint value=Next(ref state);if(ScrollPattern){uint gray=(uint)(32+((x/16*37+y/16*53)%192));value=gray|(gray<<8)|(gray<<16);}int i=x*4;row[i]=(byte)value;row[i+1]=(byte)(value>>8);row[i+2]=(byte)(value>>16);row[i+3]=255;}
+   for(int x=0;x<Width;x++){uint value=Next(ref state);if(ScrollPattern){uint gray=(uint)(32+((x/16*37+y/16*53)%192));value=gray|(gray<<8)|(gray<<16);}if(LargePattern){uint gray=(uint)(((x/16+y/16)%2==0)?40:220);value=gray|(gray<<8)|(gray<<16);}int i=x*4;row[i]=(byte)value;row[i+1]=(byte)(value>>8);row[i+2]=(byte)(value>>16);row[i+3]=255;}
   }
   static void Bounds(IntPtr scan0,int stride) { if(scan0==IntPtr.Zero||Math.Abs((long)stride)<Width*4)throw new InvalidOperationException("Invalid 32bpp bitmap row bounds."); }
   public static void Fill(IntPtr scan0,int stride) {
    Bounds(scan0,stride);uint state=0x51C1E27E;var row=new byte[Width*4];
    for(int y=0;y<Height;y++){Row(row,ref state,y);Marshal.Copy(row,0,IntPtr.Add(scan0,checked(y*stride)),row.Length);}
   }
-  public static void Verify(IntPtr scan0,int stride,int tolerance) {
+  public static string Verify(IntPtr scan0,int stride,int tolerance) {
    Bounds(scan0,stride);uint state=0x51C1E27E;var expected=new byte[Width*4];var actual=new byte[expected.Length];
-   for(int y=0;y<Height;y++){Row(expected,ref state,y);Marshal.Copy(IntPtr.Add(scan0,checked(y*stride)),actual,0,actual.Length);
-    for(int i=0;i<actual.Length;i++)if(Math.Abs(actual[i]-expected[i])>(i%4==3?0:tolerance))throw new InvalidOperationException("RGBA mismatch at x="+(i/4)+", y="+y+", BGRA channel="+(i%4)+", expected="+expected[i]+", actual="+actual[i]);}
+   using var hash=System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+   long blurred=0;
+   for(int y=0;y<Height;y++){Row(expected,ref state,y);Marshal.Copy(IntPtr.Add(scan0,checked(y*stride)),actual,0,actual.Length);hash.AppendData(actual);
+    for(int i=0;i<actual.Length;i++){
+     int x=i/4;
+     if(LargePattern&&AnnotationState>0){
+      bool inner=x>=1088&&x<1984&&y>=1088&&y<1984;
+      bool outer=x>=960&&x<2112&&y>=960&&y<2112;
+      bool blur=AnnotationState==2&&x>=1472&&x<2624&&y>=1472&&y<2624;
+      if(inner){if(actual[i]!=(i%4==3?255:0))throw new Exception("Redaction not opaque black at "+x+","+y);continue;}
+      if(outer||blur){if(i%4==3&&actual[i]!=255)throw new Exception("Alpha changed in annotation");if(blur&&x>2200&&x<2500&&y>1700&&y<2400&&i%4==0&&actual[i]>50&&actual[i]<210)blurred++;continue;}
+     }
+     if(Math.Abs(actual[i]-expected[i])>(i%4==3?0:tolerance))throw new InvalidOperationException("RGBA mismatch at x="+(i/4)+", y="+y+", BGRA channel="+(i%4)+", expected="+expected[i]+", actual="+actual[i]);}
+   }
+   if(LargePattern&&AnnotationState==2&&blurred<1000)throw new Exception("Gaussian blur has no mixed pixels outside redaction");
+   return Convert.ToHexString(hash.GetHashAndReset());
   }
  }
 }
@@ -158,6 +185,8 @@ namespace ShotKitPngExportMemorySmoke {
 [ShotKitPngExportMemorySmoke.Pixels]::Width=$width
 [ShotKitPngExportMemorySmoke.Pixels]::Height=$height
 [ShotKitPngExportMemorySmoke.Pixels]::ScrollPattern=$ScrollHeight.IsPresent
+[ShotKitPngExportMemorySmoke.Pixels]::LargePattern=$LargeAnnotated.IsPresent
+$mouseDown=$false
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Png-Export-Smoke-' + [Guid]::NewGuid().ToString('N'))
 $appData = Join-Path $root 'appdata'; $localAppData = Join-Path $root 'localappdata'; $temp = Join-Path $root 'temp'
 $settingsDir = Join-Path $appData 'ShotKitRust'
@@ -215,7 +244,7 @@ function Assert-Image([string] $Path, [string] $Format = 'PNG') {
         $expectedFormat = if ($Format -eq 'PNG') { [Drawing.Imaging.ImageFormat]::Png } else { [Drawing.Imaging.ImageFormat]::Jpeg }
         if ($image.RawFormat.Guid -ne $expectedFormat.Guid -or $image.Width -ne $width -or $image.Height -ne $height) { throw 'IMAGE_FORMAT_OR_DIMENSION_MISMATCH.' }
         $data = $image.LockBits([Drawing.Rectangle]::new(0,0,$width,$height),[Drawing.Imaging.ImageLockMode]::ReadOnly,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
-        try { [ShotKitPngExportMemorySmoke.Pixels]::Verify($data.Scan0,$data.Stride,$(if ($Format -eq 'PNG') { 0 } else { 3 })) }
+        try { $script:lastPixelHash=[ShotKitPngExportMemorySmoke.Pixels]::Verify($data.Scan0,$data.Stride,$(if ($Format -eq 'PNG') { 0 } else { 3 })) }
         finally { $image.UnlockBits($data) }
     } finally { $image.Dispose() }
 }
@@ -229,6 +258,48 @@ function Stop-OwnedProcess {
     $script:processStopped = $process.HasExited
     $process.Dispose(); $script:process = $null
     if (-not $script:processStopped) { throw 'OWNED_PROCESS_CLEANUP_FAILED.' }
+}
+
+function Click-EditorButton([string] $Text) {
+    Require-Owner $editor.H
+    $buttons=@([ShotKitPngExportMemorySmoke.Native]::Children($editor.H) | Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and ($_.Title -replace '&','').Trim() -ceq $Text})
+    if ($buttons.Count -ne 1) { throw "EDITOR_BUTTON_AMBIGUOUS: $Text." }
+    if (-not [ShotKitPngExportMemorySmoke.Native]::PostMessageW($buttons[0].H,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'EDITOR_BUTTON_POST_FAILED.' }
+}
+function Draw-LargeAnnotation([byte] $Key,[string] $Tool,[int] $Low,[int] $High) {
+    Require-Owner $editor.H
+    if (-not [ShotKitPngExportMemorySmoke.Native]::SetForegroundWindow($editor.H)) { throw 'EDITOR_FOCUS_FAILED.' }
+    [void](Wait-For {[ShotKitPngExportMemorySmoke.Native]::GetForegroundWindow() -eq $editor.H} 'editor foreground')
+    [ShotKitPngExportMemorySmoke.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
+    [ShotKitPngExportMemorySmoke.Native]::keybd_event($Key,0,2,[UIntPtr]::Zero)
+    [void](Wait-For {Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title -like "*Werkzeug $Tool*"}} 'annotation tool')
+    $client=[ShotKitPngExportMemorySmoke.Rect]::new()
+    if (-not [ShotKitPngExportMemorySmoke.Native]::GetClientRect($editor.H,[ref]$client)) { throw 'CLIENT_RECT_FAILED.' }
+    $toolbar=@([ShotKitPngExportMemorySmoke.Native]::Children($editor.H) | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'})
+    if ($toolbar.Count -ne 1) { throw 'TOOLBAR_AMBIGUOUS.' }
+    $tr=[ShotKitPngExportMemorySmoke.Rect]::new()
+    if (-not [ShotKitPngExportMemorySmoke.Native]::GetClientRect($toolbar[0].H,[ref]$tr)) { throw 'TOOLBAR_RECT_FAILED.' }
+    $side=[int][Math]::Round([Math]::Min($client.Right,$client.Bottom-$tr.Bottom))
+    if ($side -lt 256) { throw 'VIEWPORT_TOO_SMALL_FOR_BOUNDED_PIXEL_MARGIN.' }
+    $left=[int][Math]::Floor(($client.Right-$side)/2.0)
+    $top=$tr.Bottom+[int][Math]::Floor(($client.Bottom-$tr.Bottom-$side)/2.0)
+    $origin=[ShotKitPngExportMemorySmoke.Point]::new()
+    if (-not [ShotKitPngExportMemorySmoke.Native]::ClientToScreen($editor.H,[ref]$origin)) { throw 'CLIENT_TO_SCREEN_FAILED.' }
+    $a=[ShotKitPngExportMemorySmoke.Point]::new();$b=[ShotKitPngExportMemorySmoke.Point]::new()
+    $a.X=$origin.X+$left+[int][Math]::Round(($Low+0.5)*$side/8192)
+    $a.Y=$origin.Y+$top+[int][Math]::Round(($Low+0.5)*$side/8192)
+    $b.X=$origin.X+$left+[int][Math]::Round(($High+0.5)*$side/8192)
+    $b.Y=$origin.Y+$top+[int][Math]::Round(($High+0.5)*$side/8192)
+    foreach ($point in @($a,$b)) {
+        if ([ShotKitPngExportMemorySmoke.Native]::OwnerPid([ShotKitPngExportMemorySmoke.Native]::WindowFromPoint($point)) -ne $process.Id) { throw 'ANNOTATION_INPUT_TARGET_MISMATCH.' }
+    }
+    if (-not [ShotKitPngExportMemorySmoke.Native]::SetCursorPos($a.X,$a.Y)) { throw 'CURSOR_START_FAILED.' }
+    [ShotKitPngExportMemorySmoke.Native]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$true
+    Start-Sleep -Milliseconds 100
+    if (-not [ShotKitPngExportMemorySmoke.Native]::SetCursorPos($b.X,$b.Y)) { throw 'CURSOR_END_FAILED.' }
+    Start-Sleep -Milliseconds 200
+    [ShotKitPngExportMemorySmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero);$script:mouseDown=$false
+    [void](Wait-For {Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title.StartsWith('* ')}} 'dirty annotation title')
 }
 
 try {
@@ -245,6 +316,13 @@ try {
         finally { $bitmap.UnlockBits($data) }
         $bitmap.Save($fixturePath,[Drawing.Imaging.ImageFormat]::Png)
     } finally { $bitmap.Dispose() }
+    if ($LargeAnnotated) {
+        $header=[byte[]]::new(26)
+        $headerStream=[IO.File]::OpenRead($fixturePath)
+        try { if ($headerStream.Read($header,0,26) -ne 26) { throw 'PNG_HEADER_TRUNCATED.' } } finally { $headerStream.Dispose() }
+        if ($header[24] -ne 8 -or $header[25] -ne 6) { throw 'LARGE_FIXTURE_MUST_BE_RGBA8_PNG.' }
+        $header=$null
+    }
     Assert-Image $fixturePath
     $sourceHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
     $fixtureBytes = (Get-Item -LiteralPath $fixturePath).Length
@@ -281,9 +359,18 @@ try {
     if (@($identities.H | Select-Object -Unique).Count -ne $DocumentCount) { throw 'EDITOR_IDENTITIES_NOT_DISTINCT.' }
     Mark-Phase 'all_documents_open'
     $formats = if ($ScrollHeight) { @('PNG','JPEG') } else { @('PNG') }
+    $stages=if ($LargeAnnotated) {@('Redact','Both','UndoBlur','UndoRedact')} else {@('Original')}
+    foreach ($stage in $stages) {
+    if ($LargeAnnotated) {
+        [void][ShotKitPngExportMemorySmoke.Native]::ShowWindow($editor.H,3)
+        if ($stage -eq 'Redact') { Draw-LargeAnnotation 0x53 'Redact' 1024 2048 }
+        elseif ($stage -eq 'Both') { Draw-LargeAnnotation 0x57 'GaussianBlur' 1536 2560 }
+        else { Click-EditorButton 'Zurück'; Start-Sleep -Milliseconds 250 }
+        [ShotKitPngExportMemorySmoke.Pixels]::AnnotationState=$(if ($stage -eq 'Both') {2} elseif ($stage -eq 'UndoRedact') {0} else {1})
+    }
     foreach ($format in $formats) {
         $extension = if ($format -eq 'PNG') { 'png' } else { 'jpg' }
-        $outputPath=Join-Path $root "exported-${width}x${height}.$extension"
+        $outputPath=Join-Path $root "exported-${width}x${height}-$stage.$extension"
         Require-Owner $editor.H
         # ID_SAVE_AS invokes the real GUI save dialog and extension-selected encoder.
         if (-not [ShotKitPngExportMemorySmoke.Native]::PostMessageW($editor.H,0x0111,[IntPtr]0x5140,[IntPtr]::Zero)) { throw 'SAVE_AS_COMMAND_FAILED.' }
@@ -305,6 +392,27 @@ try {
         Mark-Phase 'png_export'
         $exportTimer = [Diagnostics.Stopwatch]::StartNew()
         if (-not [ShotKitPngExportMemorySmoke.Native]::PostMessageW($buttons[0].H,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'SAVE_AS_ACCEPT_FAILED.' }
+        if ($LargeAnnotated -and $stage -eq 'Both') {
+            $outcome=Wait-For {
+                $owned=@(Get-OwnedWindows)
+                $errorWindow=$owned | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit'} | Select-Object -First 1
+                if ($null -ne $errorWindow) { return $errorWindow }
+                $owned | Where-Object {$_.H -eq $editor.H -and $_.Title.IndexOf($outputPath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')} | Select-Object -First 1
+            } 'combined annotation save result'
+            if ($outcome.ClassName -eq '#32770') {
+                Require-Owner $outcome.H
+                $text=(@([ShotKitPngExportMemorySmoke.Native]::Children($outcome.H) | ForEach-Object {[ShotKitPngExportMemorySmoke.Native]::DiagnosticText($_.H,$process.Id)}) -join ' ')
+                if ($text -notlike '*Speichern fehlgeschlagen:*' -or $text -notmatch 'Bildbudget|Budget|budget') { throw "UNEXPECTED_SAVE_ERROR: $text" }
+                if (Test-Path -LiteralPath $outputPath) { throw 'FAILED_SAVE_PUBLISHED_FILE.' }
+                if (-not [ShotKitPngExportMemorySmoke.Native]::PostMessageW($outcome.H,0x0111,[IntPtr]1,[IntPtr]::Zero)) { throw 'SAVE_ERROR_DISMISS_FAILED.' }
+                [void](Wait-For {Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title.StartsWith('* ') -and [ShotKitPngExportMemorySmoke.Native]::IsWindowEnabled($_.H)}} 'retained dirty document after budget rejection')
+                if ((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -cne $sourceHash) { throw 'SOURCE_CHANGED_AFTER_REJECTION.' }
+                [ShotKitPngExportMemorySmoke.Pixels]::AnnotationState=1
+                Assert-Image (Join-Path $root "exported-${width}x${height}-Redact.png")
+                Write-Host "EXPECTED_BUDGET_REJECTION: $text; dirty editor retained; previous redacted file and source intact. UndoBlur/UndoRedact exports must still prove retained history and pixels."
+                continue
+            }
+        }
         # refresh_title runs only after the encoder and atomic write both succeed.
         [void](Wait-For { Get-OwnedWindows | Where-Object {$_.H -eq $editor.H -and $_.Title.IndexOf($outputPath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ') -and [ShotKitPngExportMemorySmoke.Native]::IsWindowEnabled($_.H)} } 'completed image export title')
         $exportTimer.Stop(); $exportMs = $exportTimer.ElapsedMilliseconds
@@ -314,6 +422,8 @@ try {
         Mark-Phase 'post_export'
         Start-Sleep -Milliseconds 500
         Assert-Image $outputPath $format
+        if ($LargeAnnotated -and $stage -eq 'Redact') { $redactedPixelHash=$lastPixelHash }
+        if ($LargeAnnotated -and $stage -eq 'UndoBlur' -and $lastPixelHash -cne $redactedPixelHash) { throw 'REDACTION_PIXELS_CHANGED_AFTER_BLUR_UNDO.' }
         if ((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -cne $sourceHash) { throw 'SOURCE_PNG_CHANGED.' }
         if ($process.HasExited) { throw "PROCESS_EXITED_AFTER_EXPORT: code $($process.ExitCode)." }
         $remaining=@(Get-OwnedWindows | Where-Object {$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'})
@@ -323,10 +433,12 @@ try {
             if ((Get-FileHash -LiteralPath $identity.Path -Algorithm SHA256).Hash -cne $sourceHash) { throw 'SOURCE_DOCUMENT_CHANGED.' }
             if ($identity.H -ne $editor.H -and @($remaining | Where-Object {$_.H -eq $identity.H -and $_.Title -ceq $identity.Title}).Count -ne 1) { throw 'OTHER_DOCUMENT_CHANGED_AFTER_SAVE.' }
         }
-        Write-Host "EXPORT_PASS: format=$format dimensions=${width}x${height} simultaneous_documents=$DocumentCount; every decoded pixel checked; source hashes and editor identities preserved."
+        Write-Host "EXPORT_PASS: format=$format dimensions=${width}x${height} simultaneous_documents=$DocumentCount; decoded pixels checked (annotation boundary margins when applicable); source hashes and editor identities preserved."
+    }
     }
 } catch { $failure = $_ }
 finally {
+    if ($mouseDown) { [ShotKitPngExportMemorySmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero) }
     try { $sampleStats = [ShotKitPngExportMemorySmoke.Sampler]::StopAndGet([ref]$sampleNames) } catch { if (-not $failure) { $failure = $_ } }
     if ($null -ne $process) { try { Stop-OwnedProcess } catch { $cleanupFailure = $_.Exception.Message } }
     if ($processStopped -and (Test-Path -LiteralPath $root)) { try { Remove-Item -LiteralPath $root -Recurse -Force } catch { $cleanupFailure = 'TEMPORARY_FIXTURE_CLEANUP_FAILED.' } }
@@ -347,5 +459,6 @@ foreach ($phase in @('import','all_documents_open','before_export_dialog_ready',
     if ($index -lt 0 -or $sampleStats[$index].Samples -lt 1) { throw "NO_MEMORY_SAMPLES: required phase '$phase' has no sample." }
 }
 Write-Host "PASS: GUI Save As completed with $DocumentCount simultaneous ${width}x${height} documents; full output pixel verification and unchanged source hashes."
-if ($ScrollHeight) { Write-Host 'PARTIAL_SCENARIO_1: synthetic 256x30000 result exported as PNG and JPEG; this does not prove the actual scroll acquisition reaches 30000 pixels. JPEG grayscale 16x16 blocks have a maximum per-channel tolerance of 3; PNG is exact.' }
+if ($LargeAnnotated) { Write-Host 'ANNOTATED_LARGE_PASS: 8192x8192 RGBA import; redaction export, overlapping Gaussian blur save or checked budget rejection, UndoBlur redaction export and UndoRedact original export fully verified.' }
+if ($ScrollHeight) { Write-Host 'SCENARIO_1: synthetic 256x30000 result exported as PNG and JPEG; this does not prove the actual scroll acquisition reaches 30000 pixels. JPEG grayscale 16x16 blocks have a maximum per-channel tolerance of 3; PNG is exact.' }
 Write-Host 'SCOPE: this GUI smoke does not test A=0 or partial alpha; the existing Rust PNG round-trip tests cover transparent RGBA pixels.'

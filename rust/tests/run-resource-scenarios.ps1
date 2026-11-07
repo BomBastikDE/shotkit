@@ -12,8 +12,9 @@ $ExePath=(Resolve-Path -LiteralPath $ExePath).Path
 $imageName=[IO.Path]::GetFileNameWithoutExtension($ExePath)
 if (@(Get-Process -Name $imageName -ErrorAction SilentlyContinue).Count -gt 0) { throw 'PREEXISTING_SHOTKIT_PROCESS.' }
 $cases=@(
-    @{Id='1'; Script='windows-png-export-memory-smoke.ps1'; Extra=@('-ScrollHeight'); Scope='PARTIAL: 30000-row synthetic result export; actual maximum scroll acquisition remains unverified'},
-    @{Id='2'; Script='windows-import-budget-smoke.ps1'; Extra=@('-Fixture','Boundary'); Scope='PARTIAL: exact 512-MiB RGBA PNG rejection; opening, redaction, blur and save at the boundary remain unverified'},
+    @{Id='1'; Script='windows-png-export-memory-smoke.ps1'; Extra=@('-ScrollHeight'); Scope='30000-row synthetic result exported as PNG and JPEG (accepted #65 scope)'},
+    @{Id='2'; Script='windows-png-export-memory-smoke.ps1'; Extra=@('-LargeAnnotated','-TimeoutSeconds','150'); Scope='2a: 8192-square RGBA import, redaction + Gaussian blur save or checked budget rejection, pixel-verified retained document and history'},
+    @{Id='2'; Script='windows-import-budget-smoke.ps1'; Extra=@('-Fixture','Boundary'); Scope='2b: exact 512-MiB RGBA PNG rejection preserves dirty existing document, pixels and history'},
     @{Id='3'; Script='windows-import-budget-smoke.ps1'; Extra=@('-Fixture','JustOver'); Scope='exactly one 16384-pixel row over the 512-MiB raster boundary'},
     @{Id='4'; Script='windows-png-export-memory-smoke.ps1'; Extra=@('-DocumentCount','5'); Scope='five simultaneous 6000x4000 documents, one GUI Save As, source hashes and HWNDs preserved'},
     @{Id='5'; Script='windows-crop-history-confirmation-smoke.ps1'; Extra=@(); Scope='real 128-MiB history overflow, decline/accept, pixel fingerprints and Undo/Redo'},
@@ -28,10 +29,11 @@ foreach ($case in $cases) {
     foreach ($arg in @('-NoProfile','-File',(Join-Path $PSScriptRoot $case.Script),'-ExePath',$ExePath)+$case.Extra) { [void]$start.ArgumentList.Add($arg) }
     $child=$null; $peaks=@{}; $clock=[Diagnostics.Stopwatch]::StartNew()
     $startUtc=[DateTime]::UtcNow
+    $caseTimeoutSeconds=if ($case.Extra -contains '-LargeAnnotated') {600} else {300}
     try {
         $child=[Diagnostics.Process]::Start($start)
         while (-not $child.WaitForExit(50)) {
-            if ($clock.Elapsed.TotalSeconds -gt 300) { throw "RESOURCE_SCENARIO_TIMEOUT: id=$($case.Id)" }
+            if ($clock.Elapsed.TotalSeconds -gt $caseTimeoutSeconds) { throw "RESOURCE_SCENARIO_TIMEOUT: id=$($case.Id)" }
             foreach ($app in @(Get-Process -Name $imageName -ErrorAction SilentlyContinue)) {
                 try {
                     # Observe only newly launched copies of the exact test executable.
@@ -62,4 +64,5 @@ foreach ($case in $cases) {
     }
 }
 Write-Host 'Memory observations have no pass/fail threshold; private-byte peaks between samples can be missed. Existing scenario safety guards remain in force.'
-Write-Host 'ISSUE_65_ACCEPTANCE_INCOMPLETE: scenarios 1 and 2 have explicit coverage gaps. Passing these automated checks does not close #65.'
+if ($Scenario -eq 'All') { Write-Host 'ISSUE_65_SCENARIO_CHECKS_PASSED: 1, 2a, 2b, 3, 4 and both history cases. Closing the issue still requires the reviewed commit and green CI evidence.' }
+else { Write-Host 'ISSUE_65_ACCEPTANCE_INCOMPLETE: only the selected scenario was run.' }

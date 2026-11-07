@@ -325,7 +325,7 @@ try {
     $afterInputHash = (Get-FileHash -LiteralPath $oversizedPath -Algorithm SHA256).Hash
     if ($inputHash -cne $afterInputHash) { throw "INPUT_MODIFIED: SHA256 before=$inputHash after=$afterInputHash." }
     Write-Host "PASS: two ${fixtureWidth}x${fixtureHeight} RGBA PNG imports rejected ($Fixture); the same dirty editor, byte-identical CF_DIBV5 export and undo/redo states survived (SHA256 $($beforeCopy.Hash)); source files unchanged."
-    if ($Fixture -eq 'Boundary') { Write-Host 'PARTIAL_SCENARIO_2: exact 512-MiB decoded raster is rejected by normal admission before opening; redaction + blur + save at that boundary remain untested. No smaller fixture substitutes for the boundary.' }
+    if ($Fixture -eq 'Boundary') { Write-Host 'SCENARIO_2B: exact 512-MiB RGBA raster rejected by normal admission; dirty document, pixels, history and source files preserved. Scenario 2a separately covers the owner-specified 8192-square RGBA image.' }
 } catch { $failure = $_ }
 finally {
     if ($mouseDown) { [ShotKitImportBudgetSmoke.Native]::mouse_event(4,0,0,0,[UIntPtr]::Zero) }

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Issue 65 scenario (1 and 2 have documented partial coverage)'
+        description: 'Issue 65 scenario (2 runs both 2a and 2b)'
         type: choice
         required: true
         default: All
@@ -22,7 +22,7 @@ permissions:
 jobs:
   resource-checks:
     runs-on: windows-2022
-    timeout-minutes: 50
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: rust
@@ -33,7 +33,7 @@ jobs:
         timeout-minutes: 15
         run: cargo build --locked --release
       - name: Run bounded resource scenarios sequentially
-        timeout-minutes: 32
+        timeout-minutes: 42
         shell: pwsh
         env:
           RESOURCE_SCENARIO: ${{ inputs.scenario || 'All' }}
