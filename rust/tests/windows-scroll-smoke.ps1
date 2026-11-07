@@ -8,7 +8,10 @@ param(
     [int] $StartupTimeoutSeconds = 25,
 
     [ValidateRange(20, 180)]
-    [int] $CaptureTimeoutSeconds = 75
+    [int] $CaptureTimeoutSeconds = 75,
+
+    [ValidateSet('None', 'Inside', 'Outside')]
+    [string] $CursorClip = 'None'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +70,17 @@ namespace ShotKitScrollSmoke {
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")]
+        public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
+        [DllImport("user32.dll")]
+        public static extern bool AreDpiAwarenessContextsEqual(IntPtr first, IntPtr second);
+        [DllImport("user32.dll")]
         public static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetCursorPos(out Point point);
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetClipCursor(out Rect rect);
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ClipCursor(ref Rect rect);
         [DllImport("user32.dll")]
         public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
         [DllImport("user32.dll")]
@@ -141,6 +154,9 @@ $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
 $passMessage = $null
 $cleanupFailures = @()
+$clipChanged = $false
+$selectionButtonDown = $false
+$originalClip = [ShotKitScrollSmoke.Rect]::new()
 
 function Get-ProcessWindows {
     param([System.Diagnostics.Process] $OwnedProcess)
@@ -358,6 +374,10 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'the ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     }
+    $dpiContext = [ShotKitScrollSmoke.Native]::GetWindowDpiAwarenessContext($mainWindow.Handle)
+    if (-not [ShotKitScrollSmoke.Native]::AreDpiAwarenessContextsEqual($dpiContext, [IntPtr](-4))) {
+        throw "ShotKit window did not start in the required PerMonitorV2 context: $dpiContext."
+    }
     Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-ProcessWindows $shotKit }
     Assert-NoUnexpectedDialog $shotKit
 
@@ -393,9 +413,42 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($startX, $startY)) { throw 'Could not position the selection start.' }
     Start-Sleep -Milliseconds 150
     [ShotKitScrollSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    $selectionButtonDown = $true
     [void][ShotKitScrollSmoke.Native]::SetCursorPos($endX, $endY)
     Start-Sleep -Milliseconds 200
+    if ($CursorClip -ne 'None') {
+        if (-not [ShotKitScrollSmoke.Native]::GetClipCursor([ref]$originalClip)) {
+            throw 'Could not save the original cursor clip rectangle.'
+        }
+        # Apply only after dragging to the end point, while it is still inside
+        # the new clip. Mouse-up therefore keeps the original 600x400 selection.
+        # Downward scrolling requests endX-8: clamp it 4px right inside the
+        # selection, or to endX (outside the half-open selection) respectively.
+        $clip = [ShotKitScrollSmoke.Rect]::new()
+        $clip.Left = if ($CursorClip -eq 'Inside') { $endX - 4 } else { $endX }
+        $clip.Right = $endX + 1
+        $clip.Top = $startY
+        $clip.Bottom = $endY + 1
+        if (-not [ShotKitScrollSmoke.Native]::ClipCursor([ref]$clip)) {
+            throw 'Could not restrict the cursor for the clamping regression.'
+        }
+        $clipChanged = $true
+        # Prove that Windows actually clamps the requested point before relying
+        # on this scenario. Restore the drag end before releasing the button.
+        if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($endX - 8, $startY + 200)) {
+            throw 'Could not probe the clamped cursor position.'
+        }
+        $actual = [ShotKitScrollSmoke.Point]::new()
+        if (-not [ShotKitScrollSmoke.Native]::GetCursorPos([ref]$actual) -or
+            $actual.X -ne $clip.Left -or $actual.Y -ne $startY + 200) {
+            throw "Cursor clamping was not established: actual=$($actual.X),$($actual.Y)."
+        }
+        if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($endX, $endY)) {
+            throw 'Could not restore the selection end before mouse-up.'
+        }
+    }
     [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    $selectionButtonDown = $false
 
     $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'an auto-saved scroll-capture PNG' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
@@ -404,15 +457,20 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
-    if ($completionText -notlike '*Ende des scrollbaren Bereichs erreicht.*') {
-        throw "Scroll did not report reaching the actual end of the test page. Dialog='$completionText'"
+    $expectedReason = if ($CursorClip -eq 'Outside') {
+        'Mauszeiger kann nicht im Aufnahmebereich positioniert werden'
+    } else { 'Ende des scrollbaren Bereichs erreicht.' }
+    if ($completionText -notlike "*$expectedReason*") {
+        throw "Scroll completion mismatch. Expected='$expectedReason' Dialog='$completionText'"
     }
 
     Add-Type -AssemblyName System.Drawing
     $bitmap = [System.Drawing.Bitmap]::new($png.FullName)
     try {
         $expectedWidth = 600
-        $expectedHeight = 2050 # page rows 60 through 2109 within the selected viewport
+        # Outside clipping must preserve the first viewport; inside clipping
+        # must still reconstruct every row through the real bottom of the page.
+        $expectedHeight = if ($CursorClip -eq 'Outside') { 400 } else { 2050 }
         if ($bitmap.Width -ne $expectedWidth -or $bitmap.Height -ne $expectedHeight) {
             throw "Captured image dimensions were $($bitmap.Width)x$($bitmap.Height); expected ${expectedWidth}x${expectedHeight}."
         }
@@ -444,9 +502,25 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         } | Select-Object -First 1
     }
     Assert-NoUnexpectedDialog $shotKit @('Scroll-Aufnahme beendet')
-    $passMessage = "PASS: scroll capture reached the bottom and reconstructed all $expectedHeight deterministic rows in $($png.Name)."
+    $passMessage = "PASS: cursor clip=$CursorClip; reason=$expectedReason; verified all $expectedHeight deterministic rows in $($png.Name)."
 }
 finally {
+    # A failed clamp probe can happen during the owned selection drag. Release
+    # only the button this test pressed, and still restore clipping if it fails.
+    if ($selectionButtonDown) {
+        try { [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
+        catch { $cleanupFailures += "Could not release the selection button: $($_.Exception.Message)" }
+    }
+    # The restriction is global desktop state: always restore it before any
+    # process/file cleanup, and fail the scenario if restoration fails.
+    if ($clipChanged) {
+        try {
+            if (-not [ShotKitScrollSmoke.Native]::ClipCursor([ref]$originalClip)) {
+                throw 'Could not restore the original cursor clip rectangle.'
+            }
+        }
+        catch { $cleanupFailures += $_.Exception.Message }
+    }
     foreach ($owned in @($shotKit, $surface)) {
         if ($null -ne $owned) {
             try {

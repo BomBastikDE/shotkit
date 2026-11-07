@@ -72,7 +72,12 @@ Fenster „Scroll-Aufnahme beendet“ nennt den Grund.
 
 ShotKit kann auch von selbst früher enden, etwa wenn sich ein Bildabschnitt nicht eindeutig zuordnen lässt oder
 nicht sicher erkennbar ist, ob der Inhalt am Ende angekommen ist. Das bis dahin Aufgenommene bleibt dann ebenfalls
-erhalten.
+erhalten. Kann Windows den Mauszeiger nicht im Aufnahmebereich positionieren (etwa weil ein anderes Programm
+seine Bewegung begrenzt), nennt die Meldung diesen Grund; es werden keine weiteren Scroll-Eingaben gesendet.
+
+Bei Monitoren mit unterschiedlicher Skalierung kann die Scroll-Aufnahme weiterhin vorzeitig enden; das Teilbild
+bleibt erhalten. Eine Prüfung auf echten Monitoren mit gemischter Skalierung steht noch aus. Auch kleine
+Mausbewegungen beenden die Aufnahme weiterhin.
 
 ### Diagnoseordner
 

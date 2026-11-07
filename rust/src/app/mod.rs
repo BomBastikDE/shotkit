@@ -214,6 +214,7 @@ extern "system" {
     fn DestroyMenu(menu: H) -> i32;
     fn IsWindowVisible(h: H) -> i32;
     fn SetProcessDpiAwarenessContext(context: H) -> i32;
+    fn OutputDebugStringW(text: *const u16);
     fn WindowFromPoint(p: Point) -> H;
     fn PostMessageW(h: H, msg: u32, w: W, l: L) -> i32;
     fn SetTimer(
@@ -809,7 +810,18 @@ unsafe fn run_application() {
         }
         return;
     }
-    SetProcessDpiAwarenessContext(-4isize as H);
+    // The manifest sets PerMonitorV2 before any window exists. Keep this
+    // request as fallback; failure must not be mistaken for a successful set.
+    // ERROR_ACCESS_DENIED is expected when the manifest already set awareness.
+    if SetProcessDpiAwarenessContext(-4isize as H) == 0 {
+        let error = GetLastError();
+        OutputDebugStringW(
+            wide(&format!(
+                "ShotKit: SetProcessDpiAwarenessContext(PerMonitorV2) failed: Win32 {error}; awareness may already be set by the manifest or compatibility settings.\n"
+            ))
+            .as_ptr(),
+        );
+    }
     let inst = GetModuleHandleW(std::ptr::null());
     let class = wide("ShotKitRustPrototype");
     let wc = WndClass {
