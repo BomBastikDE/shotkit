@@ -166,21 +166,24 @@ namespace ShotKitSettingsResetSmoke {
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Cannot delete exact held root");
         }
         public sealed class ControlInfo {
-            public IntPtr Handle, Parent;
-            public uint Pid;
+            public IntPtr Handle, Parent, Owner;
+            public uint Pid, ThreadId, Style;
             public int Id;
             public string ClassName, Text;
             public bool Exists, Visible, Enabled;
         }
         [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr hwnd);
         [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+        [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr dialog, int id);
+        [DllImport("user32.dll")] static extern int GetWindowLongW(IntPtr hwnd, int index);
         [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
         public static ControlInfo InspectControl(IntPtr hwnd) {
-            uint pid; GetWindowThreadProcessId(hwnd,out pid);
+            uint pid; uint thread=GetWindowThreadProcessId(hwnd,out pid);
             var cls=new StringBuilder(256); GetClassNameW(hwnd,cls,cls.Capacity);
             return new ControlInfo {
-                Handle=hwnd, Parent=GetParent(hwnd), Pid=pid, Id=GetDlgCtrlID(hwnd),
+                Handle=hwnd, Parent=GetParent(hwnd), Owner=GetWindow(hwnd,4), Pid=pid, ThreadId=thread, Style=unchecked((uint)GetWindowLongW(hwnd,-16)), Id=GetDlgCtrlID(hwnd),
                 ClassName=cls.ToString(), Text=Text(hwnd), Exists=IsWindow(hwnd),
                 Visible=IsWindowVisible(hwnd), Enabled=IsWindowEnabled(hwnd)
             };
@@ -191,6 +194,52 @@ namespace ShotKitSettingsResetSmoke {
                 list.Add(InspectControl(h)); return true;
             };
             EnumChildWindows(dialog,cb,IntPtr.Zero); GC.KeepAlive(cb); return list.ToArray();
+        }
+        public sealed class OkDialogInfo {
+            public ControlInfo Dialog, Owner, Button;
+            public int DefaultId;
+            public IntPtr DefaultHandle;
+        }
+        public static OkDialogInfo RequireOkDialog(IntPtr dialog, uint expectedPid, string expectedTitle, uint timeoutMs) {
+            var box=InspectControl(dialog);
+            if(!box.Exists || !box.Visible || !box.Enabled || box.Pid!=expectedPid ||
+               box.ClassName!="#32770" || box.Text!=expectedTitle || box.Owner==IntPtr.Zero || box.ThreadId==0)
+                throw new InvalidOperationException("Expected owned enabled native OK dialog is not ready.");
+            var owner=InspectControl(box.Owner);
+            if(!owner.Exists || owner.Enabled || owner.Pid!=expectedPid ||
+               owner.ClassName!="ShotKitRustPrototype" || owner.ThreadId!=box.ThreadId)
+                throw new InvalidOperationException("OK dialog must disable its own primary owner on the same UI thread.");
+            var visibleButtons=new List<ControlInfo>();
+            foreach(var candidate in Children(dialog))
+                if(candidate.Visible && candidate.ClassName=="Button") visibleButtons.Add(candidate);
+            if(visibleButtons.Count!=1)
+                throw new InvalidOperationException("OK-only dialog must have exactly one visible native Button; count="+visibleButtons.Count);
+            var button=visibleButtons[0];
+            // GetDlgCtrlID describes a child control, not MessageBoxW's result.
+            // CI 42333349379 observed the sole OK control with IDCANCEL (2).
+            // Explicitly admit only IDOK (1) or IDCANCEL (2), together with the
+            // complete OK-only/modal/default contract; never accept an arbitrary ID.
+            if(!button.Exists || !button.Enabled || button.Pid!=expectedPid || button.ThreadId!=box.ThreadId ||
+               button.Parent!=dialog || !IsChild(dialog,button.Handle) ||
+               (button.Id!=1 && button.Id!=2) || button.Text.Replace("&", "").Trim()!="OK" ||
+               (button.Style & 0x0f)!=1) // BS_TYPEMASK / BS_DEFPUSHBUTTON
+                throw new InvalidOperationException("Sole visible control must be an enabled owned default OK pushbutton with control ID 1 or 2.");
+            int defaultId=DefaultButtonWithTimeout(dialog,timeoutMs);
+            IntPtr defaultHandle=GetDlgItem(dialog,defaultId);
+            if(defaultId!=button.Id || defaultHandle!=button.Handle)
+                throw new InvalidOperationException("Native dialog default must identify the sole OK button HWND; defaultId="+defaultId+" controlId="+button.Id);
+            return new OkDialogInfo { Dialog=box, Owner=owner, Button=button, DefaultId=defaultId, DefaultHandle=defaultHandle };
+        }
+        public static void ClickOwnedOkButton(IntPtr dialog, IntPtr button, uint expectedPid, string expectedTitle) {
+            // Re-enumerate ALL visible buttons and recheck the exact OK-only,
+            // owner-modal and default contract directly before BM_CLICK.
+            var actual=RequireOkDialog(dialog,expectedPid,expectedTitle,500);
+            if(actual.Button.Handle!=button)
+                throw new InvalidOperationException("The unique default OK button HWND changed before BM_CLICK.");
+            // Native checks and input remain separate Win32 operations. The UI
+            // can change between them; closure and app/file postconditions are
+            // required as well. A child ID is not a MessageBoxW return value.
+            Click(button);
         }
         public static void ClickOwnedButton(IntPtr dialog, IntPtr button, int id, uint expectedPid, string expectedTitle) {
             // Revalidate the exact native ID and HWND immediately before BM_CLICK.
@@ -216,13 +265,18 @@ namespace ShotKitSettingsResetSmoke {
             Click(button);
         }
         public static void Click(IntPtr button) {
+            // API success is SendMessageTimeoutW's nonzero return. Its out
+            // result belongs to BM_CLICK and is NOT MessageBoxW's return value.
             UIntPtr result;
             if(SendMessageTimeoutW(button,0x00f5,IntPtr.Zero,IntPtr.Zero,2,3000,out result)==IntPtr.Zero)
                 throw new InvalidOperationException("Button click timed out.");
         }
         public static int DefaultButton(IntPtr dialog) {
+            return DefaultButtonWithTimeout(dialog,3000);
+        }
+        static int DefaultButtonWithTimeout(IntPtr dialog, uint timeoutMs) {
             UIntPtr result;
-            if(SendMessageTimeoutW(dialog,0x0400,IntPtr.Zero,IntPtr.Zero,2,3000,out result)==IntPtr.Zero)
+            if(SendMessageTimeoutW(dialog,0x0400,IntPtr.Zero,IntPtr.Zero,2,timeoutMs,out result)==IntPtr.Zero)
                 throw new InvalidOperationException("DM_GETDEFID timed out.");
             uint value=unchecked((uint)result.ToUInt64());
             if((value>>16)!=0x534b) throw new InvalidOperationException("Dialog has no default button.");
@@ -259,7 +313,9 @@ function Convert-ControlDiagnostic($Control) {
     return [ordered]@{
         hwnd = ('0x{0:X}' -f $Control.Handle.ToInt64())
         parent = ('0x{0:X}' -f $Control.Parent.ToInt64())
-        pid = $Control.Pid; class = $Control.ClassName; id = $Control.Id
+        owner = ('0x{0:X}' -f $Control.Owner.ToInt64())
+        pid = $Control.Pid; threadId = $Control.ThreadId; class = $Control.ClassName; id = $Control.Id
+        style = ('0x{0:X}' -f $Control.Style)
         exists = $Control.Exists; visible = $Control.Visible; enabled = $Control.Enabled
         text = $Control.Text
     }
@@ -314,6 +370,7 @@ function Wait-Dialog([string] $Title, [string] $Body) {
     return $dialog
 }
 function Click-DialogButton($Dialog, [int] $Id) {
+    Assert-True ($Id -in @(6, 7)) 'Exact-ID dialog helper is restricted to Yes/No (6/7); OK-only dialogs require their semantic contract'
     $script:interactionSequence++
     $readyClock = [Diagnostics.Stopwatch]::StartNew()
     $attempt = 0
@@ -352,6 +409,58 @@ function Click-DialogButton($Dialog, [int] $Id) {
         Write-UiSnapshot 'button_interaction_failed' $Dialog $Id -Details @{ attempts = $attempt; interactionElapsedMs = $readyClock.ElapsedMilliseconds; error = $_.Exception.Message; scriptStack = $_.ScriptStackTrace }
         throw
     }
+}
+function Click-OkDialog($Dialog) {
+    $script:interactionSequence++
+    $readyClock = [Diagnostics.Stopwatch]::StartNew()
+    $attempt = 0
+    $selected = $null
+    $stableControlId = 0
+    $stableHandle = [IntPtr]::Zero
+    $lastReason = '<not-sampled>'
+    Write-UiSnapshot 'ok_button_wait_begin' $Dialog -Details @{ readyLimitMs = 5000; permittedControlIds = @(1, 2); requiredCaption = 'OK' }
+    try {
+        while ($readyClock.ElapsedMilliseconds -lt 5000) {
+            Assert-OwnedProcess
+            Assert-True (-not $process.HasExited) 'Owned app exited before OK button readiness'
+            $attempt++
+            $remainingMs = [Math]::Max(1, [Math]::Min(500, 5000 - $readyClock.ElapsedMilliseconds))
+            $candidate = $null
+            try {
+                $candidate = [ShotKitSettingsResetSmoke.Native]::RequireOkDialog($Dialog.Handle, $ownedProcessId, $Dialog.Title, [uint32]$remainingMs)
+            } catch { $lastReason = $_.Exception.Message }
+            if ($null -ne $candidate) {
+                $lastReason = '<contract met>'
+                if ($stableHandle -eq $candidate.Button.Handle -and $stableControlId -eq $candidate.Button.Id) { $selected = $candidate; break }
+                $stableHandle = $candidate.Button.Handle
+                $stableControlId = $candidate.Button.Id
+            } else { $stableHandle = [IntPtr]::Zero; $stableControlId = 0 }
+            Start-Sleep -Milliseconds 50
+        }
+        Assert-True ($null -ne $selected) "OK_BUTTON_READY_TIMEOUT: exact OK-only/modal/default contract not met; attempts=$attempt elapsedMs=$($readyClock.ElapsedMilliseconds) reason=$lastReason"
+        Assert-True ([ShotKitSettingsResetSmoke.Native]::WindowText($Dialog.Handle).Contains($Dialog.ExpectedBody)) 'Expected OK dialog body changed before click'
+        Write-UiSnapshot 'ok_button_click_begin' $Dialog $selected.Button.Id -Details @{
+            attempts = $attempt; readyElapsedMs = $readyClock.ElapsedMilliseconds
+            selectedHwnd = ('0x{0:X}' -f $selected.Button.Handle.ToInt64())
+            nativeDefaultId = $selected.DefaultId; nativeDefaultHwnd = ('0x{0:X}' -f $selected.DefaultHandle.ToInt64())
+            modalOwner = (Convert-ControlDiagnostic $selected.Owner)
+        }
+        [ShotKitSettingsResetSmoke.Native]::ClickOwnedOkButton($Dialog.Handle, $selected.Button.Handle, $ownedProcessId, $Dialog.Title)
+        [void](Wait-Value { -not [ShotKitSettingsResetSmoke.Native]::IsWindow($Dialog.Handle) } 'actual OK dialog destruction')
+        # A following startup dialog may immediately disable the same owner.
+        # Terminal acknowledgements separately require the primary to become
+        # enabled; all paths retain their next-dialog/app/file assertions.
+        Write-UiSnapshot 'ok_button_click_complete' -ExpectedId $selected.Button.Id -Details @{ title = $Dialog.Title; interactionElapsedMs = $readyClock.ElapsedMilliseconds }
+    } catch {
+        Write-UiSnapshot 'ok_button_interaction_failed' $Dialog -Details @{ attempts = $attempt; interactionElapsedMs = $readyClock.ElapsedMilliseconds; lastReadinessFailure = $lastReason; error = $_.Exception.Message; scriptStack = $_.ScriptStackTrace }
+        throw
+    }
+}
+function Assert-PrimaryEnabled {
+    [void](Wait-Value {
+        $current = [ShotKitSettingsResetSmoke.Native]::InspectControl($primary.Handle)
+        $current.Exists -and $current.Pid -eq $ownedProcessId -and $current.ClassName -ceq 'ShotKitRustPrototype' -and $current.Enabled
+    } 'own primary enabled after terminal modal acknowledgement')
 }
 function Assert-Bytes([string] $Path, [byte[]] $Expected) {
     Assert-True ([IO.File]::Exists($Path)) "Expected file '$([IO.Path]::GetFileName($Path))'"
@@ -403,13 +512,14 @@ function Start-CaseProcess([string] $CaseRoot, [string] $RunName) {
 }
 function Complete-Startup {
     $notice = Wait-Dialog 'ShotKit Rust – Prototyp' 'Prototyp gestartet.'
-    Click-DialogButton $notice 1
+    Click-OkDialog $notice
     $script:primary = Wait-Value {
         [ShotKitSettingsResetSmoke.Native]::Windows($process.Id) | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
     } 'owned primary window'
     $editor = Wait-Value {
         [ShotKitSettingsResetSmoke.Native]::Windows($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq 'ShotKitRustEditor' } | Select-Object -First 1
     } 'working editor for imported local PNG'
+    Assert-PrimaryEnabled
     Assert-True ([ShotKitSettingsResetSmoke.Native]::UiResponsive($editor.Handle)) 'Editor must respond after settings load'
 }
 function Assert-OwnedProcess {
@@ -474,7 +584,8 @@ function Assert-LoadedOpenEditor([bool] $Expected) {
 function Assert-BlockedSave {
     Toggle-OpenEditor
     $warning = Wait-Dialog 'ShotKit Rust' 'Einstellungen können nicht gespeichert werden'
-    Click-DialogButton $warning 1
+    Click-OkDialog $warning
+    Assert-PrimaryEnabled
     Assert-Event 'settings_save_stage=attempt'
     Assert-Event 'settings_save_stage=blocked reason=settings_not_writable'
     Assert-True (-not ((Read-Events) -ccontains 'settings_save_stage=success')) 'Blocked state must never report save success'
@@ -541,7 +652,7 @@ try {
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0100, [IntPtr]13, [IntPtr]0)) 'Enter keydown post failed'
     Assert-True ([ShotKitSettingsResetSmoke.Native]::PostMessageW($prompt.Handle, 0x0101, [IntPtr]13, [IntPtr]0)) 'Enter keyup post failed'
     $warning = Wait-Dialog 'ShotKit Rust' 'Speichern der Einstellungen ist deaktiviert'
-    Click-DialogButton $warning 1
+    Click-OkDialog $warning
     Complete-Startup
     Assert-Event 'settings_reset_stage=declined'
     Assert-True (-not ((Read-Events) -ccontains 'settings_reset_stage=approved')) 'Default Enter must not approve reset'
@@ -567,7 +678,7 @@ try {
     Assert-True (@([IO.Directory]::GetFileSystemEntries($settingsDir)).Count -eq 3) 'Only defaults, original backup and receipt may remain'
     Assert-Defaults $settingsPath
     $receiptBytes = [IO.File]::ReadAllBytes($backup + '.complete')
-    Click-DialogButton $success 1
+    Click-OkDialog $success
     Complete-Startup
     Assert-Event 'settings_reset_stage=approved'
     Assert-Event 'settings_reset_stage=success'
@@ -596,7 +707,7 @@ try {
     [IO.File]::WriteAllBytes(($settingsPath + '.reset-pending'), $pending)
     Start-CaseProcess $caseRoot 'first'
     $warning = Wait-Dialog 'ShotKit Rust' 'Speichern der Einstellungen ist deaktiviert'
-    Click-DialogButton $warning 1
+    Click-OkDialog $warning
     Complete-Startup
     Assert-True (@(Read-Events | Where-Object { $_ -match '^settings_load_stage=failed ' }).Count -eq 1) 'Interrupted reset must fail startup load'
     Assert-True (@(Read-Events | Where-Object { $_ -match '^settings_reset_stage=' }).Count -eq 0) 'Pending state must not offer or perform another reset'
