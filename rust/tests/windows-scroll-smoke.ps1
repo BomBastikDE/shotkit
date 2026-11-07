@@ -146,6 +146,8 @@ $localAppData = Join-Path $testRoot 'localappdata'
 $saveFolder = Join-Path $testRoot 'captures'
 $readyFile = Join-Path $testRoot 'surface.ready'
 $helperFile = Join-Path $testRoot 'surface.ps1'
+$clipArmFile = Join-Path $testRoot 'cursor-clip.arm'
+$clipProofFile = Join-Path $testRoot 'cursor-clip.proof'
 $surfaceStdout = Join-Path $testRoot 'surface.stdout.log'
 $surfaceStderr = Join-Path $testRoot 'surface.stderr.log'
 $shotKit = $null
@@ -216,7 +218,11 @@ try {
     # The synthetic surface exists only for this test. It draws a fixed page and
     # implements its own WM_MOUSEWHEEL scroll model; no external app/data is used.
     $helperSource = @'
-param([Parameter(Mandatory=$true)][string] $ReadyFile)
+param(
+    [Parameter(Mandatory=$true)][string] $ReadyFile,
+    [Parameter(Mandatory=$true)][string] $ClipArmFile,
+    [Parameter(Mandatory=$true)][string] $ClipProofFile
+)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -235,12 +241,25 @@ namespace ShotKitScrollSurface {
         private const int WheelMessage = 0x020A;
         private readonly Bitmap page;
         private readonly string readyFile;
+        private readonly string clipArmFile;
+        private readonly string clipProofFile;
+        private bool clipApplied;
         private int offset;
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClipRect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CursorPoint { public int X, Y; }
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool ClipCursor(ref ClipRect rect);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClipCursor(out ClipRect rect);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetCursorPos(out CursorPoint point);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
-        public Surface(string path) {
+        public Surface(string path, string armPath, string proofPath) {
             try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             readyFile = path;
+            clipArmFile = armPath;
+            clipProofFile = proofPath;
             Text = "ShotKit Synthetic Scroll Surface";
             StartPosition = FormStartPosition.Manual;
             Location = new Point(20, 20);
@@ -279,8 +298,39 @@ namespace ShotKitScrollSurface {
             File.WriteAllText(readyFile, String.Format("{0},{1},{2},{3}", origin.X, origin.Y, ClientSize.Width, ClientSize.Height));
         }
 
+        protected override void OnActivated(EventArgs e) {
+            base.OnActivated(e);
+            if (clipApplied || String.IsNullOrEmpty(clipArmFile) ||
+                !File.Exists(clipArmFile) || GetForegroundWindow() != Handle) return;
+            string mode = File.ReadAllText(clipArmFile).Trim();
+            if (mode != "Inside" && mode != "Outside") throw new InvalidOperationException("Invalid cursor clip mode.");
+            // Arm only after the selection endpoint is established. Apply here,
+            // after the overlay gives foreground back to this owned surface.
+            // ShotKit's existing activation-message barrier runs before its
+            // capture worker starts, so no timer/poll races are needed here.
+            Point origin = PointToScreen(Point.Empty);
+            ClipRect expected = new ClipRect {
+                Left = origin.X + (mode == "Inside" ? 676 : 680),
+                Top = origin.Y + 60, Right = origin.X + 681, Bottom = origin.Y + 461
+            };
+            clipApplied = true;
+            if (!ClipCursor(ref expected)) throw new InvalidOperationException("Foreground ClipCursor failed.");
+            File.WriteAllText(clipProofFile, ClipEvidence("active") + Environment.NewLine);
+        }
+
+        private string ClipEvidence(string stage) {
+            ClipRect rect;
+            CursorPoint point;
+            if (!GetClipCursor(out rect) || !GetCursorPos(out point))
+                throw new InvalidOperationException("Could not read active cursor clipping.");
+            return String.Format("{0},{1},{2},{3},{4},{5},{6}",
+                stage, rect.Left, rect.Top, rect.Right, rect.Bottom, point.X, point.Y);
+        }
+
         protected override void WndProc(ref Message m) {
             if (m.Msg == WheelMessage) {
+                if (clipApplied)
+                    File.AppendAllText(clipProofFile, ClipEvidence("wheel") + Environment.NewLine);
                 int delta = unchecked((short)((m.WParam.ToInt64() >> 16) & 0xffff));
                 int max = Math.Max(0, PageHeight - ClientSize.Height);
                 offset = Math.Max(0, Math.Min(max, offset - delta));
@@ -312,7 +362,7 @@ namespace ShotKitScrollSurface {
     }
 }
 "@
-$surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
+$surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $ClipProofFile)
 [System.Windows.Forms.Application]::Run($surfaceForm)
 '@
     [IO.File]::WriteAllText($helperFile, $helperSource, [System.Text.UTF8Encoding]::new($false))
@@ -324,7 +374,7 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)) {
         throw "Windows PowerShell 5.1 was not found at '$powershellExe'."
     }
-    $helperArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}"' -f $helperFile, $readyFile
+    $helperArgs = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -ReadyFile "{1}" -ClipArmFile "{2}" -ClipProofFile "{3}"' -f $helperFile, $readyFile, $clipArmFile, $clipProofFile
     $surface = Start-Process -FilePath $powershellExe -ArgumentList $helperArgs -WorkingDirectory $testRoot -WindowStyle Hidden -RedirectStandardOutput $surfaceStdout -RedirectStandardError $surfaceStderr -PassThru
 
     $surfaceWindow = Wait-ForCondition -TimeoutSeconds 20 -Description 'the synthetic scroll surface' -OwnedProcess $surface -Condition {
@@ -420,35 +470,32 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         if (-not [ShotKitScrollSmoke.Native]::GetClipCursor([ref]$originalClip)) {
             throw 'Could not save the original cursor clip rectangle.'
         }
-        # Apply only after dragging to the end point, while it is still inside
-        # the new clip. Mouse-up therefore keeps the original 600x400 selection.
-        # Downward scrolling requests endX-8: clamp it 4px right inside the
-        # selection, or to endX (outside the half-open selection) respectively.
-        $clip = [ShotKitScrollSmoke.Rect]::new()
-        $clip.Left = if ($CursorClip -eq 'Inside') { $endX - 4 } else { $endX }
-        $clip.Right = $endX + 1
-        $clip.Top = $startY
-        $clip.Bottom = $endY + 1
-        if (-not [ShotKitScrollSmoke.Native]::ClipCursor([ref]$clip)) {
-            throw 'Could not restrict the cursor for the clamping regression.'
-        }
+        # Let the owned target apply clipping when it regains foreground.
+        # A pre-mouse-up probe did not establish the condition during scrolling:
+        # the previous Outside CI run incorrectly reached the real page end.
         $clipChanged = $true
-        # Prove that Windows actually clamps the requested point before relying
-        # on this scenario. Restore the drag end before releasing the button.
-        if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($endX - 8, $startY + 200)) {
-            throw 'Could not probe the clamped cursor position.'
-        }
-        $actual = [ShotKitScrollSmoke.Point]::new()
-        if (-not [ShotKitScrollSmoke.Native]::GetCursorPos([ref]$actual) -or
-            $actual.X -ne $clip.Left -or $actual.Y -ne $startY + 200) {
-            throw "Cursor clamping was not established: actual=$($actual.X),$($actual.Y)."
-        }
-        if (-not [ShotKitScrollSmoke.Native]::SetCursorPos($endX, $endY)) {
-            throw 'Could not restore the selection end before mouse-up.'
-        }
+        [IO.File]::WriteAllText($clipArmFile, $CursorClip, [System.Text.UTF8Encoding]::new($false))
     }
     [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     $selectionButtonDown = $false
+    if ($CursorClip -ne 'None') {
+        $activeClip = Wait-ForCondition -TimeoutSeconds 10 -Description 'cursor clipping applied by the foreground test surface' -OwnedProcess $surface -Condition {
+            if (Test-Path -LiteralPath $clipProofFile -PathType Leaf) {
+                $content = Read-SharedText -Path $clipProofFile
+                if ($content.Contains("`n")) {
+                    $lines = @($content.Trim() -split '\r?\n')
+                    if ($lines[0].StartsWith('active,')) { $lines[0] }
+                }
+            }
+        }
+        $clipLeft = if ($CursorClip -eq 'Inside') { $endX - 4 } else { $endX }
+        $clipBounds = '{0},{1},{2},{3}' -f $clipLeft, $startY, ($endX + 1), ($endY + 1)
+        $expectedActiveClip = 'active,{0},{1},{2}' -f $clipBounds, $endX, $endY
+        if ($activeClip -cne $expectedActiveClip) {
+            throw "Foreground cursor clip mismatch. Expected='$expectedActiveClip' Actual='$activeClip'"
+        }
+        Write-Output "MILESTONE: foreground surface established $activeClip."
+    }
 
     $png = Wait-ForCondition -TimeoutSeconds $CaptureTimeoutSeconds -Description 'an auto-saved scroll-capture PNG' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Aufnahme beendet') -Condition {
         Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File | Select-Object -First 1
@@ -457,11 +504,32 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
+    if ($CursorClip -ne 'None') {
+        $clipEvidence = @((Read-SharedText -Path $clipProofFile).Trim() -split '\r?\n')
+        $wheelEvidence = @($clipEvidence | Where-Object { $_.StartsWith('wheel,') })
+        Write-Output "DIAGNOSTIC: cursor clipping evidence: $($clipEvidence -join '; ')"
+    }
     $expectedReason = if ($CursorClip -eq 'Outside') {
         'Mauszeiger kann nicht im Aufnahmebereich positioniert werden'
     } else { 'Ende des scrollbaren Bereichs erreicht.' }
     if ($completionText -notlike "*$expectedReason*") {
         throw "Scroll completion mismatch. Expected='$expectedReason' Dialog='$completionText'"
+    }
+
+    if ($CursorClip -ne 'None') {
+        if ($CursorClip -eq 'Outside') {
+            if ($wheelEvidence.Count -ne 0) {
+                throw "Outside clipping must reject scrolling before any wheel input: $($wheelEvidence -join '; ')"
+            }
+        }
+        else {
+            $expectedWheel = 'wheel,{0},{1},{2}' -f $clipBounds, $clipLeft, ($startY + 200)
+            $invalidWheelEvidence = @($wheelEvidence | Where-Object { $_ -cne $expectedWheel })
+            if ($wheelEvidence.Count -eq 0 -or $invalidWheelEvidence.Count -ne 0) {
+                throw "Wheel input did not prove actual cursor clamping. Expected='$expectedWheel' Actual='$($wheelEvidence -join '; ')'"
+            }
+            Write-Output "MILESTONE: all $($wheelEvidence.Count) wheel events proved the clamped cursor: $expectedWheel."
+        }
     }
 
     Add-Type -AssemblyName System.Drawing
@@ -505,21 +573,17 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
     $passMessage = "PASS: cursor clip=$CursorClip; reason=$expectedReason; verified all $expectedHeight deterministic rows in $($png.Name)."
 }
 finally {
-    # A failed clamp probe can happen during the owned selection drag. Release
+    # A failed fixture setup can happen during the owned selection drag. Release
     # only the button this test pressed, and still restore clipping if it fails.
     if ($selectionButtonDown) {
         try { [ShotKitScrollSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
         catch { $cleanupFailures += "Could not release the selection button: $($_.Exception.Message)" }
     }
-    # The restriction is global desktop state: always restore it before any
-    # process/file cleanup, and fail the scenario if restoration fails.
-    if ($clipChanged) {
-        try {
-            if (-not [ShotKitScrollSmoke.Native]::ClipCursor([ref]$originalClip)) {
-                throw 'Could not restore the original cursor clip rectangle.'
-            }
-        }
-        catch { $cleanupFailures += $_.Exception.Message }
+    # Disarm before stopping either actor; a surface not yet activated must
+    # not acquire clipping because terminating ShotKit brings it to the front.
+    if (Test-Path -LiteralPath $clipArmFile -PathType Leaf) {
+        try { Remove-Item -LiteralPath $clipArmFile -Force -ErrorAction Stop }
+        catch { $cleanupFailures += "Could not disarm cursor clipping: $($_.Exception.Message)" }
     }
     foreach ($owned in @($shotKit, $surface)) {
         if ($null -ne $owned) {
@@ -534,6 +598,16 @@ finally {
             catch { $cleanupFailures += "Could not stop owned process '$($owned.ProcessName)': $($_.Exception.Message)" }
             $owned.Dispose()
         }
+    }
+    # Stop both owned actors first, so no delayed activation can overwrite
+    # the restored global desktop state. Restoration failure fails the test.
+    if ($clipChanged) {
+        try {
+            if (-not [ShotKitScrollSmoke.Native]::ClipCursor([ref]$originalClip)) {
+                throw 'Could not restore the original cursor clip rectangle.'
+            }
+        }
+        catch { $cleanupFailures += $_.Exception.Message }
     }
     $env:APPDATA = $oldAppData
     $env:LOCALAPPDATA = $oldLocalAppData
