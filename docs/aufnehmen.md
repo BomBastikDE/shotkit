@@ -68,15 +68,16 @@ Für Webseiten und Dokumente, die länger oder breiter als der Bildschirm sind.
 4. ShotKit scrollt selbst und setzt die Bilder zu einem langen Bild zusammen, bis keine weitere Bewegung erkennbar ist oder die Aufnahme beendet wird.
 
 Vorzeitig beenden: <kbd>Esc</kbd> drücken oder die Maus bewegen. Das bis dahin Aufgenommene bleibt erhalten; ein
-Fenster „Scroll-Aufnahme beendet“ nennt den Grund.
+Fenster „Scroll-Aufnahme beendet“ nennt den Grund und bestätigt: „Die Aufnahme bis hierhin bleibt erhalten.“
+Bei diesem bewussten Abbruch erscheint kein zusätzlicher Hinweis auf ein unbestätigtes Seitenende.
 
 ShotKit kann auch von selbst früher enden, etwa wenn sich ein Bildabschnitt nicht eindeutig zuordnen lässt oder
 nicht sicher erkennbar ist, ob der Inhalt am Ende angekommen ist. Das bis dahin Aufgenommene bleibt dann ebenfalls
 erhalten.
 
 ShotKit kann das Seitenende anhand der Bildschirmbilder nicht sicher bestätigen. Auch eine langsam ladende
-oder hängende Seite kann wie ein Ende aussehen. Deshalb weist der Abschlussdialog bei jeder Scrollaufnahme
-auf **„Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt“** hin. Prüfe das Bildende und die
+oder hängende Seite kann wie ein Ende aussehen. Deshalb weist der Abschlussdialog bei automatischem Ende,
+Fehlern oder Erreichen der maximalen Schrittzahl auf **„Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt“** hin. Prüfe das Bildende und die
 Übergänge, bevor du die Aufnahme weitergibst. Das Bild bleibt auch bei diesem Hinweis erhalten; eingeschaltetes
 automatisches Speichern oder Kopieren kann bereits vor der Meldung erfolgt sein.
 

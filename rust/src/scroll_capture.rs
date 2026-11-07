@@ -7,10 +7,20 @@ use crate::stitch::{Image, Rotation, RotationFailure, Stitcher};
 const MAX_CONSECUTIVE_FALLBACKS: usize = 2;
 
 // Screen pixels prove motion or a lack of motion, never the document boundary.
-// Keep this warning on every usable result, including cancellation/error paths.
+// Keep the warning on automatic stops and errors. A deliberate user stop
+// instead names the interruption and confirms that its captured prefix remains.
 const UNCONFIRMED_END: &str = "Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt. Die bisherige Aufnahme bleibt erhalten. Bitte das Ende und die Übergänge im Bild prüfen.";
 fn unconfirmed_reason(reason: &str) -> String {
     format!("{UNCONFIRMED_END}\n\n{reason}")
+}
+
+fn completion_reason(reason: &str) -> String {
+    match reason {
+        "Mit Esc beendet." | "Durch Mausbewegung beendet." => {
+            format!("{reason} Die Aufnahme bis hierhin bleibt erhalten.")
+        }
+        _ => unconfirmed_reason(reason),
+    }
 }
 
 fn reconcile_matches(
@@ -439,7 +449,7 @@ fn run_with_rotation(
     };
     Ok(Outcome {
         image,
-        reason: unconfirmed_reason(&reason),
+        reason: completion_reason(&reason),
         fallback_count: fallbacks,
         pending_rotation,
     })

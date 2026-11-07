@@ -325,7 +325,10 @@ fn cancellation_returns_the_captured_prefix_without_scrolling() {
     let mut io = FakeScrollIo::vertical(220, 700);
     io.cancel = true;
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, unconfirmed_reason("Mit Esc beendet."));
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(out.image.height, 220);
     assert_eq!(io.scroll_calls, 0);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
@@ -338,7 +341,7 @@ fn mouse_movement_before_first_scroll_keeps_initial_frame() {
     let out = run(&mut io, Direction::Down).unwrap();
     assert_eq!(
         out.reason,
-        unconfirmed_reason("Durch Mausbewegung beendet.")
+        "Durch Mausbewegung beendet. Die Aufnahme bis hierhin bleibt erhalten."
     );
     assert_eq!(io.scroll_calls, 0);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
@@ -350,7 +353,10 @@ fn cancellation_during_post_scroll_wait_does_not_capture_or_stitch_unsettled_fra
     // Wait 1 settles the initial viewport; wait 2 follows the first scroll.
     io.cancel_on_wait = Some(2);
     let out = run(&mut io, Direction::Down).unwrap();
-    assert_eq!(out.reason, unconfirmed_reason("Mit Esc beendet."));
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 1);
     assert_eq!(io.capture_calls, 2);
     assert_eq!(out.image.height, 220);
@@ -365,7 +371,10 @@ fn cancellation_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
     io.cancel_on_wait = Some(4);
     let out = run(&mut io, Direction::Down).unwrap();
 
-    assert_eq!(out.reason, unconfirmed_reason("Mit Esc beendet."));
+    assert_eq!(
+        out.reason,
+        "Mit Esc beendet. Die Aufnahme bis hierhin bleibt erhalten."
+    );
     assert_eq!(io.scroll_calls, 2);
     assert_eq!(
         io.capture_calls, 4,
@@ -383,7 +392,7 @@ fn mouse_movement_after_a_successful_stitch_keeps_the_pixel_exact_prefix() {
 
     assert_eq!(
         out.reason,
-        unconfirmed_reason("Durch Mausbewegung beendet.")
+        "Durch Mausbewegung beendet. Die Aufnahme bis hierhin bleibt erhalten."
     );
     assert_eq!(io.scroll_calls, 2);
     assert_eq!(
@@ -406,6 +415,7 @@ fn capture_failure_after_initial_frame_returns_captured_prefix() {
         out.reason
     );
     assert!(out.reason.contains("Aufnahme bis hierhin übernommen"));
+    assert!(out.reason.starts_with(UNCONFIRMED_END));
     assert_eq!(out.image.height, 220);
     assert_eq!(out.image.pixels, io.capture_page_vertical(220));
 }
@@ -941,5 +951,18 @@ fn stalled_or_delayed_page_keeps_exact_partial_pixels_and_warns_about_unconfirme
         io.wait_ms(10_000);
         io.scroll(Direction::Down, 1).unwrap();
         assert_eq!(io.offset > stopped_at, resume_at_ms.is_some());
+    }
+}
+
+#[test]
+fn only_pure_user_stops_omit_the_unconfirmed_end_warning() {
+    for reason in [
+        "Keine weitere Scrollbewegung erkennbar.",
+        "Maximale Anzahl Scroll-Schritte erreicht.",
+        "Scrollaufnahme konnte nicht gestartet werden.",
+        "Mit Esc beendet.\nDie Aufnahme konnte nicht zurückgedreht werden.",
+        "Durch Mausbewegung beendet.\nDie Aufnahme konnte nicht zurückgedreht werden.",
+    ] {
+        assert_eq!(completion_reason(reason), unconfirmed_reason(reason));
     }
 }
