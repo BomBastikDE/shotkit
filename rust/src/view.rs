@@ -477,7 +477,11 @@ mod tests {
             },
         ];
         for kind in kinds {
-            let before = Shape::new(kind);
+            let before = if matches!(kind, ShapeKind::Blur { .. }) {
+                Shape::new(kind).with_pixelation_seed(0x74_5afe_1234_5678)
+            } else {
+                Shape::new(kind)
+            };
             let mut after = before.clone();
             after.offset(27.0, 12.0);
             let old = render_document(&image, std::slice::from_ref(&before)).unwrap();
