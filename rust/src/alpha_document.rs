@@ -11,7 +11,7 @@ mod effects;
 use crate::{
     alpha_composite::source_over,
     alpha_render,
-    gaussian_blur::gaussian_blur_region,
+    gaussian_blur::gaussian_blur_layer,
     image_handle::ImageHandle,
     pixelate::{pixelate_into, PixelateRect},
     resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget},
@@ -42,8 +42,8 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
 /// A transient UI render: pixels and their shared-pool reservation stay together.
 /// Field order drops the allocation before releasing admission. This accounts
 /// only for the final Rust output buffer. Budgeted rendering also admits its
-/// temporary redaction-sanitized sampling copy and current annotation layer;
-/// other scratch, cache and GDI remain outside this pool.
+/// temporary redaction-sanitized sampling copy, current annotation layer and
+/// Gaussian work/result buffers; other scratch, cache and GDI remain outside.
 pub struct BudgetedRender {
     image: Image,
     pixel_lease: BudgetLease,
@@ -61,7 +61,7 @@ impl BudgetedRender {
     }
 }
 
-/// Reserve final document output, redaction-sanitized sampling and shape layers.
+/// Reserve output, sanitized sampling, shape layers and Gaussian work buffers.
 /// Existing-document work may use reserved headroom, but cannot bypass the
 /// caller's shared ceiling.
 pub fn render_document_budgeted(
@@ -409,8 +409,11 @@ fn render_document_over_typed(
                 // Reuse the width selector as filter strength. The kernel is
                 // bounded independently of image dimensions and style color.
                 let radius = (shape.style.width * 2.0).round().clamp(1.0, 64.0) as usize;
-                let blurred = gaussian_blur_region(sampling_source, region, radius)
-                    .map_err(|error| format!("Weichzeichnen fehlgeschlagen: {error:?}"))?;
+                let blurred =
+                    gaussian_blur_layer(sampling_source, region, radius, render_budget)
+                        .map_err(|error| format!("Weichzeichnen fehlgeschlagen: {error:?}"))?;
+                // Keep its pixel lease alive through the complete region copy.
+                let blurred = blurred.image();
                 // The filter returns a compact region rather than a full image.
                 for row in 0..region.height {
                     let dst = ((region.y + row) * source.width + region.x) * 4;
@@ -881,6 +884,7 @@ mod tests {
 
     #[test]
     fn gaussian_blur_matches_kernel_preserves_outside_and_ignores_style_color() {
+        use crate::gaussian_blur::gaussian_blur_region;
         use crate::shapes::{Color, Point};
         let source = Image::new(
             25,
@@ -1243,6 +1247,12 @@ mod tests {
         (source, shapes)
     }
 
+    // The Gaussian fixture selects 23 x 18 pixels; two [u32; 4] work
+    // buffers and the compact BGRA result coexist during conversion.
+    fn gaussian_fixture_work_bytes() -> usize {
+        23 * 18 * 36
+    }
+
     fn stamp_layers_fixture() -> (ImageHandle, Vec<Shape>) {
         use crate::shapes::{Point, StampKind};
         let (source, _) = budget_preview_fixture();
@@ -1519,9 +1529,11 @@ mod tests {
             magnifier,
         ];
         let bytes = source.pixels.len();
-        // Only the source fits normal admission; BOTH temporary allocations
-        // must be permitted to use existing-document headroom.
-        let budget = ResourceBudget::new(bytes * 3, bytes * 2).unwrap();
+        // Only the source fits normal admission; sampling, output and the
+        // Gaussian's 6 x 4 selection all use existing-document headroom.
+        let gaussian_work = 6 * 4 * 36;
+        let budget =
+            ResourceBudget::new(bytes * 3 + gaussian_work, bytes * 2 + gaussian_work).unwrap();
         let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
         for effect in effects {
             for shapes in [
@@ -1726,7 +1738,8 @@ mod tests {
     fn output_admission_uses_headroom_and_releases_on_drop_and_render_error() {
         let (source, shapes) = budget_preview_fixture();
         let bytes = source.pixels.len();
-        let budget = ResourceBudget::new(bytes * 3, bytes * 2).unwrap();
+        let scratch = gaussian_fixture_work_bytes();
+        let budget = ResourceBudget::new(bytes * 3 + scratch, bytes * 2 + scratch).unwrap();
         let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
         assert!(budget.try_acquire(1, AdmissionClass::Normal).is_err());
         let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
@@ -1738,7 +1751,10 @@ mod tests {
         let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
         let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
         assert!(render_document_budgeted(&source, &shapes, &budget).is_err());
-        assert_eq!(budget.snapshot().used_bytes, bytes * 3);
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            budget.snapshot().ceiling_bytes
+        );
         drop(blocker);
         drop(output);
         assert_eq!(budget.snapshot().used_bytes, bytes);
@@ -1753,7 +1769,9 @@ mod tests {
     #[test]
     fn output_reservation_survives_nested_work_and_releases_on_unwind() {
         let (source, shapes) = budget_preview_fixture();
-        let budget = ResourceBudget::new(source.pixels.len() * 2, 0).unwrap();
+        let budget =
+            ResourceBudget::new(source.pixels.len() * 2 + gaussian_fixture_work_bytes(), 0)
+                .unwrap();
         let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
         assert_eq!(
             budget.snapshot().used_bytes,
@@ -1802,7 +1820,9 @@ mod tests {
         use crate::shapes::Point;
         let (source, mut shapes) = budget_preview_fixture();
         let original = (*source).clone();
-        let output_budget = ResourceBudget::new(source.pixels.len() * 4, 0).unwrap();
+        let output_budget =
+            ResourceBudget::new(source.pixels.len() * 4 + gaussian_fixture_work_bytes(), 0)
+                .unwrap();
         for cache_bytes in [0, source.pixels.len() * 8] {
             let cache_budget = ResourceBudget::new(cache_bytes, 0).unwrap();
             let mut cache = None;
@@ -1852,7 +1872,9 @@ mod tests {
     #[test]
     fn budgeted_preview_rejection_keeps_cache_and_nested_outputs_cannot_bypass_pool() {
         let (source, shapes) = budget_preview_fixture();
-        let budget = ResourceBudget::new(source.pixels.len() * 2, 0).unwrap();
+        let budget =
+            ResourceBudget::new(source.pixels.len() * 2 + gaussian_fixture_work_bytes(), 0)
+                .unwrap();
         let mut cache = None;
         let first = render_preview_budgeted(&source, &shapes, 1, &mut cache, &budget).unwrap();
         let retained = cache.as_ref().map(|entry| entry.rendered.pixels.as_ptr());
@@ -2023,7 +2045,8 @@ mod tests {
         assert!(cache.is_none());
         assert!(!callback.get());
         assert_eq!(cache_budget.snapshot().used_bytes, 0);
-        let output_budget = ResourceBudget::new(source.pixels.len(), 0).unwrap();
+        let output_budget =
+            ResourceBudget::new(source.pixels.len() + gaussian_fixture_work_bytes(), 0).unwrap();
         let output = render_document_budgeted(&source, &shapes, &output_budget).unwrap();
         assert_eq!(output.image(), &render_document(&source, &shapes).unwrap());
         drop(output);
@@ -2088,6 +2111,65 @@ mod tests {
     }
 
     #[test]
+    fn gaussian_peak_rejection_is_not_optional_cache_pressure_and_releases_every_path() {
+        let (source, shapes) = budget_preview_fixture();
+        let original = (*source).clone();
+        let bytes = source.pixels.len();
+        // Source + final output fit, but Gaussian's co-live buffers do not.
+        let budget = ResourceBudget::new(bytes * 2, 0).unwrap();
+        let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let error = render_document_budgeted(&source, &shapes, &budget)
+            .err()
+            .unwrap();
+        assert!(error.contains("Weichzeichnen fehlgeschlagen: BudgetRejected"));
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        for cache_bytes in [0, bytes * 4] {
+            let cache_budget = ResourceBudget::new(cache_bytes, 0).unwrap();
+            for split in 0..=shapes.len() {
+                let mut cache = None;
+                let mut lease = reserve_output(&source, &budget).unwrap();
+                let error = render_preview_with_output_lease(
+                    &source,
+                    &shapes,
+                    split,
+                    &mut cache,
+                    &cache_budget,
+                    Some(&mut lease),
+                    Some(&budget),
+                )
+                .unwrap_err();
+                assert!(error.contains("Weichzeichnen fehlgeschlagen: BudgetRejected"));
+                // An independently completed pixelation prefix can remain;
+                // a rejected Gaussian prefix cannot become an optional miss.
+                drop(cache);
+                assert_eq!(cache_budget.snapshot().used_bytes, 0);
+                drop(lease);
+                assert_eq!(budget.snapshot().used_bytes, bytes);
+            }
+        }
+        assert_eq!(*source, original);
+        drop(source_lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn consecutive_gaussian_shapes_reuse_scratch_and_match_legacy_output() {
+        let (source, shapes) = budget_preview_fixture();
+        let gaussian = shapes[1].clone();
+        let shapes = vec![gaussian.clone(), gaussian];
+        let bytes = source.pixels.len();
+        let budget = ResourceBudget::new(bytes + gaussian_fixture_work_bytes(), 0).unwrap();
+        let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
+        assert_eq!(output.image(), &render_document(&source, &shapes).unwrap());
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            output.image().pixels.capacity()
+        );
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
     fn real_shape_and_shared_errors_release_stale_prefix_without_fallback() {
         let (template, shapes) = stamp_layers_fixture();
         let bytes = template.pixels.len();
@@ -2142,7 +2224,9 @@ mod tests {
         let expected = render_document(&source, &shapes).unwrap();
         assert_eq!(expected, render_document(&alternate, &shapes).unwrap());
         let cache_budget = ResourceBudget::new(0, 0).unwrap();
-        let output_budget = ResourceBudget::new(source.pixels.len() * 2, 0).unwrap();
+        let output_budget =
+            ResourceBudget::new(source.pixels.len() * 2 + gaussian_fixture_work_bytes(), 0)
+                .unwrap();
         let mut cache = None;
         for split in 0..=shapes.len() {
             let mut lease = reserve_output(&source, &output_budget).unwrap();

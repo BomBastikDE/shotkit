@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Bei Gauß-Weichzeichnung in der budgetierten Editor-Komposition werden die drei gleichzeitig benötigten Arbeitsbuffer im gemeinsamen Bildbudget berücksichtigt. Bei knappen Ressourcen kann die Vorschau daher früher kontrolliert abbrechen; der annotierte Dateiexport und native GDI-Puffer bleiben gesondert zu betrachten ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Der Vorschau-Cache berücksichtigt beim Neuaufbau die tatsächliche Pufferkapazität bereits vor dem Zeichnen. Ein ausgeschöpftes Cache-Budget nutzt weiterhin die ungecachte Darstellung; andere Renderfehler werden weitergegeben ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Während der Editor-Komposition werden auch temporäre Formenebenen im gemeinsamen Bildbudget berücksichtigt. Sehr große Bilder können dadurch beim Zeichnen oder Kopieren früher eine Speichermeldung erhalten; die Anleitung nennt Beispiele und verbleibende Grenzen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

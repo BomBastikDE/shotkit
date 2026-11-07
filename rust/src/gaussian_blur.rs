@@ -7,6 +7,7 @@
 
 use crate::{
     pixelate::PixelateRect,
+    resource_budget::{AdmissionClass, BudgetError, BudgetLease, ResourceBudget},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
 
@@ -23,6 +24,28 @@ pub enum BlurError {
     AllocationFailed,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum BlurLayerError {
+    Blur(BlurError),
+    BudgetRejected(BudgetError),
+}
+
+impl From<BlurError> for BlurLayerError {
+    fn from(error: BlurError) -> Self {
+        Self::Blur(error)
+    }
+}
+
+// Keep legacy blur diagnostics intact while distinguishing shared-pool refusal.
+impl std::fmt::Debug for BlurLayerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blur(error) => std::fmt::Debug::fmt(error, f),
+            Self::BudgetRejected(error) => f.debug_tuple("BudgetRejected").field(error).finish(),
+        }
+    }
+}
+
 /// Returns only the blurred rectangle, in straight-alpha BGRA format.
 /// `radius` is the radius of each of three box filters (1..=64). The source
 /// and pixels outside the selection are untouched. Hidden colors under zero
@@ -32,6 +55,65 @@ pub fn gaussian_blur_region(
     region: PixelateRect,
     radius: usize,
 ) -> Result<Image, BlurError> {
+    let count = validate_request(source, region, radius)?;
+    render_validated(source, region, radius, count, None).map_err(|error| match error {
+        BlurLayerError::Blur(error) => error,
+        // With no lease the kernel cannot invoke budget admission.
+        BlurLayerError::BudgetRejected(_) => unreachable!("unbudgeted Gaussian admission"),
+    })
+}
+
+/// Pixels remain charged while the document copies the blurred selection.
+/// Fields drop in declaration order: pixels before their lease.
+pub(crate) struct BlurLayer {
+    image: Image,
+    pixel_lease: Option<BudgetLease>,
+}
+
+impl BlurLayer {
+    pub(crate) fn image(&self) -> &Image {
+        if let Some(lease) = &self.pixel_lease {
+            debug_assert_eq!(lease.bytes(), self.image.pixels.capacity());
+        }
+        &self.image
+    }
+}
+
+/// Existing-document work shares the caller's pool and may use its headroom.
+/// None preserves standalone rendering without introducing another budget.
+pub(crate) fn gaussian_blur_layer(
+    source: &Image,
+    region: PixelateRect,
+    radius: usize,
+    budget: Option<&ResourceBudget>,
+) -> Result<BlurLayer, BlurLayerError> {
+    let count = validate_request(source, region, radius)?;
+    // Admission is owned outside the kernel: all scratch drops before this
+    // lease on every error/unwind, and before shrinking to the returned pixels.
+    let mut pixel_lease = budget
+        .map(|budget| {
+            budget
+                .try_acquire(
+                    work_bytes(count, count, count * 4)?,
+                    AdmissionClass::Reserved,
+                )
+                .map_err(BlurLayerError::BudgetRejected)
+        })
+        .transpose()?;
+    let image = render_validated(source, region, radius, count, pixel_lease.as_mut())?;
+    if let Some(lease) = &mut pixel_lease {
+        lease
+            .try_resize(image.pixels.capacity())
+            .map_err(BlurLayerError::BudgetRejected)?;
+    }
+    Ok(BlurLayer { image, pixel_lease })
+}
+
+fn validate_request(
+    source: &Image,
+    region: PixelateRect,
+    radius: usize,
+) -> Result<usize, BlurError> {
     let bytes = source
         .width
         .checked_mul(source.height)
@@ -72,9 +154,68 @@ pub fn gaussian_blur_region(
     {
         return Err(BlurError::RegionTooLarge);
     }
+    Ok(count)
+}
+
+// Capacity is in elements, including for the two 16-byte work vectors.
+fn work_bytes(a: usize, b: usize, pixels: usize) -> Result<usize, BlurError> {
+    a.checked_mul(std::mem::size_of::<[u32; 4]>())
+        .and_then(|bytes| {
+            b.checked_mul(std::mem::size_of::<[u32; 4]>())
+                .and_then(|other| bytes.checked_add(other))
+        })
+        .and_then(|bytes| {
+            pixels
+                .checked_mul(std::mem::size_of::<u8>())
+                .and_then(|other| bytes.checked_add(other))
+        })
+        .ok_or(BlurError::RegionTooLarge)
+}
+
+fn reconcile_work_capacity(
+    capacities: [usize; 3],
+    lease: Option<&mut BudgetLease>,
+) -> Result<(), BlurLayerError> {
+    let bytes = work_bytes(capacities[0], capacities[1], capacities[2])?;
+    if let Some(lease) = lease {
+        lease
+            .try_resize(bytes)
+            .map_err(BlurLayerError::BudgetRejected)?;
+    }
+    #[cfg(test)]
+    WORK_OBSERVER.with(|observer| {
+        if let Some(observer) = observer.borrow_mut().as_mut() {
+            observer(capacities);
+        }
+    });
+    Ok(())
+}
+
+// A test-only hook observes live reservations and can unwind at each stage.
+#[cfg(test)]
+type WorkObserver = Box<dyn FnMut([usize; 3])>;
+#[cfg(test)]
+thread_local! {
+    static WORK_OBSERVER: std::cell::RefCell<Option<WorkObserver>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn render_validated(
+    source: &Image,
+    region: PixelateRect,
+    radius: usize,
+    count: usize,
+    mut lease: Option<&mut BudgetLease>,
+) -> Result<Image, BlurLayerError> {
+    // Validation has already checked all region arithmetic and count * 36.
+    let right = region.x + region.width;
+    let bottom = region.y + region.height;
+    let pixel_bytes = count * 4;
     let mut a = Vec::new();
     a.try_reserve_exact(count)
         .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity([a.capacity(), count, pixel_bytes], lease.as_deref_mut())?;
     for y in region.y..bottom {
         for x in region.x..right {
             let i = (y * source.width + x) * 4;
@@ -91,6 +232,10 @@ pub fn gaussian_blur_region(
     let mut b = Vec::new();
     b.try_reserve_exact(count)
         .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity(
+        [a.capacity(), b.capacity(), pixel_bytes],
+        lease.as_deref_mut(),
+    )?;
     b.resize(count, [0u32; 4]);
     for _ in 0..3 {
         for y in 0..region.height {
@@ -102,8 +247,9 @@ pub fn gaussian_blur_region(
     }
     let mut pixels = Vec::new();
     pixels
-        .try_reserve_exact(count * 4)
+        .try_reserve_exact(pixel_bytes)
         .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity([a.capacity(), b.capacity(), pixels.capacity()], lease)?;
     for p in a {
         let alpha = (p[3] + 127) / 255;
         if alpha == 0 || p[3] == 0 {
@@ -117,7 +263,8 @@ pub fn gaussian_blur_region(
         }
         pixels.push(alpha.min(255) as u8);
     }
-    Image::new(region.width, region.height, pixels).map_err(|_| BlurError::InvalidRegion)
+    Image::new(region.width, region.height, pixels)
+        .map_err(|_| BlurLayerError::Blur(BlurError::InvalidRegion))
 }
 
 // Sliding window with repeated boundary pixels, so a uniform region remains
@@ -167,6 +314,154 @@ mod tests {
     }
     fn image(width: usize, height: usize, pixels: Vec<u8>) -> Image {
         Image::new(width, height, pixels).unwrap()
+    }
+
+    struct ObserveWork;
+
+    impl ObserveWork {
+        fn install(observer: impl FnMut([usize; 3]) + 'static) -> Self {
+            WORK_OBSERVER.with(|slot| {
+                assert!(slot.borrow_mut().replace(Box::new(observer)).is_none());
+            });
+            Self
+        }
+    }
+
+    impl Drop for ObserveWork {
+        fn drop(&mut self) {
+            WORK_OBSERVER.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn budget_counts_all_live_capacities_and_retains_only_result_after_kernel() {
+        use std::{cell::Cell, rc::Rc};
+        let source = image(2, 1, vec![0, 0, 255, 255, 255, 0, 0, 0]);
+        let expected = gaussian_blur_region(&source, rect(0, 0, 2, 1), 64).unwrap();
+        let budget = ResourceBudget::new(128, 128).unwrap();
+        let stages = Rc::new(Cell::new(0));
+        let observer_budget = budget.clone();
+        let observed_stages = Rc::clone(&stages);
+        let observer = ObserveWork::install(move |capacities| {
+            observed_stages.set(observed_stages.get() + 1);
+            assert_eq!(
+                observer_budget.snapshot().used_bytes,
+                work_bytes(capacities[0], capacities[1], capacities[2]).unwrap()
+            );
+            assert!(observer_budget
+                .try_acquire(1, AdmissionClass::Normal)
+                .is_err());
+        });
+        // Both work vectors and result coexist at the final observed stage.
+        let layer = gaussian_blur_layer(&source, rect(0, 0, 2, 1), 64, Some(&budget)).unwrap();
+        assert_eq!(stages.get(), 3);
+        assert_eq!(layer.image(), &expected);
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            layer.image().pixels.capacity()
+        );
+        drop(observer);
+        let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
+        let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
+        assert!(matches!(
+            gaussian_blur_layer(&source, rect(0, 0, 2, 1), 1, Some(&budget)),
+            Err(BlurLayerError::BudgetRejected(
+                BudgetError::LimitExceeded { .. }
+            ))
+        ));
+        assert_eq!(budget.snapshot().used_bytes, 128);
+        drop(blocker);
+        drop(layer);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn full_peak_is_required_and_standalone_and_optional_paths_remain_equivalent() {
+        let source = image(1, 1, vec![12, 34, 56, 127]);
+        let small = ResourceBudget::new(35, 0).unwrap();
+        assert!(matches!(
+            gaussian_blur_layer(&source, rect(0, 0, 1, 1), 1, Some(&small)),
+            Err(BlurLayerError::BudgetRejected(
+                BudgetError::LimitExceeded { .. }
+            ))
+        ));
+        assert_eq!(small.snapshot().used_bytes, 0);
+        let exact = ResourceBudget::new(36, 36).unwrap();
+        let layer = gaussian_blur_layer(&source, rect(0, 0, 1, 1), 1, Some(&exact)).unwrap();
+        assert_eq!(layer.image().pixels, source.pixels);
+        assert_eq!(exact.snapshot().used_bytes, layer.image().pixels.capacity());
+        drop(layer);
+        assert_eq!(exact.snapshot().used_bytes, 0);
+        let unbudgeted = gaussian_blur_layer(&source, rect(0, 0, 1, 1), 64, None).unwrap();
+        assert_eq!(
+            unbudgeted.image(),
+            &gaussian_blur_region(&source, rect(0, 0, 1, 1), 64).unwrap()
+        );
+    }
+
+    #[test]
+    fn capacity_reconciliation_counts_elements_and_rejects_excess_atomically() {
+        let a = Vec::<[u32; 4]>::with_capacity(3);
+        let b = Vec::<[u32; 4]>::with_capacity(5);
+        let pixels = Vec::<u8>::with_capacity(17);
+        let capacities = [a.capacity(), b.capacity(), pixels.capacity()];
+        let total = a.capacity() * std::mem::size_of::<[u32; 4]>()
+            + b.capacity() * std::mem::size_of::<[u32; 4]>()
+            + pixels.capacity() * std::mem::size_of::<u8>();
+        let budget = ResourceBudget::new(total - 1, 0).unwrap();
+        let mut lease = budget.try_acquire(36, AdmissionClass::Reserved).unwrap();
+        assert!(matches!(
+            reconcile_work_capacity(capacities, Some(&mut lease)),
+            Err(BlurLayerError::BudgetRejected(
+                BudgetError::LimitExceeded { .. }
+            ))
+        ));
+        assert_eq!(lease.bytes(), 36);
+        assert_eq!(budget.snapshot().used_bytes, 36);
+        assert_eq!(
+            work_bytes(capacities[0], capacities[1], capacities[2]),
+            Ok(total)
+        );
+        for capacities in [[usize::MAX, 0, 0], [0, usize::MAX, 0], [1, 1, usize::MAX]] {
+            assert_eq!(
+                reconcile_work_capacity(capacities, Some(&mut lease)),
+                Err(BlurLayerError::Blur(BlurError::RegionTooLarge))
+            );
+            assert_eq!(lease.bytes(), 36);
+        }
+        drop((a, b, pixels));
+        drop(lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn scratch_admission_releases_on_each_stage_unwind_and_keeps_existing_lease() {
+        use std::{cell::Cell, rc::Rc};
+        let source = image(2, 2, [123, 45, 67, 0].repeat(4));
+        for unwind_stage in 1..=3 {
+            let budget = ResourceBudget::new(256, 0).unwrap();
+            let existing = budget.try_acquire(7, AdmissionClass::Normal).unwrap();
+            let stage = Rc::new(Cell::new(0));
+            let observer_budget = budget.clone();
+            let observer = ObserveWork::install(move |capacities| {
+                stage.set(stage.get() + 1);
+                assert_eq!(
+                    observer_budget.snapshot().used_bytes,
+                    7 + work_bytes(capacities[0], capacities[1], capacities[2]).unwrap()
+                );
+                if stage.get() == unwind_stage {
+                    panic!("cancel Gaussian stage {unwind_stage}");
+                }
+            });
+            let result = std::panic::catch_unwind(|| {
+                let _layer = gaussian_blur_layer(&source, rect(0, 0, 2, 2), 1, Some(&budget));
+            });
+            assert!(result.is_err());
+            drop(observer);
+            assert_eq!(budget.snapshot().used_bytes, 7);
+            drop(existing);
+            assert_eq!(budget.snapshot().used_bytes, 0);
+        }
     }
 
     #[test]
