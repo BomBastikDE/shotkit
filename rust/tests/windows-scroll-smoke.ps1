@@ -493,11 +493,15 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, $ClipArmFile, $Cl
         try {
             $activeClip = Wait-ForCondition -TimeoutSeconds 10 -Description 'cursor clipping applied at the target activation barrier' -OwnedProcess $surface -Condition {
                 if (Test-Path -LiteralPath $clipProofFile -PathType Leaf) {
-                    $content = Read-SharedText -Path $clipProofFile
-                    if ($content.Contains("`n")) {
-                        $lines = @($content.Trim() -split '\r?\n')
-                        if ($lines[0].StartsWith('error,')) { throw "Target cursor clip setup failed: $content" }
-                        if ($lines[0].StartsWith('active,')) { $lines[0] }
+                    # The shared reader normalizes line endings. Outside
+                    # deliberately has only one line (zero wheel events), so
+                    # requiring a newline in Read-SharedText would never finish.
+                    $lines = @(Read-SharedLines -Path $clipProofFile)
+                    if ($lines.Count -gt 0) {
+                        if ($lines[0].StartsWith('error,')) {
+                            throw "Target cursor clip setup failed: $($lines -join [Environment]::NewLine)"
+                        }
+                        if ($lines[0] -cmatch '^active,-?\d+,-?\d+,-?\d+,-?\d+,-?\d+,-?\d+$') { $lines[0] }
                     }
                 }
             }
