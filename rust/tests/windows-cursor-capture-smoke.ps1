@@ -31,6 +31,7 @@ namespace ShotKitCursorCaptureSmoke {
   [StructLayout(LayoutKind.Sequential)] public struct CursorInfo { public int Size; public int Flags; public IntPtr Cursor; public Point Position; }
   [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CursorInfo info);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern int ShowCursor(bool show);
   [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
@@ -121,7 +122,14 @@ try {
     $form.FormBorderStyle = 'None'; $form.BackColor = [Drawing.Color]::White; $form.TopMost = $true
     $form.StartPosition = 'Manual'; $form.Bounds = $screen; $form.ShowInTaskbar = $false
     $form.Cursor = [System.Windows.Forms.Cursors]::Arrow
-    $form.Show(); Pump
+    $form.Show(); $form.Activate(); Pump
+    # Without a mouse device Windows starts the display counter at -1 and hides
+    # the cursor. The counter belongs to the thread owning the window under the
+    # cursor, so raising it for the fixture thread makes the cursor visible over
+    # the fixture only. This changes the test setup, not ShotKit.
+    $counter = -1
+    for ($i = 0; $i -lt 8 -and $counter -lt 0; $i++) { $counter = [ShotKitCursorCaptureSmoke.N]::ShowCursor($true) }
+    Write-Output "EVIDENCE: fixture thread cursor display counter=$counter."
     if (-not [ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx, $script:cy)) { throw 'SetCursorPos failed.' }
     Start-Sleep -Milliseconds 300; Pump
     $x = 0; $y = 0
