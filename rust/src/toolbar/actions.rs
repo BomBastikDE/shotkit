@@ -15,9 +15,13 @@ pub(super) enum Icon {
     Rectangle,
     Ellipse,
     Text,
+    Callout,
     Marker,
     Pixelate,
+    GaussianBlur,
+    Redact,
     Step,
+    Stamp,
     Pen,
     Crop,
     Color,
@@ -27,14 +31,20 @@ pub(super) enum Icon {
     SwatchBlue,
     LineWidth,
     FontSize,
+    FormStyle,
     Frame,
     Capture,
     Copy,
     Save,
     Undo,
     Redo,
+    More,
+    File,
+    View,
+    Spotlight,
+    Magnifier,
 }
-pub(super) const ACTIONS: [Action; 24] = [
+pub(super) const ACTIONS: [Action; 34] = [
     Action {
         id: ID_SELECT,
         label: "Auswahl (V)",
@@ -72,6 +82,12 @@ pub(super) const ACTIONS: [Action; 24] = [
         tool: true,
     },
     Action {
+        id: ID_CALLOUT,
+        label: "Sprechblase",
+        icon: Icon::Callout,
+        tool: true,
+    },
+    Action {
         id: ID_MARKER,
         label: "Marker (M)",
         icon: Icon::Marker,
@@ -79,14 +95,32 @@ pub(super) const ACTIONS: [Action; 24] = [
     },
     Action {
         id: ID_BLUR,
-        label: "Verpixeln (B)",
+        label: "Verpixeln (B) – keine sichere Schwärzung",
         icon: Icon::Pixelate,
+        tool: true,
+    },
+    Action {
+        id: ID_GAUSSIAN_BLUR,
+        label: "Weichzeichnen (W) – keine sichere Schwärzung",
+        icon: Icon::GaussianBlur,
+        tool: true,
+    },
+    Action {
+        id: ID_REDACT,
+        label: "Schwärzen (S)",
+        icon: Icon::Redact,
         tool: true,
     },
     Action {
         id: ID_STEP,
         label: "Nummer (N)",
         icon: Icon::Step,
+        tool: true,
+    },
+    Action {
+        id: ID_STAMP,
+        label: "Stempel auswählen…",
+        icon: Icon::Stamp,
         tool: true,
     },
     Action {
@@ -99,6 +133,18 @@ pub(super) const ACTIONS: [Action; 24] = [
         id: ID_CROP,
         label: "Zuschneiden (C)",
         icon: Icon::Crop,
+        tool: true,
+    },
+    Action {
+        id: ID_SPOTLIGHT,
+        label: "Spotlight – Bereich hervorheben",
+        icon: Icon::Spotlight,
+        tool: true,
+    },
+    Action {
+        id: ID_MAGNIFIER,
+        label: "Bildlupe – Ausschnitt vergrößern",
+        icon: Icon::Magnifier,
         tool: true,
     },
     Action {
@@ -132,6 +178,12 @@ pub(super) const ACTIONS: [Action; 24] = [
         tool: false,
     },
     Action {
+        id: ID_FORM_STYLE,
+        label: "Formstil…",
+        icon: Icon::FormStyle,
+        tool: false,
+    },
+    Action {
         id: ID_LINE_WIDTH,
         label: "Linienbreite…",
         icon: Icon::LineWidth,
@@ -145,7 +197,7 @@ pub(super) const ACTIONS: [Action; 24] = [
     },
     Action {
         id: ID_FRAME,
-        label: "Rahmen / Schatten…",
+        label: "Rahmen / Schatten / Leinwand…",
         icon: Icon::Frame,
         tool: false,
     },
@@ -179,4 +231,135 @@ pub(super) const ACTIONS: [Action; 24] = [
         icon: Icon::Redo,
         tool: false,
     },
+    Action {
+        id: ID_VIEW,
+        label: "Ansicht",
+        icon: Icon::View,
+        tool: false,
+    },
+    Action {
+        id: ID_FILE,
+        label: "Datei",
+        icon: Icon::File,
+        tool: false,
+    },
+    Action {
+        id: ID_MORE,
+        label: "»",
+        icon: Icon::More,
+        tool: false,
+    },
 ];
+
+pub(super) fn layout_items() -> Vec<shotkit::toolbar_layout::Item> {
+    use shotkit::toolbar_layout::{Group, Item};
+    // Fixed items are explicitly ordered independently of the left toolbar.
+    ACTIONS
+        .iter()
+        .filter(|a| a.id != ID_MORE && !matches!(a.id, ID_CAPTURE | ID_COPY | ID_SAVE | ID_FILE))
+        .map(|a| Item {
+            id: a.id,
+            group: match a.id {
+                ID_FRAME | ID_VIEW => Group::View,
+                ID_FORM_STYLE | ID_LINE_WIDTH | ID_FONT_SIZE | ID_UNDO | ID_REDO => {
+                    Group::SizeHistory
+                }
+                ID_SWATCH_RED | ID_SWATCH_BLACK | ID_SWATCH_YELLOW | ID_SWATCH_BLUE => {
+                    Group::Palette
+                }
+                _ => Group::Tool,
+            },
+        })
+        .chain([ID_CAPTURE, ID_COPY, ID_SAVE, ID_FILE].map(|id| Item {
+            id,
+            group: Group::Fixed,
+        }))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stamp_toolbar_preserves_client_width_boundary_and_dpi_geometry() {
+        use shotkit::toolbar_layout::{layout, scale};
+        let items = layout_items();
+        assert_eq!(items.len(), 33);
+        for dpi in [96, 120, 144, 192] {
+            let full_width = 2 * scale(4, dpi)
+                + items.len() as i32 * (scale(29, dpi) + scale(1, dpi))
+                - scale(1, dpi);
+            let full = layout(full_width, dpi, &items);
+            assert_eq!(full.stage, 0);
+            assert!(full.more.is_none() && full.overflow.is_empty());
+            assert_eq!(full.buttons.len(), items.len());
+            let compact = layout(full_width - 1, dpi, &items);
+            assert!(compact.more.is_some());
+            assert!(!compact.overflow.is_empty());
+            for width in [scale(180, dpi), scale(430, dpi), full_width - 1, full_width] {
+                let plan = layout(width, dpi, &items);
+                let mut rects: Vec<_> = plan
+                    .buttons
+                    .iter()
+                    .map(|entry| entry.1)
+                    .chain(plan.more)
+                    .collect();
+                rects.sort_by_key(|rect| rect.0);
+                for rect in &rects {
+                    assert!(rect.0 >= 0 && rect.0 + rect.2 <= width);
+                }
+                for pair in rects.windows(2) {
+                    assert!(pair[0].0 + pair[0].2 < pair[1].0);
+                }
+                assert_eq!(
+                    plan.buttons
+                        .iter()
+                        .filter(|entry| entry.0 == ID_STAMP)
+                        .count()
+                        + plan.overflow.iter().filter(|&&id| id == ID_STAMP).count(),
+                    1,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn production_actions_follow_reference_stages_without_losing_commands() {
+        use shotkit::toolbar_layout::layout;
+        let items = layout_items();
+        for (width, stage) in [(1000, 0), (980, 1), (930, 2), (700, 3), (430, 3), (180, 3)] {
+            let plan = layout(width, 96, &items);
+            assert_eq!(plan.stage, stage);
+            let mut reachable: Vec<_> = plan
+                .buttons
+                .iter()
+                .map(|p| p.0)
+                .chain(plan.overflow.iter().copied())
+                .collect();
+            let mut expected: Vec<_> = ACTIONS
+                .iter()
+                .filter(|a| a.id != ID_MORE)
+                .map(|a| a.id)
+                .collect();
+            reachable.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(reachable, expected);
+            let fixed: Vec<_> = plan.buttons.iter().rev().take(4).map(|p| p.0).collect();
+            assert_eq!(fixed, vec![ID_FILE, ID_SAVE, ID_COPY, ID_CAPTURE]);
+            for (id, hidden_stage) in [
+                (ID_FRAME, 1),
+                (ID_VIEW, 1),
+                (ID_LINE_WIDTH, 2),
+                (ID_FONT_SIZE, 2),
+                (ID_UNDO, 2),
+                (ID_REDO, 2),
+                (ID_SWATCH_RED, 3),
+                (ID_SWATCH_BLACK, 3),
+                (ID_SWATCH_YELLOW, 3),
+                (ID_SWATCH_BLUE, 3),
+            ] {
+                assert_eq!(plan.overflow.contains(&id), stage >= hidden_stage);
+            }
+        }
+    }
+}

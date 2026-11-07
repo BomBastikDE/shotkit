@@ -55,25 +55,7 @@ unsafe fn invalidate_preview_change(
 // Nachrichten: Textdialog und SetCapture können reentrieren; Text und Koordinaten werden vor den Aufrufen kopiert.
 pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L> {
     Some(match m {
-        0x0203 if !window_state(h).bitmap.is_null() => {
-            let (x, y) = point(h, l);
-            editor(h).set_tool(Tool::Select);
-            toolbar::set_active(h, toolbar::ID_SELECT);
-            editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
-            editor(h).mouse_up(ShapePoint::new(x as f32, y as f32));
-            let current = editor(h).selected_text().map(str::to_owned);
-            if let Some(text) = current {
-                if let Some(changed) = text_dialog::prompt(h, &text) {
-                    if editor(h).set_selected_text(changed) {
-                        window_state(h).dirty = true;
-                    }
-                }
-            }
-            report_editor_error(h);
-            invalidate_image_view(h);
-            0
-        }
-        0x0201 if !window_state(h).bitmap.is_null() => {
+        0x0201 | 0x0203 if !window_state(h).bitmap.is_null() => {
             let (vx, vy, vw, vh) = image_view(h);
             let sx = (l as u32 as u16 as i16) as i32;
             let sy = ((l as u32 >> 16) as u16 as i16) as i32;
@@ -81,8 +63,35 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 return Some(0);
             }
             let (x, y) = point(h, l);
-            window_state(h).pen_history = None;
             let image_point = ShapePoint::new(x as f32, y as f32);
+            if m == 0x0203 && callout::edit_at(h, image_point, false) {
+                return Some(0);
+            }
+            if editor(h).tool() == Tool::Callout && !editor(h).selected_handle_hit(image_point) {
+                callout::edit_at(h, image_point, true);
+                return Some(0);
+            }
+            if m == 0x0203 {
+                // A double-click should edit only the text object actually
+                // under the pointer. Other double-clicks continue through the
+                // same path as WM_LBUTTONDOWN, so fast consecutive marks are
+                // not swallowed by CS_DBLCLKS.
+                if let Some((index, existing)) = editor(h).text_at(image_point) {
+                    editor(h).set_tool(Tool::Select);
+                    toolbar::set_active(h, toolbar::ID_SELECT);
+                    editor(h).mouse_down(image_point);
+                    editor(h).mouse_up(image_point);
+                    if let Some(changed) = text_dialog::prompt(h, &existing) {
+                        apply_annotation_edit(h, |state| {
+                            state.set_text_at(index, changed);
+                        });
+                    }
+                    report_editor_error(h);
+                    invalidate_image_view(h);
+                    return Some(0);
+                }
+            }
+            window_state(h).pen_history = None;
             let text_tool = editor(h).tool() == Tool::Text;
             let handle_hit = text_tool && editor(h).selected_handle_hit(image_point);
             if text_tool {
@@ -96,25 +105,27 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 if !handle_hit {
                     if let Some((index, existing)) = hit {
                         if let Some(changed) = text_dialog::prompt(h, &existing) {
-                            let edited = editor(h).set_text_at(index, changed);
+                            let mut edited = false;
+                            let applied = apply_annotation_edit(h, |state| {
+                                edited = state.set_text_at(index, changed)
+                            });
+                            edited &= applied;
                             crate::uia_picker::log_diagnostic(&format!(
                                 "text-edit index={index} changed={edited} shapes={}",
                                 editor(h).shapes().len(),
                             ));
-                            if edited {
-                                window_state(h).dirty = true;
-                            }
                         }
                     } else if let Some(text) = text_dialog::prompt(h, "") {
                         if !text.trim().is_empty() {
-                            let placed = editor(h).place_text(image_point, text);
+                            let mut placed = false;
+                            let applied = apply_annotation_edit(h, |state| {
+                                placed = state.place_text(image_point, text)
+                            });
+                            placed &= applied;
                             crate::uia_picker::log_diagnostic(&format!(
                                 "text-place image=({x},{y}) placed={placed} shapes={}",
                                 editor(h).shapes().len(),
                             ));
-                            if placed {
-                                window_state(h).dirty = true;
-                            }
                         }
                     }
                     report_editor_error(h);
@@ -148,7 +159,7 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
     Some(match m {
         0x0200 if window_state(h).drawing && !window_state(h).bitmap.is_null() => {
             let (x, y) = point(h, l);
-            if matches!(window_state(h).crop_start, Some(_)) {
+            if window_state(h).crop_start.is_some() {
                 window_state(h).crop_end = Some((x, y));
                 invalidate_image_view(h);
                 return Some(0);
@@ -192,14 +203,12 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
                 InvalidateRect(h, &rect, 1);
                 return Some(0);
             }
-            let before = editor(h).shapes().to_vec();
-            editor(h)
-                .mouse_up_with_shift(ShapePoint::new(x as f32, y as f32), GetKeyState(0x10) < 0);
-            if before != editor(h).shapes() {
-                window_state(h).dirty = true;
-            }
+            let point = ShapePoint::new(x as f32, y as f32);
+            let shift = GetKeyState(0x10) < 0;
             window_state(h).drawing = false;
+            window_state(h).pen_history = None;
             ReleaseCapture();
+            apply_annotation_edit(h, |state| state.mouse_up_with_shift(point, shift));
             report_editor_error(h);
             invalidate_image_view(h);
             0
@@ -218,6 +227,78 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
 }
 
 // SAFETY CONTRACT:
+// dc is a live paint DC whose existing clip describes the invalidated region
+// (null is accepted only to report GDI failure); target/source are copied values.
+// A successful composed bitmap is owned here. The neutral fill/text path uses
+// no allocation or new GDI object. No WindowState reference spans GDI calls.
+// The paint clip is retained: neither the toolbar nor holes in the dirty region
+// are overwritten. False means both bounded neutral-fill attempts failed.
+unsafe fn paint_preview(
+    dc: H,
+    dirty: &Rect,
+    toolbar_top: i32,
+    target: (i32, i32, i32, i32),
+    source: (i32, i32),
+    high_quality: bool,
+    composed: Result<H, String>,
+) -> bool {
+    let mut ok = false;
+    if let Ok(flattened) = composed {
+        let mem = CreateCompatibleDC(dc);
+        if !mem.is_null() {
+            let old = SelectObject(mem, flattened);
+            if !old.is_null() && old as isize != -1 {
+                ok = preview_scaling::blit_preview(dc, mem, target, source, high_quality);
+                SelectObject(mem, old);
+            }
+            DeleteDC(mem);
+        }
+        DeleteObject(flattened);
+    }
+    if ok {
+        return true;
+    }
+    // BLACKNESS does not select/allocate a brush and ignores all source pixels.
+    // Clear the dirty image viewport, including any partially drawn blit, before
+    // adding optional diagnostic text. Clamp to the toolbar boundary as well as
+    // preserving the DC clip (which can contain disjoint dirty rectangles).
+    let top = dirty.top.max(toolbar_top);
+    let width = dirty.right.saturating_sub(dirty.left);
+    let height = dirty.bottom.saturating_sub(top);
+    if width <= 0 || height <= 0 {
+        return true;
+    }
+    if PatBlt(dc, dirty.left, top, width, height, 0x0000_0042) == 0 {
+        // One synchronous alternative, using an existing stock brush and the
+        // same exact DC clip. Never enqueue another WM_PAINT on GDI failure.
+        let area = Rect {
+            left: dirty.left,
+            top,
+            right: dirty.right,
+            bottom: dirty.bottom,
+        };
+        let black = GetStockObject(4); // BLACK_BRUSH; borrowed, never delete it.
+        if black.is_null() || FillRect(dc, &area, black) == 0 {
+            return false;
+        }
+    }
+    const TEXT: &[u8] = b"Bilddarstellung fehlgeschlagen. Bitte erneut versuchen.";
+    let mut message = [0u16; TEXT.len()];
+    for (out, byte) in message.iter_mut().zip(TEXT) {
+        *out = u16::from(*byte);
+    }
+    // Text is best effort: a failure leaves the already neutralized surface.
+    let _ = TextOutW(
+        dc,
+        12,
+        toolbar_top.saturating_add(15),
+        message.as_ptr(),
+        message.len() as i32,
+    );
+    true
+}
+
+// SAFETY CONTRACT:
 // Voraussetzung: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig.
 // Warum erfüllt bzw. offen: proc prüft Userdata; die Lebensdauer bei Reentranz
 // und der Vertrag von window_state bleiben für jeden Aufruf zu beachten.
@@ -225,49 +306,37 @@ pub(super) unsafe fn dispatch_mouse_continue(h: H, m: u32, _w: W, l: L) -> Optio
 pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Option<L> {
     Some(match m {
         0x000f => {
+            // Snapshot before BeginPaint/composition/GDI; no WindowState borrow
+            // spans those calls. BeginPaint can synchronously send WM_ERASEBKGND
+            // (and WM_NCPAINT), so recheck lifetime before touching state again.
+            let generation = window_state(h).generation;
+            let has_image = !window_state(h).bitmap.is_null();
+            let top = toolbar_height(h);
+            let target = image_view(h);
+            let source = (window_state(h).width, window_state(h).height);
+            let high_quality = !window_state(h).drawing;
             let mut ps: Paint = zeroed();
             let dc = BeginPaint(h, &mut ps);
-            if !window_state(h).bitmap.is_null() && !dc.is_null() {
-                let mut ok = false;
-                if let Ok(flattened) = composited_bitmap(h, true) {
-                    let mem = CreateCompatibleDC(dc);
-                    if !mem.is_null() {
-                        let old = SelectObject(mem, flattened);
-                        if !old.is_null() && old as isize != -1 {
-                            let (x, y, w, height) = image_view(h);
-                            let source_width = window_state(h).width;
-                            let source_height = window_state(h).height;
-                            ok = preview_scaling::blit_preview(
-                                dc,
-                                mem,
-                                (x, y, w, height),
-                                (source_width, source_height),
-                                !window_state(h).drawing,
-                            );
-                            SelectObject(mem, old);
-                        }
-                        DeleteDC(mem);
-                    }
-                    DeleteObject(flattened);
-                }
-                if !ok {
-                    let message = wide("Bilddarstellung fehlgeschlagen. Bitte erneut versuchen.");
-                    TextOutW(
-                        dc,
-                        12,
-                        toolbar_height(h) + 15,
-                        message.as_ptr(),
-                        (message.len() - 1) as i32,
-                    );
-                }
+            if GetWindowLongPtrW(h, -21) == 0 || window_state(h).generation != generation {
+                EndPaint(h, &ps);
+                return Some(0);
             }
-            if window_state(h).bitmap.is_null() && !dc.is_null() {
+            if has_image && !dc.is_null() {
+                let composed = composited_bitmap(h, true);
+                // If both GDI fills fail, leave the optional text out. Do not
+                // self-invalidate: persistent failure must not spin WM_PAINT or
+                // broaden a disjoint update region to its bounding rectangle.
+                // A subsequent ordinary invalidation can try painting again.
+                let _neutralized =
+                    paint_preview(dc, &ps.rect, top, target, source, high_quality, composed);
+            }
+            if !has_image && !dc.is_null() {
                 let message =
                     wide("Bild öffnen: Strg+O · Bild einfügen: Strg+V · Aufnahme: F9 oder F11");
                 TextOutW(
                     dc,
                     12,
-                    toolbar_height(h) + 15,
+                    top + 15,
                     message.as_ptr(),
                     (message.len() - 1) as i32,
                 );
@@ -301,3 +370,11 @@ pub(super) unsafe fn dispatch_paint_and_close(h: H, m: u32, _w: W, _l: L) -> Opt
         _ => return None,
     })
 }
+
+#[cfg(test)]
+#[path = "window_paint_tests.rs"]
+mod paint_tests;
+
+#[cfg(test)]
+#[path = "window_paint_hwnd_tests.rs"]
+mod paint_hwnd_tests;

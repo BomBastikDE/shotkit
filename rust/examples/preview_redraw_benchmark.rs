@@ -2,18 +2,100 @@
 mod benchmark {
     //! Reproducible redraw comparison; timings are evidence, not a pass/fail threshold.
     use shotkit::{
-        alpha_composite::{flatten_checkerboard, source_over},
-        alpha_document::{render_document, render_preview},
+        alpha_composite::{flatten_checkerboard, flatten_checkerboard_in_place, source_over},
+        alpha_document::{render_document, render_preview, render_preview_budgeted},
         alpha_render,
+        image_handle::ImageHandle,
+        resource_budget::ResourceBudget,
         shapes::{Point, Shape, ShapeKind},
         stitch::Image,
     };
-    use std::{sync::Arc, time::Instant};
+    use std::time::{Duration, Instant};
+
+    fn percentile_ms(samples: &[Duration], percentile: usize) -> f64 {
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        let rank = (sorted.len() * percentile).div_ceil(100).max(1);
+        sorted[rank - 1].as_secs_f64() * 1000.0
+    }
+
+    /// Compare only the shared-budget output admission on the warmed cached
+    /// redraw path. This deliberately excludes GDI bitmap creation and WM_PAINT.
+    fn compare_budgeted_redraw(image: &ImageHandle, shapes: &mut [Shape], stable_count: usize) {
+        let budget = ResourceBudget::new(image.pixels.len() * 2, 0).unwrap();
+        let mut cache = None;
+
+        let mut warm_legacy = render_preview(image, shapes, stable_count, &mut cache).unwrap();
+        flatten_checkerboard_in_place(&mut warm_legacy).unwrap();
+        let mut warm_budgeted =
+            render_preview_budgeted(image, shapes, stable_count, &mut cache, &budget).unwrap();
+        warm_budgeted.flatten_checkerboard().unwrap();
+        assert_eq!(warm_legacy, *warm_budgeted.image());
+        drop(warm_budgeted);
+        drop(warm_legacy);
+
+        // Keep the large 1200x10000 case bounded: 3 samples there, 9 otherwise.
+        let iterations = if image.pixels.len() > 8 * 1024 * 1024 {
+            3
+        } else {
+            9
+        };
+        let mut legacy = Vec::with_capacity(iterations);
+        let mut budgeted = Vec::with_capacity(iterations);
+        for i in 0..iterations {
+            shapes[stable_count].offset(1.0 + i as f32, 0.0);
+
+            let (legacy_frame, budgeted_frame) = if i % 2 == 0 {
+                let started = Instant::now();
+                let mut frame =
+                    render_preview_budgeted(image, shapes, stable_count, &mut cache, &budget)
+                        .unwrap();
+                frame.flatten_checkerboard().unwrap();
+                budgeted.push(started.elapsed());
+                let budgeted_frame = frame;
+
+                let started = Instant::now();
+                let mut frame = render_preview(image, shapes, stable_count, &mut cache).unwrap();
+                flatten_checkerboard_in_place(&mut frame).unwrap();
+                legacy.push(started.elapsed());
+                (frame, budgeted_frame)
+            } else {
+                let started = Instant::now();
+                let mut frame = render_preview(image, shapes, stable_count, &mut cache).unwrap();
+                flatten_checkerboard_in_place(&mut frame).unwrap();
+                legacy.push(started.elapsed());
+                let legacy_frame = frame;
+
+                let started = Instant::now();
+                let mut frame =
+                    render_preview_budgeted(image, shapes, stable_count, &mut cache, &budget)
+                        .unwrap();
+                frame.flatten_checkerboard().unwrap();
+                budgeted.push(started.elapsed());
+                (legacy_frame, frame)
+            };
+
+            // Pixel correctness is checked outside both timed sections.
+            assert_eq!(&legacy_frame, budgeted_frame.image());
+            drop(legacy_frame);
+            drop(budgeted_frame);
+        }
+        println!(
+            "BUDGETED_PREVIEW_BENCHMARK {}x{} samples={} legacy_ms_p50={:.2} legacy_ms_max={:.2} budgeted_ms_p50={:.2} budgeted_ms_max={:.2}",
+            image.width,
+            image.height,
+            iterations,
+            percentile_ms(&legacy, 50),
+            percentile_ms(&legacy, 100),
+            percentile_ms(&budgeted, 50),
+            percentile_ms(&budgeted, 100),
+        );
+    }
 
     fn baseline_flatten(image: &Image) -> Image {
         let mut pixels = Vec::with_capacity(image.pixels.len());
-        for (i, src) in image.pixels.chunks_exact(4).enumerate() {
-            let gray = if (((i % image.width) / 12) + ((i / image.width) / 12)) % 2 == 0 {
+        for (i, src) in image.pixels.as_chunks::<4>().0.iter().enumerate() {
+            let gray = if (((i % image.width) / 12) + ((i / image.width) / 12)).is_multiple_of(2) {
                 236
             } else {
                 196
@@ -29,10 +111,10 @@ mod benchmark {
 
     fn compare(width: usize, height: usize) {
         let mut pixels = vec![0; width * height * 4];
-        for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
+        for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[(i % 251) as u8, ((i / width) % 251) as u8, 120, 255]);
         }
-        let image = Arc::new(Image::new(width, height, pixels).unwrap());
+        let image = ImageHandle::from_image(Image::new(width, height, pixels).unwrap());
         let mut shapes = vec![
             Shape::new(ShapeKind::Rectangle {
                 start: Point::new(30.0, 30.0),
@@ -70,13 +152,14 @@ mod benchmark {
         }
         println!("PREVIEW_BENCHMARK {width}x{height} 4_shapes 3_frames baseline_ms={:.2} cached_ms={:.2}",
         old.as_secs_f64() * 1000.0 / f64::from(iterations), new.as_secs_f64() * 1000.0 / f64::from(iterations));
+        compare_budgeted_redraw(&image, &mut shapes, 3);
     }
 
     fn compare_freehand(width: usize, height: usize) {
         let pixels = (0..width * height)
             .flat_map(|i| [(i % 251) as u8, ((i / width) % 251) as u8, 120, 255])
             .collect();
-        let image = Arc::new(Image::new(width, height, pixels).unwrap());
+        let image = ImageHandle::from_image(Image::new(width, height, pixels).unwrap());
         let points = (0..600)
             .map(|i| Point::new(30.0 + i as f32, 200.0 + ((i as f32) * 0.06).sin() * 100.0))
             .collect();

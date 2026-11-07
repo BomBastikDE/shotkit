@@ -547,6 +547,10 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile, ($AtRight -ne 0))
         $overlay = Wait-ForCondition -TimeoutSeconds 10 -Description 'the horizontal scroll-selection overlay' -OwnedProcess $shotKit -AllowedDialogTitles @('Scroll-Richtung') -Condition {
             Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible } | Select-Object -First 1
         }
+        $persistedSettings = [IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
+        if ($persistedSettings.scroll_direction -cne $case.Name) {
+            throw "Scroll direction was not persisted: expected '$($case.Name)', got '$($persistedSettings.scroll_direction)'."
+        }
         $startX = $geometry[0]
         $startY = $geometry[1] + 60
         $endX = $startX + 900

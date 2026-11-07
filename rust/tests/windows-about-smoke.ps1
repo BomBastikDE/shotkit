@@ -50,8 +50,29 @@ namespace ShotKitAboutSmoke {
         [DllImport("user32.dll")] private static extern uint GetMenuItemID(IntPtr menu, uint position);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern uint GetMenuStringW(IntPtr menu, uint position, StringBuilder text, int max, uint flags);
         [DllImport("user32.dll")] private static extern bool GetMenuItemRect(IntPtr hwnd, IntPtr menu, uint position, out Rect rect);
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+        [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+        public static string ClickOutsidePopup(IntPtr popupWindow) {
+            Rect popup;
+            if (!GetWindowRect(popupWindow, out popup) || popup.Right <= popup.Left || popup.Bottom <= popup.Top)
+                throw new InvalidOperationException("GetWindowRect could not locate the active tray popup.");
+            int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77);
+            int vr = vx + GetSystemMetrics(78), vb = vy + GetSystemMetrics(79);
+            int x = 0, y = popup.Top + (popup.Bottom - popup.Top) / 2;
+            if (popup.Right + 8 < vr) x = popup.Right + 8;
+            else if (popup.Left - 8 >= vx) x = popup.Left - 8;
+            else if (popup.Bottom + 8 < vb) { x = popup.Left + (popup.Right - popup.Left) / 2; y = popup.Bottom + 8; }
+            else if (popup.Top - 8 >= vy) { x = popup.Left + (popup.Right - popup.Left) / 2; y = popup.Top - 8; }
+            else throw new InvalidOperationException("No point outside the tray popup is available on the virtual desktop.");
+            if (x >= popup.Left && x < popup.Right && y >= popup.Top && y < popup.Bottom)
+                throw new InvalidOperationException("Computed outside-click point overlaps the tray popup.");
+            if (!SetCursorPos(x, y)) throw new InvalidOperationException("SetCursorPos failed for outside-popup click.");
+            mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            return "outside-popup click=" + x + "," + y + " popup=" + popup.Left + "," + popup.Top + "," + popup.Right + "," + popup.Bottom;
+        }
         public static WindowInfo[] Windows(int wantedPid) {
             var list = new List<WindowInfo>();
             EnumProc cb = delegate(IntPtr h, IntPtr d) { uint pid; GetWindowThreadProcessId(h, out pid); if (wantedPid == 0 || pid == (uint)wantedPid) {
@@ -127,23 +148,45 @@ try {
     while ([DateTime]::UtcNow -lt $deadline -and [ShotKitAboutSmoke.Native]::IsWindow($welcome.Handle)) { Start-Sleep -Milliseconds 100 }
     if ([ShotKitAboutSmoke.Native]::IsWindow($welcome.Handle)) { throw 'STARTUP_DIALOG_CLOSE_TIMEOUT: startup dialog did not close.' }
 
-    # Exercise the same app window callback emitted by the registered tray icon for WM_RBUTTONUP.
-    # It opens the real TrackPopupMenu; selection below is against the visible native menu item.
+    # Exercise the app's tray callback and verify that a physical outside click
+    # closes the native popup before opening the same menu a second time.
     if (-not [ShotKitAboutSmoke.Native]::PostMessageW($main.Handle, 0x8001, [IntPtr]1, [IntPtr]0x0205)) {
         throw 'TRAY_CALLBACK_POST_FAILED: could not post the tray right-click notification.'
     }
-    # TrackPopupMenu creates a native #32768 popup window. Read its HMENU via
-    # MN_GETHMENU, verify command ID 15 and the exact label, then click the
-    # item using its native screen rectangle. This is real menu input.
     $popup = $null
     $deadline = [DateTime]::UtcNow.AddSeconds(8)
     while ([DateTime]::UtcNow -lt $deadline) {
         $popup = @([ShotKitAboutSmoke.Native]::Windows($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32768' } | Select-Object -First 1)
         if ($popup.Count -gt 0) { $popup = $popup[0]; break }
-        if ($process.HasExited) { throw "PROCESS_EXITED before native tray popup appeared (code $($process.ExitCode))." }
+        if ($process.HasExited) { throw "PROCESS_EXITED before first native tray popup appeared (code $($process.ExitCode))." }
         Start-Sleep -Milliseconds 100
     }
-    if (-not $popup) { throw 'TRAY_MENU_TIMEOUT: the app process did not create a visible native #32768 popup after its tray callback.' }
+    if (-not $popup) { throw 'TRAY_MENU_TIMEOUT: the app process did not create the first visible native #32768 popup.' }
+    try { $outsideClick = [ShotKitAboutSmoke.Native]::ClickOutsidePopup($popup.Handle) }
+    catch { throw "TRAY_MENU_OUTSIDE_CLICK_FAILED: $($_.Exception.Message)" }
+    $firstPopupHandle = $popup.Handle
+    $deadline = [DateTime]::UtcNow.AddSeconds(3)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $stillVisible = @([ShotKitAboutSmoke.Native]::Windows($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32768' -and $_.Handle -eq $firstPopupHandle })
+        if ($stillVisible.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 25
+    }
+    if ($stillVisible.Count -gt 0) { throw "TRAY_MENU_OUTSIDE_DISMISS_TIMEOUT: popup remained visible after $outsideClick." }
+
+    if (-not [ShotKitAboutSmoke.Native]::PostMessageW($main.Handle, 0x8001, [IntPtr]1, [IntPtr]0x0205)) {
+        throw 'TRAY_CALLBACK_REOPEN_POST_FAILED: could not post the second tray right-click notification.'
+    }
+    # TrackPopupMenu creates a native #32768 popup window. Read the reopened
+    # HMENU, verify the About item and select it through its screen rectangle.
+    $popup = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $popup = @([ShotKitAboutSmoke.Native]::Windows($process.Id) | Where-Object { $_.Visible -and $_.ClassName -eq '#32768' } | Select-Object -First 1)
+        if ($popup.Count -gt 0) { $popup = $popup[0]; break }
+        if ($process.HasExited) { throw "PROCESS_EXITED before reopened native tray popup appeared (code $($process.ExitCode))." }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $popup) { throw 'TRAY_MENU_REOPEN_TIMEOUT: the app process did not recreate a visible native #32768 popup.' }
     try {
         $menuSelection = [ShotKitAboutSmoke.Native]::VerifyAndClickAboutMenuItem($popup.Handle, 15, 'Über ShotKit')
     } catch { throw "TRAY_MENU_ITEM_SELECTION_FAILED: $($_.Exception.Message)" }
@@ -171,7 +214,7 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(8)
     while ([DateTime]::UtcNow -lt $deadline -and [ShotKitAboutSmoke.Native]::IsWindow($about.Handle)) { Start-Sleep -Milliseconds 100 }
     if ([ShotKitAboutSmoke.Native]::IsWindow($about.Handle)) { throw 'ABOUT_CLOSE_TIMEOUT: About window remained open after WM_CLOSE.' }
-    Write-Host "PASS: $menuSelection; name, version $expectedVersion, developer and website button text verified; WM_CLOSE closed About window. Website was not opened."
+    Write-Host "PASS: $outsideClick; tray popup closed and reopened; $menuSelection; name, version $expectedVersion, developer and website button text verified; WM_CLOSE closed About window. Website was not opened."
 } catch { $failure = $_ }
 finally {
     $env:APPDATA = $oldAppData
