@@ -89,21 +89,26 @@ pub(super) unsafe fn composited_bitmap(h: H, preview: bool) -> Result<H, String>
         // these pixels charged to the same process-wide preview-cache pool.
         let shared = Rc::clone(&window_state(h).preview_cache);
         let mut cache = shared.borrow_mut().take();
-        let result =
-            shotkit::alpha_document::render_preview(&source, &shapes, stable_count, &mut cache);
+        let result = shotkit::alpha_document::render_preview_budgeted(
+            &source,
+            &shapes,
+            stable_count,
+            &mut cache,
+            &shared_image_budget(),
+        );
         *shared.borrow_mut() = cache;
         result?
     } else {
-        shotkit::alpha_document::render_document(&source, &shapes)?
+        shotkit::alpha_document::render_document_budgeted(&source, &shapes, &shared_image_budget())?
     };
     // StretchBlt ignores the DIB alpha channel. Flatten only this on-screen
     // preview against a checkerboard so transparent source pixels and
     // translucent annotations are displayed using the same source-over math
     // as the document renderer. Export continues to use the original alpha.
     if preview {
-        shotkit::alpha_composite::flatten_checkerboard_in_place(&mut rendered)?;
+        rendered.flatten_checkerboard()?;
     }
-    let output = create_bitmap(&rendered)?;
+    let output = create_bitmap(rendered.image())?;
     if !preview || (tool != Tool::Crop && tool != Tool::Select && !moving_selection) {
         return Ok(output);
     }

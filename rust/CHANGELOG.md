@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Der vorübergehende Ausgabepuffer der Editorvorschau und Bildkomposition wird im gemeinsamen Bildbudget berücksichtigt. Bei fehlendem Budget bleibt der Dokumentzustand erhalten; GDI und andere Render-Zwischenpuffer sind nicht vollständig erfasst ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
 - Schlägt das Zeichnen der Vorschau fehl, wird der betroffene Bereich vor der Fehlermeldung nach Möglichkeit deckend neutralisiert. Damit sollen vorher sichtbare Bildinhalte nicht unter einer fehlgeschlagenen Aktualisierung stehen bleiben; ein vollständiger Ausfall beider Windows-Grafikoperationen kann nicht abgefangen werden.
 
 - Beim TIFF-Import werden Größe und Anzahl der Einträge im ersten Verzeichnis vor dem Start des Decoders begrenzt. Dadurch können auch gültige Spezialdateien mit sehr großen Metadaten oder vielen Strips/Kacheln abgelehnt werden; eine vollständige Prozessspeichergrenze ist damit nicht verbunden ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).

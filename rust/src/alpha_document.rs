@@ -39,6 +39,45 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
     render_document_over(source, source, shapes)
 }
 
+/// A transient UI render: pixels and their shared-pool reservation stay together.
+/// Field order drops the allocation before releasing admission. This accounts
+/// only for the final Rust output buffer, not renderer scratch, cache or GDI.
+pub struct BudgetedRender {
+    image: Image,
+    pixel_lease: BudgetLease,
+}
+
+impl BudgetedRender {
+    pub fn image(&self) -> &Image {
+        debug_assert_eq!(self.pixel_lease.bytes(), self.image.pixels.capacity());
+        &self.image
+    }
+
+    /// Flatten without exposing mutable pixel ownership or changing capacity.
+    pub fn flatten_checkerboard(&mut self) -> Result<(), String> {
+        crate::alpha_composite::flatten_checkerboard_in_place(&mut self.image)
+    }
+}
+
+/// Reserve final document output before rendering. Existing-document work may
+/// use reserved headroom, but cannot bypass the caller's shared ceiling.
+pub fn render_document_budgeted(
+    source: &Image,
+    shapes: &[Shape],
+    budget: &ResourceBudget,
+) -> Result<BudgetedRender, String> {
+    let mut pixel_lease = reserve_output(source, budget)?;
+    let image = render_document_over_with_lease(source, source, shapes, Some(&mut pixel_lease))?;
+    Ok(BudgetedRender { image, pixel_lease })
+}
+
+fn reserve_output(source: &Image, budget: &ResourceBudget) -> Result<BudgetLease, String> {
+    validate_image(source)?;
+    budget
+        .try_acquire(source.pixels.len(), AdmissionClass::Reserved)
+        .map_err(|error| format!("Kein freies Bildbudget für die Darstellung: {error}"))
+}
+
 /// Return the original immutable image when there are no annotations.
 /// Retaining an imported handle also retains its pixel reservation. An annotated
 /// result owns a new, untracked allocation and leaves the source lease intact.
@@ -101,6 +140,30 @@ pub fn render_preview(
     render_preview_with_budget(source, shapes, stable_count, cache, budget)
 }
 
+/// Render UI preview with shared admission for its final output. Prefix cache
+/// admission remains in its independent pool, including uncached fallbacks.
+pub fn render_preview_budgeted(
+    source: &ImageHandle,
+    shapes: &[Shape],
+    stable_count: usize,
+    cache: &mut Option<PreviewCache>,
+    budget: &ResourceBudget,
+) -> Result<BudgetedRender, String> {
+    let mut pixel_lease = reserve_output(source, budget)?;
+    let cache_budget = PREVIEW_CACHE_BUDGET.get_or_init(|| {
+        ResourceBudget::new(PREVIEW_CACHE_BYTES, 0).expect("constant preview budget is valid")
+    });
+    let image = render_preview_with_output_lease(
+        source,
+        shapes,
+        stable_count,
+        cache,
+        cache_budget,
+        Some(&mut pixel_lease),
+    )?;
+    Ok(BudgetedRender { image, pixel_lease })
+}
+
 // Kept private so callers cannot move an existing cache between accounting
 // pools. Tests inject a small pool without depending on global test ordering.
 fn render_preview_with_budget(
@@ -109,6 +172,17 @@ fn render_preview_with_budget(
     stable_count: usize,
     cache: &mut Option<PreviewCache>,
     budget: &ResourceBudget,
+) -> Result<Image, String> {
+    render_preview_with_output_lease(source, shapes, stable_count, cache, budget, None)
+}
+
+fn render_preview_with_output_lease(
+    source: &ImageHandle,
+    shapes: &[Shape],
+    stable_count: usize,
+    cache: &mut Option<PreviewCache>,
+    budget: &ResourceBudget,
+    output_lease: Option<&mut BudgetLease>,
 ) -> Result<Image, String> {
     let Some(prefix) = shapes.get(..stable_count) else {
         *cache = None;
@@ -121,13 +195,13 @@ fn render_preview_with_budget(
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
     {
         *cache = None;
-        return render_document(source, shapes);
+        return render_document_over_with_lease(source, source, shapes, output_lease);
     }
     // An empty prefix is just the source image. Rendering it into the cache
     // would retain a redundant full-size pixel buffer and copy it again below.
     if prefix.is_empty() {
         *cache = None;
-        return render_document(source, shapes);
+        return render_document_over_with_lease(source, source, shapes, output_lease);
     }
     let reusable = cache
         .as_ref()
@@ -139,7 +213,7 @@ fn render_preview_with_budget(
         validate_image(source)?;
         let Ok(pixel_lease) = budget.try_acquire(source.pixels.len(), AdmissionClass::Normal)
         else {
-            return render_document(source, shapes);
+            return render_document_over_with_lease(source, source, shapes, output_lease);
         };
         // try_acquire has released its mutex. Rendering can dispatch GDI+
         // callbacks and reenter paint; the provisional lease remains owned here.
@@ -149,12 +223,17 @@ fn render_preview_with_budget(
         // drops the candidate before releasing its lease and renders uncached.
         *cache = PreviewCache::try_new(pixel_lease, source, prefix, rendered);
         if cache.is_none() {
-            return render_document(source, shapes);
+            return render_document_over_with_lease(source, source, shapes, output_lease);
         }
     }
     let entry = cache.as_ref().ok_or("Vorschau-Cache fehlt.")?;
     debug_assert_eq!(entry.pixel_lease.bytes(), entry.rendered.pixels.capacity());
-    let mut result = render_document_over(source, &entry.rendered, &shapes[stable_count..])?;
+    let mut result = render_document_over_with_lease(
+        source,
+        &entry.rendered,
+        &shapes[stable_count..],
+        output_lease,
+    )?;
     // Later pixelation samples the original, so restore redactions from the
     // cached prefix as well as those from the changing suffix.
     apply_redactions(&mut result.pixels, source.width, source.height, shapes)?;
@@ -166,14 +245,19 @@ fn render_document_over(
     initial: &Image,
     shapes: &[Shape],
 ) -> Result<Image, String> {
+    render_document_over_with_lease(source, initial, shapes, None)
+}
+
+fn render_document_over_with_lease(
+    source: &Image,
+    initial: &Image,
+    shapes: &[Shape],
+    output_lease: Option<&mut BudgetLease>,
+) -> Result<Image, String> {
     validate_image(source)?;
     validate_same_dimensions(source, initial)?;
 
-    let mut output_pixels = Vec::new();
-    output_pixels
-        .try_reserve_exact(initial.pixels.len())
-        .map_err(|_| "Nicht genug Speicher für das gerenderte Dokument.".to_owned())?;
-    output_pixels.extend_from_slice(&initial.pixels);
+    let mut output_pixels = allocate_output(initial, output_lease)?;
 
     // Filters sampling the original must never reveal redacted pixels outside
     // the redaction. Source-independent shapes need no second image buffer.
@@ -312,6 +396,30 @@ fn render_document_over(
     apply_redactions(&mut output_pixels, source.width, source.height, shapes)?;
     Image::new(source.width, source.height, output_pixels)
         .map_err(|error| format!("Gerendertes Bild ist ungültig: {error}"))
+}
+
+// Account allocator excess before any shape renderer can dispatch callbacks.
+// On rejected growth the local Vec drops while the caller still owns its lease.
+fn allocate_output(initial: &Image, lease: Option<&mut BudgetLease>) -> Result<Vec<u8>, String> {
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(initial.pixels.len())
+        .map_err(|_| "Nicht genug Speicher für das gerenderte Dokument.".to_owned())?;
+    reconcile_output_capacity(&pixels, lease)?;
+    pixels.extend_from_slice(&initial.pixels);
+    Ok(pixels)
+}
+
+fn reconcile_output_capacity(
+    pixels: &Vec<u8>,
+    lease: Option<&mut BudgetLease>,
+) -> Result<(), String> {
+    if let Some(lease) = lease {
+        lease.try_resize(pixels.capacity()).map_err(|error| {
+            format!("Bildspeicher für die Darstellung konnte nicht verbucht werden: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 // Exhaustive so newly added effects must explicitly choose a safety policy.
@@ -966,6 +1074,157 @@ mod tests {
             }),
         ];
         (source, shapes)
+    }
+
+    #[test]
+    fn output_admission_uses_headroom_and_releases_on_drop_and_render_error() {
+        let (source, shapes) = budget_preview_fixture();
+        let bytes = source.pixels.len();
+        let budget = ResourceBudget::new(bytes * 3, bytes * 2).unwrap();
+        let source_lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        assert!(budget.try_acquire(1, AdmissionClass::Normal).is_err());
+        let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
+        assert_eq!(output.image(), &render_document(&source, &shapes).unwrap());
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            bytes + output.image().pixels.capacity()
+        );
+        let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
+        let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
+        assert!(render_document_budgeted(&source, &shapes, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, bytes * 3);
+        drop(blocker);
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        let mut invalid = shapes;
+        invalid[0].style.width = f32::NAN;
+        assert!(render_document_budgeted(&source, &invalid, &budget).is_err());
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        drop(source_lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn output_reservation_survives_nested_work_and_releases_on_unwind() {
+        let (source, shapes) = budget_preview_fixture();
+        let budget = ResourceBudget::new(source.pixels.len() * 2, 0).unwrap();
+        let output = render_document_budgeted(&source, &shapes, &budget).unwrap();
+        assert_eq!(
+            budget.snapshot().used_bytes,
+            output.image().pixels.capacity()
+        );
+        let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
+        let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
+        let nested_budget = budget.clone();
+        let result = std::panic::catch_unwind(move || {
+            // Models work reentered while outer pixels are still owned.
+            assert!(render_document_budgeted(&source, &shapes, &nested_budget).is_err());
+            assert!(!output.image().pixels.is_empty());
+            assert_eq!(blocker.bytes(), spare);
+            panic!("simulate cancelled UI render");
+        });
+        assert!(result.is_err());
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn output_capacity_is_reconciled_before_use_and_growth_failure_is_atomic() {
+        let pixels = Vec::<u8>::with_capacity(32);
+        let capacity = pixels.capacity();
+        let small = ResourceBudget::new(capacity - 1, 0).unwrap();
+        let mut lease = small.try_acquire(1, AdmissionClass::Reserved).unwrap();
+        assert!(reconcile_output_capacity(&pixels, Some(&mut lease)).is_err());
+        assert_eq!(lease.bytes(), 1);
+        drop(pixels);
+        drop(lease);
+        assert_eq!(small.snapshot().used_bytes, 0);
+
+        let image = Image::new(1, 1, vec![1, 2, 3, 4]).unwrap();
+        let budget = ResourceBudget::new(16, 0).unwrap();
+        let mut lease = reserve_output(&image, &budget).unwrap();
+        let pixels = allocate_output(&image, Some(&mut lease)).unwrap();
+        assert_eq!(lease.bytes(), pixels.capacity());
+        assert_eq!(budget.snapshot().used_bytes, pixels.capacity());
+        assert_eq!(pixels, image.pixels);
+        drop(pixels);
+        drop(lease);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn budgeted_preview_preserves_cache_fallback_redactions_and_checkerboard() {
+        use crate::shapes::Point;
+        let (source, mut shapes) = budget_preview_fixture();
+        let original = (*source).clone();
+        let output_budget = ResourceBudget::new(source.pixels.len() * 4, 0).unwrap();
+        for cache_bytes in [0, source.pixels.len() * 8] {
+            let cache_budget = ResourceBudget::new(cache_bytes, 0).unwrap();
+            let mut cache = None;
+            for redacted in [false, true] {
+                if redacted {
+                    shapes.push(Shape::new(ShapeKind::Redact {
+                        start: Point::new(3.0, 4.0),
+                        end: Point::new(19.0, 15.0),
+                    }));
+                }
+                for split in 0..=shapes.len() {
+                    // Repeat to exercise both cache construction and reuse.
+                    for _ in 0..2 {
+                        let mut pixel_lease = reserve_output(&source, &output_budget).unwrap();
+                        let image = render_preview_with_output_lease(
+                            &source,
+                            &shapes,
+                            split,
+                            &mut cache,
+                            &cache_budget,
+                            Some(&mut pixel_lease),
+                        )
+                        .unwrap();
+                        let mut output = BudgetedRender { image, pixel_lease };
+                        let expected = render_document(&source, &shapes).unwrap();
+                        assert_eq!(output.image(), &expected);
+                        output.flatten_checkerboard().unwrap();
+                        assert_eq!(
+                            output.image(),
+                            &crate::alpha_composite::flatten_checkerboard(&expected).unwrap()
+                        );
+                        drop(output);
+                        assert_eq!(output_budget.snapshot().used_bytes, 0);
+                    }
+                }
+                if redacted {
+                    shapes.pop();
+                }
+            }
+            drop(cache);
+            assert_eq!(cache_budget.snapshot().used_bytes, 0);
+        }
+        assert_eq!(*source, original);
+    }
+
+    #[test]
+    fn budgeted_preview_rejection_keeps_cache_and_nested_outputs_cannot_bypass_pool() {
+        let (source, shapes) = budget_preview_fixture();
+        let budget = ResourceBudget::new(source.pixels.len() * 2, 0).unwrap();
+        let mut cache = None;
+        let first = render_preview_budgeted(&source, &shapes, 1, &mut cache, &budget).unwrap();
+        let retained = cache.as_ref().map(|entry| entry.rendered.pixels.as_ptr());
+        let spare = budget.snapshot().ceiling_bytes - budget.snapshot().used_bytes;
+        let blocker = budget.try_acquire(spare, AdmissionClass::Reserved).unwrap();
+        assert!(render_preview_budgeted(&source, &shapes, 1, &mut cache, &budget).is_err());
+        assert_eq!(
+            cache.as_ref().map(|entry| entry.rendered.pixels.as_ptr()),
+            retained
+        );
+        drop(blocker);
+        drop(first);
+        assert_eq!(budget.snapshot().used_bytes, 0);
+        // Invalid prefix errors release the provisional output reservation.
+        assert!(
+            render_preview_budgeted(&source, &shapes, shapes.len() + 1, &mut cache, &budget)
+                .is_err()
+        );
+        assert_eq!(budget.snapshot().used_bytes, 0);
     }
 
     #[test]
