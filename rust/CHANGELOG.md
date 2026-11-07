@@ -2,6 +2,12 @@
 
 ## In Entwicklung nach Beta 1
 
+- Das gemeinsame Bildbudget berücksichtigt zusätzlich Zwischenablageimporte, gewöhnliche Bildschirmaufnahmen sowie neue Bildpuffer für Zuschnitt, Rahmen, Schatten und Leinwandänderungen. Bei nicht ausreichendem Budget bleibt der bisherige Dokumentzustand erhalten. GDI, weitere Bearbeitungen, Codec-Hilfsspeicher und der gesamte Prozessspeicher bleiben außerhalb einer festen Gesamtgrenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+
+- Bei JPEG-Importen wird die vom Decoder benötigte Eingabekopie zusätzlich im Bildbudget berücksichtigt. PNG begrenzt interne Decoderbuchungen auf 16 MiB; dadurch können auch gültige PNG-Dateien mit umfangreichen Metadaten oder anderen großen internen Decoderbuchungen abgewiesen werden. Dies ist keine feste Speicherobergrenze für den Decoderprozess ([#65](https://github.com/BomBastikDE/shotkit/issues/65), [#52](https://github.com/BomBastikDE/shotkit/issues/52)).
+
+- Eine abgelehnte Einstellungsdatei mit eindeutig erkannter Version 1 kann nach ausdrücklicher Zustimmung zurückgesetzt werden. Das unveränderte Original wird gesichert; eine unterbrochene Wiederherstellung erfordert weiterhin eine manuelle Prüfung. Gesicherte Fassungen werden nicht automatisch bereinigt ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
+
 - Dateiimporte prüfen vor der Dekodierung und nach dem Lesen der Bildabmessungen ein gemeinsames Budget für geschätzte Importpuffer und bereits importierte Originalbilder. Ein abgelehnter Import verändert vorhandene Dokumente nicht. Vorschau, Bearbeitung, Bildschirmaufnahmen, GDI und interne Decoderpuffer sind nicht vollständig erfasst; das ist keine feste Grenze für den gesamten Prozessspeicher ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Scrollaufnahmen können auch bei ausschließlich randnaher Struktur einen eindeutigen, pixelgenauen Bildversatz erkennen. Nach Nutzung dieses Abgleichs bleibt bei unklaren Folgebildern die Teilaufnahme erhalten; bildidentische Überlagerungen lassen sich allein anhand der Pixel nicht sicher von Seiteninhalt unterscheiden ([#60](https://github.com/BomBastikDE/shotkit/issues/60)).
@@ -20,7 +26,7 @@
 
 - Der Edge-Scrolltest protokolliert begrenzt Scrollposition und Ereigniszähler; beim Aufräumen seines eigenen Testprofils werden vorübergehende Dateisperren mit begrenzten Wiederholungen behandelt ([#58](https://github.com/BomBastikDE/shotkit/issues/58)).
 
-- Bilddateien werden beim Öffnen direkt aus einem größenbegrenzten Dateileser dekodiert, statt die vollständige Eingabedatei gleichzeitig mit dem Bildpuffer im Speicher zu halten. Unter Windows schützt der geöffnete Lesehandle die Datei während des Imports vor gleichzeitigen Schreib- und Ersetzungsvorgängen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
+- Bilddateien werden beim Öffnen aus einem größenbegrenzten Dateileser dekodiert. Der JPEG-Decoder hält intern eine vollständige Eingabekopie, die separat im Bildbudget berücksichtigt wird. Unter Windows schützt der geöffnete Lesehandle die Datei während des Imports vor gleichzeitigen Schreib- und Ersetzungsvorgängen ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Die Anleitung erklärt, dass automatische Datei- und Zwischenablageausgabe vor einer Schwärzung im Editor erfolgen und vorher ausgeschaltet werden müssen, wenn nur die geschwärzte Aufnahme ausgegeben werden soll ([#52](https://github.com/BomBastikDE/shotkit/issues/52)).
 
