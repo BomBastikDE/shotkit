@@ -20,9 +20,9 @@ pub fn acquire<'a>(
     let ticket = admission.try_reserve_decode().map_err(|_| {
         "Ein Bildimport ist noch aktiv oder wartet auf Wiederherstellung.".to_owned()
     })?;
-    let fallback = rejected.try_reserve().map_err(|_| {
-        "Ein abgelehnter Bildimport wartet noch auf Wiederherstellung.".to_owned()
-    })?;
+    let fallback = rejected
+        .try_reserve()
+        .map_err(|_| "Ein abgelehnter Bildimport wartet noch auf Wiederherstellung.".to_owned())?;
     let Some(decoded) = read(admission.budget())? else {
         return Ok(None);
     };
@@ -38,7 +38,9 @@ pub fn acquire<'a>(
                 // Successful pixels are already owned by admission. Drop only
                 // the guard, which leaves the same tracked allocation pending.
                 drop(initialization);
-                Err(format!("{error}. Das Zwischenablagebild bleibt zur Wiederherstellung im Speicher."))
+                Err(format!(
+                    "{error}. Das Zwischenablagebild bleibt zur Wiederherstellung im Speicher."
+                ))
             } else {
                 Ok(Some(initialization))
             }
@@ -50,7 +52,9 @@ pub fn acquire<'a>(
             let details = post_decode_error.unwrap_or_else(|| {
                 "Das Zwischenablagebild konnte nicht übernommen werden".to_owned()
             });
-            Err(format!("{details}. Bild und Speicherreservierung bleiben zur Wiederherstellung erhalten."))
+            Err(format!(
+                "{details}. Bild und Speicherreservierung bleiben zur Wiederherstellung erhalten."
+            ))
         }
     }
 }
@@ -365,9 +369,11 @@ mod tests {
         let budget = ResourceBudget::new(4, 0).unwrap();
         let admission = ImportAdmission::new(budget.clone());
         let rejected = RejectedImportSlot::new();
-        let initialization = acquire(&admission, &rejected, |budget| Ok(Some(decoded(budget, 37))))
-            .unwrap()
-            .unwrap();
+        let initialization = acquire(&admission, &rejected, |budget| {
+            Ok(Some(decoded(budget, 37)))
+        })
+        .unwrap()
+        .unwrap();
         let handle = ImageHandle::from_imported(Arc::clone(initialization.image()));
         let ptr = handle.pixels.as_ptr();
         drop(initialization); // editor setup failed after taking its handle

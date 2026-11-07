@@ -347,6 +347,14 @@ impl EditorController {
         self.cancel_drag();
         self.document.crop(rect)
     }
+    pub fn crop_with_budget(
+        &mut self,
+        rect: CropRect,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        self.cancel_drag();
+        self.document.crop_with_budget(rect, budget)
+    }
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
         self.cancel_drag();
         self.document.add_frame(options)

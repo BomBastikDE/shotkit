@@ -833,7 +833,8 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_budgeted_decode_rejects_initial_and_peak_admission_without_touching_existing_lease() {
+    fn borrowed_budgeted_decode_rejects_initial_and_peak_admission_without_touching_existing_lease()
+    {
         let bytes = encode(&sample(), ImageFormat::Png).unwrap();
         for ceiling in [IMPORT_WORKSPACE_ALLOWANCE - 1, IMPORT_WORKSPACE_ALLOWANCE] {
             let budget = ResourceBudget::new(ceiling + 37, 0).unwrap();

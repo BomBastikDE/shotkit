@@ -68,6 +68,15 @@ pub struct TrackedImage {
 }
 
 impl TrackedImage {
+    // Shared immutable ownership for already-validated, internally budgeted
+    // edit output. No admission/recovery slot is involved: the existing document
+    // remains the rollback source until the caller commits the edit.
+    pub(crate) fn from_reserved(image: Image, lease: BudgetLease) -> Self {
+        debug_assert!(image.validate().is_ok());
+        debug_assert!(lease.bytes() >= image.pixels.capacity());
+        Self { image, lease }
+    }
+
     pub fn image(&self) -> &Image {
         &self.image
     }

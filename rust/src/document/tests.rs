@@ -1595,3 +1595,153 @@ fn imported_handle_keeps_budget_in_history_clones_and_external_peeks() {
     drop(retained);
     assert_eq!(budget.snapshot().used_bytes, 0);
 }
+
+fn assert_same_crop_baseline(document: &Document, before: &Document) {
+    assert!(document.current.image.ptr_eq(&before.current.image));
+    assert!(Arc::ptr_eq(
+        &document.current.revision,
+        &before.current.revision
+    ));
+    assert_eq!(document.current.shapes, before.current.shapes);
+    assert_eq!(document.is_dirty(), before.is_dirty());
+    assert_eq!(document.undo, before.undo);
+    assert_eq!(document.redo, before.redo);
+    for (after, before) in document
+        .undo
+        .iter()
+        .chain(&document.redo)
+        .zip(before.undo.iter().chain(&before.redo))
+    {
+        assert!(after.image.ptr_eq(&before.image));
+        assert!(Arc::ptr_eq(&after.revision, &before.revision));
+    }
+    assert!(document.staged_before.is_none());
+}
+
+fn tracked_crop_document(budget: &crate::resource_budget::ResourceBudget) -> Document {
+    use crate::{import_admission::ImportAdmission, resource_budget::AdmissionClass};
+    let source = image();
+    let lease = budget
+        .try_acquire(source.pixels.capacity(), AdmissionClass::Normal)
+        .unwrap();
+    let admission = ImportAdmission::new(budget.clone());
+    let tracked = admission.try_begin(source, lease).unwrap().complete();
+    Document::from_image_handle(ImageHandle::from_imported(tracked)).unwrap()
+}
+
+fn budget_crop_rect() -> CropRect {
+    CropRect {
+        x: 1,
+        y: 0,
+        width: 2,
+        height: 2,
+    }
+}
+
+#[test]
+fn crop_budget_and_direct_history_refusal_preserve_revision_and_both_histories() {
+    use crate::resource_budget::{AdmissionClass, ResourceBudget};
+    let budget = ResourceBudget::new(128, 0).unwrap();
+    let mut document = tracked_crop_document(&budget);
+    document.add_shape(shape()).unwrap();
+    document.add_shape(shape()).unwrap();
+    assert!(document.undo());
+    assert!(document.mark_saved());
+    let before = document.clone();
+    let used = budget.snapshot().used_bytes;
+    let blocker = budget
+        .try_acquire(128 - used, AdmissionClass::Normal)
+        .unwrap();
+    assert!(matches!(
+        document.crop_with_budget(budget_crop_rect(), &budget),
+        Err(DocumentError::Image(ImageEditError::Budget(_)))
+    ));
+    assert_same_crop_baseline(&document, &before);
+    drop(blocker);
+    document.history_budget = 0;
+    assert_eq!(
+        document.crop_with_budget(budget_crop_rect(), &budget),
+        Err(DocumentError::HistoryBudgetExceeded)
+    );
+    assert_same_crop_baseline(&document, &before);
+    assert_eq!(budget.snapshot().used_bytes, used);
+}
+
+#[test]
+fn budgeted_crop_bitmap_failure_history_failure_and_decline_restore_exact_baseline() {
+    use crate::resource_budget::ResourceBudget;
+    for failure in 0..3 {
+        let budget = ResourceBudget::new(128, 0).unwrap();
+        let mut document = tracked_crop_document(&budget);
+        document.add_shape(shape()).unwrap();
+        document.add_shape(shape()).unwrap();
+        assert!(document.undo()); // Keep both undo and redo populated.
+        assert!(document.mark_saved());
+        let before = document.clone();
+        let used = budget.snapshot().used_bytes;
+        document.begin_edit().unwrap();
+        document
+            .crop_with_budget(budget_crop_rect(), &budget)
+            .unwrap();
+        assert!(budget.snapshot().used_bytes > used);
+        match failure {
+            0 => {
+                // Models native bitmap construction returning Err before the
+                // history dialog. The staged output alone is abandoned.
+                document.abort_edit().unwrap();
+            }
+            1 => {
+                let _guard = HistoryReservationFailureGuard::after(0);
+                assert!(matches!(
+                    document.plan_commit_edit_with_fallback(),
+                    Err(DocumentError::AllocationFailed)
+                ));
+                document.abort_edit().unwrap();
+            }
+            _ => {
+                let plan = document.plan_commit_edit_with_fallback().unwrap().unwrap();
+                let plan = document.suspend_edit_with_plan(plan).unwrap();
+                assert_same_crop_baseline(&document, &before);
+                // A declined history confirmation drops the suspended output.
+                drop(plan);
+            }
+        }
+        assert_same_crop_baseline(&document, &before);
+        assert_eq!(budget.snapshot().used_bytes, used);
+    }
+}
+
+#[test]
+fn budgeted_crop_lease_follows_current_undo_redo_plans_and_external_clones() {
+    use crate::resource_budget::ResourceBudget;
+    let budget = ResourceBudget::new(128, 0).unwrap();
+    let mut document = tracked_crop_document(&budget);
+    let source = document.image_arc();
+    let source_bytes = source.pixels.capacity();
+    document.begin_edit().unwrap();
+    document
+        .crop_with_budget(budget_crop_rect(), &budget)
+        .unwrap();
+    let crop = document.image_arc();
+    let crop_bytes = crop.pixels.capacity();
+    let plan = document.plan_commit_edit().unwrap().unwrap();
+    let plan = document.suspend_edit_with_plan(plan).unwrap();
+    assert!(document.image_arc().ptr_eq(&source));
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + crop_bytes);
+    document
+        .commit_edit_with_approval(plan, CommitApproval::PreserveHistory)
+        .unwrap();
+    assert!(document.image_arc().ptr_eq(&crop));
+    assert!(document.try_undo().unwrap());
+    assert!(document.redo_image_arc().unwrap().ptr_eq(&crop));
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + crop_bytes);
+    assert!(document.try_redo().unwrap());
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + crop_bytes);
+    let external = document.clone();
+    drop(document);
+    drop(crop);
+    drop(source);
+    assert_eq!(budget.snapshot().used_bytes, source_bytes + crop_bytes);
+    drop(external);
+    assert_eq!(budget.snapshot().used_bytes, 0);
+}

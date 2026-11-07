@@ -609,6 +609,23 @@ impl Document {
         self.install(next)
     }
 
+    /// Crop into a shared-pool tracked allocation. As with `crop`, a staged
+    /// transaction can be aborted if a later bitmap/history step is rejected.
+    /// Unstaged use retains the existing direct-edit history policy.
+    pub fn crop_with_budget(
+        &mut self,
+        rect: CropRect,
+        budget: &crate::resource_budget::ResourceBudget,
+    ) -> Result<(), DocumentError> {
+        let image = image_edit::crop_with_budget(&self.current.image, rect, budget)?;
+        let mut next = self.current.clone();
+        next.image = image;
+        for shape in &mut next.shapes {
+            shape.offset(-(rect.x as f32), -(rect.y as f32));
+        }
+        self.install(next)
+    }
+
     /// Add frame/shadow and move annotations to the new image-content origin.
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
         let image = ImageHandle::from_image(image_edit::add_frame(&self.current.image, options)?);

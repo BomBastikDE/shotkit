@@ -6,8 +6,14 @@
 //! into transparent padding beneath the frame; it uses separable box coverage,
 //! not a photo-realistic Gaussian blur.
 
-use crate::{shapes::Color, stitch::Image};
-use std::fmt;
+use crate::{
+    image_handle::ImageHandle,
+    import_admission::TrackedImage,
+    resource_budget::{AdmissionClass, BudgetError, ResourceBudget},
+    shapes::Color,
+    stitch::Image,
+};
+use std::{fmt, sync::Arc};
 
 const MAX_SHADOW_RADIUS: usize = 1024;
 
@@ -67,6 +73,7 @@ pub struct FrameOptions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImageEditError {
+    Budget(BudgetError),
     InvalidCrop,
     InvalidShadow,
     ImageTooLarge,
@@ -75,6 +82,7 @@ pub enum ImageEditError {
 impl fmt::Display for ImageEditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Budget(error) => write!(f, "Kein freies Bildbudget für den Ausschnitt: {error}"),
             Self::InvalidCrop => {
                 f.write_str("Der Ausschnitt liegt außerhalb des Bildes oder ist leer")
             }
@@ -89,7 +97,50 @@ impl fmt::Display for ImageEditError {
 impl std::error::Error for ImageEditError {}
 
 /// Return an exact pixel copy of a checked image-space crop.
+/// This portable legacy path does not register output bytes in a resource pool.
 pub fn crop(source: &Image, rect: CropRect) -> Result<Image, ImageEditError> {
+    let len = crop_len(source, rect)?;
+    copy_crop(source, rect, reserve_pixels(len)?)
+}
+
+/// Reserve crop OUTPUT pixels in the caller's shared pool before allocating.
+/// Existing source/history ownership is retained while the output is created.
+/// Reserved admission permits an existing-document edit to use pool headroom;
+/// it neither bypasses the common ceiling nor accounts for GDI, shapes or RSS.
+/// The returned immutable handle owns pixels and lease until its last owner
+/// drops, including when retained in a document, undo/redo or a suspended plan.
+pub fn crop_with_budget(
+    source: &Image,
+    rect: CropRect,
+    budget: &ResourceBudget,
+) -> Result<ImageHandle, ImageEditError> {
+    crop_with_budget_using(source, rect, budget, reserve_pixels)
+}
+
+fn crop_with_budget_using(
+    source: &Image,
+    rect: CropRect,
+    budget: &ResourceBudget,
+    allocate: impl FnOnce(usize) -> Result<Vec<u8>, ImageEditError>,
+) -> Result<ImageHandle, ImageEditError> {
+    let len = crop_len(source, rect)?;
+    let mut lease = budget
+        .try_acquire(len, AdmissionClass::Reserved)
+        .map_err(ImageEditError::Budget)?;
+    // No budget mutex crosses allocation (or any caller-supplied callback).
+    let pixels = allocate(len)?;
+    // A fallible exact reserve may still return spare capacity. Reconcile the
+    // actual retained allocation before copying pixels or handing off ownership.
+    lease
+        .try_resize(pixels.capacity())
+        .map_err(ImageEditError::Budget)?;
+    let image = copy_crop(source, rect, pixels)?;
+    Ok(ImageHandle::from_imported(Arc::new(
+        TrackedImage::from_reserved(image, lease),
+    )))
+}
+
+fn crop_len(source: &Image, rect: CropRect) -> Result<usize, ImageEditError> {
     validate_source(source)?;
     let right = rect
         .x
@@ -102,28 +153,30 @@ pub fn crop(source: &Image, rect: CropRect) -> Result<Image, ImageEditError> {
     if rect.width == 0 || rect.height == 0 || right > source.width || bottom > source.height {
         return Err(ImageEditError::InvalidCrop);
     }
-    let len = rect
-        .width
+    rect.width
         .checked_mul(rect.height)
         .and_then(|n| n.checked_mul(4))
-        .ok_or(ImageEditError::ImageTooLarge)?;
-    let mut pixels = reserve_pixels(len)?;
-    let source_stride = source
-        .width
-        .checked_mul(4)
-        .ok_or(ImageEditError::ImageTooLarge)?;
-    let row_bytes = rect
-        .width
-        .checked_mul(4)
-        .ok_or(ImageEditError::ImageTooLarge)?;
-    for y in rect.y..bottom {
-        let begin = y
-            .checked_mul(source_stride)
-            .and_then(|n| n.checked_add(rect.x * 4))
-            .ok_or(ImageEditError::InvalidCrop)?;
+        .ok_or(ImageEditError::ImageTooLarge)
+}
+
+// Called only after crop_len validated source, geometry and all byte products.
+// Copying into the preallocated Vec cannot grow it beyond admitted capacity.
+fn copy_crop(source: &Image, rect: CropRect, mut pixels: Vec<u8>) -> Result<Image, ImageEditError> {
+    let len = rect.width * rect.height * 4;
+    if !pixels.is_empty() || pixels.capacity() < len {
+        return Err(ImageEditError::AllocationFailed);
+    }
+    let source_stride = source.width * 4;
+    let row_bytes = rect.width * 4;
+    for y in rect.y..rect.y + rect.height {
+        let begin = y * source_stride + rect.x * 4;
         pixels.extend_from_slice(&source.pixels[begin..begin + row_bytes]);
     }
-    Image::new(rect.width, rect.height, pixels).map_err(|_| ImageEditError::ImageTooLarge)
+    Ok(Image {
+        width: rect.width,
+        height: rect.height,
+        pixels,
+    })
 }
 
 /// Add a colored frame and optional soft shadow without modifying `source`.
@@ -290,6 +343,90 @@ fn validate_source(source: &Image) -> Result<(), ImageEditError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one_pixel_crop() -> CropRect {
+        CropRect {
+            x: 1,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn budgeted_crop_rejects_geometry_and_shared_ceiling_before_allocation() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let original = source.clone();
+        let budget = ResourceBudget::new(8, 0).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        let invalid = CropRect {
+            x: usize::MAX,
+            ..one_pixel_crop()
+        };
+        assert_eq!(
+            crop_with_budget_using(&source, invalid, &budget, |_| panic!(
+                "invalid crop allocated"
+            )),
+            Err(ImageEditError::InvalidCrop)
+        );
+        assert!(matches!(
+            crop_with_budget_using(&source, one_pixel_crop(), &budget, |_| panic!(
+                "refused crop allocated"
+            )),
+            Err(ImageEditError::Budget(_))
+        ));
+        assert_eq!(source, original);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
+
+    #[test]
+    fn budgeted_crop_allocation_failure_and_capacity_refusal_release_only_output() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let original = source.clone();
+        let source_ptr = source.pixels.as_ptr();
+        let budget = ResourceBudget::new(12, 4).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        assert_eq!(
+            crop_with_budget_using(&source, one_pixel_crop(), &budget, |len| {
+                // Reenter the same pool: no mutex may cross allocation.
+                assert_eq!(len, 4);
+                assert_eq!(budget.snapshot().used_bytes, 12);
+                drop(budget.try_acquire(0, AdmissionClass::Reserved).unwrap());
+                Err(ImageEditError::AllocationFailed)
+            }),
+            Err(ImageEditError::AllocationFailed)
+        );
+        assert_eq!(budget.snapshot().used_bytes, 8);
+        assert!(matches!(
+            crop_with_budget_using(&source, one_pixel_crop(), &budget, |_| {
+                Ok(Vec::with_capacity(5))
+            }),
+            Err(ImageEditError::Budget(_))
+        ));
+        assert_eq!(source, original);
+        assert_eq!(source.pixels.as_ptr(), source_ptr);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
+
+    #[test]
+    fn budgeted_crop_charges_actual_capacity_and_last_shared_owner() {
+        let source = Image::new(2, 1, vec![1, 2, 3, 0, 4, 5, 6, 128]).unwrap();
+        let budget = ResourceBudget::new(32, 4).unwrap();
+        let retained = budget.try_acquire(8, AdmissionClass::Normal).unwrap();
+        let output = crop_with_budget_using(&source, one_pixel_crop(), &budget, |_| {
+            Ok(Vec::with_capacity(9))
+        })
+        .unwrap();
+        let capacity = output.pixels.capacity();
+        assert!(capacity >= 9);
+        assert_eq!(output.pixels, [4, 5, 6, 128]);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes() + capacity);
+        let last = output.clone();
+        drop(output);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes() + capacity);
+        drop(last);
+        assert_eq!(budget.snapshot().used_bytes, retained.bytes());
+    }
 
     #[test]
     fn output_reservation_returns_error_for_unrepresentable_capacity() {

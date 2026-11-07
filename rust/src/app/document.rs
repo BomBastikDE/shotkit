@@ -608,7 +608,7 @@ pub(super) unsafe fn apply_crop(h: H, a: (i32, i32), b: (i32, i32)) {
             .document_mut()
             .begin_edit()
             .map_err(|e| e.to_string())?;
-        if let Err(e) = editor(h).crop(rect) {
+        if let Err(e) = editor(h).crop_with_budget(rect, &shared_image_budget()) {
             let _ = editor(h).document_mut().abort_edit();
             return Err(e.to_string());
         }
