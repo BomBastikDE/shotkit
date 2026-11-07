@@ -41,10 +41,28 @@ namespace ShotKitFirstStartSmoke {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
         [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
-        public static long CopyDataBusy(IntPtr hwnd) {
-            IntPtr result;
-            if(SendMessageTimeoutW(hwnd,0x004a,IntPtr.Zero,IntPtr.Zero,2,1000,out result)==IntPtr.Zero) throw new InvalidOperationException("WM_COPYDATA timeout");
-            return result.ToInt64();
+        [StructLayout(LayoutKind.Sequential)]
+        struct CopyData { public UIntPtr Tag; public uint Bytes; public IntPtr Data; }
+        public static long CopyDataBusy(IntPtr hwnd, string path) {
+            // WM_COPYDATA requires a valid COPYDATASTRUCT even when the
+            // receiver rejects the request before reading its payload.
+            IntPtr payload=Marshal.StringToHGlobalUni(path);
+            IntPtr packet=IntPtr.Zero;
+            try {
+                var data=new CopyData { Tag=new UIntPtr(0x534b5255u), Bytes=checked((uint)((path.Length+1)*2)), Data=payload };
+                packet=Marshal.AllocHGlobal(Marshal.SizeOf<CopyData>());
+                Marshal.StructureToPtr(data,packet,false);
+                IntPtr result;
+                if(SendMessageTimeoutW(hwnd,0x004a,IntPtr.Zero,packet,2,1000,out result)==IntPtr.Zero) {
+                    int error=Marshal.GetLastWin32Error();
+                    throw new InvalidOperationException("WM_COPYDATA send failed; Win32 error="+error);
+                }
+                return result.ToInt64();
+            }
+            finally {
+                if(packet!=IntPtr.Zero) Marshal.FreeHGlobal(packet);
+                Marshal.FreeHGlobal(payload);
+            }
         }
         [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode)] static extern IntPtr ReadControlText(IntPtr hwnd, uint message, IntPtr w, StringBuilder text, uint flags, uint timeout, out IntPtr result);
         static string Text(IntPtr hwnd) {
@@ -252,7 +270,7 @@ try {
         }
         if($dialog.Text.Contains('.shotkit-123-456-8.tmp') -or $dialog.Text.Contains('x.shotkit')) { throw 'Recovery offered young or foreign control.' }
         $owner=Wait-ForMainWindow $recovery
-        if([ShotKitFirstStartSmoke.Native]::CopyDataBusy($owner.Handle) -ne 3) { throw 'Recovery dialog did not reject WM_COPYDATA as busy.' }
+        if([ShotKitFirstStartSmoke.Native]::CopyDataBusy($owner.Handle,$candidate) -ne 3) { throw 'Recovery dialog did not reject WM_COPYDATA as busy.' }
         [void][ShotKitFirstStartSmoke.Native]::PostMessageW($owner.Handle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
         Start-Sleep -Milliseconds 100
         $recovery.Refresh()
