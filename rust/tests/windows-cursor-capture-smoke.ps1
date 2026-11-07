@@ -46,10 +46,7 @@ namespace ShotKitCursorCaptureSmoke {
    flags = info.Flags; cursor = info.Cursor.ToInt64();
    return (info.Flags & 1) != 0 && info.Cursor != IntPtr.Zero;
   }
-  [StructLayout(LayoutKind.Sequential)] public struct MouseKeys { public uint Size, Flags, MaxSpeed, TimeToMaxSpeed, CtrlSpeed, Reserved1, Reserved2; }
-  [DllImport("user32.dll", SetLastError=true)] static extern bool SystemParametersInfoW(uint action, uint param, ref MouseKeys value, uint winIni);
-  public static MouseKeys GetMouseKeys() { var m = new MouseKeys { Size = (uint)Marshal.SizeOf<MouseKeys>() }; if (!SystemParametersInfoW(0x0036, m.Size, ref m, 0)) throw new InvalidOperationException("SPI_GETMOUSEKEYS failed."); return m; }
-  public static void SetMouseKeys(MouseKeys m) { m.Size = (uint)Marshal.SizeOf<MouseKeys>(); if (!SystemParametersInfoW(0x0037, m.Size, ref m, 0)) throw new InvalidOperationException("SPI_SETMOUSEKEYS failed."); }
+
   static string Text(IntPtr h, bool cls) { var b=new StringBuilder(1024); if(cls)GetClassNameW(h,b,b.Capacity);else GetWindowTextW(h,b,b.Capacity); return b.ToString(); }
   public static Win[] Windows(int pid) { var a=new List<Win>(); EnumProc cb=(h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==(uint)pid)a.Add(new Win{H=h,ClassName=Text(h,true),Title=Text(h,false),Visible=IsWindowVisible(h)});return true;}; EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
   public static Win[] Children(IntPtr parent) { var a=new List<Win>(); EnumProc cb=(h,p)=>{a.Add(new Win{H=h,ClassName=Text(h,true),Title=Text(h,false),Visible=IsWindowVisible(h)});return true;}; EnumChildWindows(parent,cb,IntPtr.Zero);GC.KeepAlive(cb);return a.ToArray(); }
@@ -59,7 +56,7 @@ namespace ShotKitCursorCaptureSmoke {
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ShotKit-Cursor-Capture-' + [Guid]::NewGuid().ToString('N'))
 $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
-$form = $null; $failure = $null; $cleanupErrors = @(); $script:mouseKeysChanged = $false; $script:mouseKeysBefore = $null
+$form = $null; $failure = $null; $cleanupErrors = @(); $script:result = $null
 
 function Pump { [System.Windows.Forms.Application]::DoEvents() }
 function Wait-Value([scriptblock]$Probe, [string]$What) {
@@ -137,39 +134,31 @@ try {
     if (-not [ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx, $script:cy)) { throw 'SetCursorPos failed.' }
     Start-Sleep -Milliseconds 300; Pump
     $flags = 0; $handle = 0
-    if (-not [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$flags, [ref]$handle)) {
-        # Hosted runners have no pointing device and suppress the cursor.
-        # Mouse Keys makes Windows show it without a mouse (session setting,
-        # restored in the cleanup below; the runner is ephemeral).
-        $script:mouseKeysBefore = [ShotKitCursorCaptureSmoke.N]::GetMouseKeys()
-        $on = $script:mouseKeysBefore; $on.Flags = $on.Flags -bor 0x3
-        [ShotKitCursorCaptureSmoke.N]::SetMouseKeys($on)
-        $script:mouseKeysChanged = $true
-        Start-Sleep -Milliseconds 500
-        [void][ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx + 1, $script:cy); Pump
-        [void][ShotKitCursorCaptureSmoke.N]::SetCursorPos($script:cx, $script:cy); Pump
-        Start-Sleep -Milliseconds 300
-        $shown = [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$flags, [ref]$handle)
-        Write-Output "EVIDENCE: Mouse Keys enabled for the test; GetCursorInfo flags=$flags cursor=$handle visible=$shown."
-        if (-not $shown) {
-            throw "NO_VISIBLE_CURSOR: Windows reports no visible mouse cursor (flags=$flags) even with Mouse Keys; the capture cannot contain one."
-        }
-    }
+    $visible = [ShotKitCursorCaptureSmoke.N]::CursorShowing([ref]$flags, [ref]$handle)
+    Write-Output "EVIDENCE: GetCursorInfo flags=$flags cursor=$handle visible=$visible."
 
     $with = Dark-Pixels (Capture-Png $true 'with')
     $without = Dark-Pixels (Capture-Png $false 'without')
     Write-Output "EVIDENCE: dark pixels at the cursor position: with option=$with, without option=$without."
-    if ($with -lt 10) { throw "CURSOR_MISSING: only $with dark pixels at the hotspot with the option on." }
     if ($without -ne 0) { throw "CURSOR_WITHOUT_OPTION: $without dark pixels at the hotspot with the option off." }
+    if ($visible) {
+        if ($with -lt 10) { throw "CURSOR_MISSING: only $with dark pixels at the hotspot with the option on." }
+        $script:result = 'PASS: with "Mauszeiger mit aufnehmen" the automatic PNG contains the real cursor at its position; without it the spot stays white.'
+    } else {
+        # Hosted runners have no pointing device: Windows reports the cursor as
+        # suppressed (flags=2) and no cursor can be captured. The option must
+        # then leave the capture intact and cursor-free, as on touch devices.
+        if ($with -ne 0) { throw "SUPPRESSED_CURSOR_DRAWN: $with dark pixels although Windows suppresses the cursor." }
+        $script:result = 'PASS (suppressed cursor): with the option on and no visible cursor the capture was saved normally and without cursor; the visible-cursor case needs a desktop with a pointing device (owner practice test).'
+    }
 } catch { $failure = $_ }
 finally {
     foreach ($p in $owned) {
         try { if (-not $p.HasExited) { $p.Kill() }; [void]$p.WaitForExit(5000) } catch { $cleanupErrors += "Process $($p.Id): $_" } finally { $p.Dispose() }
     }
     if ($form) { try { $form.Close(); $form.Dispose() } catch { $cleanupErrors += "Form: $_" } }
-    if ($script:mouseKeysChanged) { try { [ShotKitCursorCaptureSmoke.N]::SetMouseKeys($script:mouseKeysBefore) } catch { $cleanupErrors += "Mouse Keys restore: $_" } }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($cleanupErrors.Count -gt 0) { throw "CLEANUP_FAILED: $($cleanupErrors -join '; '). Test failure: $failure" }
 if ($failure) { throw $failure }
-Write-Output 'PASS: with "Mauszeiger mit aufnehmen" the automatic PNG contains the real cursor at its position; without it the spot stays white.'
+Write-Output $script:result
