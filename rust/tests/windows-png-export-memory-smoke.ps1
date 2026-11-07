@@ -167,15 +167,15 @@ namespace ShotKitPngExportMemorySmoke {
     for(int i=0;i<actual.Length;i++){
      int x=i/4;
      if(LargePattern&&AnnotationState>0){
-      bool inner=x>=1088&&x<1984&&y>=1088&&y<1984;
-      bool outer=x>=960&&x<2112&&y>=960&&y<2112;
-      bool blur=AnnotationState==2&&x>=1472&&x<2624&&y>=1472&&y<2624;
+      bool inner=AnnotationState!=3&&x>=1088&&x<1984&&y>=1088&&y<1984;
+      bool outer=AnnotationState!=3&&x>=960&&x<2112&&y>=960&&y<2112;
+      bool blur=(AnnotationState==2||AnnotationState==3)&&x>=1472&&x<2624&&y>=1472&&y<2624;
       if(inner){if(actual[i]!=(i%4==3?255:0))throw new Exception("Redaction not opaque black at "+x+","+y);continue;}
       if(outer||blur){if(i%4==3&&actual[i]!=255)throw new Exception("Alpha changed in annotation");if(blur&&x>2200&&x<2500&&y>1700&&y<2400&&i%4==0&&actual[i]>50&&actual[i]<210)blurred++;continue;}
      }
      if(Math.Abs(actual[i]-expected[i])>(i%4==3?0:tolerance))throw new InvalidOperationException("RGBA mismatch at x="+(i/4)+", y="+y+", BGRA channel="+(i%4)+", expected="+expected[i]+", actual="+actual[i]);}
    }
-   if(LargePattern&&AnnotationState==2&&blurred<1000)throw new Exception("Gaussian blur has no mixed pixels outside redaction");
+   if(LargePattern&&(AnnotationState==2||AnnotationState==3)&&blurred<1000)throw new Exception("Gaussian blur has no mixed pixels outside redaction");
    return Convert.ToHexString(hash.GetHashAndReset());
   }
  }
@@ -359,14 +359,30 @@ try {
     if (@($identities.H | Select-Object -Unique).Count -ne $DocumentCount) { throw 'EDITOR_IDENTITIES_NOT_DISTINCT.' }
     Mark-Phase 'all_documents_open'
     $formats = if ($ScrollHeight) { @('PNG','JPEG') } else { @('PNG') }
-    $stages=if ($LargeAnnotated) {@('Redact','Both','UndoBlur','UndoRedact')} else {@('Original')}
+    $combinedRejected=$false
+    $stages=if ($LargeAnnotated) {@('Redact','Both','BlurOnly','RestoreBoth','UndoBlur','UndoRedact')} else {@('Original')}
     foreach ($stage in $stages) {
     if ($LargeAnnotated) {
+        if ($stage -in @('BlurOnly','RestoreBoth') -and -not $combinedRejected) { continue }
         [void][ShotKitPngExportMemorySmoke.Native]::ShowWindow($editor.H,3)
         if ($stage -eq 'Redact') { Draw-LargeAnnotation 0x53 'Redact' 1024 2048 }
         elseif ($stage -eq 'Both') { Draw-LargeAnnotation 0x57 'GaussianBlur' 1536 2560 }
+        elseif ($stage -eq 'BlurOnly') {
+            # Inspect the actual post-failure document, not a previous export:
+            # temporarily remove only its non-overlapping redaction object.
+            # The remaining existing Gaussian object must survive and export.
+            Draw-LargeAnnotation 0x56 'Select' 1280 1280
+            [ShotKitPngExportMemorySmoke.Native]::keybd_event(0x2E,0,0,[UIntPtr]::Zero)
+            [ShotKitPngExportMemorySmoke.Native]::keybd_event(0x2E,0,2,[UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 250
+        }
         else { Click-EditorButton 'Zurück'; Start-Sleep -Milliseconds 250 }
-        [ShotKitPngExportMemorySmoke.Pixels]::AnnotationState=$(if ($stage -eq 'Both') {2} elseif ($stage -eq 'UndoRedact') {0} else {1})
+        if ($stage -eq 'RestoreBoth') {
+            # Undo the temporary deletion before the original history checks.
+            # The next UndoBlur removes the original Gaussian object only.
+            continue
+        }
+        [ShotKitPngExportMemorySmoke.Pixels]::AnnotationState=$(if ($stage -eq 'Both') {2} elseif ($stage -eq 'BlurOnly') {3} elseif ($stage -eq 'UndoRedact') {0} else {1})
     }
     foreach ($format in $formats) {
         $extension = if ($format -eq 'PNG') { 'png' } else { 'jpg' }
@@ -400,6 +416,7 @@ try {
                 $owned | Where-Object {$_.H -eq $editor.H -and $_.Title.IndexOf($outputPath,[StringComparison]::OrdinalIgnoreCase) -ge 0 -and -not $_.Title.StartsWith('* ')} | Select-Object -First 1
             } 'combined annotation save result'
             if ($outcome.ClassName -eq '#32770') {
+                $combinedRejected=$true
                 Require-Owner $outcome.H
                 $text=(@([ShotKitPngExportMemorySmoke.Native]::Children($outcome.H) | ForEach-Object {[ShotKitPngExportMemorySmoke.Native]::DiagnosticText($_.H,$process.Id)}) -join ' ')
                 if ($text -notlike '*Speichern fehlgeschlagen:*' -or $text -notmatch 'Bildbudget|Budget|budget') { throw "UNEXPECTED_SAVE_ERROR: $text" }
@@ -409,7 +426,7 @@ try {
                 if ((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -cne $sourceHash) { throw 'SOURCE_CHANGED_AFTER_REJECTION.' }
                 [ShotKitPngExportMemorySmoke.Pixels]::AnnotationState=1
                 Assert-Image (Join-Path $root "exported-${width}x${height}-Redact.png")
-                Write-Host "EXPECTED_BUDGET_REJECTION: $text; dirty editor retained; previous redacted file and source intact. UndoBlur/UndoRedact exports must still prove retained history and pixels."
+                Write-Host "EXPECTED_BUDGET_REJECTION: $text; dirty editor retained; previous redacted file and source intact. BlurOnly export must independently prove the retained Gaussian object; restoring the redaction and UndoBlur/UndoRedact must prove retained history and pixels."
                 continue
             }
         }
@@ -422,6 +439,7 @@ try {
         Mark-Phase 'post_export'
         Start-Sleep -Milliseconds 500
         Assert-Image $outputPath $format
+        if ($LargeAnnotated -and $stage -eq 'BlurOnly') { Write-Host 'RETAINED_GAUSSIAN_OBJECT_VERIFIED: current post-rejection document exported with temporary redaction removal; mixed blur pixels and all outside pixels checked. The deletion must now be undone.' }
         if ($LargeAnnotated -and $stage -eq 'Redact') { $redactedPixelHash=$lastPixelHash }
         if ($LargeAnnotated -and $stage -eq 'UndoBlur' -and $lastPixelHash -cne $redactedPixelHash) { throw 'REDACTION_PIXELS_CHANGED_AFTER_BLUR_UNDO.' }
         if ((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -cne $sourceHash) { throw 'SOURCE_PNG_CHANGED.' }

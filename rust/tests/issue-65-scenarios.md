@@ -17,7 +17,7 @@ Testskripten. Vorhandene normale CI-Prüfungen werden nicht ersetzt.
 | # | Automatischer Nachweis bei erfolgreichem Lauf | Grenze |
 |---|---|---|
 | 1 | GUI-Speichern eines synthetischen 256 × 30 000 großen Ergebnisses als PNG und JPEG; vollständige Dekodierung und Pixelprüfung beider Ausgaben, Quelldatei unverändert, dasselbe Dokument bleibt offen. | Der Owner hat dieses Szenario ausdrücklich als ausreichend für #65 angenommen. Es prüft keine Scroll-Mechanik; diese bleibt bei den Scroll-Tests (#58). |
-| 2a | RGBA8-PNG mit 8 192 × 8 192 Pixeln (256 MiB BGRA) wirklich öffnen, mit S schwärzen und exportieren, mit W überlappend weichzeichnen und erneut speichern. Die Ausgabe muss Schwärzung und gemischte Blur-Pixel zeigen; ausschließlich eine konkrete Budgetfehlermeldung darf den kombinierten Export ersetzen. Danach prüfen UndoBlur und UndoRedact durch weitere Exporte den vollständigen Erhalt der vorherigen Schwärzung bzw. aller Originalpixel. | Dies ist die vom Owner genannte große, tatsächlich importierbare RGBA-Fixture, keine Suche nach dem mathematisch größten importierbaren Bild. Ein abgewiesener kombinierter Export wird ausdrücklich als solcher protokolliert. |
+| 2a | RGBA8-PNG mit 8 192 × 8 192 Pixeln (256 MiB BGRA) wirklich öffnen, mit S schwärzen und exportieren, mit W überlappend weichzeichnen und erneut speichern. Die Ausgabe muss Schwärzung und gemischte Blur-Pixel zeigen; ausschließlich eine konkrete Budgetfehlermeldung darf den kombinierten Export ersetzen. Bei Budgetablehnung muss ein zusätzlicher Blur-only-Export aus dem aktuellen Dokument das erhaltene W-Objekt nachweisen. Danach prüfen UndoBlur und UndoRedact durch weitere Exporte den vollständigen Erhalt der vorherigen Schwärzung bzw. aller Originalpixel. | Dies ist die vom Owner genannte große, tatsächlich importierbare RGBA-Fixture, keine Suche nach dem mathematisch größten importierbaren Bild. Ein abgewiesener kombinierter Export wird ausdrücklich als solcher protokolliert. |
 | 2b | Vollständiges RGBA8-PNG mit 16 384 × 8 192 Pixeln, exakt 536 870 912 dekodierte BGRA-Bytes. Zweimaliger Öffnungsversuch zeigt den erwarteten deutschen Erhaltungs-Hinweis beim Budgetfehler. Dasselbe vorher bereits geöffnete, ungespeicherte Dokument, seine Pixel und Undo/Redo bleiben erhalten; beide Quelldateien bleiben unverändert. | Dieses PNG wird vor Übernahme abgewiesen. Das ist der separat geforderte Grenzfall, kein erfolgreicher 512-MiB-Import. |
 | 3 | RGBA8-PNG mit 16 384 × 8 193 Pixeln (64 KiB über 512 MiB) wird mit „Das dekodierte Bild überschreitet 512 MiB.“ abgewiesen. Derselbe Dokument-/Pixel-/Verlaufs- und Quelldateierhalt wie bei 2b. | Kein allgemeiner Nachweis aller Codec-Grenzfälle. |
 | 4 | Fünf gleichzeitig offene, unabhängige 6 000 × 4 000 große Dokumente, jeweils 96 000 000 BGRA-Bytes. Eines wird über GUI-Speichern unter exportiert und vollständig auf identische Pixel geprüft. Alle fünf HWNDs bleiben erhalten, die anderen Titel und alle fünf Quelldatei-Hashes unverändert. | Synthetische, identische und noch nicht annotierte Inhalte in verschiedenen Dateien; keine gleichzeitigen Exporte. |
@@ -53,9 +53,17 @@ muss wieder jedes Originalbyte ergeben.
 Bei kombinierter Speicherablehnung müssen ein deutscher Speicherfehler mit
 Budgetbezug, das unveränderte Quellbild und der erste gültige Schwärzungsexport,
 ein weiterhin schmutziges Editorfenster mit identischem HWND und das Fehlen
-einer veröffentlichten Fehlerausgabe nachgewiesen werden. Die anschließenden
-Undo-Exporte bleiben Pflicht; ein Dialog oder ein noch vorhandenes Fenster
-allein beweist keinen Dokumenterhalt. Andere Speicherfehler und Timeouts
+einer veröffentlichten Fehlerausgabe nachgewiesen werden. Zusätzlich wird **aus genau diesem aktuellen Dokument** die Redaktionsform
+vorübergehend mit V-Auswahl und Entf entfernt. Der erhaltene Gaussian-Blur muss
+als vollständiges 8192²-PNG exportierbar sein: mindestens 1000 gemischte Pixel
+im Blur-Inneren, deckendes Alpha und jedes Pixel außerhalb seiner Randzone
+exakt original. Damit genügt weder ein alter Export noch ein verlorenes oder
+leeres Blur-Objekt. Die Löschung wird anschließend rückgängig gemacht; erst
+danach folgen UndoBlur mit identischem vollständigem Pixel-Hash der ersten
+Schwärzung und UndoRedact mit allen Originalpixeln. Diese Exporte bleiben
+Pflicht; ein Dialog oder ein noch vorhandenes Fenster allein beweist keinen
+Dokumenterhalt. Der kombinierte Rasterexport selbst bleibt bei dieser
+Budgetablehnung unbewiesen und wird auch nicht als erfolgreich gemeldet. Andere Speicherfehler und Timeouts
 schlagen fehl.
 
 ## Grenzen und Ressourcen
