@@ -64,6 +64,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Required native capture acceptance failed (exit $LASTEXITCODE)."
           }
+      - name: Verify real atomic-save abort boundary and normal controls
+        timeout-minutes: 15
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Release is mandatory: Cargo's ordinary test harness uses unwind.
+          # Expected aborts run only in children within owned, held fixtures.
+          # Empty fixture roots remain for ephemeral runner expiry; no root deletion.
+          & cargo build --locked --release --example atomic_save_abort_probe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic-save abort probe build failed (exit $LASTEXITCODE)."
+          }
+          & ./target/release/examples/atomic_save_abort_probe.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic-save abort boundary or normal controls failed (exit $LASTEXITCODE)."
+          }
       - name: Measure preview redraw on Windows
         timeout-minutes: 15
         if: runner.os == 'Windows'
