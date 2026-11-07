@@ -1,6 +1,41 @@
 # Änderungsprotokoll der Rust-Version
 
-## Version 2.0.0 – Änderungen seit Beta 1
+## Version 2.0.0
+
+ShotKit 2.0 ist die erste stabile Version in Rust und löst die C#-Version 1.2.0 ab. Weiterhin eine einzelne EXE ohne Installation. Die Einstellungen liegen getrennt von der C#-Version unter `%APPDATA%\ShotKitRust`. Die C#-Version 1.2.0 bleibt unter [v1.2.0](https://github.com/BomBastikDE/shotkit/releases/tag/v1.2.0) erhältlich und erhält nur noch Sicherheitskorrekturen.
+
+### Neu gegenüber 1.2.0
+- **Schwärzen (S):** deckende schwarze Fläche, die vertrauliche Inhalte dauerhaft entfernt. Wirkt immer zuletzt, auch über anderen Markierungen.
+- **Verpixeln gehärtet:** gröbere Blöcke (mindestens 48 px), zufälliges Raster, Farbstufen und Rauschen. Verpixelter Text lässt sich nicht mehr per Kandidatenvergleich zurückrechnen. Für vertrauliche Inhalte trotzdem Schwärzen verwenden.
+- **Weichzeichnen (W)** als Alternative zum Verpixeln.
+- **Sprechblasen:** mehrzeiliger Text mit Hintergrundkasten und Zeiger.
+- **Spotlight und Bildlupe** zum Hervorheben von Bereichen.
+- **Formstil:** gefüllte Formen, gestrichelte und gepunktete Linien, abgerundete Rechtecke, Pfeilenden.
+- **Stempel und Symbole.**
+- **Leinwandgröße ändern.**
+- **Datenschutz:** Kopierte Screenshots werden standardmäßig nicht in den Windows-Zwischenablageverlauf und die Cloud-Zwischenablage übernommen.
+- **Netzlaufwerke:** Warnung, bevor eine Datei auf einem Netzlaufwerk geöffnet wird, weil Windows sich dabei am Server anmelden kann.
+- **Sicheres Speichern:** Dateien erscheinen erst, wenn sie vollständig geschrieben sind; vorhandene Dateien werden nicht überschrieben.
+- **Aufräumen nach Absturz:** Bleiben nach einem Absturz beim Speichern temporäre Dateien zurück, zeigt ShotKit sie an und löscht sie nur nach Bestätigung. Lokale Ordner werden beim Start geprüft, ein Speicherordner im Netzwerk erst nach dem nächsten Speichern dorthin.
+- **Große Bilder:** Statt eines Absturzes erscheint eine verständliche Meldung; geöffnete Bilder bleiben erhalten. Bevor wegen des Speicherlimits Rückgängig-Schritte verloren gehen, fragt ShotKit nach.
+- **Scrollaufnahme:** Endet eine Aufnahme ohne bestätigtes Seitenende, sagt die Abschlussmeldung das deutlich. Bei Monitoren mit unterschiedlicher Skalierung bricht sie nicht mehr grundlos ab.
+- **Erster Start:** einmaliger Hinweis auf Infobereich und Tastenkürzel; danach und beim Autostart startet ShotKit ohne Fenster. Der Editor-Titel zeigt Datei und Werkzeug auf Deutsch.
+
+### Bekannte Grenzen
+- **Verpixeln und Weichzeichnen sind keine sichere Schwärzung.** Für Passwörter, Kundendaten und Ähnliches das Werkzeug **Schwärzen** verwenden. Das Rauschen der Verpixelung wird noch nicht kryptografisch erzeugt ([#85](https://github.com/BomBastikDE/shotkit/issues/85)).
+- **Automatisches Speichern und Kopieren** passieren direkt nach der Aufnahme, also **vor** dem Editor. Wer nur geschwärzte Bilder weitergeben will, schaltet beides im Tray-Menü aus (beim ersten Start ist beides aus).
+- **Scrollaufnahme:** ShotKit erkennt das Seitenende nur daran, dass sich das Bild nicht mehr bewegt. Bitte Bildende und Übergänge prüfen ([#88](https://github.com/BomBastikDE/shotkit/issues/88) soll das Ende künftig bestätigen). Lässt sich ein Abschnitt nicht zuordnen, legt ShotKit Diagnosebilder im Unterordner `Diagnose` des Speicherordners ab; sie können vertrauliche Inhalte enthalten.
+- **Sehr große Bilder** (etwa ab 70 Megapixeln) werden mit einer Meldung abgelehnt.
+- **Vorschau:** Schlägt das Neuzeichnen vollständig fehl, können alte Bildpunkte sichtbar bleiben; das gespeicherte Bild ist davon nicht betroffen.
+- **Praxistests:** Mehrere Monitore, gemischte Skalierung und echte Webseiten sind automatisiert geprüft, aber noch nicht auf echter Hardware. Rückmeldungen bitte als Issue.
+- **Die EXE ist nicht signiert.** Windows SmartScreen kann warnen („Weitere Informationen“ → „Trotzdem ausführen“). Die SHA256-Datei schützt vor Übertragungsfehlern, ist aber kein Herkunftsnachweis.
+
+### Umstieg von C# 1.2.0
+C#-ShotKit über das Tray-Menü beenden und die neue EXE starten. Ausgabeoptionen und Autostart im Tray-Menü neu einstellen und gegebenenfalls den C#-Autostart ausschalten. Ausführlich: [Handbuch – Umstieg](https://github.com/BomBastikDE/shotkit/blob/v2.0.0/docs/umstieg.md).
+
+## Technische Änderungen seit Beta 1
+
+Details für Entwickler; die Zusammenfassung für Nutzer steht oben.
 
 - Nach einem Absturz beim Speichern zeigt ShotKit zurückgebliebene eigene temporäre Dateien an und löscht sie nur nach Bestätigung. Lokale Ordner werden beim Start geprüft, ein Speicherordner im Netzwerk erst nach dem nächsten Speichern dorthin, höchstens einmal pro Sitzung ([#67](https://github.com/BomBastikDE/shotkit/issues/67)).
 
@@ -8,7 +43,6 @@
 
 - Verpixeln verwendet mindestens 48 px große Blöcke und Rauschen. Für vertrauliche Inhalte weiterhin Schwärzen (S) verwenden ([#5](https://github.com/BomBastikDE/shotkit/issues/5)).
 
-Die C#-Version v1.2.0 ist historisch abgeschlossen; Rust ist die maßgebliche Weiterentwicklung. Die EXE ist unsigniert. Echte Windows-Praxistests mit gemischter DPI und mehreren Monitoren sowie Teile der Sicherheitsprüfung stehen noch aus. Verpixelung ist keine sichere Schwärzung. Bei abruptem Abbruch während des Speicherns können temporäre Dateien mit Bilddaten zurückbleiben; Hinweise stehen in der [Rust-Anleitung](README.md).
 
 - Die Scrollaufnahme berücksichtigt die von Windows tatsächlich gesetzte Mausposition. Kann der Zeiger nicht im Aufnahmebereich positioniert werden, endet sie mit verständlichem Grund und erhält das Teilbild. Bei Monitoren unterschiedlicher Skalierung sind vorzeitige Abbrüche weiterhin eine bekannte Grenze ([#6](https://github.com/BomBastikDE/shotkit/issues/6)).
 
