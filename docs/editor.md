@@ -7,6 +7,9 @@ bekommt ein eigenes Fenster; mehrere Bilder lassen sich parallel bearbeiten. All
 bis zum Speichern einzeln auswählbar und änderbar. Fährst du mit der Maus über ein Symbol, nennt ShotKit seinen
 Namen und gegebenenfalls das Tastenkürzel.
 
+Der Fenstertitel zeigt den geöffneten Dateipfad und das aktive Werkzeug mit seinem Namen aus der Werkzeugleiste.
+Ein Stern vor dem Dateipfad kennzeichnet ungespeicherte Änderungen; beides bleibt beim Werkzeugwechsel sichtbar.
+
 ## Werkzeuge
 
 | Werkzeug | Taste | Bedienung |
@@ -19,7 +22,7 @@ Namen und gegebenenfalls das Tastenkürzel.
 | Text | <kbd>T</kbd> | klicken und Text eingeben; Doppelklick auf vorhandenen Text zum Ändern |
 | Sprechblase | – | mehrzeiligen Text in einem abgerundeten Kasten platzieren; Doppelklick bearbeitet den Text, die Spitze lässt sich am Griff verschieben |
 | Marker | <kbd>M</kbd> | Bereich halbtransparent farbig hervorheben; mit <kbd>Umschalt</kbd> quadratisch |
-| Verpixeln | <kbd>B</kbd> | Bereich vergröbern – **keine sichere Schwärzung**, siehe [Sicherheit](sicherheit.md) |
+| Verpixeln | <kbd>B</kbd> | Bereich vergröbern – **keine sichere Schwärzung**; für vertrauliche Daten Schwärzen (<kbd>S</kbd>) verwenden, siehe [Sicherheit](sicherheit.md) |
 | Weichzeichnen | <kbd>W</kbd> | Bereich unscharf machen; die Stärke folgt der Linienbreite – **keine sichere Schwärzung** |
 | Schwärzen | <kbd>S</kbd> | Bereich deckend schwarz abdecken – die sichere Methode, siehe [Sicherheit](sicherheit.md) |
 | Nummer | <kbd>N</kbd> | per Klick fortlaufende Schritt-Nummern setzen |

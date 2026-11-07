@@ -404,8 +404,8 @@ $surfaceForm = [ShotKitScrollSurface.Surface]::new($ReadyFile)
         Get-ProcessDialogs $shotKit | Where-Object { $_.Title -eq 'Scroll-Aufnahme beendet' } | Select-Object -First 1
     }
     $completionText = [ShotKitScrollSmoke.Native]::WindowText($completion.Handle)
-    if ($completionText -notlike '*Ende des scrollbaren Bereichs erreicht.*') {
-        throw "Scroll did not report reaching the actual end of the test page. Dialog='$completionText'"
+    if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
+        throw "Scroll did not warn that the document end is unconfirmed. Dialog='$completionText'"
     }
 
     Add-Type -AssemblyName System.Drawing

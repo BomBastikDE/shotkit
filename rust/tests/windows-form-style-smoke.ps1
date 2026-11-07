@@ -261,7 +261,7 @@ function Drag-Image([int]$X1,[int]$Y1,[int]$X2,[int]$Y2) {
 }
 function Select-Tool([int]$Id,[string]$Name) {
     Click-Button $Id
-    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like "*Werkzeug $Name*"}} 5 "$Name tool selected")
+    [void](Wait-For {Get-OwnedWindows|Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like "*Werkzeug: $Name*"}} 5 "$Name tool selected")
 }
 function Maximize-Editor {
     [void][ShotKitFormStyleSmoke.Native]::ShowWindow($main.Handle,3)
@@ -352,7 +352,7 @@ try {
     $null=Open-StyleMenu;Cancel-Menu
     [void](Save-Export {param($v)$v.Hash -eq $baseline.Hash} 'cancel unchanged fixture pixels')
 
-    Select-Tool 0x5104 'Rectangle';Drag-Image 40 40 120 100;$script:target='Rectangle'
+    Select-Tool 0x5104 'Rechteck';Drag-Image 40 40 120 100;$script:target='Rectangle'
     $outline=Save-Export {param($v)$v.Hash -ne $baseline.Hash} 'existing rectangle outline'
     Assert-Fill $outline 'None'
     if((Ink-Count $outline 60 39 100 43) -lt 30){throw 'RECTANGLE_OUTLINE_MISSING.'}
@@ -385,7 +385,7 @@ try {
     Click-Button 0x5112;[void](Save-Export {param($v)$v.Hash -eq $rounded.Hash} 'cancel leaves history unchanged')
     Click-Button 0x5113;[void](Save-Export {param($v)$v.Hash -eq $inherited.Hash} 'redo new inherited shape exactly')
 
-    Select-Tool 0x5103 'Line';Drag-Image 40 145 270 145;$script:target='Line'
+    Select-Tool 0x5103 'Linie';Drag-Image 40 145 270 145;$script:target='Line'
     $lineSolid=Save-Export {param($v)$v.Hash -ne $inherited.Hash} 'solid line export'
     $sm=Line-Metrics $lineSolid
     if($sm.Gaps -ne 0 -or $sm.Runs -ne 1){throw 'SOLID_LINE_HAS_GAPS.'}
@@ -397,7 +397,7 @@ try {
     Choose-Style 3
     [void](Save-Export {param($v)$v.Hash -eq $lineSolid.Hash} 'solid line restored exactly')
 
-    Select-Tool 0x5102 'Arrow';Drag-Image 70 205 250 205;$script:target='Arrow'
+    Select-Tool 0x5102 'Pfeil';Drag-Image 70 205 250 205;$script:target='Arrow'
     $single=Save-Export {param($v)$v.Hash -ne $lineSolid.Hash} 'single arrow export';Assert-Arrow $single 'Single'
     Choose-Style 9
     $double=Save-Export {param($v)$v.Hash -ne $single.Hash} 'double arrow export';Assert-Arrow $double 'Double'

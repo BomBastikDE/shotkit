@@ -95,6 +95,7 @@ pub struct EditorController {
     magnifier_frame: crate::shapes::MagnifierFrame,
     current_style: Style,
     last_error: Option<DocumentError>,
+    pixelation_seed_source: fn() -> Result<u64, crate::pixelation_random::EntropyUnavailable>,
 }
 
 /// Controller metadata accompanying a document transaction. Image pixels and
@@ -217,6 +218,7 @@ impl EditorController {
             magnifier_frame: crate::shapes::MagnifierFrame::Circle,
             current_style: Style::default(),
             last_error: None,
+            pixelation_seed_source: crate::pixelation_random::operating_system_seed,
         }
     }
     /// Compatibility constructor. Prefer `with_image` for a controller tied
@@ -237,6 +239,9 @@ impl EditorController {
     /// methods retain their existing signatures while making failures visible.
     pub fn take_error(&mut self) -> Option<DocumentError> {
         self.last_error.take()
+    }
+    pub fn has_error(&self) -> bool {
+        self.last_error.is_some()
     }
     /// Run an annotation action inside one rollback-safe document transaction.
     /// A returned plan suspends both the document and controller metadata before
@@ -738,6 +743,15 @@ impl EditorController {
             Tool::Select | Tool::Text | Tool::Callout | Tool::Crop => return,
         };
         let mut shape = Shape::new(kind);
+        if matches!(shape.kind, ShapeKind::Blur { .. }) {
+            match (self.pixelation_seed_source)() {
+                Ok(seed) => shape.pixelation_seed = Some(crate::shapes::PixelationSeed(seed)),
+                Err(_) => {
+                    self.last_error = Some(DocumentError::RandomUnavailable);
+                    return;
+                }
+            }
+        }
         shape.style = self.current_style.clone();
         self.drag = Some(Drag::Create {
             shape,

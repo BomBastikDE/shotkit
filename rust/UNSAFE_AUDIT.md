@@ -10,6 +10,15 @@ Diese Bestandsaufnahme erfasst jede `unsafe fn`-Definition im Rust-Quelltext ein
 
 Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe einschließlich unauffälliger Stellen steht zusätzlich in [REENTRANCY_AUDIT.md](REENTRANCY_AUDIT.md). Die Ablösung des globalen Overlay-Zustands ist in [ROADMAP.md](ROADMAP.md) für nach der Beta notiert.
 
+Ergänzung 2026-11-07 ([#79](https://github.com/BomBastikDE/shotkit/issues/79)): `app::actions::activate_tool`
+delegiert die Titelaktualisierung an `app::refresh_title`. Beide benötigen weiterhin ein lebendes eigenes
+Editorfenster auf dem UI-Thread. Der Titel wird einschließlich Werkzeugname als besitzender String aufgebaut,
+bevor `SetWindowTextW` synchron `WM_SETTEXT` auslösen kann; kein State-Borrow wird danach weiterverwendet.
+Der erweiterte Test `tests/windows-save-undo-redo-smoke.ps1` prüft den wirklichen Fenstertitel vor und nach
+Werkzeugwechseln im sauberen und geänderten Dokumentzustand. Dieser Windows-Lauf ist lokal auf Linux nicht
+ausgeführt; der vollständige Handlelebensdauer-/Reentranznachweis bleibt ausstehend. Die bisherigen
+Audit-Statuswerte werden durch die Titelkorrektur nicht angehoben.
+
 | Datei | Funktion | Status | Beleg oder konkreter Grund |
 |---|---|---|---|
 | `src/about_dialog.rs:92` | `child` | Beleg fehlt | Nachzuweisen: parent und instance sind gültige Handles auf dem UI-Thread. |
@@ -193,3 +202,7 @@ Für Netzwerkordner und unbekannte Laufwerkstypen wird vor dem Scan ausdrücklic
 bestehende Warnpolicy vor automatischer Windows-Authentifizierung, ist aber eine Abweichung von
 „Nichts gefunden: kein Dialog“: Ohne Netzwerk-I/O lässt sich das Vorhandensein von Resten nicht prüfen.
 Diese Kombination der Kriterien benötigt Owner-/PR-Prüfung; sie wird hier nicht als vollständig erfüllt gemeldet.
+
+## Neuer einzelner unsafe-Block: Zufallsquelle
+
+- `pixelation_random::operating_system_seed` (`BCryptGenRandom`): **Beleg fehlt** bis zum Windows-CI-Lauf. Voraussetzung: ein gültiger, exklusiv beschreibbarer 8-Byte-Puffer und der systemseitige Zufallsanbieter; beide sind lokal angelegt beziehungsweise über die Windows-API angefordert. Der Aufruf versendet keine Fensternachrichten. Ein Fehler wird ohne Ersatzwert an den Aufrufer zurückgegeben.
