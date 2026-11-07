@@ -256,6 +256,21 @@ struct DialogState {
     result: Option<String>,
     done: bool,
     accepted: bool,
+    /// Owner disabled by this dialog; re-enabled *before* the dialog is
+    /// destroyed so Windows reactivates ShotKit, not another application.
+    reenable_owner: Hwnd,
+}
+
+/// Re-enable the owner before destroying the active modal dialog.
+///
+/// If an active window is destroyed while its owner is still disabled, Windows
+/// cannot return activation to the owner and activates a window of another
+/// application instead: the user ends up outside ShotKit after entering text.
+// SAFETY CONTRACT: owner is null or a window handle; IsWindow guards a stale one.
+unsafe fn restore_owner_before_destroy(owner: Hwnd) {
+    if !owner.is_null() && IsWindow(owner) != 0 {
+        EnableWindow(owner, 1);
+    }
 }
 
 // SAFETY CONTRACT:
@@ -359,6 +374,7 @@ unsafe fn complete(hwnd: Hwnd, state: *mut DialogState, accepted: bool) {
     // Copy the handle first: read_text sends messages which can reenter this
     // procedure, so no DialogState reference may be alive during that call.
     let edit = (*state).edit;
+    let owner = (*state).reenable_owner;
     let max_units = (*state)
         .multiline
         .then_some(shotkit::shapes::MAX_CALLOUT_TEXT_BYTES);
@@ -376,6 +392,7 @@ unsafe fn complete(hwnd: Hwnd, state: *mut DialogState, accepted: bool) {
         state.done = true;
     }
     // The state borrow ends before synchronous destruction can reenter.
+    restore_owner_before_destroy(owner);
     DestroyWindow(hwnd);
 }
 
@@ -661,6 +678,7 @@ unsafe fn prompt_with_mode(owner: *mut c_void, initial: &str, multiline: bool) -
         result: Some(initial.to_owned()),
         done: false,
         accepted: false,
+        reenable_owner: if was_enabled { owner } else { null_mut() },
     };
     let class_name = wide("ShotKitRustTextEntryDialog");
     let title = wide(if multiline {
@@ -726,6 +744,8 @@ unsafe fn prompt_with_mode(owner: *mut c_void, initial: &str, multiline: bool) -
         }
     }
     if IsWindow(hwnd) != 0 {
+        // Loop ended without OK/Cancel (e.g. WM_QUIT): same activation order.
+        restore_owner_before_destroy(state.reenable_owner);
         DestroyWindow(hwnd);
     }
     // Controls no longer exist, so none can still hold one of these owned fonts.

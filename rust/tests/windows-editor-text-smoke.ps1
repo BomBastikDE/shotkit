@@ -300,6 +300,8 @@ try {
     if($entered -cne $original){throw "TEXT_ENTRY_NOT_ACCEPTED: input control reads '$entered' before confirmation; expected '$original'."}
     Button $d.Handle 'OK'
     [void](Wait-For {@(@(Owned-Windows | Where-Object {$_.ClassName -eq 'ShotKitRustTextEntryDialog'}).Count -eq 0)} 2 'text creation dialog close')
+    # The editor, not another application, must be active after the dialog closes.
+    [void](Wait-For {[ShotKitTextSmoke.Native]::Owner([ShotKitTextSmoke.Native]::GetForegroundWindow()) -eq $proc.Id} 3 'ShotKit foreground after text entry (TEXT_FOCUS_LEFT_SHOTKIT)')
     $placement=Wait-ForTextPlacement
     Write-Output "TEXT_PLACEMENT_STATUS: $placement"
 

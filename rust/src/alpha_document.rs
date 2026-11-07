@@ -226,9 +226,16 @@ fn render_preview_with_output_lease(
     };
     // Pixelation must sample a source sanitized by every redaction, including
     // those after the cached prefix. Their edits invalidate that dependency.
+    // Several spotlights form one combined effect across prefix and suffix,
+    // which a cached prefix cannot express either.
     if shapes
         .iter()
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
+        || shapes
+            .iter()
+            .filter(|shape| matches!(shape.kind, ShapeKind::Spotlight { .. }))
+            .count()
+            > 1
     {
         *cache = None;
         return render_document_over_with_lease(
@@ -400,12 +407,26 @@ fn render_document_over_typed(
         .as_ref()
         .map_or(source, SamplingImage::image);
 
+    // All spotlights act as one effect at the position of the first one, so
+    // the background is dimmed once however many spotlights there are.
+    let spotlights: Vec<&crate::shapes::Spotlight> = shapes
+        .iter()
+        .filter_map(|shape| match &shape.kind {
+            ShapeKind::Spotlight { data } => Some(data),
+            _ => None,
+        })
+        .collect();
+    let mut spotlights_applied = false;
+
     for shape in shapes {
         match &shape.kind {
             ShapeKind::Redact { .. } => {}
             ShapeKind::Cursor { data } => cursor::cursor(&mut output_pixels, source, data)?,
-            ShapeKind::Spotlight { data } => {
-                effects::spotlight(&mut output_pixels, sampling_source, data)?
+            ShapeKind::Spotlight { .. } => {
+                if !spotlights_applied {
+                    effects::spotlights(&mut output_pixels, sampling_source, &spotlights)?;
+                    spotlights_applied = true;
+                }
             }
             ShapeKind::Magnifier { data } => {
                 effects::magnifier(&mut output_pixels, sampling_source, data, &shape.style)?

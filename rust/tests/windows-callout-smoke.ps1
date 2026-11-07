@@ -117,6 +117,9 @@ function Confirm-Callout([string]$Text) {
     if($actual -cne $Text){throw "CALLOUT_TEXT_MISMATCH expected=<$Text> actual=<$actual>."}
     Click-Id $d.H 1
     [void](Wait-For {-not @(Owned-Windows|Where-Object {$_.ClassName -eq 'ShotKitRustTextEntryDialog'}).Count} 4 'callout dialog close')
+    # Owner report 2.0.0: after entering the text, activation left ShotKit for
+    # another application. The editor must be the foreground window again.
+    [void](Wait-For {[ShotKitCalloutSmoke.N]::Owner([ShotKitCalloutSmoke.N]::GetForegroundWindow()) -eq $proc.Id} 3 'ShotKit foreground after callout text (CALLOUT_FOCUS_LEFT_SHOTKIT)')
 }
 function Save-Hash([string]$PreviousHash,[string]$ExpectedHash) {
     Click-Id $main.H 0x5110
