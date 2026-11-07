@@ -12,6 +12,36 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 
 ---
 
+## Zwischenstand v2.0.0 — `main` @ `c6a33dd` — 2026-11-07 (abends)
+
+Noch kein Release. Gemergt seit dem Vormittag: Release-Pipeline für stabile Versionen (#75), Erststart-Hinweis statt Prototyp-Fenster (#78), Szenario-Wiederhol-Workflow (#81), gemeinsames Lesen von Live-Protokollen (#82), Verpixelung gehärtet (#83).
+
+### Verpixelung: Angriffstest (`rust/tests/pixelation_attack.rs`, PR #83)
+
+Synthetische Ziffernbilder, 400 Kandidaten, 4 000 Versuche je Schriftgröße (12 und 16 px) und Werkzeugbreite (8 Breiten); der Angreifer kennt die Rasterphase. Zufallsquote 0,25 %, erlaubt ist höchstens das Doppelte.
+
+| Verfahren | Ergebnis |
+|---|---|
+| Alt: exakter Mittelwert, Block 12 | über 90 % Treffer (Gegenprobe) |
+| Alt: exakter Mittelwert, Block 24, gleiche Phase | 98,5 % bzw. 100 % Treffer |
+| Gehärtet, Block 24 (4 Stufen, Rauschen ±96) | Wahrscheinlichkeitsangriff 25/4 000 bei 16 px – **über** dem Grenzwert (20) |
+| **Gehärtet, Block 48 (Release-Stand)** | Mittelwert- und Wahrscheinlichkeitsangriff bei allen Breiten unter 0,5 % – bestanden |
+
+Owner-Entscheidung: Mindestblockgröße 48 px. Bekannte Grenze: nicht kryptografische Rauschableitung (#85). Linux-/Windows-CI [42395136477](https://github.com/BomBastikDE/shotkit/actions/runs/42395136477) grün, 569 Linux-Tests.
+
+### Stabilität der Windows-Tests
+
+- Auswertung von 60 fehlgeschlagenen Läufen (05.–07.11.): 17 % Code-/Lint-Fehler (nicht lokal geprüft), 63 % neue Tests, die noch nicht zum Code passten, 18 % unzuverlässige Tests (Details in #25).
+- Ursache der häufigsten Unzuverlässigkeit: Live-Protokolle wurden ohne `FileShare.ReadWrite` gelesen; behoben mit #77 und #82 (#25 geschlossen).
+- Edge-Scrolltest etwa 98 % stabil; der einzige Fehlschlag speicherte ein zu kurzes Bild als vollständig. Kennzeichnung unbestätigter Enden in PR #87 (#58).
+- Für Zehnfachnachweise gibt es den manuellen Workflow „Windows smoke scenario repeats“ (#81) mit Diagnose-Artefakten bei Fehlschlag.
+
+### Noch offen bis v2.0.0
+
+#6 (gemischte DPI), #58 (Zehnfachnachweis), #65 (Szenarien), #66 (Doku), #67 (Temp-Dateien), #79 (Fenstertitel), danach Schritt 8 aus [#72](https://github.com/BomBastikDE/shotkit/issues/72).
+
+---
+
 ## Stand für v2.0.0 (noch kein Release) — Commit `2413c37` — 2026-11-07
 
 ### Automatische Tests (CI)
@@ -98,6 +128,18 @@ deckt die CI nicht ab.
 ---
 
 ## Reviews
+
+### Reviews der Bot-PRs – 2026-11-07
+
+| PR | Thema | Ergebnis |
+|---|---|---|
+| #75 | Release-Pipeline | erfüllt #71; Tag muss auf `main` liegen, Release-Text aus dem CHANGELOG |
+| #77, #82 | Live-Protokolle | erfüllt #76/#25; Ursache Lesefreigabe statt Zeitpunkt |
+| #78 | Erststart | erfüllt #74; Nebenbefund #79 (englischer Werkzeugname im Titel) |
+| #81 | Wiederhol-Workflow | in Ordnung; Eingaben gegen Einschleusen abgesichert, Artefakte bei Fehlschlag |
+| #83 | Verpixelung | erfüllt #5 nach Ergänzung der Gegenprobe (24 px) und des Wahrscheinlichkeitsangriffs; Korrektur einer zu starken Aussage im Review („Startwert nicht durchsuchbar“) → #85 |
+| #87 | Scroll-Ende | erfüllt #58 (Produktteil); Hinweis nicht bei Nutzerabbruch; bestätigtes Ende per UI Automation → #88 |
+
 
 ### Sicherheitsbewertung v2.0.0 – 2026-11-07, Stand `2413c37`
 
