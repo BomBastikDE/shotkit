@@ -122,9 +122,9 @@ fn peek_image_follows_undo_and_redo_order() {
     })
     .unwrap();
     let cropped = d.image_arc();
-    assert!(Arc::ptr_eq(&original, &d.undo_image_arc().unwrap()));
+    assert!(original.ptr_eq(&d.undo_image_arc().unwrap()));
     assert!(d.undo());
-    assert!(Arc::ptr_eq(&cropped, &d.redo_image_arc().unwrap()));
+    assert!(cropped.ptr_eq(&d.redo_image_arc().unwrap()));
 }
 #[test]
 fn shared_history_orders_shape_and_image_changes() {
@@ -631,7 +631,7 @@ fn plan_observation(d: &Document) -> (String, Vec<usize>) {
         .chain(d.redo.iter())
     {
         identities.extend([
-            Arc::as_ptr(&state.image) as usize,
+            state.image.identity(),
             Arc::as_ptr(&state.revision) as usize,
             state.image.pixels.capacity(),
             shapes_allocation_bytes(&state.shapes),
@@ -921,7 +921,7 @@ fn suspended_snapshot_restores_original_document_until_approved_apply() {
     let plan = d.plan_commit_edit().unwrap().unwrap();
     let planned_bytes = plan.history_bytes();
     let plan = d.suspend_edit_with_plan(plan).unwrap();
-    assert!(Arc::ptr_eq(&d.image_arc(), &old_image));
+    assert!(d.image_arc().ptr_eq(&old_image));
     assert!(Arc::ptr_eq(&d.current.revision, &old_revision));
     assert_eq!(d.shapes(), old_shapes);
     assert!(!d.is_dirty());
@@ -929,12 +929,12 @@ fn suspended_snapshot_restores_original_document_until_approved_apply() {
     assert_eq!(d.undo, undo_before);
     assert_eq!(d.redo, redo_before);
     d.commit_edit_with_plan(plan, false).unwrap();
-    assert!(Arc::ptr_eq(&d.image_arc(), &new_image));
+    assert!(d.image_arc().ptr_eq(&new_image));
     assert_eq!(d.shapes().len(), 2);
     assert!(d.is_dirty());
     assert_eq!(d.history_bytes(), planned_bytes);
     assert!(d.undo());
-    assert!(Arc::ptr_eq(&d.image_arc(), &old_image));
+    assert!(d.image_arc().ptr_eq(&old_image));
     assert_eq!(d.shapes(), old_shapes);
     assert!(!d.is_dirty());
 }
@@ -1177,7 +1177,7 @@ fn planned_image_edit_preserves_all_approved_steps_through_undo_and_redo() {
     assert_eq!(d.undo.len(), retained);
     assert_eq!(d.redo.len(), 0);
     assert!(d.try_undo().unwrap());
-    assert!(Arc::ptr_eq(&d.image_arc(), &original));
+    assert!(d.image_arc().ptr_eq(&original));
     assert_eq!(d.shapes(), original_shapes);
     assert_eq!(d.undo.len(), retained - 1);
     assert_eq!(d.redo.len(), 1);
@@ -1341,7 +1341,7 @@ fn approved_fallback_installs_new_baseline_without_undo_or_redo_allocations() {
         assert!(d
             .commit_edit_with_approval(plan, CommitApproval::CommitWithoutUndo)
             .unwrap());
-        assert!(Arc::ptr_eq(&expected_image, &d.image_arc()));
+        assert!(expected_image.ptr_eq(&d.image_arc()));
         assert_eq!(d.shapes(), expected_shapes);
         assert!(Arc::ptr_eq(&saved, d.saved_revision.as_ref().unwrap()));
         assert!(!Arc::ptr_eq(&saved, &d.current.revision));
@@ -1521,4 +1521,77 @@ fn allocation_failure_at_every_fallback_reservation_is_propagated_atomically() {
         reserve_history(|| impossible.try_reserve(usize::MAX)),
         Err(DocumentError::AllocationFailed)
     );
+}
+
+#[test]
+fn existing_handle_constructor_preserves_pixels_and_rejected_ownership() {
+    let source = ImageHandle::from_image(image());
+    let pixels = source.pixels.as_ptr();
+    let d = Document::from_image_handle(source.clone()).unwrap();
+    assert!(source.ptr_eq(&d.image_arc()));
+    assert_eq!(d.image().pixels.as_ptr(), pixels);
+
+    let invalid = ImageHandle::from_image(Image {
+        width: 3,
+        height: 2,
+        pixels: vec![0; 4],
+    });
+    let original = invalid.clone();
+    let pixels = invalid.pixels.as_ptr();
+    let (error, returned) = Document::from_image_handle(invalid).unwrap_err();
+    assert_eq!(error, DocumentError::InvalidImage);
+    assert!(returned.ptr_eq(&original));
+    assert_eq!(returned.pixels.as_ptr(), pixels);
+    assert_eq!(returned.pixels, vec![0; 4]);
+}
+
+#[test]
+fn imported_handle_keeps_budget_in_history_clones_and_external_peeks() {
+    use crate::{
+        import_admission::ImportAdmission,
+        resource_budget::{AdmissionClass, ResourceBudget},
+    };
+
+    let source = image();
+    let pixels = source.pixels.as_ptr();
+    let reserved = source.pixels.capacity();
+    let budget = ResourceBudget::new(reserved, 0).unwrap();
+    let owner = ImportAdmission::new(budget.clone());
+    let lease = budget
+        .try_acquire(reserved, AdmissionClass::Normal)
+        .unwrap();
+    let imported = ImageHandle::from_imported(owner.try_begin(source, lease).unwrap().complete());
+    let mut d = Document::from_image_handle(imported.clone()).unwrap();
+    assert!(d.image_arc().ptr_eq(&imported));
+    assert_eq!(d.image().pixels.as_ptr(), pixels);
+    drop(imported);
+    drop(owner);
+
+    d.crop(CropRect {
+        x: 1,
+        y: 0,
+        width: 2,
+        height: 2,
+    })
+    .unwrap();
+    assert!(matches!(d.image_arc(), ImageHandle::Untracked(_)));
+    let undo_image = d.undo_image_arc().unwrap();
+    assert_eq!(undo_image.pixels.as_ptr(), pixels);
+    assert!(matches!(undo_image, ImageHandle::Imported(_)));
+    assert_eq!(budget.snapshot().used_bytes, reserved);
+    let mut clone = d.clone();
+    assert!(clone.undo_image_arc().unwrap().ptr_eq(&undo_image));
+    drop(undo_image);
+    drop(d);
+    assert_eq!(budget.snapshot().used_bytes, reserved);
+
+    assert!(clone.undo());
+    assert_eq!(clone.image().pixels.as_ptr(), pixels);
+    assert!(clone.redo());
+    let retained = clone.undo_image_arc().unwrap();
+    drop(clone);
+    assert_eq!(budget.snapshot().used_bytes, reserved);
+    assert_eq!(retained.pixels.as_ptr(), pixels);
+    drop(retained);
+    assert_eq!(budget.snapshot().used_bytes, 0);
 }

@@ -13,10 +13,10 @@ mod history;
 use crate::{
     document::{CommitApproval, Document, DocumentError, HistoryCommitMode, HistorySnapshotPlan},
     image_edit::{CropRect, FrameOptions},
+    image_handle::ImageHandle,
     shapes::{Color, Point, Shape, ShapeKind, StampKind, Style, Tool},
     stitch::Image,
 };
-use std::sync::Arc;
 
 const MIN_STYLE_WIDTH: f32 = 0.25;
 const MAX_STYLE_WIDTH: f32 = 256.0;
@@ -193,7 +193,17 @@ impl EditorController {
     /// validation fails.
     pub fn with_image_recover(image: Image) -> Result<Self, (DocumentError, Image)> {
         let document = Document::new_recover(image)?;
-        Ok(Self {
+        Ok(Self::from_document(document))
+    }
+
+    /// Retain the original shared image and its accounting on failure.
+    pub fn with_image_handle(image: ImageHandle) -> Result<Self, (DocumentError, ImageHandle)> {
+        let document = Document::from_image_handle(image)?;
+        Ok(Self::from_document(document))
+    }
+
+    fn from_document(document: Document) -> Self {
+        Self {
             document,
             tool: Tool::Select,
             selected: None,
@@ -207,7 +217,7 @@ impl EditorController {
             magnifier_frame: crate::shapes::MagnifierFrame::Circle,
             current_style: Style::default(),
             last_error: None,
-        })
+        }
     }
     /// Compatibility constructor. Prefer `with_image` for a controller tied
     /// to the actual canvas image.
@@ -220,7 +230,7 @@ impl EditorController {
     pub fn document_mut(&mut self) -> &mut Document {
         &mut self.document
     }
-    pub fn image_arc(&self) -> Arc<Image> {
+    pub fn image_arc(&self) -> ImageHandle {
         self.document.image_arc()
     }
     /// Return and clear the last failed document mutation. Boolean/void UI

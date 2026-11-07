@@ -675,7 +675,7 @@ fn mixed_shape_and_crop_share_one_undo_redo_history() {
     e.set_tool(Tool::Rectangle);
     e.mouse_down(p(20.0, 20.0));
     e.mouse_up(p(40.0, 40.0));
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
 
     e.crop(CropRect {
         x: 10,
@@ -696,7 +696,7 @@ fn mixed_shape_and_crop_share_one_undo_redo_history() {
         (100, 100)
     );
     assert_eq!(e.shapes()[0].bounds().x, 20.0);
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
     assert!(e.undo());
     assert!(e.shapes().is_empty());
     assert!(e.redo());
@@ -719,11 +719,11 @@ fn frame_is_undoable_with_shape_coordinates_and_image_arc() {
     .unwrap();
     assert_eq!(e.document().image().width, 110);
     assert_eq!(e.shapes()[0].bounds().x, before.x + 5.0);
-    assert!(!Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(!original_image.ptr_eq(&e.image_arc()));
     assert!(e.undo());
     assert_eq!(e.document().image().width, 100);
     assert_eq!(e.shapes()[0].bounds().x, before.x);
-    assert!(Arc::ptr_eq(&original_image, &e.image_arc()));
+    assert!(original_image.ptr_eq(&e.image_arc()));
     assert!(e.redo());
     assert_eq!(e.document().image().width, 110);
 }
@@ -902,7 +902,7 @@ fn gaussian_blur_crop_and_frame_offset_and_history_are_consistent() {
     assert_eq!(e.shapes()[0], cropped);
     assert!(e.undo());
     assert_eq!(e.shapes()[0], original);
-    assert!(Arc::ptr_eq(&source, &e.image_arc()));
+    assert!(source.ptr_eq(&e.image_arc()));
     assert!(e.redo());
     assert_eq!(e.shapes()[0], cropped);
     assert!(e.redo());
@@ -1071,7 +1071,7 @@ fn prepared_step_restores_original_until_accept_and_commits_one_history_entry() 
     assert!(e.shapes().is_empty());
     assert!(!e.document().is_dirty());
     assert!(!e.document().can_undo());
-    assert!(Arc::ptr_eq(&image, &e.image_arc()));
+    assert!(image.ptr_eq(&e.image_arc()));
 
     assert!(e.commit_annotation_edit(plan, false).unwrap());
     assert_eq!(e.selected_index(), Some(0));

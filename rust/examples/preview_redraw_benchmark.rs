@@ -5,10 +5,11 @@ mod benchmark {
         alpha_composite::{flatten_checkerboard, source_over},
         alpha_document::{render_document, render_preview},
         alpha_render,
+        image_handle::ImageHandle,
         shapes::{Point, Shape, ShapeKind},
         stitch::Image,
     };
-    use std::{sync::Arc, time::Instant};
+    use std::time::Instant;
 
     fn baseline_flatten(image: &Image) -> Image {
         let mut pixels = Vec::with_capacity(image.pixels.len());
@@ -32,7 +33,7 @@ mod benchmark {
         for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[(i % 251) as u8, ((i / width) % 251) as u8, 120, 255]);
         }
-        let image = Arc::new(Image::new(width, height, pixels).unwrap());
+        let image = ImageHandle::from_image(Image::new(width, height, pixels).unwrap());
         let mut shapes = vec![
             Shape::new(ShapeKind::Rectangle {
                 start: Point::new(30.0, 30.0),
@@ -76,7 +77,7 @@ mod benchmark {
         let pixels = (0..width * height)
             .flat_map(|i| [(i % 251) as u8, ((i / width) % 251) as u8, 120, 255])
             .collect();
-        let image = Arc::new(Image::new(width, height, pixels).unwrap());
+        let image = ImageHandle::from_image(Image::new(width, height, pixels).unwrap());
         let points = (0..600)
             .map(|i| Point::new(30.0 + i as f32, 200.0 + ((i as f32) * 0.06).sin() * 100.0))
             .collect();

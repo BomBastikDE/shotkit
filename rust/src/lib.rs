@@ -13,6 +13,7 @@ pub mod editor;
 pub mod gaussian_blur;
 pub mod hotkey_action;
 pub mod image_edit;
+pub mod image_handle;
 pub mod image_io;
 pub mod import_admission;
 pub mod magnifier_label;

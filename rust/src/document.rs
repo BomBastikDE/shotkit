@@ -1,6 +1,6 @@
 //! Shared image-and-annotation document with one bounded undo/redo history.
 //!
-//! History snapshots hold image pixels in `Arc<Image>` so shape-only edits do
+//! History snapshots hold image pixels in `ImageHandle` so shape-only edits do
 //! not duplicate the pixel allocation. Image operations create a new `Image`;
 //! prior images remain available through the same history. A transaction can
 //! stage a sequence of edits, then commit it as one history step or abort it
@@ -8,6 +8,7 @@
 
 use crate::{
     image_edit::{self, CropRect, FrameOptions, ImageEditError},
+    image_handle::ImageHandle,
     shapes::{Color, Point, Shape},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
 };
@@ -79,7 +80,7 @@ pub enum CanvasAlignment {
 
 #[derive(Clone, Debug, PartialEq)]
 struct State {
-    image: Arc<Image>,
+    image: ImageHandle,
     shapes: Vec<Shape>,
     revision: Arc<()>,
 }
@@ -213,9 +214,35 @@ impl Document {
         if let Err(error) = validate_image(&image) {
             return Err((error, image));
         }
-        Ok(Self {
+        Ok(Self::from_validated_image_handle(
+            ImageHandle::from_image(image),
+            history_budget_bytes,
+        ))
+    }
+
+    /// Reuse an existing allocation and its import reservation. Validation
+    /// failure returns the original handle without copying or losing ownership.
+    pub fn from_image_handle(image: ImageHandle) -> Result<Self, (DocumentError, ImageHandle)> {
+        Self::with_image_handle_history_budget(image, DEFAULT_HISTORY_BUDGET)
+    }
+
+    pub fn with_image_handle_history_budget(
+        image: ImageHandle,
+        history_budget_bytes: usize,
+    ) -> Result<Self, (DocumentError, ImageHandle)> {
+        if let Err(error) = validate_image(&image) {
+            return Err((error, image));
+        }
+        Ok(Self::from_validated_image_handle(
+            image,
+            history_budget_bytes,
+        ))
+    }
+
+    fn from_validated_image_handle(image: ImageHandle, history_budget_bytes: usize) -> Self {
+        Self {
             current: State {
-                image: Arc::new(image),
+                image,
                 shapes: Vec::new(),
                 revision: Arc::new(()),
             },
@@ -225,20 +252,20 @@ impl Document {
             saved_revision: None,
             history_budget: history_budget_bytes,
             history_generation: Arc::new(()),
-        })
+        }
     }
 
     pub fn image(&self) -> &Image {
         &self.current.image
     }
-    pub fn image_arc(&self) -> Arc<Image> {
-        Arc::clone(&self.current.image)
+    pub fn image_arc(&self) -> ImageHandle {
+        self.current.image.clone()
     }
-    pub fn undo_image_arc(&self) -> Option<Arc<Image>> {
-        self.undo.back().map(|s| Arc::clone(&s.image))
+    pub fn undo_image_arc(&self) -> Option<ImageHandle> {
+        self.undo.back().map(|s| s.image.clone())
     }
-    pub fn redo_image_arc(&self) -> Option<Arc<Image>> {
-        self.redo.last().map(|s| Arc::clone(&s.image))
+    pub fn redo_image_arc(&self) -> Option<ImageHandle> {
+        self.redo.last().map(|s| s.image.clone())
     }
     pub fn shapes(&self) -> &[Shape] {
         &self.current.shapes
@@ -277,12 +304,12 @@ impl Document {
     /// overhead are included.
     pub fn history_bytes(&self) -> usize {
         let mut seen = HashSet::new();
-        seen.insert(Arc::as_ptr(&self.current.image) as usize);
+        seen.insert(self.current.image.identity());
         self.undo
             .iter()
             .chain(self.redo.iter())
             .fold(0usize, |total, state| {
-                let image_bytes = if seen.insert(Arc::as_ptr(&state.image) as usize) {
+                let image_bytes = if seen.insert(state.image.identity()) {
                     image_allocation_bytes(&state.image)
                 } else {
                     0
@@ -324,7 +351,7 @@ impl Document {
             self.invalidate_history_plans();
             return Ok(false);
         }
-        self.record_snapshot(before.clone(), Arc::clone(&self.current.image))?;
+        self.record_snapshot(before.clone(), self.current.image.clone())?;
         self.current.revision = Arc::new(());
         self.staged_before = None;
         self.trim_history();
@@ -567,13 +594,13 @@ impl Document {
     pub fn replace_image(&mut self, image: Image) -> Result<(), DocumentError> {
         validate_image(&image)?;
         let mut next = self.current.clone();
-        next.image = Arc::new(image);
+        next.image = ImageHandle::from_image(image);
         self.install(next)
     }
 
     /// Crop pixels and shift every annotation by the crop origin in one step.
     pub fn crop(&mut self, rect: CropRect) -> Result<(), DocumentError> {
-        let image = Arc::new(image_edit::crop(&self.current.image, rect)?);
+        let image = ImageHandle::from_image(image_edit::crop(&self.current.image, rect)?);
         let mut next = self.current.clone();
         next.image = image;
         for shape in &mut next.shapes {
@@ -584,7 +611,7 @@ impl Document {
 
     /// Add frame/shadow and move annotations to the new image-content origin.
     pub fn add_frame(&mut self, options: FrameOptions) -> Result<(), DocumentError> {
-        let image = Arc::new(image_edit::add_frame(&self.current.image, options)?);
+        let image = ImageHandle::from_image(image_edit::add_frame(&self.current.image, options)?);
         let shadow = options.shadow;
         let margin_x = shadow.map_or(0usize, |s| {
             s.blur_radius
@@ -645,7 +672,7 @@ impl Document {
             pixels[dst..dst + count].copy_from_slice(&source.pixels[src..src + count]);
         }
         let mut next = self.current.clone();
-        next.image = Arc::new(Image {
+        next.image = ImageHandle::from_image(Image {
             width,
             height,
             pixels,
@@ -726,7 +753,7 @@ impl Document {
             return Ok(());
         }
         if self.staged_before.is_none() {
-            self.record_snapshot(self.current.clone(), Arc::clone(&next.image))?;
+            self.record_snapshot(self.current.clone(), next.image.clone())?;
             next.revision = Arc::new(());
         }
         self.current = next;
@@ -740,7 +767,7 @@ impl Document {
     fn record_snapshot(
         &mut self,
         snapshot: State,
-        next_image: Arc<Image>,
+        next_image: ImageHandle,
     ) -> Result<(), DocumentError> {
         if self.snapshot_bytes_after_redo_clear(&snapshot, &next_image) > self.history_budget {
             return Err(DocumentError::HistoryBudgetExceeded);
@@ -820,11 +847,11 @@ impl Document {
         let mut seen = HashSet::new();
         seen.try_reserve(count.saturating_add(1))
             .map_err(|_| DocumentError::AllocationFailed)?;
-        seen.insert(Arc::as_ptr(&target.image) as usize);
+        seen.insert(target.image.identity());
         let mut bytes = container_bytes(plan.undo.capacity(), size_of::<State>())
             .saturating_add(container_bytes(plan.redo.capacity(), size_of::<State>()));
         for state in states {
-            let image_bytes = if seen.insert(Arc::as_ptr(&state.image) as usize) {
+            let image_bytes = if seen.insert(state.image.identity()) {
                 image_allocation_bytes(&state.image)
             } else {
                 0
@@ -841,10 +868,10 @@ impl Document {
         Ok(Some(plan))
     }
 
-    fn snapshot_bytes_after_redo_clear(&self, snapshot: &State, next_image: &Arc<Image>) -> usize {
+    fn snapshot_bytes_after_redo_clear(&self, snapshot: &State, next_image: &ImageHandle) -> usize {
         // Older snapshots may all need eviction, so only sharing with the
         // resulting current image can reduce this snapshot's minimum cost.
-        let image_bytes = if !Arc::ptr_eq(next_image, &snapshot.image) {
+        let image_bytes = if !next_image.ptr_eq(&snapshot.image) {
             image_allocation_bytes(&snapshot.image)
         } else {
             0
@@ -906,10 +933,10 @@ struct HistoryStorage {
 impl HistoryStorage {
     fn new<'a>(
         states: impl Iterator<Item = &'a State>,
-        current_image: &Arc<Image>,
+        current_image: &ImageHandle,
     ) -> Result<Self, DocumentError> {
         let mut storage = Self {
-            current_image: Arc::as_ptr(current_image) as usize,
+            current_image: current_image.identity(),
             images: HashMap::new(),
             bytes: 0,
         };
@@ -923,7 +950,7 @@ impl HistoryStorage {
                 .bytes
                 .checked_add(snapshot_storage_bytes(state))
                 .ok_or(DocumentError::HistoryBudgetExceeded)?;
-            let image = Arc::as_ptr(&state.image) as usize;
+            let image = state.image.identity();
             if image != storage.current_image {
                 if let Some(entry) = storage.images.get_mut(&image) {
                     entry.0 += 1;
@@ -942,7 +969,7 @@ impl HistoryStorage {
 
     fn remove(&mut self, state: &State) {
         self.bytes -= snapshot_storage_bytes(state);
-        let image = Arc::as_ptr(&state.image) as usize;
+        let image = state.image.identity();
         if image != self.current_image {
             let entry = self
                 .images
@@ -1073,7 +1100,7 @@ fn validate_image(image: &Image) -> Result<(), DocumentError> {
 }
 
 fn states_equal(left: &State, right: &State) -> bool {
-    (Arc::ptr_eq(&left.image, &right.image) || left.image.as_ref() == right.image.as_ref())
+    (left.image.ptr_eq(&right.image) || left.image.as_ref() == right.image.as_ref())
         && left.shapes == right.shapes
 }
 

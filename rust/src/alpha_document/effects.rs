@@ -220,8 +220,8 @@ pub(super) fn magnifier(
 mod tests {
     use super::*;
     use crate::alpha_document::{render_document, render_preview};
+    use crate::image_handle::ImageHandle;
     use crate::shapes::{Color, Point, Rect, Shape, ShapeKind};
-    use std::sync::Arc;
 
     fn solid(width: usize, height: usize, pixel: [u8; 4]) -> Image {
         Image::new(width, height, pixel.repeat(width * height)).unwrap()
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn preview_cache_never_reuses_unredacted_sampling_after_redaction_changes() {
-        let image = Arc::new(solid(8, 4, [7, 10, 240, 255]));
+        let image = ImageHandle::from_image(solid(8, 4, [7, 10, 240, 255]));
         let mut lens = Shape::new(ShapeKind::Magnifier {
             data: Magnifier::new(
                 Rect {
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn cached_preview_matches_export_for_effects() {
-        let image = Arc::new(solid(8, 8, [140, 100, 60, 255]));
+        let image = ImageHandle::from_image(solid(8, 8, [140, 100, 60, 255]));
         let spotlight = Shape::new(ShapeKind::Spotlight {
             data: Spotlight::new(
                 Rect {

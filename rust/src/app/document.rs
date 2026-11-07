@@ -656,7 +656,7 @@ pub(super) unsafe fn history(h: H, redo: bool) {
     };
     // Allocate the replacement GDI bitmap before changing history. On failure,
     // both the document and the displayed image remain at their old state.
-    let replacement = if std::sync::Arc::ptr_eq(&before, &next) {
+    let replacement = if before.ptr_eq(&next) {
         None
     } else {
         match create_bitmap(&next) {

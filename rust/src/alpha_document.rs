@@ -8,12 +8,11 @@
 mod cursor;
 mod effects;
 
-use std::sync::Arc;
-
 use crate::{
     alpha_composite::source_over,
     alpha_render,
     gaussian_blur::gaussian_blur_region,
+    image_handle::ImageHandle,
     pixelate::{pixelate_into, PixelateRect},
     shapes::{Shape, ShapeKind},
     stitch::{Image, MAX_EDITABLE_IMAGE_DIMENSION},
@@ -33,19 +32,24 @@ pub fn render_document(source: &Image, shapes: &[Shape]) -> Result<Image, String
 }
 
 /// Return the original immutable image when there are no annotations.
-pub fn render_document_shared(source: &Arc<Image>, shapes: &[Shape]) -> Result<Arc<Image>, String> {
+/// Retaining an imported handle also retains its pixel reservation. An annotated
+/// result owns a new, untracked allocation and leaves the source lease intact.
+pub fn render_document_shared(
+    source: &ImageHandle,
+    shapes: &[Shape],
+) -> Result<ImageHandle, String> {
     if shapes.is_empty() {
         validate_image(source)?;
-        return Ok(Arc::clone(source));
+        return Ok(source.clone());
     }
-    render_document(source, shapes).map(Arc::new)
+    render_document(source, shapes).map(ImageHandle::from_image)
 }
 
 /// Cached, fully rendered prefix of one image's annotation stack.
 /// The original image is retained because pixelation samples that image even
 /// when earlier annotations are already present in the accumulated output.
 pub struct PreviewCache {
-    source: Arc<Image>,
+    source: ImageHandle,
     shapes: Vec<Shape>,
     rendered: Image,
 }
@@ -54,7 +58,7 @@ pub struct PreviewCache {
 /// `stable_count` must identify the first potentially changing shape; later
 /// shapes are still rendered in order, including pixelation against `source`.
 pub fn render_preview(
-    source: &Arc<Image>,
+    source: &ImageHandle,
     shapes: &[Shape],
     stable_count: usize,
     cache: &mut Option<PreviewCache>,
@@ -87,11 +91,11 @@ pub fn render_preview(
     }
     let reusable = cache
         .as_ref()
-        .is_some_and(|entry| Arc::ptr_eq(&entry.source, source) && entry.shapes == prefix);
+        .is_some_and(|entry| entry.source.ptr_eq(source) && entry.shapes == prefix);
     if !reusable {
         let rendered = render_document(source, prefix)?;
         *cache = Some(PreviewCache {
-            source: Arc::clone(source),
+            source: source.clone(),
             shapes: prefix.to_vec(),
             rendered,
         });
@@ -362,6 +366,14 @@ mod tests {
     use crate::pixelate::pixelate_region;
     #[cfg(windows)]
     use crate::shapes::{Color, Point, Style};
+    use std::sync::Arc;
+
+    fn untracked_arc(handle: &ImageHandle) -> &Arc<Image> {
+        let ImageHandle::Untracked(image) = handle else {
+            panic!("expected untracked test image");
+        };
+        image
+    }
 
     #[test]
     fn redaction_and_spotlight_do_not_need_a_sampling_copy() {
@@ -414,9 +426,11 @@ mod tests {
     #[test]
     fn shared_export_reuses_unannotated_image_and_validates_it() {
         use crate::shapes::Point;
-        let source = Arc::new(Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap());
+        let source = ImageHandle::from_image(
+            Image::new(2, 1, vec![10, 20, 30, 40, 50, 60, 70, 80]).unwrap(),
+        );
         let reused = render_document_shared(&source, &[]).unwrap();
-        assert!(Arc::ptr_eq(&source, &reused));
+        assert!(source.ptr_eq(&reused));
         assert_eq!(*reused, render_document(&source, &[]).unwrap());
         let png = crate::image_io::encode(&reused, image::ImageFormat::Png).unwrap();
         assert_eq!(crate::image_io::decode(&png).unwrap(), *source);
@@ -426,38 +440,35 @@ mod tests {
             end: Point::new(1.0, 1.0),
         });
         let rendered = render_document_shared(&source, std::slice::from_ref(&redact)).unwrap();
-        assert!(!Arc::ptr_eq(&source, &rendered));
+        assert!(!source.ptr_eq(&rendered));
         assert_eq!(*rendered, render_document(&source, &[redact]).unwrap());
         assert_eq!(&source.pixels[..4], &[10, 20, 30, 40]);
         assert_eq!(&rendered.pixels[..4], &[0, 0, 0, 255]);
 
-        let malformed = Arc::new(Image {
+        let malformed = ImageHandle::from_image(Image {
             width: 1,
             height: 1,
             pixels: vec![],
         });
-        let too_wide = Arc::new(Image::new(30_001, 1, vec![0; 30_001 * 4]).unwrap());
-        let too_tall = Arc::new(Image::new(1, 30_001, vec![0; 30_001 * 4]).unwrap());
-        let zero = Arc::new(Image {
+        let too_wide = ImageHandle::from_image(Image::new(30_001, 1, vec![0; 30_001 * 4]).unwrap());
+        let too_tall = ImageHandle::from_image(Image::new(1, 30_001, vec![0; 30_001 * 4]).unwrap());
+        let zero = ImageHandle::from_image(Image {
             width: 0,
             height: 1,
             pixels: vec![],
         });
-        let excess = Arc::new(Image {
+        let excess = ImageHandle::from_image(Image {
             width: 1,
             height: 1,
             pixels: vec![0; 8],
         });
-        let overflow = Arc::new(Image {
+        let overflow = ImageHandle::from_image(Image {
             width: usize::MAX,
             height: 2,
             pixels: vec![],
         });
-        let boundary = Arc::new(Image::new(30_000, 1, vec![0; 30_000 * 4]).unwrap());
-        assert!(Arc::ptr_eq(
-            &boundary,
-            &render_document_shared(&boundary, &[]).unwrap()
-        ));
+        let boundary = ImageHandle::from_image(Image::new(30_000, 1, vec![0; 30_000 * 4]).unwrap());
+        assert!(boundary.ptr_eq(&render_document_shared(&boundary, &[]).unwrap()));
         for image in [malformed, too_wide, too_tall, zero, excess, overflow] {
             assert!(render_document_shared(&image, &[]).is_err());
             assert!(render_document(&image, &[]).is_err());
@@ -468,7 +479,8 @@ mod tests {
     fn cursor_preview_matches_export_and_redaction_wins_in_both_orders() {
         use crate::cursor_snapshot::CursorPixels;
         use crate::shapes::{CursorSprite, Point};
-        let source = Arc::new(Image::new(3, 1, [10, 20, 30, 255].repeat(3)).unwrap());
+        let source =
+            ImageHandle::from_image(Image::new(3, 1, [10, 20, 30, 255].repeat(3)).unwrap());
         let cursor = Shape::new(ShapeKind::Cursor {
             data: CursorSprite::new(
                 Point::new(0.0, 0.0),
@@ -501,7 +513,8 @@ mod tests {
     #[test]
     fn stamps_preview_matches_export_and_never_overpaints_redaction() {
         use crate::shapes::{Point, StampKind};
-        let source = Arc::new(Image::new(60, 60, [20, 40, 60, 90].repeat(3600)).unwrap());
+        let source =
+            ImageHandle::from_image(Image::new(60, 60, [20, 40, 60, 90].repeat(3600)).unwrap());
         for kind in StampKind::ALL {
             let mut stamp = Shape::new(ShapeKind::Stamp {
                 center: Point::new(30.0, 30.0),
@@ -641,7 +654,7 @@ mod tests {
                         assert_eq!(&expected.pixels[i..i + 4], &[0, 0, 0, 255]);
                     }
                 }
-                let original = Arc::new(secret.clone());
+                let original = ImageHandle::from_image(secret.clone());
                 let mut cache = None;
                 for split in 0..=shapes.len() {
                     assert_eq!(
@@ -657,7 +670,7 @@ mod tests {
     #[test]
     fn gaussian_preview_cache_matches_export_across_strength_edits_and_overlaps() {
         use crate::shapes::Point;
-        let source = Arc::new(
+        let source = ImageHandle::from_image(
             Image::new(
                 30,
                 20,
@@ -722,7 +735,7 @@ mod tests {
                     assert_eq!(&result.pixels[i..i + 4], &[0, 0, 0, 255]);
                 }
             }
-            let source = Arc::new(one.clone());
+            let source = ImageHandle::from_image(one.clone());
             let mut cache = None;
             for split in 0..=shapes.len() {
                 assert_eq!(
@@ -759,7 +772,7 @@ mod tests {
     #[test]
     fn redactions_only_preserve_alpha_outside_their_union() {
         use crate::shapes::Point;
-        let source = Arc::new(
+        let source = ImageHandle::from_image(
             Image::new(
                 5,
                 4,
@@ -834,7 +847,7 @@ mod tests {
     #[test]
     fn empty_preview_prefix_matches_document_and_releases_previous_cache() {
         use crate::shapes::Point;
-        let source = Arc::new(
+        let source = ImageHandle::from_image(
             Image::new(
                 32,
                 24,
@@ -851,12 +864,12 @@ mod tests {
         let mut cache = None;
         render_preview(&source, std::slice::from_ref(&blur), 1, &mut cache).unwrap();
         assert!(cache.is_some());
-        assert_eq!(Arc::strong_count(&source), 2);
+        assert_eq!(Arc::strong_count(untracked_arc(&source)), 2);
 
         // Only the cache retains this old source now. Clearing the cache must
         // drop its ownership, together with its independently rendered pixels.
-        let previous_source = Arc::downgrade(&source);
-        let replacement = Arc::new((*source).clone());
+        let previous_source = Arc::downgrade(untracked_arc(&source));
+        let replacement = ImageHandle::from_image((*source).clone());
         drop(source);
         assert!(previous_source.upgrade().is_some());
         for shapes in [vec![blur], vec![]] {
@@ -866,10 +879,10 @@ mod tests {
             );
             assert!(cache.is_none());
             assert!(previous_source.upgrade().is_none());
-            assert_eq!(Arc::strong_count(&replacement), 1);
+            assert_eq!(Arc::strong_count(untracked_arc(&replacement)), 1);
         }
         assert!(render_preview(&replacement, &[], 1, &mut cache).is_err());
-        let malformed = Arc::new(Image {
+        let malformed = ImageHandle::from_image(Image {
             width: 1,
             height: 1,
             pixels: vec![],
@@ -878,12 +891,78 @@ mod tests {
     }
 
     #[test]
+    fn tracked_preview_cache_retains_identity_pixels_and_lease_until_cleared() {
+        use crate::{
+            import_admission::ImportAdmission,
+            resource_budget::{AdmissionClass, ResourceBudget},
+            shapes::Point,
+        };
+        let image = Image::new(
+            24,
+            12,
+            (0..24 * 12)
+                .flat_map(|i| [i as u8, (i * 3) as u8, 42, 255])
+                .collect(),
+        )
+        .unwrap();
+        let bytes = image.pixels.capacity();
+        let pixels = image.pixels.as_ptr();
+        let budget = ResourceBudget::new(bytes, 0).unwrap();
+        let owner = ImportAdmission::new(budget.clone());
+        let lease = budget.try_acquire(bytes, AdmissionClass::Normal).unwrap();
+        let tracked = owner.try_begin(image, lease).unwrap().complete();
+        let weak = Arc::downgrade(&tracked);
+        let source = ImageHandle::from_imported(tracked);
+        let shared = render_document_shared(&source, &[]).unwrap();
+        assert!(source.ptr_eq(&shared));
+        assert_eq!(shared.pixels.as_ptr(), pixels);
+        let shapes = [Shape::new(ShapeKind::Blur {
+            start: Point::new(1.0, 1.0),
+            end: Point::new(23.0, 11.0),
+        })];
+        let expected = render_document(&source, &shapes).unwrap();
+        let mut cache = None;
+        assert_eq!(
+            render_preview(&source, &shapes, 1, &mut cache).unwrap(),
+            expected
+        );
+        assert!(cache.as_ref().unwrap().source.ptr_eq(&source));
+        let cached_pixels = cache.as_ref().unwrap().rendered.pixels.as_ptr();
+        assert_eq!(
+            render_preview(&shared, &shapes, 1, &mut cache).unwrap(),
+            expected
+        );
+        assert_eq!(
+            cache.as_ref().unwrap().rendered.pixels.as_ptr(),
+            cached_pixels
+        );
+        drop(owner);
+        drop(source);
+        drop(shared);
+        assert!(weak.upgrade().is_some());
+        assert_eq!(budget.snapshot().used_bytes, bytes);
+        assert_eq!(cache.as_ref().unwrap().source.pixels.as_ptr(), pixels);
+        assert_eq!(
+            render_document(&cache.as_ref().unwrap().source, &shapes).unwrap(),
+            expected
+        );
+
+        // Clearing the prefix releases the last tracked owner; its independent
+        // rendered buffer must not accidentally keep or detach the lease.
+        let replacement = ImageHandle::from_image(Image::new(1, 1, vec![0; 4]).unwrap());
+        render_preview(&replacement, &[], 0, &mut cache).unwrap();
+        assert!(cache.is_none());
+        assert!(weak.upgrade().is_none());
+        assert_eq!(budget.snapshot().used_bytes, 0);
+    }
+
+    #[test]
     fn preview_cache_preserves_pixelation_source_and_invalidates_changes() {
         use crate::shapes::Point;
         let pixels = (0..64 * 48)
             .flat_map(|i| [(i % 251) as u8, ((i * 3) % 253) as u8, 42, 255])
             .collect();
-        let source = Arc::new(Image::new(64, 48, pixels).unwrap());
+        let source = ImageHandle::from_image(Image::new(64, 48, pixels).unwrap());
         let mut first = Shape::new(ShapeKind::Blur {
             start: Point::new(2.0, 2.0),
             end: Point::new(40.0, 30.0),
@@ -919,16 +998,16 @@ mod tests {
             render_document(&source, &changed_prefix).unwrap()
         );
         assert_eq!(cache.as_ref().unwrap().shapes, changed_prefix[..1]);
-        let replacement = Arc::new((*source).clone());
+        let replacement = ImageHandle::from_image((*source).clone());
         render_preview(&replacement, &changed_prefix, 1, &mut cache).unwrap();
-        assert!(Arc::ptr_eq(&cache.as_ref().unwrap().source, &replacement));
+        assert!(cache.as_ref().unwrap().source.ptr_eq(&replacement));
         assert!(render_preview(&replacement, &changed_prefix, 3, &mut cache).is_err());
     }
 
     #[cfg(windows)]
     #[test]
     fn preview_cache_matches_document_for_transparent_shapes_and_pixelation() {
-        let source = Arc::new(Image::new(64, 48, vec![80; 64 * 48 * 4]).unwrap());
+        let source = ImageHandle::from_image(Image::new(64, 48, vec![80; 64 * 48 * 4]).unwrap());
         let mut arrow = Shape::new(ShapeKind::Line {
             start: Point::new(2.0, 3.0),
             end: Point::new(58.0, 39.0),

@@ -313,8 +313,7 @@ mod windows_tests {
     #[test]
     fn cached_preview_matches_export_for_measured_callout() {
         use crate::alpha_document::{render_document, render_preview};
-        use crate::stitch::Image;
-        use std::sync::Arc;
+        use crate::{image_handle::ImageHandle, stitch::Image};
         let text = "Erste Zeile\n漢字";
         let data = CalloutData {
             origin: Point::new(20.0, 20.0),
@@ -327,7 +326,8 @@ mod windows_tests {
         let shape = Shape::new(ShapeKind::Callout {
             data: Box::new(data),
         });
-        let image = Arc::new(Image::new(320, 200, vec![180; 320 * 200 * 4]).unwrap());
+        let image =
+            ImageHandle::from_image(Image::new(320, 200, vec![180; 320 * 200 * 4]).unwrap());
         let shapes = [shape];
         let mut cache = None;
         let preview = render_preview(&image, &shapes, 0, &mut cache).unwrap();
