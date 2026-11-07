@@ -5,13 +5,9 @@ use super::*;
 // Warum erfüllt bzw. offen: Die Funktion wird vom Fensterhandler aufgerufen; vollständiger Reentranznachweis steht noch aus.
 // Nachrichten: ShowWindow, MessageBoxW und overlay::select können reentrieren; Koordinaten und BusyGuard sind eigene Werte, kein State-Borrow bleibt aktiv.
 pub(super) unsafe fn capture_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     let was_visible = IsWindowVisible(h) != 0;
     ShowWindow(h, 0);
     let Some((x, y, w, height)) = overlay::select() else {
@@ -163,13 +159,9 @@ pub(super) unsafe fn current_monitor_rects() -> Result<Vec<last_region::Rect>, S
 // Warum erfüllt bzw. offen: Der Handler übergibt h; Monitorgrenzen werden vor Wiederholung geprüft.
 // Nachrichten: MessageBoxW, ShowWindow und capture_region_rect können reentrieren; LAST_REGION wird kopiert und der MutexGuard vor dem Dialog beendet.
 pub(super) unsafe fn repeat_last_region(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     // Drop the mutex guard before the dialog can dispatch nested messages.
     let previous_region = *LAST_REGION.lock().unwrap_or_else(|p| p.into_inner());
     let Some(rect) = previous_region else {
@@ -194,22 +186,9 @@ pub(super) unsafe fn repeat_last_region(h: H) {
 // Nachrichten: MessageBoxW, ShowWindow, SetForegroundWindow, SendMessageTimeoutW
 // und overlay::select können reentrieren; kein State-Borrow bleibt dabei aktiv.
 pub(super) unsafe fn start_scroll(h: H) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(mut busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let mut busy = BusyGuard(true);
-    if scroll_recovery_pending() {
-        MessageBoxW(
-            h,
-            wide("Eine Scroll-Aufnahme wartet noch auf ihre Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(),
-            wide("Scroll-Aufnahme sichern").as_ptr(),
-            0x30,
-        );
-        return;
-    }
+    };
     let previous_direction = active_settings().scroll_direction;
     let previous_label = match previous_direction {
         settings::ScrollDirection::Down => "nach unten",
@@ -356,7 +335,7 @@ pub(super) unsafe fn start_scroll(h: H) {
     let diagnostic_folder = active_settings().save_folder;
     let coordinator = PRIMARY as usize;
     let target_window = root as usize;
-    busy.0 = false;
+    busy.disarm();
     let worker = std::thread::Builder::new()
         .name("scroll-capture".into())
         .spawn(move || {

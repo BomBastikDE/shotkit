@@ -38,6 +38,13 @@ pub(super) fn import_transfer_active() -> bool {
     )
 }
 
+pub(super) fn import_recovery_pending() -> bool {
+    IMPORT_ADMISSION
+        .get()
+        .is_some_and(|admission| admission.pending_state() == PendingState::Recoverable)
+        || REJECTED_IMPORT.state() == RejectedImportState::Recoverable
+}
+
 struct ImportBitmap(H);
 impl ImportBitmap {
     fn take(mut self) -> H {

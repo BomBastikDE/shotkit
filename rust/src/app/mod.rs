@@ -44,6 +44,7 @@ use shotkit::{
     editor::EditorController,
     image_edit::{FrameOptions, ShadowOptions},
     image_io, output_windows,
+    recovery_admission::{self, AdmissionError as SourceAdmissionError, Permit as SourcePermit},
     scroll_capture::{self, Direction, Outcome, ScrollIo},
     scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
@@ -331,6 +332,32 @@ fn scroll_recovery_pending() -> bool {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .is_some()
+}
+
+fn source_recovery_pending() -> bool {
+    RECOVERY_RESOLVING.load(Ordering::SeqCst)
+        || !RECOVERY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty()
+        || scroll_recovery_pending()
+        || import_transfer_active()
+        || import_recovery_pending()
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h is a live dialog owner on the UI thread.
+// Warum erfüllt: callers are owned window handlers guarded against closure.
+// Nachrichten: MessageBoxW can reenter; all recovery locks are released first.
+unsafe fn acquire_recovery_safe_source(h: H) -> Option<SourcePermit<'static>> {
+    match recovery_admission::acquire_source(&SCROLL_BUSY, source_recovery_pending) {
+        Ok(permit) => Some(permit),
+        Err(SourceAdmissionError::Busy) => None,
+        Err(SourceAdmissionError::PendingRecovery) => {
+            MessageBoxW(h, wide("Ein Bild wartet noch auf seine Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(), wide("Ungesichertes Bild").as_ptr(), 0x30);
+            None
+        }
+    }
 }
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static SETTINGS_WRITABLE: AtomicBool = AtomicBool::new(false);

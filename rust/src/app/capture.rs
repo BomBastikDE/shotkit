@@ -106,13 +106,9 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
 // Warum erfüllt bzw. offen: BusyGuard serialisiert Aufnahmen; die Lebensdauer bei Reentranz ist noch zu belegen.
 // Nachrichten: ShowWindow, MessageBoxW und handle_capture können reentrieren; es wird keine WindowState-Referenz gehalten, die HWND-Lebensdauer bleibt offen.
 pub(super) unsafe fn capture_rect(h: H, target: Result<capture_targets::ScreenRect, String>) {
-    if SCROLL_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
         return;
-    }
-    let _busy = BusyGuard(true);
+    };
     let rect = match target {
         Ok(r) => r,
         Err(e) => {
@@ -158,6 +154,10 @@ pub(super) unsafe fn capture(h: H) {
 // Warum erfüllt: Die Nachrichtenbehandlung übergibt das eigene Fenster; der Worker postet nur eine Nachricht.
 // Nachrichten: MessageBoxW kann reentrieren; der DELAYED_CAPTURE_STATE-Guard endet vor dem Dialog, der Worker postet später eine Nachricht.
 pub(super) unsafe fn schedule_capture(h: H, seconds: u64) {
+    if source_recovery_pending() {
+        MessageBoxW(h, wide("Ein Bild wartet noch auf seine Sicherung. Bitte zuerst im Tray-Menü „Ungesicherte Aufnahme speichern …“ wählen.").as_ptr(), wide("Ungesichertes Bild").as_ptr(), 0x30);
+        return;
+    }
     let request = DELAYED_CAPTURE_STATE
         .lock()
         .unwrap_or_else(|p| p.into_inner())

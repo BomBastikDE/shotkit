@@ -281,6 +281,9 @@ impl Drop for RecoveryResolveGuard {
 // Nachrichten: MessageBoxW und GetSaveFileNameW können reentrieren; alle Mutex-
 // Guards enden vor Dialogen. Rotation, Encoding und Dateischreiben pumpen nicht.
 pub(super) unsafe fn resolve_recovery(h: H) -> bool {
+    let Ok(_source_gate) = recovery_admission::acquire_resolution(&SCROLL_BUSY) else {
+        return false;
+    };
     if RECOVERY_RESOLVING.swap(true, Ordering::SeqCst) {
         return false;
     }
@@ -390,6 +393,9 @@ pub(super) unsafe fn confirm_replace(h: H) -> bool {
 // Warum erfüllt: Aufruf aus der eigenen Ereignisbehandlung; Clipboard-Ressourcen werden im Clipboard-Modul verwaltet.
 // Nachrichten: GetClipboardData und Fensteranlage können reentrieren; das eingelesene Bild ist besitzend und kein Editor-Borrow wird gehalten.
 pub(super) unsafe fn paste_image(h: H) {
+    let Some(_busy) = acquire_recovery_safe_source(h) else {
+        return;
+    };
     match clipboard::read_image(h) {
         Ok(Some(image)) => {
             if let Err(e) = display_image(h, image) {
