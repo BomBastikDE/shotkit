@@ -45,6 +45,7 @@ use shotkit::{
     image_edit::{FrameOptions, ShadowOptions},
     image_io, output_windows,
     recovery_admission::{self, AdmissionError as SourceAdmissionError, Permit as SourcePermit},
+    recovery_images::RecoveryImages,
     scroll_capture::{self, Direction, Outcome, ScrollIo},
     scroll_completion::{ScrollCompletion, Ticket as ScrollTicket, WindowIdentity},
     settings::{self, Settings},
@@ -317,8 +318,8 @@ static SCROLL_COMPLETION: Mutex<ScrollCompletion<Result<Outcome, String>>> =
     Mutex::new(ScrollCompletion::new());
 const SCROLL_POLL_TIMER: usize = 0x5343_524c;
 static NEXT_WINDOW_GENERATION: AtomicUsize = AtomicUsize::new(1);
-static RECOVERY: Mutex<Vec<Image>> = Mutex::new(Vec::new());
-// A failed horizontal return rotation must not grow RECOVERY's Vec while the
+static RECOVERY: Mutex<RecoveryImages<Image>> = Mutex::new(RecoveryImages::new());
+// A failed horizontal return rotation must not grow RECOVERY's overflow while the
 // image allocator is already under pressure. This inline slot needs no queue
 // allocation. start_scroll refuses another job until it has been resolved.
 static SCROLL_RECOVERY: Mutex<Option<PendingScrollRecovery>> = Mutex::new(None);
