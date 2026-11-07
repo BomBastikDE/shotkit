@@ -142,6 +142,11 @@ pub(super) unsafe fn dispatch_mouse_begin(h: H, m: u32, _w: W, l: L) -> Option<L
                 return Some(0);
             }
             editor(h).mouse_down(ShapePoint::new(x as f32, y as f32));
+            if editor(h).has_error() {
+                window_state(h).drawing = false;
+                report_editor_error(h);
+                return Some(0);
+            }
             SetCapture(h);
             invalidate_image_view(h);
             0

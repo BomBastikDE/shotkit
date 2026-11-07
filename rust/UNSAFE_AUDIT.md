@@ -167,3 +167,7 @@ Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe
 | `src/toolbar.rs:454` | `create` | bewusst zurückgestellt | Parent und Tooltiptext-Lebensdauer sind im Normalpfad sichtbar; Klassenkollision und vollständige HWND-Lebensdauer bei verschachtelter Erstellung sind nicht belegt. |
 | `src/uia_picker.rs:286` | `create_automation` | Beleg fehlt | Nachzuweisen: COM ist im passenden Apartment initialisiert; die Referenz wird dort verwendet und freigegeben. |
 | `src/uia_picker.rs:305` | `inspect` | belegt | Enger COM-Apartment-Vertrag: MTA-Initialisierung, Interface-Nutzung und Freigabe bleiben im Worker; der UIA-Auswahlpfad mit Tastaturkorrektur bestand im [Windows-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41523039080); Providerqualität und Handle-Identität sind nicht damit belegt. |
+
+## Neuer einzelner unsafe-Block: Zufallsquelle
+
+- `pixelation_random::operating_system_seed` (`BCryptGenRandom`): **Beleg fehlt** bis zum Windows-CI-Lauf. Voraussetzung: ein gültiger, exklusiv beschreibbarer 8-Byte-Puffer und der systemseitige Zufallsanbieter; beide sind lokal angelegt beziehungsweise über die Windows-API angefordert. Der Aufruf versendet keine Fensternachrichten. Ein Fehler wird ohne Ersatzwert an den Aufrufer zurückgegeben.
