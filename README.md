@@ -20,7 +20,10 @@ Get-FileHash .\shotkit-*.exe -Algorithm SHA256
 Die EXE ist noch unsigniert; Windows SmartScreen kann warnen („Weitere Informationen → Trotzdem ausführen“).
 Signierung und Herkunftsnachweis sind nicht geplant.
 
-Funktionen, Tastenkürzel, bekannte Grenzen sowie Bauen und Testen: **[rust/README.md](rust/README.md)**.
+## Dokumentation
+
+- **[Benutzerhandbuch](docs/README.md)** – Installation, Aufnehmen, Editor, Einstellungen, Sicherheit, häufige Fragen
+- [Technische Übersicht, Bauen und Testen](rust/README.md) · [Testprotokoll](rust/TESTPROTOKOLL.md) · [Änderungen](rust/CHANGELOG.md)
 
 ## Bisherige C#-Version (1.2.0)
 
