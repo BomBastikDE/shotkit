@@ -177,6 +177,7 @@ extern "system" {
     fn ReleaseDC(h: H, dc: H) -> i32;
     fn BeginPaint(h: H, p: *mut Paint) -> H;
     fn EndPaint(h: H, p: *const Paint) -> i32;
+    fn FillRect(dc: H, rect: *const Rect, brush: H) -> i32;
     fn GetClientRect(h: H, r: *mut Rect) -> i32;
     fn InvalidateRect(h: H, r: *const Rect, erase: i32) -> i32;
     fn SetWindowTextW(h: H, t: *const u16) -> i32;
@@ -283,6 +284,7 @@ extern "system" {
     ) -> i32;
     fn CreatePen(style: i32, width: i32, color: u32) -> H;
     fn Rectangle(dc: H, l: i32, t: i32, r: i32, b: i32) -> i32;
+    fn PatBlt(dc: H, x: i32, y: i32, width: i32, height: i32, rop: u32) -> i32;
     fn TextOutW(dc: H, x: i32, y: i32, text: *const u16, len: i32) -> i32;
     fn GetStockObject(index: i32) -> H;
 }

@@ -2,6 +2,8 @@
 
 ## In Entwicklung nach Beta 1
 
+- Schlägt das Zeichnen der Vorschau fehl, wird der betroffene Bereich vor der Fehlermeldung nach Möglichkeit deckend neutralisiert. Damit sollen vorher sichtbare Bildinhalte nicht unter einer fehlgeschlagenen Aktualisierung stehen bleiben; ein vollständiger Ausfall beider Windows-Grafikoperationen kann nicht abgefangen werden.
+
 - Beim TIFF-Import werden Größe und Anzahl der Einträge im ersten Verzeichnis vor dem Start des Decoders begrenzt. Dadurch können auch gültige Spezialdateien mit sehr großen Metadaten oder vielen Strips/Kacheln abgelehnt werden; eine vollständige Prozessspeichergrenze ist damit nicht verbunden ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
 
 - Das gemeinsame Bildbudget berücksichtigt zusätzlich Zwischenablageimporte, gewöhnliche Bildschirmaufnahmen sowie neue Bildpuffer für Zuschnitt, Rahmen, Schatten und Leinwandänderungen. Bei nicht ausreichendem Budget bleibt der bisherige Dokumentzustand erhalten. GDI, weitere Bearbeitungen, Codec-Hilfsspeicher und der gesamte Prozessspeicher bleiben außerhalb einer festen Gesamtgrenze ([#65](https://github.com/BomBastikDE/shotkit/issues/65)).
