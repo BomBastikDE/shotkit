@@ -4,6 +4,7 @@ param(
     [ValidateRange(10,120)][int]$StartupTimeoutSeconds=30
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if(($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_WINDOWS_REQUIRED: ephemeral interactive runner or dedicated opt-in session required.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -77,9 +78,7 @@ try {
     $env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData
     try {$proc=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $fixture) -WorkingDirectory $root -PassThru}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
-    $notice=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|Select-Object -First 1} 'owned startup notice' 12
-    if(-not[ShotKitZoomTenByTenSmoke.N]::PostMessageW($notice.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_FAILED'}
-    [void](Wait-For {-not[ShotKitZoomTenByTenSmoke.N]::IsWindow($notice.H)} 'startup notice close' 8)
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $proc -GetWindows { Owned-Windows }
     $main=Wait-For {Owned-Windows|Where-Object{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditor'}|Select-Object -First 1} 'owned editor window' $StartupTimeoutSeconds
     if([ShotKitZoomTenByTenSmoke.N]::Owner($main.H) -ne $proc.Id){throw 'EDITOR_OWNER_MISMATCH'}
     [void][ShotKitZoomTenByTenSmoke.N]::ShowWindow($main.H,3) # SW_MAXIMIZE

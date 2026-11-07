@@ -19,7 +19,7 @@
 
 ## Starten
 
-Die EXE per Doppelklick starten.
+Die EXE per Doppelklick starten. Beim ersten Start ohne vorhandene Einstellungen zeigt ShotKit einmal einen Hinweis zu Infobereich und Tastenkürzeln. Beim Start mit einer Bilddatei oder über den Autostart erscheint der Hinweis nicht.
 
 > [!WARNING]
 > Die EXE ist nicht digital signiert. Windows SmartScreen zeigt deshalb eine Warnung:

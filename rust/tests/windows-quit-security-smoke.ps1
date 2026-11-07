@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required.' }
 if (($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive) { throw 'This smoke test requires an interactive ephemeral GitHub Actions Windows runner or an explicitly opted-in local interactive session.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -123,13 +124,8 @@ try {
     try {$process=Start-Process -FilePath $ExePath -ArgumentList ('"{0}"' -f $inputPath) -WorkingDirectory $root -PassThru} finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     $main=Wait-Value {Get-Main} 'owned editor window'
     [void][ShotKitQuitSecuritySmoke.N]::ShowWindow($main.H,3);[void][ShotKitQuitSecuritySmoke.N]::SetForegroundWindow($main.H)
-    $notice=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|?{$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'}|select -First 1 } 'startup notice'
-    $noticeHandle=$notice.H
-    if(-not [ShotKitQuitSecuritySmoke.N]::PostMessageW($noticeHandle,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'STARTUP_NOTICE_CLOSE_POST_FAILED'}
-    $noticeCloseDeadline=[DateTime]::UtcNow.AddSeconds(5)
-    while([DateTime]::UtcNow -lt $noticeCloseDeadline -and [ShotKitQuitSecuritySmoke.N]::IsWindow($noticeHandle)){Start-Sleep -Milliseconds 50}
-    if([ShotKitQuitSecuritySmoke.N]::IsWindow($noticeHandle)){throw "STARTUP_NOTICE_CLOSE_TIMEOUT: WM_CLOSE was posted but startup dialog '$($notice.Title)' HWND=$noticeHandle was not destroyed."}
-    $main=Wait-Value {Get-Main} 'editor after startup notice'
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $process -GetWindows { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id) }
+    $main=Wait-Value {Get-Main} 'ready editor'
     $client=[Activator]::CreateInstance([ShotKitQuitSecuritySmoke.Rect]);[void][ShotKitQuitSecuritySmoke.N]::GetClientRect($main.H,[ref]$client)
     $toolbar=[ShotKitQuitSecuritySmoke.N]::Children($main.H)|?{$_.Visible -and $_.ClassName -eq 'ShotKitRustEditorToolbar'}|select -First 1
     if($null -eq $toolbar){throw 'EDITOR_TOOLBAR_MISSING'}
@@ -154,7 +150,7 @@ try {
 
     # The normal primary-window close must still ask about unsaved edits.
     if(-not [ShotKitQuitSecuritySmoke.N]::PostMessageW($primary.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'QUIT_POST_FAILED'}
-    $dialog=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit Rust'}|Select-Object -First 1 } 'unsaved changes confirmation'
+    $dialog=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit'}|Select-Object -First 1 } 'unsaved changes confirmation'
     Assert-QuitDialog $dialog.H
     # The editor-owned MessageBox runs a nested loop on PRIMARY's UI thread.
     # Send to PRIMARY itself, then recheck modality: the foreign synchronous
@@ -173,7 +169,7 @@ try {
     $main=Wait-Value {Get-Main|Where-Object {$_.Title.StartsWith('* ')}} 'dirty document after cancel'
     if(-not [ShotKitQuitSecuritySmoke.N]::IsWindow($primary.H)){throw 'PRIMARY_LOST_AFTER_CANCEL'}
     if(-not [ShotKitQuitSecuritySmoke.N]::PostMessageW($primary.H,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'SECOND_QUIT_POST_FAILED'}
-    $dialog=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit Rust'}|Select-Object -First 1 } 'second unsaved changes confirmation'
+    $dialog=Wait-Value { [ShotKitQuitSecuritySmoke.N]::Windows($process.Id)|Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -eq 'ShotKit'}|Select-Object -First 1 } 'second unsaved changes confirmation'
     Assert-QuitDialog $dialog.H
     $discard=[ShotKitQuitSecuritySmoke.N]::Buttons($dialog.H)|Where-Object {($_.Text -replace '&','').Trim() -in @('No','Nein')}|Select-Object -First 1
     if($null -eq $discard){throw 'DISCARD_BUTTON_NOT_FOUND'}

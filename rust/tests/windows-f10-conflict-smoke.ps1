@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 (pwsh) is required.'}
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT' -or -not [Environment]::UserInteractive){throw 'INTERACTIVE_CI_WINDOWS_REQUIRED: this global hotkey-conflict test runs only on an interactive ephemeral Windows CI desktop.'}
 if(-not(Test-Path -LiteralPath $ExePath -PathType Leaf)){throw "ShotKit EXE not found: $ExePath"}
@@ -84,28 +85,21 @@ function Read-ReservationFile([string]$Path){
  }
 }
 function Wait-EventCount([int]$Expected){Wait-For {if(Test-Path -LiteralPath $eventFile){$v=(Read-ReservationFile $eventFile);if($v -match '^\d+$' -and [int]$v -ge $Expected){return [int]$v}};return $null} "reservation helper WM_HOTKEY count >= $Expected" 8 $helper}
-function Start-AppAndCloseWelcome([switch]$ExpectConflict){
+function Start-AppAndCheckStartup([switch]$ExpectConflict){
  $script:shotKit=Start-ShotKit
  $main=Wait-For {Owned-Windows $shotKit|Where-Object{$_.ClassName -eq 'ShotKitRustPrototype'}|Select-Object -First 1} 'ShotKit primary window' $StartupTimeoutSeconds $shotKit
  if([ShotKitHotkeyConflictSmoke.N]::Owner($main.H) -ne $shotKit.Id){throw "MAIN_WINDOW_OWNER_MISMATCH HWND=$($main.H)."}
  if($ExpectConflict){
   $conflict=Wait-For {
    $dialogs=Owned-Dialogs $shotKit
-   foreach($d in $dialogs){$text=[ShotKitHotkeyConflictSmoke.N]::Text($d.H);if($d.Title -eq 'ShotKit Rust' -and $text -like '*F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.*'){return $d};if($d.Title -notlike '*Prototyp*'){throw "UNEXPECTED_REGISTRATION_DIALOG: title='$($d.Title)' text='$text'"}}
+   foreach($d in $dialogs){$text=[ShotKitHotkeyConflictSmoke.N]::Text($d.H);if($d.Title -eq 'ShotKit' -and $text -like '*F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.*'){return $d};throw "UNEXPECTED_REGISTRATION_DIALOG: title='$($d.Title)' text='$text'"}
    return $null
   } 'exact F10 conflict notification' $StartupTimeoutSeconds $shotKit
   $conflictText=[ShotKitHotkeyConflictSmoke.N]::Text($conflict.H)
   if($conflictText -notlike '*F10 ist belegt. Die experimentelle Scroll-Aufnahme kann nicht gestartet werden.*'){throw "CONFLICT_NOTIFICATION_TEXT_MISMATCH: $conflictText"}
   Close-Dialog $conflict 'F10 conflict notification'
  }
- $welcome=Wait-For {
-  $dialogs=Owned-Dialogs $shotKit
-  $notice=$dialogs|Where-Object{$_.Title -like '*Prototyp*'}|Select-Object -First 1
-  if($notice){return $notice}
-  if($dialogs.Count){$d=$dialogs[0];throw "UNEXPECTED_REGISTRATION_DIALOG: title='$($d.Title)' text='$([ShotKitHotkeyConflictSmoke.N]::Text($d.H))'"}
-  return $null
- } 'ShotKit startup notice' $StartupTimeoutSeconds $shotKit
- Close-Dialog $welcome 'ShotKit startup notice'
+ Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Owned-Windows $shotKit }
  $other=@(Owned-Dialogs $shotKit)
  if($other.Count){$text=[ShotKitHotkeyConflictSmoke.N]::Text($other[0].H);throw "UNEXPECTED_SHOTKIT_DIALOG after startup: title='$($other[0].Title)' text='$text'"}
  Set-ReservationForeground
@@ -177,7 +171,7 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  if([ShotKitHotkeyConflictSmoke.N]::Owner($script:helperWindow.H) -ne $helper.Id){throw "RESERVATION_WINDOW_OWNER_MISMATCH HWND=$($script:helperWindow.H)."}
  [void](Wait-For {if(Test-Path -LiteralPath $eventFile){(Read-ReservationFile $eventFile)}} 'reservation event log' 5 $helper)
 
- Start-AppAndCloseWelcome -ExpectConflict
+ Start-AppAndCheckStartup -ExpectConflict
  foreach($expected in 1..2){Send-ConflictChord;[void](Wait-EventCount $expected);Start-Sleep -Milliseconds 100}
  $reservationCount=(Read-ReservationFile $eventFile)
  if($reservationCount -cne '2'){throw "RESERVATION_CHANGED_OR_REPEATED: expected exactly two helper WM_HOTKEY messages, got '$reservationCount'."}
@@ -190,7 +184,7 @@ $form=[ShotKitHotkeyReservationHelper.ReservationForm]::new($Ready,$Events,$Rele
  $released=Wait-For {if(Test-Path -LiteralPath $releasedFile){(Read-ReservationFile $releasedFile)}} 'helper UnregisterHotKey acknowledgement' 8 $helper
  if($released -cne '1'){throw "HELPER_UNREGISTER_FAILED: ack='$released'."}
 
- Start-AppAndCloseWelcome
+ Start-AppAndCheckStartup
  Send-ConflictChord
  $scrollDialog=Wait-For {Owned-Dialogs $shotKit|Where-Object{$_.Title -eq 'Scroll-Richtung'}|Select-Object -First 1} 'Scroll-Richtung after releasing conflict reservation' $ActionTimeoutSeconds $shotKit
  if([ShotKitHotkeyConflictSmoke.N]::Owner($scrollDialog.H) -ne $shotKit.Id){throw "SCROLL_DIALOG_OWNER_MISMATCH HWND=$($scrollDialog.H), expected PID=$($shotKit.Id)."}

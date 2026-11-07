@@ -82,12 +82,7 @@ pub(super) unsafe fn finish_scroll(ticket: ScrollTicket) {
             outcome,
             |image, message| {
                 if let Err(error) = handle_capture(h, image, false) {
-                    MessageBoxW(
-                        h,
-                        wide(&error).as_ptr(),
-                        wide("ShotKit Rust").as_ptr(),
-                        0x10,
-                    );
+                    MessageBoxW(h, wide(&error).as_ptr(), wide("ShotKit").as_ptr(), 0x10);
                 } else {
                     MessageBoxW(
                         h,

@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
@@ -76,7 +77,7 @@ function Wait-ForCondition([scriptblock] $Condition, [int] $TimeoutSeconds, [str
     $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while([DateTime]::UtcNow -lt $deadline) {
         if($OwnedProcess.HasExited){throw "ShotKit exited before $Description (exit code $($OwnedProcess.ExitCode))."}
-        $dialog=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -ne 'ShotKit Rust – Prototyp'} | Select-Object -First 1
+        $dialog=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770'} | Select-Object -First 1
         if($null -ne $dialog){throw "Unexpected ShotKit dialog: $($dialog.Title) $([ShotKitKeyboardSmoke.Native]::WindowText($dialog.Handle))"}
         $v=& $Condition; if($null -ne $v -and $v){return $v}; Start-Sleep -Milliseconds 100
     }
@@ -147,9 +148,7 @@ namespace ShotKitKeyboardSurface {
     try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $testRoot -PassThru}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     [void](Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
-    $welcome=Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
-    if (-not [ShotKitKeyboardSmoke.Native]::PostMessageW($welcome.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
-    Start-Sleep -Milliseconds 250
+    Assert-NoStartupDialogs -TimeoutSeconds $StartupTimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-OwnWindows $shotKit }
     [void][ShotKitKeyboardSmoke.Native]::SetForegroundWindow($surfaceWindow.Handle)
     Send-Key 0x7A $true; Send-Key 0x7A $false
     $overlay=Wait-ForCondition -TimeoutSeconds 10 -Description 'the area-selection overlay' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitSelectionOverlay' -and $_.Visible} | Select-Object -First 1}

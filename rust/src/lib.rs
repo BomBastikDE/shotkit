@@ -13,6 +13,7 @@ pub mod cursor_snapshot;
 pub mod delayed_capture;
 pub mod document;
 pub mod editor;
+pub mod first_start;
 pub mod gaussian_blur;
 pub mod hotkey_action;
 pub mod image_edit;

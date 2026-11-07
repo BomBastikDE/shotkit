@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "EXE not found: $ExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
@@ -120,7 +121,7 @@ function Wait-ForCondition([scriptblock] $Condition,[int] $Seconds,[string] $Des
     $deadline=[DateTime]::UtcNow.AddSeconds($Seconds)
     while([DateTime]::UtcNow -lt $deadline) {
         if($OwnedProcess.HasExited){throw "Owned process exited before $Description (code $($OwnedProcess.ExitCode))."}
-        $unexpected=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -notlike '*Prototyp*' -and [ShotKitLastRegionSmoke.Native]::WindowText($_.Handle) -notlike '*Aufnahme in die Zwischenablage kopiert*'} | Select-Object -First 1
+        $unexpected=Get-OwnWindows $OwnedProcess | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and [ShotKitLastRegionSmoke.Native]::WindowText($_.Handle) -notlike '*Aufnahme in die Zwischenablage kopiert*'} | Select-Object -First 1
         if($null -ne $unexpected){throw "Unexpected dialog '$($unexpected.Title)': $([ShotKitLastRegionSmoke.Native]::WindowText($unexpected.Handle))"}
         $v=& $Condition; if($null -ne $v -and $v){return $v}; Start-Sleep -Milliseconds 100
     }
@@ -216,9 +217,7 @@ namespace ShotKitLastRegionSurface {
     try {$env:APPDATA=$appData;$env:LOCALAPPDATA=$localAppData;$shotKit=Start-Process -FilePath $ExePath -WorkingDirectory $root -PassThru}
     finally {$env:APPDATA=$oldAppData;$env:LOCALAPPDATA=$oldLocalAppData}
     [void](Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.ClassName -eq 'ShotKitRustPrototype'} | Select-Object -First 1})
-    $welcome=Wait-ForCondition -Seconds $TimeoutSeconds -Description 'ShotKit startup dialog' -OwnedProcess $shotKit -Condition {Get-OwnWindows $shotKit | Where-Object {$_.Visible -and $_.ClassName -eq '#32770' -and $_.Title -like '*Prototyp*'} | Select-Object -First 1}
-    if (-not [ShotKitLastRegionSmoke.Native]::PostMessageW($welcome.Handle,0x0111,[IntPtr]1,[IntPtr]::Zero)){throw 'Could not close the owned startup dialog.'}
-    Start-Sleep -Milliseconds 250
+    Assert-NoStartupDialogs -TimeoutSeconds $TimeoutSeconds -OwnedProcess $shotKit -GetWindows { Get-OwnWindows $shotKit }
 
     # First successful manual selection establishes LAST_REGION and copies a
     # pixel-checked image from the known fixture coordinates (80,60)-(280,210).

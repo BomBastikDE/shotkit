@@ -75,12 +75,7 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
             Some(path) => format!("Aufnahme gespeichert: {}", path.display()),
             None => "Aufnahme in die Zwischenablage kopiert.".into(),
         };
-        MessageBoxW(
-            h,
-            wide(&message).as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
-            0x40,
-        );
+        MessageBoxW(h, wide(&message).as_ptr(), wide("ShotKit").as_ptr(), 0x40);
     }
     if !output.failures().is_empty() {
         let details = output
@@ -95,7 +90,7 @@ pub(super) unsafe fn handle_capture(h: H, image: Image, was_visible: bool) -> Re
                 "Ein Teil der Ausgabe ist fehlgeschlagen:\n{details}"
             ))
             .as_ptr(),
-            wide("ShotKit Rust").as_ptr(),
+            wide("ShotKit").as_ptr(),
             0x30,
         );
     }
