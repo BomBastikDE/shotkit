@@ -136,6 +136,15 @@ function Button([IntPtr]$Parent,[string]$Label) {
     $b=[ShotKitTextSmoke.Native]::Children($Parent) | Where-Object {$_.Visible -and $_.ClassName -eq 'Button' -and (($_.Text -replace '&','').Trim() -eq $Label)} | Select-Object -First 1
     if($null -eq $b){throw "BUTTON_NOT_FOUND: $Label"}; [ShotKitTextSmoke.Native]::Click($b.Handle)
 }
+# Issue #102: BM_CLICK on a toolbar button can be lost while the editor is not
+# yet active again. Close the text dialog, then require that it is gone and
+# that ShotKit (not another application) is in the foreground before the next
+# toolbar click. This also checks the #95 focus return for Cancel.
+function Close-TextDialog($Dialog,[string]$Label,[string]$Stage) {
+    Button $Dialog.Handle $Label
+    [void](Wait-For {@(@(Owned-Windows | Where-Object {$_.ClassName -eq 'ShotKitRustTextEntryDialog'}).Count -eq 0)} 2 "text dialog close after $Label at $Stage")
+    [void](Wait-For {[ShotKitTextSmoke.Native]::Owner([ShotKitTextSmoke.Native]::GetForegroundWindow()) -eq $proc.Id} 3 "ShotKit foreground after $Label at $Stage (TEXT_FOCUS_LEFT_SHOTKIT)")
+}
 function Canvas-Click([int]$ImageX,[int]$ImageY) {
     $o=[Activator]::CreateInstance([ShotKitTextSmoke.Point]); if(-not [ShotKitTextSmoke.Native]::ClientToScreen($main.Handle,[ref]$o)){throw 'Could not map editor origin.'}
     $sx=$o.X+$viewX+[int][Math]::Floor(($ImageX+0.5)*$shownW/160.0); $sy=$o.Y+$viewY+[int][Math]::Floor(($ImageY+0.5)*$shownH/120.0)
@@ -314,22 +323,22 @@ try {
     if(-not [ShotKitTextSmoke.Native]::SetEditText($e.Handle,$changed)){throw 'TEXT_SET_FAILED: synchronous WM_SETTEXT returned zero while editing the existing text.'}
     $changedInput=[ShotKitTextSmoke.Native]::EditText($e.Handle)
     if($changedInput -cne $changed){throw "TEXT_EDIT_NOT_ACCEPTED: input control reads '$changedInput' before confirmation; expected '$changed'."}
-    Button $d.Handle 'OK'
+    Close-TextDialog $d 'OK' 'saved text edit'
     Start-Sleep -Milliseconds 250
     Canvas-Click 40 40
     $d=Check-DialogText $changed 'reopen after saved text edit'
-    Button $d.Handle 'Abbrechen'
+    Close-TextDialog $d 'Abbrechen' 'reopen after saved text edit'
 
     Button $main.Handle 'Zurück'
     Start-Sleep -Milliseconds 250
     Canvas-Click 40 40
     $d=Check-DialogText $original 'reopen after Undo'
-    Button $d.Handle 'Abbrechen'
+    Close-TextDialog $d 'Abbrechen' 'reopen after Undo'
     Button $main.Handle 'Auswahl (V)'
     [void](Wait-For {Owned-Windows | Where-Object {$_.Handle -eq $main.Handle -and $_.Title -like '*Werkzeug: Auswahl*'} | Select-Object -First 1} 5 'active Select tool for text double-click')
     Canvas-DoubleClick 40 40
     $d=Check-DialogText $original 'double-click on existing text with Select tool'
-    Button $d.Handle 'Abbrechen'
+    Close-TextDialog $d 'Abbrechen' 'double-click with Select tool'
 
     # Select the existing text, save a baseline, then change its size through
     # the actual native popup. Compare decoded PNG pixels, not file metadata.
