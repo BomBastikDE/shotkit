@@ -37,6 +37,8 @@ pub const ID_SAVE_AS: usize = 0x5140;
 pub const ID_OPEN: usize = 0x5141;
 pub const ID_PASTE: usize = 0x5142;
 pub const ID_FOLDER: usize = 0x5143;
+/// Pin the current image as an always-on-top window (#99).
+pub const ID_PIN: usize = 0x5144;
 pub const ID_ZOOM_IN: usize = 0x5150;
 pub const ID_ZOOM_OUT: usize = 0x5151;
 pub const ID_ZOOM_ORIGINAL: usize = 0x5152;

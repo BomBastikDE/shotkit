@@ -79,6 +79,10 @@ pub(super) unsafe fn dispatch_shortcuts(h: H, m: u32, w: W, _l: L) -> Option<L> 
             capture_region(h);
             0
         }
+        0x0100 if w == 0x54 && GetKeyState(0x11) < 0 => {
+            pin::pin_current(h);
+            0
+        }
         0x0100 if GetKeyState(0x11) < 0 && GetKeyState(0x10) < 0 && w == 0x5a => {
             history(h, true);
             0
