@@ -44,16 +44,6 @@ pub(super) unsafe fn capture_ordinary_rect(
         |pixels| scroll_windows::WindowsScrollIo::new(x, y, width, height, 0)?.capture_into(pixels),
     )?;
     let prefs = active_settings();
-    // #36: sampled right after the screen capture, in the same physical
-    // coordinates. Best effort: no cursor, an unsupported cursor or an error
-    // simply leaves the capture without one.
-    let cursor = if prefs.capture_cursor {
-        sample_cursor(x, y, width, height)
-    } else {
-        None
-    };
-    // Automatic outputs contain the cursor too; rendered once, on demand.
-    let mut with_cursor: Option<shotkit::image_handle::ImageHandle> = None;
     let mut output = CaptureOutputState::new(&prefs);
     let mut saved = None;
     // Kept separately: `saved` may be handed to the editor (#67).
@@ -70,45 +60,15 @@ pub(super) unsafe fn capture_ordinary_rect(
                     .map(|path| (path, Some(image::ImageFormat::Png))),
             )
             .map(|window| {
-                if let Some(cursor) = &cursor {
-                    // Part of the capture's initial state: no Undo step, no
-                    // unsaved change. Failure only omits the cursor.
-                    if editor(window.0)
-                        .document_mut()
-                        .seed_initial_shapes(vec![cursor.clone()])
-                        .is_ok()
-                    {
-                        InvalidateRect(window.0, std::ptr::null(), 0);
-                    }
-                }
                 opened = Some(window);
             }),
-            _ => {
-                if with_cursor.is_none() {
-                    if let Some(cursor) = &cursor {
-                        // If the budget refuses the rendered copy, the output
-                        // falls back to the capture without cursor.
-                        with_cursor = shotkit::alpha_document::render_document_shared_budgeted(
-                            &shotkit::image_handle::ImageHandle::from_imported(Arc::clone(
-                                initialization.image(),
-                            )),
-                            std::slice::from_ref(cursor),
-                            &shared_image_budget(),
-                        )
-                        .ok();
-                    }
-                }
-                let image = with_cursor.as_ref().map_or_else(
-                    || initialization.image().image(),
-                    |rendered| rendered.image(),
-                );
-                output_windows::execute_action(action, &prefs, image, h).map(|result| {
+            _ => output_windows::execute_action(action, &prefs, initialization.image().image(), h)
+                .map(|result| {
                     if result.saved_path.is_some() {
                         auto_saved.clone_from(&result.saved_path);
                         saved = result.saved_path;
                     }
-                })
-            }
+                }),
         };
         let advance = output
             .finish_action(action, result)
@@ -198,14 +158,4 @@ pub(super) unsafe fn resolve_capture_recovery(owner: H) -> bool {
         }
         _ => false,
     }
-}
-
-/// Sample the mouse cursor for a capture of the given screen rectangle (#36).
-fn sample_cursor(x: i32, y: i32, width: i32, height: i32) -> Option<shotkit::shapes::Shape> {
-    let snapshot = shotkit::cursor_snapshot::capture().ok()??;
-    shotkit::capture_cursor::cursor_shape_for_capture(
-        &snapshot,
-        (i64::from(x), i64::from(y)),
-        (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
-    )
 }

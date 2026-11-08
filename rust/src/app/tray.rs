@@ -46,7 +46,6 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
             (101, "Nach Aufnahme Editor öffnen", prefs.open_editor),
             (102, "In Zwischenablage kopieren", prefs.copy_to_clipboard),
             (103, "Automatisch als PNG speichern", prefs.auto_save),
-            (107, "Mauszeiger mit aufnehmen", prefs.capture_cursor),
             (
                 106,
                 "Aufnahmen von Zwischenablageverlauf und Cloud ausschließen",
@@ -120,13 +119,12 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
         8 => {
             resolve_recovery(h);
         }
-        101 | 102 | 103 | 106 | 107 => {
+        101 | 102 | 103 | 106 => {
             let mut prefs = active_settings();
             match choice {
                 101 => prefs.open_editor = !prefs.open_editor,
                 102 => prefs.copy_to_clipboard = !prefs.copy_to_clipboard,
                 106 => prefs.exclude_from_clipboard_history = !prefs.exclude_from_clipboard_history,
-                107 => prefs.capture_cursor = !prefs.capture_cursor,
                 103 => {
                     if !prefs.auto_save && prefs.save_folder.is_none() {
                         match folder_dialog::choose_folder(h) {

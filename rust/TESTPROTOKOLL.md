@@ -19,7 +19,7 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 | Funktion | PR | Windows-Szenarien | Nachweis |
 |---|---|---|---|
 | #98 Rissrand | #100 | 68/68 | [Lauf 42416671707](https://github.com/BomBastikDE/shotkit/actions/runs/42416671707) |
-| #36 Mauszeiger mit aufnehmen | #103 | 69/69 | [Lauf 42425002518](https://github.com/BomBastikDE/shotkit/actions/runs/42425002518). Der Runner hat keine Maus (Zeiger unterdrückt); der echte Zeiger wird nur im Praxistest geprüft (Schritt 13) |
+| #36 Mauszeiger mit aufnehmen | #103 | 69/69 | [Lauf 42425002518](https://github.com/BomBastikDE/shotkit/actions/runs/42425002518). **Vor 2.1.0 zurückgestellt:** Im Praxistest des Owners (2026-11-08) fehlte der Zeiger im Bild; der CI-Runner hat keine Maus und konnte den echten Zeiger nicht prüfen. Windows-Test entfernt (im Verlauf von PR #103 erhalten) |
 | #99 Bild anheften | #104 | 70/70 | [Lauf 42427627447](https://github.com/BomBastikDE/shotkit/actions/runs/42427627447) |
 | #88 Seitenende per UI Automation | #105 | 71/71 | [Lauf 42431888182](https://github.com/BomBastikDE/shotkit/actions/runs/42431888182); Edge normal und mit fester Kopfzeile „Seitenende erreicht.“ (UIA 100 %) |
 | #102 Text-Test | #106 | 71/71 | [Lauf 42433402739](https://github.com/BomBastikDE/shotkit/actions/runs/42433402739) |
@@ -31,7 +31,7 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 
 ### Offen bis v2.1.0
 
-Praxistest des Owners ([WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md), unter anderem Schritt 13 Mauszeiger, Anheften, Rissrand, Seitenende in Edge), danach Tag nach Freigabe ([#101](https://github.com/BomBastikDE/shotkit/issues/101)).
+Praxistest des Owners ([WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md): Schritt 13 Anheften, 14 Rissrand (bestanden 2026-11-08), 15 Seitenende in Edge), danach Tag nach Freigabe ([#101](https://github.com/BomBastikDE/shotkit/issues/101)).
 
 ---
 
