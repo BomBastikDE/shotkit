@@ -14,7 +14,7 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | # | Schritt | Erwartung |
 |---|---|---|
 | 1 | Neue EXE starten, **ohne** vorhandene Einstellungen (`%APPDATA%\ShotKitRust` vorher umbenennen) | Einmaliger Hinweis „Willkommen bei ShotKit“, danach Symbol im Infobereich. Zweiter Start: **kein** Hinweis. |
-| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.0.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
+| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.1.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
 | 3 | `Druck` oder `F11`: Bereich aufziehen, dann im Editor ein Fenster per Vorschlag übernehmen | Bildinhalt und Ränder stimmen; Editor öffnet sich. |
 | 4 | Im Editor: Pfeil, Rechteck, Text, Sprechblase, Stempel zeichnen; Werkzeug mehrmals wechseln | Symbole scharf; Fenstertitel zeigt weiter den Dateinamen und **keinen** englischen Werkzeugnamen (#79). |
 | 5 | Verpixeln (`B`) über Text ziehen | Grobe Blöcke (mindestens 48 px), Text nicht lesbar; Hinweis „keine sichere Schwärzung“ im Tooltip. |
