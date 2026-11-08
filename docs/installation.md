@@ -5,7 +5,7 @@
 ## Herunterladen
 
 1. Auf der [Releases-Seite](https://github.com/BomBastikDE/shotkit/releases) die neueste Version
-   (`shotkit-v2.0.0-windows-x64.exe`) und die gleichnamige `.sha256`-Datei laden.
+   (`shotkit-v2.1.0-windows-x64.exe`) und die gleichnamige `.sha256`-Datei laden.
 2. Optional die Echtheit der Übertragung prüfen (PowerShell im Download-Ordner):
 
    ```powershell

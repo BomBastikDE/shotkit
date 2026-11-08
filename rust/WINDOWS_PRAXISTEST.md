@@ -14,7 +14,7 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | # | Schritt | Erwartung |
 |---|---|---|
 | 1 | Neue EXE starten, **ohne** vorhandene Einstellungen (`%APPDATA%\ShotKitRust` vorher umbenennen) | Einmaliger Hinweis „Willkommen bei ShotKit“, danach Symbol im Infobereich. Zweiter Start: **kein** Hinweis. |
-| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.0.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
+| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.1.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
 | 3 | `Druck` oder `F11`: Bereich aufziehen, dann im Editor ein Fenster per Vorschlag übernehmen | Bildinhalt und Ränder stimmen; Editor öffnet sich. |
 | 4 | Im Editor: Pfeil, Rechteck, Text, Sprechblase, Stempel zeichnen; Werkzeug mehrmals wechseln | Symbole scharf; Fenstertitel zeigt weiter den Dateinamen und **keinen** englischen Werkzeugnamen (#79). |
 | 5 | Verpixeln (`B`) über Text ziehen | Grobe Blöcke (mindestens 48 px), Text nicht lesbar; Hinweis „keine sichere Schwärzung“ im Tooltip. |
@@ -26,6 +26,9 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | 11 | Editor auf einen anderen Monitor ziehen, zeichnen, speichern | Darstellung und Ergebnis stimmen. |
 | 12 | Tray → Einstellungen → „Mit Windows starten“ einschalten, abmelden und wieder anmelden | ShotKit startet ohne Hinweisfenster. |
 | 13 | Tray → Einstellungen → **„Mauszeiger mit aufnehmen“** einschalten, mit `F9` aufnehmen; im Editor den Zeiger verschieben und löschen; mit automatischem Speichern wiederholen | Zeiger an der richtigen Stelle, als Objekt verschieb- und löschbar; „Rückgängig“ entfernt ihn nicht; die gespeicherte PNG enthält ihn. Ohne Option: kein Zeiger. *(Der CI-Runner hat keine Maus und kann das nicht prüfen, #36.)* |
+| 14 | Im Editor **Strg+T** (oder Datei → Anheften); das Fenster verschieben, mit dem Mausrad zoomen, per Rechtsklick „Kopieren“ und „Im Editor öffnen“, mit Esc schließen | Bild mit Markierungen schwebt über allen Programmen, ohne Taskleisteneintrag; Zoom ändert die Größe; Kopie in Paint einfügbar; Esc schließt nur das angeheftete Bild (#99). |
+| 15 | Editor → „Rahmen / Schatten / Leinwand…“ → **„Rissrand…“**, Seiten wählen, mit und ohne Schatten; speichern und „Rückgängig“ | Abgerissene, transparente Kante an den gewählten Seiten, Schatten folgt der Kante; „Rückgängig“ stellt das Bild wieder her (#98). |
+| 16 | `F10` in **Edge** auf einer langen Seite bis zum Ende laufen lassen; danach in einem Programm ohne Bedienungshilfen-Scrollposition wiederholen (z. B. ältere Programme) | Edge: Meldung „Seitenende erreicht.“ ohne Hinweis. Sonst: „Möglicherweise unvollständig“ wie in 2.0.x (#88). |
 
 ## Ausführliche Prüfungen (optional)
 

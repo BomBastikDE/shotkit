@@ -16,7 +16,7 @@ Die C#-Version 1.2.0 ist die letzte C#-Version und wird nicht weiterentwickelt
 
 ## Wichtige Unterschiede
 
-| | C# 1.2.0 | Rust (2.0.0) |
+| | C# 1.2.0 | Rust (2.1.0) |
 |---|---|---|
 | Scroll-Aufnahme | <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Druck</kbd> | zusätzlich <kbd>F10</kbd>, <kbd>Strg</kbd>+<kbd>Umschalt</kbd>+<kbd>4</kbd>; Richtung wird vorher abgefragt |
 | Bereich | <kbd>Druck</kbd> | zusätzlich <kbd>F11</kbd> |

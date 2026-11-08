@@ -1,11 +1,22 @@
 # Änderungsprotokoll der Rust-Version
 
-## In Entwicklung für 2.1.0
+## Version 2.1.0
+
+Neue Funktionen: Rissrand, Mauszeiger mit aufnehmen, Bild anheften und ein bestätigtes Seitenende bei der Scrollaufnahme.
 
 - **Scrollaufnahme: Seitenende bestätigt:** Endet eine Scrollaufnahme, weil sich nichts mehr bewegt, fragt ShotKit über die Windows-Bedienungshilfen die Scrollposition ab. Steht die Seite am Ende, lautet die Meldung „Seitenende erreicht.“ statt „Möglicherweise unvollständig“; ohne Bestätigung bleibt der Hinweis ([#88](https://github.com/BomBastikDE/shotkit/issues/88)).
 - **Bild anheften:** „Datei → Anheften“ oder Strg+T zeigt das Bild mit Markierungen als schwebendes Fenster über allen Programmen; verschieben, mit dem Mausrad zoomen, per Rechtsklick kopieren oder im Editor öffnen, mit Esc schließen ([#99](https://github.com/BomBastikDE/shotkit/issues/99)).
 - **Mauszeiger mit aufnehmen:** Neue Option im Tray-Menü unter Einstellungen (standardmäßig aus). Der Zeiger wird in die Aufnahme übernommen und ist im Editor ein verschiebbares, löschbares Objekt; automatisch gespeicherte und kopierte Bilder enthalten ihn. Hinweis: Ist die Option eingeschaltet, steht sie als neues Feld in der Einstellungsdatei, das Version 2.0.x nicht lesen kann; bei ausgeschalteter Option bleibt die Datei mit 2.0.x kompatibel ([#36](https://github.com/BomBastikDE/shotkit/issues/36)).
 - **Rissrand:** Unter „Rahmen / Schatten / Leinwand…“ → „Rissrand…“ bekommt das Bild eine abgerissene, transparente Kante an den gewählten Seiten, auf Wunsch mit einem Schatten, der der Kante folgt ([#98](https://github.com/BomBastikDE/shotkit/issues/98)).
+
+### Bekannte Grenzen
+- **Einstellungsdatei:** Ist „Mauszeiger mit aufnehmen“ eingeschaltet, kann Version 2.0.x die Einstellungsdatei nicht mehr lesen. Vor einem Wechsel zurück auf 2.0.x die Option ausschalten.
+- **Seitenende:** Bestätigt wird nur, wo das aufgenommene Programm seine Scrollposition über die Windows-Bedienungshilfen meldet (zum Beispiel Edge). Sonst bleibt der Hinweis „Möglicherweise unvollständig“.
+- **Verpixeln und Weichzeichnen sind keine sichere Schwärzung.** Für vertrauliche Inhalte das Werkzeug **Schwärzen (S)** verwenden.
+- **Automatisches Speichern und Kopieren** passieren vor dem Editor, also vor einer Schwärzung.
+- **Die EXE ist nicht signiert**; Windows SmartScreen kann warnen.
+
+Die vollständige Liste der bekannten Grenzen: [Release 2.0.0](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0).
 
 ## Version 2.0.1
 

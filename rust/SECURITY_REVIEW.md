@@ -48,6 +48,21 @@ Zwei in #52 genannte, unbestätigte Hypothesen sind hier nicht enthalten. Sie we
 - **Mittel (kein Blocker, als bekannte Grenze dokumentieren):** Nr. 1, 2, 4, 5 (in Arbeit), 15, 16.
 - **Niedrig:** keine Aufgabe für v2.0.0.
 
+## Nachtrag v2.1.0
+
+**Bewerteter Stand:** `main` @ `34fc190` (2026-11-08). Bewertet werden nur die neuen Funktionen; die Zeilen 1–18 gelten unverändert. Die Sicherheitsabschnitte der PRs #100, #103, #104 und #105 enthalten die Einzelprüfungen.
+
+| # | Angriffsfläche | Mögliche Auswirkung | Risiko | Stand | Nachweis / Issue |
+|---|---|---|---|---|---|
+| 19 | Mauszeiger mit aufnehmen | Der Zeiger kann Bildteile verdecken; die Option läuft versehentlich mit | niedrig | Standardmäßig aus. Im Editor ist der Zeiger ein eigenes Objekt (verschieben, löschen); es werden nur Form und Position des eigenen Zeigers gelesen. Ist die Option an, schreibt ShotKit ein neues Feld in die Einstellungsdatei, das 2.0.x ablehnt (dokumentiert); ist sie aus, bleibt die Datei bytegleich zu 2.0.x | #36, PR #103; `capture_cursor.rs`, Test `default_settings_stay_valid_for_the_frozen_v1_reset_receipt` |
+| 20 | Bild anheften | Das angeheftete Bild bleibt über allen Fenstern sichtbar, etwa bei einer Bildschirmfreigabe | niedrig | Nur auf ausdrücklichen Befehl (Strg+T oder Menü); kein Schreiben auf die Festplatte; Kopieren nur per Befehl; Schließen mit Esc oder Doppelklick. Das Fenster zeigt denselben Stand wie der Export, also mit Schwärzungen | #99, PR #104; `app/pin.rs` |
+| 21 | Seitenende per UI Automation | Ein fremdes Programm antwortet langsam oder gar nicht; falsche Angaben eines Programms | niedrig | Nur lesende Abfrage der Scrollposition, keine Inhalte. UIA-Zeitlimits 700 ms, Gesamtfrist 1,5 s auf eigenem Thread, danach gilt „nicht bestätigt“. Eine falsche Angabe ändert nur den Meldungstext, nie das Bild. Diagnoseausgabe nur über eine Umgebungsvariable und nur in den Temp-Ordner, ohne Inhalte | #88, PR #105; `scroll_end_uia.rs`; Gegenprobe `-StopHalfway` |
+| 22 | Rissrand | Speichererschöpfung bei sehr großen Bildern | niedrig | Rechnet innerhalb des gemeinsamen Bildbudgets wie Rahmen und Schatten; keine neue Eingabequelle | #98, PR #100; `image_edit.rs` |
+
+**`unsafe`-Fläche (Nr. 15):** Das Audit führt jetzt 170 Funktionen, davon 127 ohne gesonderten Nachweis; neu in 2.1.0 sind unter anderem das Anheftfenster und die UIA-Abfrage (Abschnitt „Ergänzungen v2.1.0“ in [UNSAFE_AUDIT.md](UNSAFE_AUDIT.md)). Weiter #69.
+
+**Ergebnis für v2.1.0:** kein neues hohes oder mittleres Risiko. Die bekannten Grenzen aus v2.0.0 gelten weiter.
+
 ## Empfehlungen nach 2.0.0
 
 - **Herkunftsnachweis ohne Zertifikat (Nr. 16):** Der Release-Workflow kann mit `actions/attest-build-provenance` eine kostenlose GitHub-Attestierung erzeugen. Nutzer prüfen dann mit `gh attestation verify shotkit-….exe -R BomBastikDE/shotkit`, dass die EXE aus diesem Repository und Workflow stammt. Der Aufwand ist gering; ein Code-Signing-Zertifikat ist dafür nicht nötig.

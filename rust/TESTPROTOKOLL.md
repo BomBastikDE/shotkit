@@ -12,6 +12,29 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 
 ---
 
+## Stand für v2.1.0 (vor Praxistest, noch kein Release) — `main` @ `3b98360` — 2026-11-08
+
+### Automatische Tests (CI, je PR Linux und Windows grün)
+
+| Funktion | PR | Windows-Szenarien | Nachweis |
+|---|---|---|---|
+| #98 Rissrand | #100 | 68/68 | [Lauf 42416671707](https://github.com/BomBastikDE/shotkit/actions/runs/42416671707) |
+| #36 Mauszeiger mit aufnehmen | #103 | 69/69 | [Lauf 42425002518](https://github.com/BomBastikDE/shotkit/actions/runs/42425002518). Der Runner hat keine Maus (Zeiger unterdrückt); der echte Zeiger wird nur im Praxistest geprüft (Schritt 13) |
+| #99 Bild anheften | #104 | 70/70 | [Lauf 42427627447](https://github.com/BomBastikDE/shotkit/actions/runs/42427627447) |
+| #88 Seitenende per UI Automation | #105 | 71/71 | [Lauf 42431888182](https://github.com/BomBastikDE/shotkit/actions/runs/42431888182); Edge normal und mit fester Kopfzeile „Seitenende erreicht.“ (UIA 100 %) |
+| #102 Text-Test | #106 | 71/71 | [Lauf 42433402739](https://github.com/BomBastikDE/shotkit/actions/runs/42433402739) |
+
+### Wiederholungsläufe
+
+- Gegenprobe Edge, Seite bei der Hälfte gestoppt (`-StopHalfway`): UIA 51 %, Hinweis bleibt, 3/3 ([Lauf 42431883193](https://github.com/BomBastikDE/shotkit/actions/runs/42431883193)). Die erste Fassung stoppte per Wheel-`preventDefault`, das Edge nach dem ersten Ereignis ignoriert; die Seite lief bis zum Ende und UIA meldete korrekt 100 % ([Lauf 42431674767](https://github.com/BomBastikDE/shotkit/actions/runs/42431674767)).
+- Text-Test (#102): ohne Änderung 20/20 ([Lauf 42433044004](https://github.com/BomBastikDE/shotkit/actions/runs/42433044004)), mit #106 20/20 ([Lauf 42433401656](https://github.com/BomBastikDE/shotkit/actions/runs/42433401656)). Der Einzelfehler aus PR #100 ließ sich isoliert nicht reproduzieren; #102 bleibt bis zum Release-Lauf offen.
+
+### Offen bis v2.1.0
+
+Praxistest des Owners ([WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md), unter anderem Schritt 13 Mauszeiger, Anheften, Rissrand, Seitenende in Edge), danach Tag nach Freigabe ([#101](https://github.com/BomBastikDE/shotkit/issues/101)).
+
+---
+
 ## Zwischenstand v2.0.0 — `main` @ `c6a33dd` — 2026-11-07 (abends)
 
 Noch kein Release. Gemergt seit dem Vormittag: Release-Pipeline für stabile Versionen (#75), Erststart-Hinweis statt Prototyp-Fenster (#78), Szenario-Wiederhol-Workflow (#81), gemeinsames Lesen von Live-Protokollen (#82), Verpixelung gehärtet (#83).
