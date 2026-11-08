@@ -92,10 +92,15 @@ Bei Monitoren mit unterschiedlicher Skalierung kann die Scroll-Aufnahme weiterhi
 bleibt erhalten. Eine Prüfung auf echten Monitoren mit gemischter Skalierung steht noch aus. Auch kleine
 Mausbewegungen beenden die Aufnahme weiterhin.
 
-ShotKit kann das Seitenende anhand der Bildschirmbilder nicht sicher bestätigen. Auch eine langsam ladende
-oder hängende Seite kann wie ein Ende aussehen. Deshalb weist der Abschlussdialog bei automatischem Ende,
-Fehlern oder Erreichen der maximalen Schrittzahl auf **„Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt“** hin. Prüfe das Bildende und die
-Übergänge, bevor du die Aufnahme weitergibst. Das Bild bleibt auch bei diesem Hinweis erhalten; eingeschaltetes
+Bewegt sich das Bild nicht mehr, fragt ShotKit beim Programm unter dem Aufnahmebereich nach, ob die Seite wirklich
+am Ende steht (über die Windows-Bedienungshilfen). Bestätigt es das, lautet die Abschlussmeldung **„Seitenende
+erreicht.“** Das gelingt bei Programmen und Browsern, die ihre Scrollposition melden, zum Beispiel bei normalen
+Webseiten in Edge oder Chrome.
+
+Kann das Ende nicht bestätigt werden – das Programm meldet keine Scrollposition, eine langsam ladende oder hängende
+Seite steht noch nicht am Ende, ein Fehler trat auf oder die maximale Schrittzahl wurde erreicht –, weist der
+Abschlussdialog auf **„Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt“** hin. Prüfe dann das
+Bildende und die Übergänge, bevor du die Aufnahme weitergibst. Das Bild bleibt auch bei diesem Hinweis erhalten; eingeschaltetes
 automatisches Speichern oder Kopieren kann bereits vor der Meldung erfolgt sein.
 
 ### Diagnoseordner

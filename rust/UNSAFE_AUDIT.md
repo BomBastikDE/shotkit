@@ -6,7 +6,7 @@ Diese Bestandsaufnahme erfasst jede `unsafe fn`-Definition im Rust-Quelltext ein
 
 **Weitere Statuswerte:** `offen` kennzeichnet eine noch nicht entschiedene Voraussetzung; `Beleg fehlt` kennzeichnet einen Vertrag ohne gesonderten vollständigen Nachweis. `Bewusst zurückgestellt` nennt einen konkreten Grund und den ausstehenden Nachweis; daraus folgt keine Behauptung, die betreffende Voraussetzung sei erfüllt.
 
-**Zählung:** 169 Funktionen (155 in der Tabelle, 14 im Abschnitt „Ergänzungen v2.1.0“); 0 offen, 4 für den jeweils ausdrücklich eingegrenzten Vertrag belegt, 39 bewusst zurückgestellt und 126 mit fehlendem gesondertem Beleg.
+**Zählung:** 170 Funktionen (155 in der Tabelle, 15 im Abschnitt „Ergänzungen v2.1.0“); 0 offen, 4 für den jeweils ausdrücklich eingegrenzten Vertrag belegt, 39 bewusst zurückgestellt und 127 mit fehlendem gesondertem Beleg.
 
 Die Prüfung der Zustandsreferenzen über ausgewählte synchrone Windows-Aufrufe einschließlich unauffälliger Stellen steht zusätzlich in [REENTRANCY_AUDIT.md](REENTRANCY_AUDIT.md). Die Ablösung des globalen Overlay-Zustands ist in [ROADMAP.md](ROADMAP.md) für nach der Beta notiert.
 
@@ -214,7 +214,7 @@ Diese Kombination der Kriterien benötigt Owner-/PR-Prüfung; sie wird hier nich
 
 ## Ergänzungen v2.1.0
 
-Neue `unsafe fn` aus #95 (Fokus nach Texteingabe), #98 (Rissrand) und #99 (Bild anheften). Status jeweils **Beleg fehlt**: Die Verträge sind benannt und durch Code-Review sowie die genannten Windows-Tests ausgeübt, aber nicht gesondert nachgewiesen. Die Verkleinerung der `unsafe`-Fläche verfolgt #69.
+Neue `unsafe fn` aus #95 (Fokus nach Texteingabe), #98 (Rissrand), #99 (Bild anheften) und #88 (Seitenende per UI Automation). Status jeweils **Beleg fehlt**: Die Verträge sind benannt und durch Code-Review sowie die genannten Windows-Tests ausgeübt, aber nicht gesondert nachgewiesen. Die Verkleinerung der `unsafe`-Fläche verfolgt #69.
 
 | Datei | Funktion | Status | Vertrag |
 |---|---|---|---|
@@ -232,4 +232,4 @@ Neue `unsafe fn` aus #95 (Fokus nach Texteingabe), #98 (Rissrand) und #99 (Bild 
 | `src/app/pin.rs` | `context_menu` | Beleg fehlt | Lokales Menü; nach `TrackPopupMenu` wird der Zustand erneut über `state` geholt, weil das Menü reentrieren kann. |
 | `src/app/pin.rs` | `paint` | Beleg fehlt | `BeginPaint`/`EndPaint` paarig; das ausgewählte Bitmap wird vor `DeleteDC` zurückgesetzt. |
 | `src/app/pin.rs` | `proc` | Beleg fehlt | Fensterprozedur auf dem UI-Thread; Zustand nur über `state`; `WM_NCDESTROY` löscht `GWLP_USERDATA` vor der Freigabe, sodass spätere Nachrichten keinen freigegebenen Zustand sehen. |
-
+| `src/scroll_end_uia.rs` | `query` | Beleg fehlt | Läuft auf einem eigenen, neu gestarteten Thread: eigenes MTA (`CoInitializeEx`/`CoUninitialize` paarig über einen Drop-Guard); alle COM-Schnittstellen leben nur in einer inneren Closure und werden vor `CoUninitialize` freigegeben; UIA-Transaktions- und Verbindungszeitlimit 700 ms, Gesamtfrist 1,5 s im Aufrufer; nur lesende Abfragen (`ElementFromPoint`, `ScrollPattern`), keine Fenster dieses Prozesses (`windows-browser-scroll-smoke.ps1`). |

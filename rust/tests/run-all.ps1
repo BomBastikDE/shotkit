@@ -100,6 +100,7 @@ $cases = @(
     @{ Name = 'Windows Edge profile cleanup contract'; Script = 'windows-edge-cleanup-contract.ps1'; Extra = @(); TimeoutSeconds = 120; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Edge browser scroll smoke test with fixed header and footer'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-FixedHeaderFooter'); TimeoutSeconds = 600; Toolbar = $false },
+    @{ Name = 'Interactive Edge browser scroll smoke test stopping halfway'; Script = 'windows-browser-scroll-smoke.ps1'; Extra = @('-StopHalfway'); TimeoutSeconds = 600; Toolbar = $false },
     @{ Name = 'Interactive Windows multi-editor lifecycle smoke test'; Script = 'windows-multi-editor-smoke.ps1'; Extra = @(); TimeoutSeconds = 600; Toolbar = $false }
 )
 # The reset fixture drives the real tray menu and deliberately has no local

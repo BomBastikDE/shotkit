@@ -10,12 +10,17 @@ param(
     [ValidateRange(30, 180)]
     [int] $CaptureTimeoutSeconds = 90,
 
-    [switch] $FixedHeaderFooter
+    [switch] $FixedHeaderFooter,
+
+    # #88 negative case: the page blocks further wheel scrolling halfway, so
+    # scrolling stops before the document end; no end may be confirmed.
+    [switch] $StopHalfway
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'edge-profile-cleanup.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the GitHub runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -361,6 +366,15 @@ try {
 })();
 </script></body></html>
 '@
+    if ($StopHalfway) {
+        # Line-ending independent (the checkout may use CRLF): insert before the
+        # single top-level "  updateTitle();" line of the page script.
+        # The page locks scrolling past the midpoint with overflow:hidden; a wheel
+        # preventDefault is not reliable because Edge only lets the first wheel
+        # event of a scroll sequence be cancelled.
+        $html = [regex]::new('(?m)^  updateTitle\(\);\r?$').Replace($html, "  const stopAt = Math.floor((document.scrollingElement.scrollHeight - innerHeight) / 2);`n  window.addEventListener('scroll', () => { if (scrollY >= stopAt) document.documentElement.style.overflow = 'hidden'; }, { passive: true });`n  updateTitle();", 1)
+        if (-not $html.Contains('stopAt')) { throw 'STOP_HALFWAY_FIXTURE_NOT_INSTALLED' }
+    }
     if ($FixedHeaderFooter) {
         # Fixed bars are deliberately patterned horizontally so the production
         # matcher can identify them as stationary rows, like the unit fixture.
@@ -404,9 +418,13 @@ try {
     try {
         $env:APPDATA = $appData
         $env:LOCALAPPDATA = $localAppData
+        # Numeric UIA diagnostics of the scroll-end check (#88), inside the temp dir.
+        $script:uiaDiagnostics = Join-Path $testRoot 'uia-diagnostics.log'
+        $oldUiaDiagnostics = $env:SHOTKIT_UIA_DIAGNOSTICS_PATH
+        $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $script:uiaDiagnostics
         $shotKit = Start-Process -FilePath $ExePath -WorkingDirectory $testRoot -PassThru
     }
-    finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData }
+    finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData; $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $oldUiaDiagnostics }
 
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
@@ -602,16 +620,37 @@ try {
         }
     }
     catch { Write-Output "DIAGNOSTIC: Could not read live Edge DOM-offset title after scroll completion: $($_.Exception.ToString())" }
-    if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
-        throw "Scroll did not warn that the document end is unconfirmed. Dialog='$completionText'"
+    # #88: Edge may confirm the end through UI Automation ("Seitenende erreicht.");
+    # otherwise the unconfirmed-end warning must be shown. Never neither.
+    if (Test-Path -LiteralPath $script:uiaDiagnostics) {
+        foreach ($line in @(Read-SharedLines -Path $script:uiaDiagnostics | Where-Object { $_ -like 'scroll_end*' })) { Write-Output "DIAGNOSTIC: $line" }
+    } else { Write-Output 'DIAGNOSTIC: no UIA scroll-end diagnostics written.' }
+    $titleNow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
+        Where-Object { $_.Handle -eq $browserWindow.Handle } | Select-Object -First 1
+    Write-Output "DIAGNOSTIC: browser title at completion: $($titleNow.Title)"
+    $confirmedEnd = $completionText -like '*Seitenende erreicht.*'
+    $warnedEnd = $completionText -like '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*'
+    if ($confirmedEnd -eq $warnedEnd) {
+        throw "Scroll completion must either confirm the end or warn that it is unconfirmed. Dialog='$completionText'"
     }
+    if ($StopHalfway) {
+        if (-not $warnedEnd) { throw "STOPPED_PAGE_CLAIMED_END: scrolling stopped halfway but the end was confirmed. Dialog='$completionText'" }
+    } elseif (-not $confirmedEnd) {
+        throw "EDGE_END_NOT_CONFIRMED: Edge reports its scroll position, so the document end must be confirmed. Dialog='$completionText'"
+    }
+    Write-Output "EVIDENCE: scroll end via UI Automation: $(if ($confirmedEnd) { 'confirmed' } else { 'unconfirmed (warning shown)' })."
     $finalWindow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
         Where-Object { $_.Handle -eq $browserWindow.Handle -and $_.Visible } | Select-Object -First 1
     if ($null -eq $finalWindow -or $finalWindow.Title -notmatch 'offset=0,(-?\d+) wheel=') {
         throw 'SCROLL_END_UNCONFIRMED: original profile-owned browser window did not expose its final DOM offset.'
     }
-    if ([int]$Matches[1] -ne $scrollHeight - $innerHeight) {
-        throw "SCROLL_END_MISMATCH: browser offset $($Matches[1]); expected $($scrollHeight - $innerHeight)."
+    $finalOffset = [int]$Matches[1]
+    if ($StopHalfway) {
+        if ($finalOffset -ge $scrollHeight - $innerHeight -or $finalOffset -le 0) {
+            throw "STOP_HALFWAY_OFFSET: browser offset $finalOffset; expected between 0 and $($scrollHeight - $innerHeight) (exclusive)."
+        }
+    } elseif ($finalOffset -ne $scrollHeight - $innerHeight) {
+        throw "SCROLL_END_MISMATCH: browser offset $finalOffset; expected $($scrollHeight - $innerHeight)."
     }
     $pngs = @(Get-ChildItem -LiteralPath $saveFolder -Filter '*.png' -File)
     if ($pngs.Count -ne 1) { throw "Expected one auto-saved PNG, found $($pngs.Count)." }
@@ -621,10 +660,16 @@ try {
         $selectedWidth = 600
         $selectedHeight = $y1 - $y0
         $expectedHeight = $scrollHeight - $innerHeight + $selectedHeight
-        if ($bitmap.Width -ne $selectedWidth -or $bitmap.Height -ne $expectedHeight) {
+        if ($StopHalfway) {
+            # The capture covers the scrolled part only: shorter than the full page.
+            if ($bitmap.Width -ne $selectedWidth -or $bitmap.Height -le $selectedHeight -or $bitmap.Height -ge $expectedHeight) {
+                throw "STOP_HALFWAY_BOUNDS: got $($bitmap.Width)x$($bitmap.Height); expected width $selectedWidth and a height between $selectedHeight and $expectedHeight (exclusive)."
+            }
+            $expectedHeight = 0
+        } elseif ($bitmap.Width -ne $selectedWidth -or $bitmap.Height -ne $expectedHeight) {
             throw "SCROLL_BOUNDS_MISMATCH: got $($bitmap.Width)x$($bitmap.Height); expected ${selectedWidth}x${expectedHeight} from viewport/document geometry."
         }
-        foreach ($y in 0..($expectedHeight - 1)) {
+        foreach ($y in $(if ($expectedHeight -gt 0) { 0..($expectedHeight - 1) } else { @() })) {
             $sourceY = if ($FixedHeaderFooter) { $y } else { $y + 10 }
             foreach ($x in @(10, 97, 299, 588)) {
                 $sourceX = $x + 100
@@ -649,7 +694,11 @@ try {
     finally { $bitmap.Dispose() }
     Write-Output "MILESTONE: saved scroll image validated at $($png.Length) bytes with $expectedHeight deterministic rows and four pixel tracks."
     $fixture = if ($FixedHeaderFooter) { ' with fixed header/footer' } else { '' }
-    $passMessage = "PASS: real Edge page$fixture scrolled to bottom and auto-saved ${selectedWidth}x${expectedHeight}; every sampled pixel matches its deterministic source coordinate."
+    $passMessage = if ($StopHalfway) {
+        "PASS: real Edge page stopped halfway (offset $finalOffset of $($scrollHeight - $innerHeight)); ShotKit kept the partial capture and warned that the end is unconfirmed instead of confirming it."
+    } else {
+        "PASS: real Edge page$fixture scrolled to bottom, the end was confirmed via UI Automation, and auto-saved ${selectedWidth}x${expectedHeight}; every sampled pixel matches its deterministic source coordinate."
+    }
 }
 catch { $testFailure = $_ }
 finally {

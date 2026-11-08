@@ -307,6 +307,12 @@ impl WindowsScrollIo {
 }
 
 impl ScrollIo for WindowsScrollIo {
+    fn end_confirmed(&mut self, direction: Direction) -> bool {
+        // Centre of the capture: the edge position used for wheel input may lie
+        // on a scrollbar, the centre lies on the scrolled content (#88).
+        let (x, y, width, height) = self.rect;
+        crate::scroll_end_uia::confirm_end((x + width / 2, y + height / 2), direction)
+    }
     fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
         let folder = self.diagnostic_folder.as_ref()?;
         let (x, y, width, height) = self.rect;

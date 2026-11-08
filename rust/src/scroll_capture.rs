@@ -14,7 +14,27 @@ fn unconfirmed_reason(reason: &str) -> String {
     format!("{UNCONFIRMED_END}\n\n{reason}")
 }
 
+/// Reason when the platform confirmed the document end (#88).
+pub const CONFIRMED_END: &str = "Seitenende erreicht.";
+const NO_MOTION: &str = "Keine weitere Scrollbewegung erkennbar.";
+
+/// Whether a scroll position reported by the platform (0–100 %) is at the end
+/// in `direction`: bottom/right at 100 %, left at 0 %, with half a percent of
+/// tolerance for rounding in providers.
+pub fn scroll_percent_at_end(direction: Direction, percent: f64) -> bool {
+    if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+        return false;
+    }
+    match direction {
+        Direction::Down | Direction::Right => percent >= 99.5,
+        Direction::Left => percent <= 0.5,
+    }
+}
+
 fn completion_reason(reason: &str) -> String {
+    if reason.starts_with(CONFIRMED_END) {
+        return reason.to_owned();
+    }
     match reason {
         "Mit Esc beendet." | "Durch Mausbewegung beendet." => {
             format!("{reason} Die Aufnahme bis hierhin bleibt erhalten.")
@@ -75,6 +95,13 @@ pub trait ScrollIo {
     /// matcher orientation; the adapter may persist them without affecting capture.
     fn diagnostics(&mut self, _before: &Image, _after: &Image, _details: &str) -> Option<String> {
         None
+    }
+    /// Asked only after an automatic stop without further motion: does the
+    /// platform confirm that the scrolled document is at its end? The default
+    /// cannot confirm anything, which keeps the "möglicherweise unvollständig"
+    /// warning. Must answer quickly and never scroll.
+    fn end_confirmed(&mut self, _direction: Direction) -> bool {
+        false
     }
 }
 fn oriented(
@@ -397,7 +424,7 @@ fn run_with_rotation(
                 }
                 still += 1;
                 if still >= 2 {
-                    reason = "Keine weitere Scrollbewegung erkennbar.".into();
+                    reason = NO_MOTION.into();
                     break;
                 }
                 io.wait_ms(400);
@@ -425,6 +452,11 @@ fn run_with_rotation(
             expected = (ppn * notches as f32) as usize;
             io.progress(stitch.length());
         }
+    }
+    // #88: only an automatic stop without motion may be confirmed as the
+    // document end; user stops and errors keep their own message.
+    if reason == NO_MOTION && io.end_confirmed(direction) {
+        reason = CONFIRMED_END.into();
     }
     if fallbacks > 0 {
         reason.push_str(&format!(

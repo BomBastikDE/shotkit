@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string] $ExePath,
-    [Parameter(Mandatory = $true)][ValidateSet('output-matrix', 'edge-scroll', 'edge-scroll-fixed-header-footer')][string] $Scenario,
+    [Parameter(Mandatory = $true)][ValidateSet('output-matrix', 'edge-scroll', 'edge-scroll-fixed-header-footer', 'edge-scroll-stop-halfway')][string] $Scenario,
     [ValidatePattern('^(?:[1-9]|1[0-9]|20)$')][string] $RepeatCount = '10'
 )
 
@@ -18,6 +18,10 @@ $extra = @()
 $scriptPath = switch ($Scenario) {
     'output-matrix' { Join-Path $PSScriptRoot 'windows-output-matrix-smoke.ps1' }
     'edge-scroll' { Join-Path $PSScriptRoot 'windows-browser-scroll-smoke.ps1' }
+    'edge-scroll-stop-halfway' {
+        $extra = @('-StopHalfway')
+        Join-Path $PSScriptRoot 'windows-browser-scroll-smoke.ps1'
+    }
     'edge-scroll-fixed-header-footer' {
         $extra = @('-FixedHeaderFooter')
         Join-Path $PSScriptRoot 'windows-browser-scroll-smoke.ps1'
