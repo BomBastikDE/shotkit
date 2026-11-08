@@ -369,7 +369,10 @@ try {
     if ($StopHalfway) {
         # Line-ending independent (the checkout may use CRLF): insert before the
         # single top-level "  updateTitle();" line of the page script.
-        $html = [regex]::new('(?m)^  updateTitle\(\);\r?$').Replace($html, "  const stopAt = Math.floor((document.scrollingElement.scrollHeight - innerHeight) / 2);`n  window.addEventListener('wheel', e => { if (scrollY >= stopAt) e.preventDefault(); }, { passive: false, capture: true });`n  updateTitle();", 1)
+        # The page locks scrolling past the midpoint with overflow:hidden; a wheel
+        # preventDefault is not reliable because Edge only lets the first wheel
+        # event of a scroll sequence be cancelled.
+        $html = [regex]::new('(?m)^  updateTitle\(\);\r?$').Replace($html, "  const stopAt = Math.floor((document.scrollingElement.scrollHeight - innerHeight) / 2);`n  window.addEventListener('scroll', () => { if (scrollY >= stopAt) document.documentElement.style.overflow = 'hidden'; }, { passive: true });`n  updateTitle();", 1)
         if (-not $html.Contains('stopAt')) { throw 'STOP_HALFWAY_FIXTURE_NOT_INSTALLED' }
     }
     if ($FixedHeaderFooter) {
