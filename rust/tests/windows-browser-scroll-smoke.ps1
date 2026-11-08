@@ -602,9 +602,14 @@ try {
         }
     }
     catch { Write-Output "DIAGNOSTIC: Could not read live Edge DOM-offset title after scroll completion: $($_.Exception.ToString())" }
-    if ($completionText -notlike '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*') {
-        throw "Scroll did not warn that the document end is unconfirmed. Dialog='$completionText'"
+    # #88: Edge may confirm the end through UI Automation ("Seitenende erreicht.");
+    # otherwise the unconfirmed-end warning must be shown. Never neither.
+    $confirmedEnd = $completionText -like '*Seitenende erreicht.*'
+    $warnedEnd = $completionText -like '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*'
+    if ($confirmedEnd -eq $warnedEnd) {
+        throw "Scroll completion must either confirm the end or warn that it is unconfirmed. Dialog='$completionText'"
     }
+    Write-Output "EVIDENCE: scroll end via UI Automation: $(if ($confirmedEnd) { 'confirmed' } else { 'unconfirmed (warning shown)' })."
     $finalWindow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
         Where-Object { $_.Handle -eq $browserWindow.Handle -and $_.Visible } | Select-Object -First 1
     if ($null -eq $finalWindow -or $finalWindow.Title -notmatch 'offset=0,(-?\d+) wheel=') {

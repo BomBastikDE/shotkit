@@ -20,6 +20,8 @@ mod last_region;
 #[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
+mod scroll_end_uia;
+#[cfg(windows)]
 mod scroll_windows;
 #[cfg(windows)]
 mod text_dialog;

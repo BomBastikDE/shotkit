@@ -57,6 +57,9 @@ struct FakeScrollIo {
     progress: Vec<usize>,
     diagnostics: Vec<(Image, Image, String)>,
     diagnostic_success: bool,
+    /// Answer of the platform end check (#88) and how often it was asked.
+    end_confirmation: bool,
+    end_confirmation_calls: usize,
 }
 
 impl FakeScrollIo {
@@ -84,6 +87,8 @@ impl FakeScrollIo {
             progress: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_success: false,
+            end_confirmation: false,
+            end_confirmation_calls: 0,
         }
     }
     fn horizontal(height: usize, width: usize, page_len: usize) -> Self {
@@ -110,6 +115,8 @@ impl FakeScrollIo {
             progress: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_success: false,
+            end_confirmation: false,
+            end_confirmation_calls: 0,
         }
     }
     fn vertical_with_sticky_bands(
@@ -159,6 +166,10 @@ impl FakeScrollIo {
 }
 
 impl ScrollIo for FakeScrollIo {
+    fn end_confirmed(&mut self, _direction: Direction) -> bool {
+        self.end_confirmation_calls += 1;
+        self.end_confirmation
+    }
     fn diagnostics(&mut self, before: &Image, after: &Image, details: &str) -> Option<String> {
         self.diagnostics
             .push((before.clone(), after.clone(), details.to_owned()));
@@ -964,5 +975,55 @@ fn only_pure_user_stops_omit_the_unconfirmed_end_warning() {
         "Durch Mausbewegung beendet.\nDie Aufnahme konnte nicht zurückgedreht werden.",
     ] {
         assert_eq!(completion_reason(reason), unconfirmed_reason(reason));
+    }
+}
+
+#[test]
+fn confirmed_end_replaces_the_warning_only_for_a_stop_without_motion() {
+    // #88: the platform confirms the end → plain "Seitenende erreicht.".
+    let mut io = FakeScrollIo::vertical(220, 220);
+    io.end_confirmation = true;
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(out.reason, CONFIRMED_END);
+    assert_eq!(io.end_confirmation_calls, 1);
+    assert_eq!(out.image.height, 220);
+    // Unconfirmed → the warning stays, unchanged.
+    let mut io = FakeScrollIo::vertical(220, 220);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert_eq!(
+        out.reason,
+        unconfirmed_reason("Keine weitere Scrollbewegung erkennbar.")
+    );
+    assert_eq!(io.end_confirmation_calls, 1);
+}
+
+#[test]
+fn user_stops_never_ask_for_or_claim_a_confirmed_end() {
+    let mut io = FakeScrollIo::vertical(220, 2000);
+    io.end_confirmation = true;
+    io.cancel_on_wait = Some(2);
+    let out = run(&mut io, Direction::Down).unwrap();
+    assert!(!out.reason.contains(CONFIRMED_END), "{}", out.reason);
+    assert_eq!(io.end_confirmation_calls, 0);
+}
+
+#[test]
+fn scroll_percent_end_depends_on_direction_and_rejects_invalid_values() {
+    assert!(scroll_percent_at_end(Direction::Down, 100.0));
+    assert!(scroll_percent_at_end(Direction::Down, 99.6));
+    assert!(!scroll_percent_at_end(Direction::Down, 99.0));
+    assert!(scroll_percent_at_end(Direction::Right, 100.0));
+    assert!(!scroll_percent_at_end(Direction::Right, 0.0));
+    assert!(scroll_percent_at_end(Direction::Left, 0.0));
+    assert!(!scroll_percent_at_end(Direction::Left, 100.0));
+    for invalid in [-1.0, 101.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            !scroll_percent_at_end(Direction::Down, invalid),
+            "{invalid}"
+        );
+        assert!(
+            !scroll_percent_at_end(Direction::Left, invalid),
+            "{invalid}"
+        );
     }
 }
