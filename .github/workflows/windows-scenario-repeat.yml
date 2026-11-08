@@ -12,6 +12,7 @@ on:
           - output-matrix
           - edge-scroll
           - edge-scroll-fixed-header-footer
+          - edge-scroll-stop-halfway
       repeat:
         description: 'Consecutive runs of the selected scenario (1 to 20)'
         type: number
