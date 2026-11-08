@@ -12,7 +12,7 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 
 ---
 
-## Stand für v2.1.0 (vor Praxistest, noch kein Release) — `main` @ `3b98360` — 2026-11-08
+## Release v2.1.0 — `main` @ `aa39d8f` — 2026-11-08
 
 ### Automatische Tests (CI, je PR Linux und Windows grün)
 
@@ -23,15 +23,22 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 | #99 Bild anheften | #104 | 70/70 | [Lauf 42427627447](https://github.com/BomBastikDE/shotkit/actions/runs/42427627447) |
 | #88 Seitenende per UI Automation | #105 | 71/71 | [Lauf 42431888182](https://github.com/BomBastikDE/shotkit/actions/runs/42431888182); Edge normal und mit fester Kopfzeile „Seitenende erreicht.“ (UIA 100 %) |
 | #102 Text-Test | #106 | 71/71 | [Lauf 42433402739](https://github.com/BomBastikDE/shotkit/actions/runs/42433402739) |
+| #36 zurückgestellt | #110 | 70/70 | [Lauf 42492813895](https://github.com/BomBastikDE/shotkit/actions/runs/42492813895) |
 
 ### Wiederholungsläufe
 
 - Gegenprobe Edge, Seite bei der Hälfte gestoppt (`-StopHalfway`): UIA 51 %, Hinweis bleibt, 3/3 ([Lauf 42431883193](https://github.com/BomBastikDE/shotkit/actions/runs/42431883193)). Die erste Fassung stoppte per Wheel-`preventDefault`, das Edge nach dem ersten Ereignis ignoriert; die Seite lief bis zum Ende und UIA meldete korrekt 100 % ([Lauf 42431674767](https://github.com/BomBastikDE/shotkit/actions/runs/42431674767)).
-- Text-Test (#102): ohne Änderung 20/20 ([Lauf 42433044004](https://github.com/BomBastikDE/shotkit/actions/runs/42433044004)), mit #106 20/20 ([Lauf 42433401656](https://github.com/BomBastikDE/shotkit/actions/runs/42433401656)). Der Einzelfehler aus PR #100 ließ sich isoliert nicht reproduzieren; #102 bleibt bis zum Release-Lauf offen.
+- Text-Test (#102): ohne Änderung 20/20 ([Lauf 42433044004](https://github.com/BomBastikDE/shotkit/actions/runs/42433044004)), mit #106 20/20 ([Lauf 42433401656](https://github.com/BomBastikDE/shotkit/actions/runs/42433401656)). Der Einzelfehler aus PR #100 ließ sich isoliert nicht reproduzieren; Im Release-Lauf grün, #102 geschlossen.
 
-### Offen bis v2.1.0
+### Praxistest und Freigabe
 
-Praxistest des Owners ([WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md): Schritt 13 Anheften, 14 Rissrand (bestanden 2026-11-08), 15 Seitenende in Edge), danach Tag nach Freigabe ([#101](https://github.com/BomBastikDE/shotkit/issues/101)).
+Praxistest des Owners ([WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md)) am 2026-11-08: Anheften, Rissrand und Seitenende in Edge bestanden. Mauszeiger (#36) nicht bestanden, deshalb zurückgestellt (#110). Danach hat der Owner freigegeben ([#101](https://github.com/BomBastikDE/shotkit/issues/101)).
+
+### Release
+
+- Release-Lauf [42503515383](https://github.com/BomBastikDE/shotkit/actions/runs/42503515383): Linux und Windows grün, Veröffentlichung erfolgreich.
+- [Release v2.1.0](https://github.com/BomBastikDE/shotkit/releases/tag/v2.1.0): `shotkit-v2.1.0-windows-x64.exe`, SHA256 `a3a4c1d59d4757924eafb35ae995775dc9a67358c5cb3fd9b66d83a529a91211`.
+- Abschlussprüfung bestanden: Tag auf main, ist „Latest“, v1.2.0 weiter vorhanden, kein Prototyp-Text, „Bekannte Grenzen“ im Release-Text.
 
 ---
 
