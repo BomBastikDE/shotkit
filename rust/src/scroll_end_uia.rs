@@ -80,7 +80,17 @@ unsafe fn query(point: (i32, i32), direction: Direction) -> Option<bool> {
                 y: point.1,
             })
             .ok()?;
-        for _ in 0..MAX_ANCESTORS {
+        for depth in 0..MAX_ANCESTORS {
+            // Test diagnostics only (SHOTKIT_UIA_DIAGNOSTICS_PATH): control
+            // type and class of each visited node, never names or contents.
+            let control_type = element.CurrentControlType().map(|t| t.0).unwrap_or(-1);
+            let class = element
+                .CurrentClassName()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
+            crate::uia_picker::log_diagnostic(&format!(
+                "scroll_end node depth={depth} control_type={control_type} class={class:.64}"
+            ));
             if let Ok(pattern) =
                 element.GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
             {
@@ -94,9 +104,16 @@ unsafe fn query(point: (i32, i32), direction: Direction) -> Option<bool> {
                         pattern.CurrentHorizontalScrollPercent().ok()?,
                     ),
                 };
+                crate::uia_picker::log_diagnostic(&format!(
+                    "scroll_end pattern depth={depth} scrollable={scrollable} percent={percent}"
+                ));
                 // The first element scrollable on this axis decides.
                 if scrollable && percent != UIA_ScrollPatternNoScroll {
-                    return Some(scroll_percent_at_end(direction, percent));
+                    let at_end = scroll_percent_at_end(direction, percent);
+                    crate::uia_picker::log_diagnostic(&format!(
+                        "scroll_end decision at_end={at_end}"
+                    ));
+                    return Some(at_end);
                 }
             }
             element = walker.GetParentElement(&element).ok()?;

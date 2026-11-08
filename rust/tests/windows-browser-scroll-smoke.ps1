@@ -20,6 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'startup-dialog-assertions.ps1')
 . (Join-Path $PSScriptRoot 'edge-profile-cleanup.ps1')
+. (Join-Path $PSScriptRoot 'shared-log-reader.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:SHOTKIT_LOCAL_SMOKE_TEST -ne '1') { throw 'This smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
 if (-not [Environment]::UserInteractive) { throw 'NO_INTERACTIVE_DESKTOP: the GitHub runner is not interactive.' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "ShotKit EXE not found: $ExePath" }
@@ -414,9 +415,13 @@ try {
     try {
         $env:APPDATA = $appData
         $env:LOCALAPPDATA = $localAppData
+        # Numeric UIA diagnostics of the scroll-end check (#88), inside the temp dir.
+        $script:uiaDiagnostics = Join-Path $testRoot 'uia-diagnostics.log'
+        $oldUiaDiagnostics = $env:SHOTKIT_UIA_DIAGNOSTICS_PATH
+        $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $script:uiaDiagnostics
         $shotKit = Start-Process -FilePath $ExePath -WorkingDirectory $testRoot -PassThru
     }
-    finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData }
+    finally { $env:APPDATA = $oldAppData; $env:LOCALAPPDATA = $oldLocalAppData; $env:SHOTKIT_UIA_DIAGNOSTICS_PATH = $oldUiaDiagnostics }
 
     $mainWindow = Wait-ForCondition -TimeoutSeconds $StartupTimeoutSeconds -Description 'ShotKit main window' -OwnedProcess $shotKit -Condition {
         Get-ProcessWindows $shotKit | Where-Object { $_.ClassName -eq 'ShotKitRustPrototype' } | Select-Object -First 1
@@ -614,6 +619,12 @@ try {
     catch { Write-Output "DIAGNOSTIC: Could not read live Edge DOM-offset title after scroll completion: $($_.Exception.ToString())" }
     # #88: Edge may confirm the end through UI Automation ("Seitenende erreicht.");
     # otherwise the unconfirmed-end warning must be shown. Never neither.
+    if (Test-Path -LiteralPath $script:uiaDiagnostics) {
+        foreach ($line in @(Read-SharedLines -Path $script:uiaDiagnostics | Where-Object { $_ -like 'scroll_end*' })) { Write-Output "DIAGNOSTIC: $line" }
+    } else { Write-Output 'DIAGNOSTIC: no UIA scroll-end diagnostics written.' }
+    $titleNow = [ShotKitBrowserScrollSmoke.Native]::WindowsForProcess([int]$browserWindow.ProcessId) |
+        Where-Object { $_.Handle -eq $browserWindow.Handle } | Select-Object -First 1
+    Write-Output "DIAGNOSTIC: browser title at completion: $($titleNow.Title)"
     $confirmedEnd = $completionText -like '*Seitenende erreicht.*'
     $warnedEnd = $completionText -like '*Möglicherweise unvollständig: Das Seitenende wurde nicht bestätigt.*'
     if ($confirmedEnd -eq $warnedEnd) {
