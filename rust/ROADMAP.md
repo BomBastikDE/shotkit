@@ -19,7 +19,7 @@ ShotKit 2.0.0 ist die erste stabile Version in Rust. Sie ersetzt die C#-Version 
 
 ## Aufnahme
 
-- Mauszeiger optional mit aufnehmen ([#36](https://github.com/BomBastikDE/shotkit/issues/36)); die Grundlagen dafür sind im Code vorhanden, aber noch nicht nutzbar.
+- Mauszeiger optional mit aufnehmen ([#36](https://github.com/BomBastikDE/shotkit/issues/36)): Einbau in PR #103, vor 2.1.0 zurückgestellt, weil der Zeiger im Praxistest fehlte. Die Bausteine (Zeigerbild, Zeigerobjekt im Editor) sind im Code vorhanden; der Weg zurück steht in #36.
 
 ## Konzepte
 

@@ -80,12 +80,12 @@ pub struct Settings {
     pub auto_save: bool,
     #[serde(default)]
     pub scroll_direction: ScrollDirection,
-    /// Insert the mouse cursor as an editable object into captures (#36).
+    /// Reserved for "capture mouse cursor" (#36), withdrawn before 2.1.0.
     ///
-    /// Written only when enabled: the default settings then stay byte-identical
-    /// to the frozen v1 schema used by reset receipts, and 2.0.x can still read
-    /// the file as long as the option is off.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Only read, never written and never used: a file from the 2.1.0 test
+    /// build with the option enabled stays loadable, and the next save drops
+    /// the field, so the file is readable by 2.0.x again.
+    #[serde(default, skip_serializing)]
     pub capture_cursor: bool,
 }
 
@@ -863,22 +863,19 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_stay_valid_for_the_frozen_v1_reset_receipt() {
-        // The Windows reset protocol writes these defaults and refuses if they
-        // no longer match the frozen v1 receipt schema (#36 added a field).
+    fn withdrawn_capture_cursor_field_is_read_but_never_written() {
+        // #36 was withdrawn before 2.1.0. A test-build file with the option
+        // enabled must still load; saving drops the field again, so defaults
+        // and saved files stay valid for the frozen v1 reset receipt and 2.0.x.
         let defaults = serde_json::to_vec_pretty(&Settings::default()).unwrap();
         assert!(reset_receipt::valid_v1_settings(&defaults));
-        assert!(!String::from_utf8_lossy(&defaults).contains("capture_cursor"));
-        // Enabled, the option is written and read back; such a file is no
-        // longer v1-receipt material, which is the documented downgrade limit.
-        let enabled = Settings {
-            capture_cursor: true,
-            ..Settings::default()
-        };
-        let bytes = serde_json::to_vec_pretty(&enabled).unwrap();
-        assert!(String::from_utf8_lossy(&bytes).contains("\"capture_cursor\": true"));
-        assert_eq!(serde_json::from_slice::<Settings>(&bytes).unwrap(), enabled);
-        assert!(!reset_receipt::valid_v1_settings(&bytes));
+        let mut value: serde_json::Value = serde_json::from_slice(&defaults).unwrap();
+        value["capture_cursor"] = serde_json::Value::Bool(true);
+        let loaded: Settings = serde_json::from_value(value).unwrap();
+        assert!(loaded.capture_cursor);
+        let saved = serde_json::to_vec_pretty(&loaded).unwrap();
+        assert!(!String::from_utf8_lossy(&saved).contains("capture_cursor"));
+        assert!(reset_receipt::valid_v1_settings(&saved));
     }
 
     #[test]

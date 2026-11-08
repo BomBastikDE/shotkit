@@ -31,7 +31,6 @@ Ein **Linksklick** auf das ShotKit-Symbol startet die Bereichsaufnahme, ein **Re
 | Nach Aufnahme Editor öffnen | jede Aufnahme öffnet ein Editorfenster | an |
 | In Zwischenablage kopieren | jede Aufnahme wird sofort kopiert | aus |
 | Automatisch als PNG speichern | jede Aufnahme wird im Speicherordner abgelegt | aus |
-| Mauszeiger mit aufnehmen | der Mauszeiger wird in die Aufnahme übernommen, im Editor als verschiebbares Objekt (siehe [Aufnehmen](aufnehmen.md#mauszeiger-mit-aufnehmen)) | aus |
 | Aufnahmen von Zwischenablageverlauf und Cloud ausschließen | ShotKit bittet Windows, kopierte Bilder nicht im Verlauf (<kbd>Win</kbd>+<kbd>V</kbd>) und nicht im Cloud-Abgleich abzulegen | an |
 | Speicherordner wählen … | Ziel für automatisches Speichern | – (wird beim Einschalten abgefragt) |
 | Mit Windows starten | ShotKit startet mit der Anmeldung | aus |
