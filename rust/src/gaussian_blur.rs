@@ -14,6 +14,8 @@ use crate::{
 const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_WORK_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RADIUS: usize = 64;
+/// Edge of the tiles used when a region exceeds the single-pass work limit.
+const TILE_CORE: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlurError {
@@ -94,7 +96,10 @@ pub(crate) fn gaussian_blur_layer(
         .map(|budget| {
             budget
                 .try_acquire(
-                    work_bytes(count, count, count * 4)?,
+                    {
+                        let scratch = scratch_pixels(region, radius, count, TILE_CORE);
+                        work_bytes(scratch, scratch, count * 4)?
+                    },
                     AdmissionClass::Reserved,
                 )
                 .map_err(BlurLayerError::BudgetRejected)
@@ -146,15 +151,41 @@ fn validate_request(
         .width
         .checked_mul(region.height)
         .ok_or(BlurError::RegionTooLarge)?;
-    // Two [u32; 4] buffers and the resulting four-byte pixel buffer.
+    // The region lies inside a valid image, so its four-byte result fits.
+    // Scratch memory is bounded separately, see `scratch_pixels`.
     if count
-        .checked_mul(36)
-        .filter(|&n| n <= MAX_WORK_BYTES)
+        .checked_mul(4)
+        .filter(|&n| n <= MAX_IMAGE_BYTES)
         .is_none()
     {
         return Err(BlurError::RegionTooLarge);
     }
     Ok(count)
+}
+
+/// Two `[u32; 4]` buffers and the four-byte result fit the single-pass limit.
+fn fits_single_pass(count: usize) -> bool {
+    count
+        .checked_mul(36)
+        .is_some_and(|bytes| bytes <= MAX_WORK_BYTES)
+}
+
+/// Elements in each of the two scratch buffers. Small regions are filtered in
+/// one piece. Larger ones are filtered tile by tile, so the scratch buffers
+/// stay bounded however large the selection is (a blur over a whole 4K
+/// screenshot used to fail the complete document render).
+fn scratch_pixels(region: PixelateRect, radius: usize, count: usize, tile_core: usize) -> usize {
+    if fits_single_pass(count) && tile_core == TILE_CORE {
+        return count;
+    }
+    let extent = tile_core + 2 * tile_margin(radius);
+    region.width.min(extent) * region.height.min(extent)
+}
+
+/// Three box passes per axis let a wrong value travel `radius` pixels each.
+/// Context this wide around a tile makes its core identical to the single pass.
+fn tile_margin(radius: usize) -> usize {
+    radius * 3
 }
 
 // Capacity is in elements, including for the two 16-byte work vectors.
@@ -208,7 +239,10 @@ fn render_validated(
     count: usize,
     mut lease: Option<&mut BudgetLease>,
 ) -> Result<Image, BlurLayerError> {
-    // Validation has already checked all region arithmetic and count * 36.
+    // Validation has already checked all region arithmetic.
+    if !fits_single_pass(count) {
+        return render_tiled(source, region, radius, count, TILE_CORE, lease);
+    }
     let right = region.x + region.width;
     let bottom = region.y + region.height;
     let pixel_bytes = count * 4;
@@ -251,17 +285,103 @@ fn render_validated(
         .map_err(|_| BlurError::AllocationFailed)?;
     reconcile_work_capacity([a.capacity(), b.capacity(), pixels.capacity()], lease)?;
     for p in a {
-        let alpha = (p[3] + 127) / 255;
-        if alpha == 0 || p[3] == 0 {
-            pixels.extend_from_slice(&[0, 0, 0, 0]);
-            continue;
+        pixels.extend_from_slice(&straight_pixel(p));
+    }
+    Image::new(region.width, region.height, pixels)
+        .map_err(|_| BlurLayerError::Blur(BlurError::InvalidRegion))
+}
+
+/// Premultiplied sums back to straight alpha; hidden colours are discarded.
+fn straight_pixel(p: [u32; 4]) -> [u8; 4] {
+    let alpha = (p[3] + 127) / 255;
+    if alpha == 0 || p[3] == 0 {
+        return [0, 0, 0, 0];
+    }
+    let channel = |value: u32| {
+        ((u64::from(value) * 255 + u64::from(p[3]) / 2) / u64::from(p[3])).min(255) as u8
+    };
+    [
+        channel(p[0]),
+        channel(p[1]),
+        channel(p[2]),
+        alpha.min(255) as u8,
+    ]
+}
+
+/// Same result as the single pass, computed tile by tile. Each tile is filtered
+/// together with `tile_margin` pixels of context, clipped to the region, so
+/// sampling still clamps only at the edges of the selection itself.
+fn render_tiled(
+    source: &Image,
+    region: PixelateRect,
+    radius: usize,
+    count: usize,
+    tile_core: usize,
+    mut lease: Option<&mut BudgetLease>,
+) -> Result<Image, BlurLayerError> {
+    let pixel_bytes = count * 4;
+    let scratch = scratch_pixels(region, radius, count, tile_core);
+    let margin = tile_margin(radius);
+    let mut a: Vec<[u32; 4]> = Vec::new();
+    a.try_reserve_exact(scratch)
+        .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity([a.capacity(), scratch, pixel_bytes], lease.as_deref_mut())?;
+    let mut b: Vec<[u32; 4]> = Vec::new();
+    b.try_reserve_exact(scratch)
+        .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity(
+        [a.capacity(), b.capacity(), pixel_bytes],
+        lease.as_deref_mut(),
+    )?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(pixel_bytes)
+        .map_err(|_| BlurError::AllocationFailed)?;
+    reconcile_work_capacity([a.capacity(), b.capacity(), pixels.capacity()], lease)?;
+    pixels.resize(pixel_bytes, 0u8);
+
+    // Tile coordinates are relative to the region.
+    for core_y in (0..region.height).step_by(tile_core) {
+        let core_bottom = (core_y + tile_core).min(region.height);
+        let top = core_y.saturating_sub(margin);
+        let height = (core_bottom + margin).min(region.height) - top;
+        for core_x in (0..region.width).step_by(tile_core) {
+            let core_right = (core_x + tile_core).min(region.width);
+            let left = core_x.saturating_sub(margin);
+            let width = (core_right + margin).min(region.width) - left;
+            a.clear();
+            for y in top..top + height {
+                let row = ((region.y + y) * source.width + region.x + left) * 4;
+                for p in source.pixels[row..row + width * 4].as_chunks::<4>().0 {
+                    let alpha = u32::from(p[3]);
+                    a.push([
+                        u32::from(p[0]) * alpha,
+                        u32::from(p[1]) * alpha,
+                        u32::from(p[2]) * alpha,
+                        alpha * 255,
+                    ]);
+                }
+            }
+            b.clear();
+            b.resize(width * height, [0u32; 4]);
+            for _ in 0..3 {
+                for y in 0..height {
+                    box_line(&a, &mut b, y * width, 1, width, radius);
+                }
+                for x in 0..width {
+                    box_line(&b, &mut a, x, width, height, radius);
+                }
+            }
+            for y in core_y..core_bottom {
+                let from = (y - top) * width + (core_x - left);
+                let to = (y * region.width + core_x) * 4;
+                let tile_row = &a[from..from + (core_right - core_x)];
+                let out_row = &mut pixels[to..to + (core_right - core_x) * 4];
+                for (out, p) in out_row.as_chunks_mut::<4>().0.iter_mut().zip(tile_row) {
+                    *out = straight_pixel(*p);
+                }
+            }
         }
-        for &channel in &p[..3] {
-            pixels.push(
-                ((u64::from(channel) * 255 + u64::from(p[3]) / 2) / u64::from(p[3])).min(255) as u8,
-            );
-        }
-        pixels.push(alpha.min(255) as u8);
     }
     Image::new(region.width, region.height, pixels)
         .map_err(|_| BlurLayerError::Blur(BlurError::InvalidRegion))
@@ -462,6 +582,69 @@ mod tests {
             drop(existing);
             assert_eq!(budget.snapshot().used_bytes, 0);
         }
+    }
+
+    fn noise(width: usize, height: usize) -> Image {
+        // Deterministic content with varying colour and alpha, including zero.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut pixels = Vec::with_capacity(width * height * 4);
+        for _ in 0..width * height * 4 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            pixels.push((state >> 24) as u8);
+        }
+        for pixel in pixels.as_chunks_mut::<4>().0.iter_mut().step_by(7) {
+            pixel[3] = 0;
+        }
+        image(width, height, pixels)
+    }
+
+    #[test]
+    fn tiled_blur_is_identical_to_the_single_pass() {
+        let source = noise(97, 83);
+        for region in [rect(0, 0, 97, 83), rect(5, 9, 61, 70), rect(40, 0, 1, 83)] {
+            for radius in [1, 2, 5] {
+                let count = region.width * region.height;
+                let whole = gaussian_blur_region(&source, region, radius).unwrap();
+                // Tiles smaller than, equal to and larger than their context.
+                for tile_core in [1, 7, 16, 64] {
+                    let tiled =
+                        render_tiled(&source, region, radius, count, tile_core, None).unwrap();
+                    assert!(
+                        tiled == whole,
+                        "region {region:?}, radius {radius}, tile {tile_core}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_4k_selection_is_blurred_with_bounded_scratch() {
+        // 3840x2160 needs about 285 MiB in one piece and used to be rejected.
+        let (width, height) = (3840, 2160);
+        let count = width * height;
+        assert!(!fits_single_pass(count));
+        let region = rect(0, 0, width, height);
+        let scratch = scratch_pixels(region, MAX_RADIUS, count, TILE_CORE);
+        assert_eq!(scratch, (TILE_CORE + 6 * MAX_RADIUS).pow(2));
+        assert!(work_bytes(scratch, scratch, 0).unwrap() <= 64 * 1024 * 1024);
+
+        let source = image(width, height, [40, 80, 120, 255].repeat(count));
+        let budget = ResourceBudget::new(256 * 1024 * 1024, 0).unwrap();
+        let layer = gaussian_blur_layer(&source, region, 8, Some(&budget)).unwrap();
+        assert_eq!(layer.image().pixels.len(), count * 4);
+        assert!(layer
+            .image()
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [40, 80, 120, 255]));
+        assert_eq!(budget.snapshot().used_bytes, count * 4);
+        drop(layer);
+        assert_eq!(budget.snapshot().used_bytes, 0);
     }
 
     #[test]
