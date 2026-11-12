@@ -116,6 +116,96 @@ pub(super) unsafe fn high_contrast_enabled() -> bool {
         && settings.flags & 1 != 0
 }
 
+/// Highlight the button under the pointer and repaint the two affected buttons.
+// SAFETY CONTRACT:
+// Voraussetzung: toolbar ist das lebende Toolbar-Fenster auf dem UI-Thread; button ist 0 oder das HWND eines Kindfensters.
+// Warum erfüllt: toolbar_proc übergibt sein eigenes HWND und den wParam von WM_SETCURSOR; veraltete Handles weist IsWindow ab.
+// Nachrichten: InvalidateRect, SetTimer und KillTimer senden keine Nachrichten; die VISUALS-Sperre ist vorher freigegeben.
+pub(super) unsafe fn set_hot(toolbar: Hwnd, button: usize) {
+    let previous = with_visuals(toolbar, |visuals| {
+        std::mem::replace(&mut visuals.hot, button)
+    });
+    let Some(previous) = previous.filter(|previous| *previous != button) else {
+        return;
+    };
+    for hwnd in [previous, button] {
+        if hwnd != 0 && IsWindow(hwnd as Hwnd) != 0 {
+            InvalidateRect(hwnd as Hwnd, null(), 1);
+        }
+    }
+    if button != 0 {
+        SetTimer(toolbar, HOVER_TIMER, 100, None);
+    } else {
+        KillTimer(toolbar, HOVER_TIMER);
+    }
+}
+
+/// Frame around the active tool, one logical pixel wide, drawn inside `bounds`.
+// SAFETY CONTRACT:
+// Voraussetzung: hwnd und hdc gehören zum laufenden WM_DRAWITEM; bounds ist dessen Rechteck.
+// Warum erfüllt: Der Toolbar-Callback übergibt seine aktuellen Parameter; der Pinsel wird vor der Rückkehr gelöscht.
+// Nachrichten: GDI und GetDpiForWindow senden keine Fensternachrichten.
+pub(super) unsafe fn draw_frame(hwnd: Hwnd, hdc: Hwnd, bounds: NativeRect, color: u32) {
+    let line = shotkit::toolbar_layout::separator_line(GetDpiForWindow(hwnd));
+    let brush = CreateSolidBrush(color);
+    if brush.is_null() {
+        return;
+    }
+    for edge in [
+        NativeRect {
+            bottom: bounds.top + line,
+            ..bounds
+        },
+        NativeRect {
+            top: bounds.bottom - line,
+            ..bounds
+        },
+        NativeRect {
+            right: bounds.left + line,
+            ..bounds
+        },
+        NativeRect {
+            left: bounds.right - line,
+            ..bounds
+        },
+    ] {
+        FillRect(hdc, &edge, brush);
+    }
+    DeleteObject(brush);
+}
+
+/// Thin vertical lines between the sections of the toolbar.
+// SAFETY CONTRACT:
+// Voraussetzung: toolbar ist das lebende Toolbar-Fenster und hdc der Gerätekontext seines laufenden WM_ERASEBKGND.
+// Warum erfüllt: toolbar_proc übergibt sein HWND und den wParam der Nachricht; der Pinsel wird vor der Rückkehr gelöscht.
+// Nachrichten: GDI, GetClientRect und GetDpiForWindow senden keine Fensternachrichten; die VISUALS-Sperre ist vorher freigegeben.
+pub(super) unsafe fn draw_separators(toolbar: Hwnd, hdc: Hwnd) {
+    let separators =
+        with_visuals(toolbar, |visuals| visuals.separators.clone()).unwrap_or_default();
+    let mut client: NativeRect = std::mem::zeroed();
+    if separators.is_empty() || hdc.is_null() || GetClientRect(toolbar, &mut client) == 0 {
+        return;
+    }
+    let dpi = GetDpiForWindow(toolbar);
+    let line = shotkit::toolbar_layout::separator_line(dpi);
+    let inset = shotkit::toolbar_layout::scale(8, dpi);
+    // COLOR_BTNSHADOW, or the text colour where a theme demands full contrast.
+    let brush = CreateSolidBrush(GetSysColor(if high_contrast_enabled() { 18 } else { 16 }));
+    if brush.is_null() {
+        return;
+    }
+    for left in separators {
+        let rect = NativeRect {
+            left,
+            top: client.top + inset,
+            right: left + line,
+            bottom: client.bottom - inset,
+        };
+        FillRect(hdc, &rect, brush);
+    }
+    DeleteObject(brush);
+}
+
 /// Render the original 20-unit icon geometry at four times its output size,
 /// then downsample it. The background is included so GDI can smooth the edges.
 // SAFETY CONTRACT:

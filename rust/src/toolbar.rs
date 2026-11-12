@@ -120,6 +120,27 @@ const TTF_SUBCLASS: u32 = 0x0010;
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
 static ACTIVE_TOOLS: OnceLock<Mutex<HashMap<usize, (usize, usize)>>> = OnceLock::new();
 static CURRENT_COLORS: OnceLock<Mutex<HashMap<usize, u32>>> = OnceLock::new();
+/// Per toolbar window: the button under the pointer, whether undo and redo
+/// currently have an effect, and where the separators of the last layout are.
+#[derive(Clone, Default)]
+struct Visuals {
+    hot: usize,
+    can_undo: bool,
+    can_redo: bool,
+    separators: Vec<i32>,
+}
+static VISUALS: OnceLock<Mutex<HashMap<usize, Visuals>>> = OnceLock::new();
+const HOVER_TIMER: usize = 1;
+
+/// Read or change the visual state of one toolbar. The lock is released
+/// before the caller issues any Win32 call.
+fn with_visuals<T>(toolbar: Hwnd, change: impl FnOnce(&mut Visuals) -> T) -> Option<T> {
+    VISUALS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .map(|mut all| change(all.entry(toolbar as usize).or_default()))
+}
 
 #[repr(C)]
 struct WndClassW {
@@ -218,6 +239,15 @@ extern "system" {
     fn InvalidateRect(hwnd: Hwnd, rect: *const NativeRect, erase: i32) -> i32;
     fn DrawFocusRect(hdc: Hwnd, rect: *const NativeRect) -> i32;
     fn SystemParametersInfoW(action: u32, param: u32, data: *mut c_void, flags: u32) -> i32;
+    fn SetTimer(
+        hwnd: Hwnd,
+        id: usize,
+        milliseconds: u32,
+        callback: Option<unsafe extern "system" fn(Hwnd, u32, usize, u32)>,
+    ) -> usize;
+    fn KillTimer(hwnd: Hwnd, id: usize) -> i32;
+    fn GetCursorPos(point: *mut NativePoint) -> i32;
+    fn WindowFromPoint(point: NativePoint) -> Hwnd;
 }
 #[link(name = "comctl32")]
 extern "system" {
@@ -307,6 +337,9 @@ unsafe extern "system" fn toolbar_proc(
     if message == 0x0082 {
         // WM_NCDESTROY
         menus::remove(hwnd);
+        if let Ok(mut visuals) = VISUALS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+            visuals.remove(&(hwnd as usize));
+        }
         let parent = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
         if let Ok(mut active) = ACTIVE_TOOLS
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -320,6 +353,28 @@ unsafe extern "system" fn toolbar_proc(
         {
             colors.remove(&parent);
         }
+    }
+    if message == 0x0020 {
+        // WM_SETCURSOR: a child button forwards it for every pointer move
+        // over it; wparam is the window under the pointer.
+        let under = if wparam == hwnd as usize { 0 } else { wparam };
+        set_hot(hwnd, under);
+    }
+    if message == 0x0113 && wparam == HOVER_TIMER {
+        // WM_TIMER: no message arrives when the pointer leaves the toolbar,
+        // so poll while a button is highlighted.
+        let hot = with_visuals(hwnd, |visuals| visuals.hot).unwrap_or(0);
+        let mut point = NativePoint { x: 0, y: 0 };
+        if hot == 0 || GetCursorPos(&mut point) == 0 || WindowFromPoint(point) as usize != hot {
+            set_hot(hwnd, 0);
+        }
+        return 0;
+    }
+    if message == 0x0014 {
+        // WM_ERASEBKGND: the class brush clears the bar, then the separators.
+        let result = DefWindowProcW(hwnd, message, wparam, lparam);
+        draw_separators(hwnd, wparam as Hwnd);
+        return result;
     }
     if message == WM_COMMAND {
         let parent = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as Hwnd;
@@ -365,12 +420,29 @@ unsafe extern "system" fn toolbar_proc(
                             .copied()
                     })
                     .unwrap_or(0x000000FF);
-                let bg = if selected || checked {
-                    GetSysColor(13)
-                } else {
-                    GetSysColor(15)
-                };
-                let brush = CreateSolidBrush(bg);
+                let visuals = with_visuals(hwnd, |visuals| {
+                    (visuals.hot, visuals.can_undo, visuals.can_redo)
+                })
+                .unwrap_or((0, true, true));
+                let high_contrast = high_contrast_enabled();
+                let colors = shotkit::toolbar_layout::button_colors(
+                    shotkit::toolbar_layout::ButtonState {
+                        pressed: selected,
+                        checked,
+                        hot: visuals.0 == item.hwnd_item as usize,
+                        dimmed: (action.id == ID_UNDO && !visuals.1)
+                            || (action.id == ID_REDO && !visuals.2),
+                    },
+                    shotkit::toolbar_layout::Palette {
+                        face: GetSysColor(15),
+                        text: GetSysColor(18),
+                        accent: GetSysColor(13),
+                        accent_text: GetSysColor(14),
+                        gray_text: GetSysColor(17),
+                    },
+                    high_contrast,
+                );
+                let brush = CreateSolidBrush(colors.background);
                 FillRect(item.hdc, &item.rect, brush);
                 DeleteObject(brush);
                 draw_smoothed_icon(
@@ -378,10 +450,13 @@ unsafe extern "system" fn toolbar_proc(
                     item.hdc,
                     item.rect,
                     action.icon,
-                    GetSysColor(if checked { 14 } else { 18 }),
+                    colors.icon,
                     current_color,
-                    bg,
+                    colors.background,
                 );
+                if let Some(frame) = colors.frame {
+                    draw_frame(item.hwnd_item, item.hdc, item.rect, frame);
+                }
                 if item.item_state & 0x0010 != 0 {
                     DrawFocusRect(item.hdc, &item.rect);
                 }
@@ -480,6 +555,36 @@ pub unsafe fn set_color(parent: *mut c_void, red: u8, green: u8, blue: u8) {
     }
 }
 
+/// Show whether Zurück and Wiederholen currently have an effect. The buttons
+/// stay clickable and keep their tooltips; they are only drawn paler.
+// SAFETY CONTRACT:
+// Voraussetzung: parent und zugehörige Toolbar-Handles sind auf dem UI-Thread gültig und nicht wiederverwendet.
+// Warum erfüllt bzw. offen: Einträge entstehen in create und werden bei WM_NCDESTROY entfernt; vollständige Handlelebensdauer bleibt offen.
+// Nachrichten: GetDlgItem und InvalidateRect senden keine Nachrichten; die Sperren sind vor den Aufrufen freigegeben.
+pub unsafe fn set_history(parent: *mut c_void, can_undo: bool, can_redo: bool) {
+    let toolbar = ACTIVE_TOOLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|active| active.get(&(parent as usize)).map(|entry| entry.0));
+    let Some(toolbar) = toolbar else {
+        return;
+    };
+    let changed = with_visuals(toolbar as Hwnd, |visuals| {
+        let changed = (visuals.can_undo != can_undo, visuals.can_redo != can_redo);
+        visuals.can_undo = can_undo;
+        visuals.can_redo = can_redo;
+        changed
+    })
+    .unwrap_or((false, false));
+    for (id, changed) in [(ID_UNDO, changed.0), (ID_REDO, changed.1)] {
+        let button = GetDlgItem(toolbar as Hwnd, id as i32);
+        if changed && !button.is_null() {
+            InvalidateRect(button, null(), 1);
+        }
+    }
+}
+
 impl Toolbar {
     /// Apply the same staged policy on every resize, including growth.
     // SAFETY CONTRACT:
@@ -495,6 +600,12 @@ impl Toolbar {
             let plan =
                 shotkit::toolbar_layout::layout(width, GetDpiForWindow(self.hwnd), &layout_items());
             self.height.set(plan.height);
+            let separators_changed = with_visuals(self.hwnd, |visuals| {
+                let changed = visuals.separators != plan.separators;
+                visuals.separators.clone_from(&plan.separators);
+                changed
+            })
+            .unwrap_or(false);
             menus::set_overflow(self.hwnd, plan.overflow);
             let _ = SetWindowPos(
                 self.hwnd,
@@ -525,6 +636,10 @@ impl Toolbar {
                 } else {
                     ShowWindow(*button, 0);
                 }
+            }
+            if separators_changed {
+                // Buttons clip themselves; only the strip between them repaints.
+                InvalidateRect(self.hwnd, null(), 1);
             }
             match self.pending_width.take() {
                 Some(latest) if latest != width => width = latest,

@@ -692,6 +692,25 @@ unsafe fn editor_windows() -> Vec<H> {
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
+// Warum erfüllt: proc ruft nur für eigene Editorfenster mit gültigem Userdata auf.
+// Nachrichten: toolbar::set_history ruft nur InvalidateRect; kein State-Borrow bleibt über den Aufruf bestehen.
+unsafe fn sync_history_buttons(h: H) {
+    let state = window_state(h);
+    // A gesture stages its edit; undo and redo are briefly unavailable then.
+    // Do not flash the two buttons for every stroke.
+    if state.drawing {
+        return;
+    }
+    let Some(history) = state.editor.as_ref().map(|editor| {
+        let document = editor.document();
+        (document.can_undo(), document.can_redo())
+    }) else {
+        return;
+    };
+    toolbar::set_history(h, history.0, history.1);
+}
+// SAFETY CONTRACT:
+// Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
 // Warum erfüllt: Aufruf für eigene Editorfenster; der Titel besitzt seine Daten vor dem Win32-Aufruf.
 // Nachrichten: GetWindowTextW und SetWindowTextW senden synchron WM_GETTEXT bzw. WM_SETTEXT an das eigene Fenster; der aus dem State erzeugte Titel und der Lesepuffer sind besitzend und der Borrow endet vorher.
 unsafe fn refresh_title(h: H) {

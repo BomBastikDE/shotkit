@@ -324,7 +324,8 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- # Stage 0 uses compact spacing for 33 buttons: 2*4 + 33*(29+1) - 1 = 997 logical
+ # Stage 0 uses compact spacing for 33 buttons and four section separators:
+ # 2*4 + 33*(29+1) - 1 + 4*2 = 1005 logical
  # client pixels. Include measured nonclient borders, and keep the complete
  # window on the primary display so every GetPixel sample is screen-backed.
  $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
@@ -333,7 +334,8 @@ try {
  # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
  $margin=[int][Math]::Floor((4*$dpi+48)/96)
  $size=[int][Math]::Floor((29*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
- $wide=2*$margin+33*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
+ $separator=[int][Math]::Floor((2*$dpi+48)/96)
+ $wide=2*$margin+33*($size+$gap)-$gap+4*$separator+($outer.Right-$outer.Left-$initialClient.Right)
  $tall=[int][Math]::Round(600*$dpi/96)
  $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
  if($wide -gt $screenWidth -or $tall -gt $screenHeight){throw "RESPONSIVE_DISPLAY_TOO_SMALL: required outer=${wide}x${tall}; primary display=${screenWidth}x${screenHeight}; dpi=$dpi"}

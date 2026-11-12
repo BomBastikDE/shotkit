@@ -129,6 +129,7 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     drop(modal);
     if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 {
         refresh_title(h);
+        sync_history_buttons(h);
     }
     result
 }
