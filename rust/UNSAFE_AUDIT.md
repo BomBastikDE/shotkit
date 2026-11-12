@@ -74,7 +74,7 @@ Audit-Statuswerte werden durch die Titelkorrektur nicht angehoben.
 | `src/app/mod.rs:378` | `toolbar_height` | Beleg fehlt | Nachzuweisen: h besitzt einen lebenden WindowState auf dem UI-Thread. |
 | `src/app/mod.rs:391` | `new` | Beleg fehlt | Nachzuweisen: h bleibt bis zum Ende des Guards auf dem UI-Thread am Leben. |
 | `src/app/mod.rs:407` | `editor_windows` | Beleg fehlt | Nachzuweisen: EDITOR_WINDOWS wird nur auf dem UI-Thread verändert. |
-| `src/app/mod.rs:414` | `refresh_title` | Beleg fehlt | Nachzuweisen: h und sein WindowState sind auf dem UI-Thread gültig. |
+| `src/app/mod.rs:669` | `refresh_title` | Beleg fehlt | Nachzuweisen: h und sein WindowState sind auf dem UI-Thread gültig. Seit dem Review 2026-11-12 liest die Funktion den Titel zuerst mit `GetWindowTextW` in einen eigenen Puffer (Länge Titel + 1, als `max_count` übergeben) und ruft `SetWindowTextW` nur bei Abweichung auf. |
 | `src/app/mod.rs:444` | `show_editors` | Beleg fehlt | Nachzuweisen: Fensterliste und PRIMARY gehören zum aktiven UI-Thread. |
 | `src/app/mod.rs:478` | `quit_application` | Beleg fehlt | Nachzuweisen: h und alle gelisteten Fenster gehören zum UI-Thread. |
 | `src/app/mod.rs:519` | `run_application` | bewusst zurückgestellt | Eintrittsthread und einmaliger Aufruf sind im Code sichtbar; Panikfreiheit aller aufgerufenen Windows-Callbacks über die ABI ist damit nicht nachgewiesen. |

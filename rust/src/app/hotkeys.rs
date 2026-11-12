@@ -19,7 +19,8 @@ pub(super) unsafe fn register(h: H) {
     if !register(registration(1)) {
         MessageBoxW(
             h,
-            wide("F9 ist belegt. Bereichsaufnahme über Einzelklick auf das Tray-Symbol.").as_ptr(),
+            wide("F9 ist belegt. Bildschirmaufnahme über das Tray-Menü („Bildschirm aufnehmen“).")
+                .as_ptr(),
             wide("ShotKit").as_ptr(),
             0x30,
         );
