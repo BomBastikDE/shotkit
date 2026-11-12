@@ -40,6 +40,12 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
         drop(Box::from_raw(state));
         return DefWindowProcW(h, m, w, l);
     }
+    if h == PRIMARY && m != 0 && m == TASKBAR_CREATED.load(Ordering::SeqCst) {
+        // Explorer restarted, or the taskbar appeared only after ShotKit
+        // started: every notification icon is gone and must be added again.
+        tray::restore(h);
+        return 0;
+    }
     if m == 0x0010
         && window_state(h)
             .initialization_close_blocked
