@@ -239,8 +239,12 @@ fn settings_path_from(
     app_data: Option<std::ffi::OsString>,
     local_app_data: Option<std::ffi::OsString>,
 ) -> Result<PathBuf, SettingsError> {
-    let base = app_data
-        .or(local_app_data)
+    // A variable that is set but empty would yield a path relative to the
+    // current directory; treat it like an absent one.
+    let base = [app_data, local_app_data]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
         .ok_or(SettingsError::NoConfigDirectory)?;
     Ok(PathBuf::from(base)
         .join("ShotKitRust")
@@ -303,6 +307,10 @@ fn parse_settings(path: &Path, bytes: &[u8]) -> Result<Settings, SettingsError> 
     struct VersionHeader {
         version: u32,
     }
+    // Editors such as Notepad ("UTF-8 with BOM") and Windows PowerShell 5 put a
+    // byte order mark in front of the JSON. serde_json rejects it, so skip it
+    // for parsing only: callers keep the exact file bytes as their baseline.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let header: VersionHeader =
         serde_json::from_slice(bytes).map_err(|source| SettingsError::Json {
             path: path.to_owned(),
@@ -921,6 +929,45 @@ mod tests {
             settings_path_from(None, Some(local.clone().into_os_string())).unwrap(),
             local.join("ShotKitRust").join("settings.json")
         );
+    }
+
+    #[test]
+    fn empty_app_data_variables_never_yield_a_relative_settings_path() {
+        let local = PathBuf::from(r"C:\Users\example\AppData\Local");
+        assert_eq!(
+            settings_path_from(Some("".into()), Some(local.clone().into_os_string())).unwrap(),
+            local.join("ShotKitRust").join("settings.json")
+        );
+        assert!(matches!(
+            settings_path_from(Some("".into()), Some("".into())),
+            Err(SettingsError::NoConfigDirectory)
+        ));
+        assert!(matches!(
+            settings_path_from(None, None),
+            Err(SettingsError::NoConfigDirectory)
+        ));
+    }
+
+    #[test]
+    fn utf8_byte_order_mark_is_accepted_and_kept_in_the_snapshot() {
+        let dir = test_dir();
+        let path = dir.join("settings.json");
+        let with_bom = b"\xEF\xBB\xBF{\"version\":1,\"open_editor\":false}";
+        fs::write(&path, with_bom).unwrap();
+
+        assert!(!load(&path).unwrap().open_editor);
+        let (settings, snapshot) = load_snapshot(&path).unwrap();
+        assert!(!settings.open_editor);
+        // The guarded save compares against the exact bytes on disk.
+        assert_eq!(snapshot.as_deref(), Some(&with_bom[..]));
+        assert!(matches!(
+            load_outcome(&path).unwrap(),
+            SettingsLoadOutcome::Loaded { .. }
+        ));
+        // Only one leading mark is skipped; anything else stays malformed.
+        fs::write(&path, b"\xEF\xBB\xBF\xEF\xBB\xBF{\"version\":1}").unwrap();
+        assert!(matches!(load(&path), Err(SettingsError::Json { .. })));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
