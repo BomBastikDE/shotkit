@@ -160,16 +160,28 @@ pub fn pan_after_wheel(
         )
     }
 }
+/// Map a client point to image coordinates.
+///
+/// Shape coordinates are edges, not pixel indices: an area from `a` to `b`
+/// covers the pixels `a..b`. The last screen column and row of the image view,
+/// and every position beyond them, therefore map to the far image edge (`w`,
+/// `h`). Otherwise an area dragged to or past the right or bottom border could
+/// never include the last pixel column or row, which matters for redaction.
 pub fn to_image(view: View, image: (u32, u32), point: (i32, i32)) -> (i32, i32) {
     let w = image.0.max(1).min(i32::MAX as u32) as i32;
     let h = image.1.max(1).min(i32::MAX as u32) as i32;
-    let x = ((i64::from(point.0) - i64::from(view.x)) * i64::from(w)
-        / i64::from(view.width.max(1)))
-    .clamp(0, (w - 1) as i64);
-    let y = ((i64::from(point.1) - i64::from(view.y)) * i64::from(h)
-        / i64::from(view.height.max(1)))
-    .clamp(0, (h - 1) as i64);
-    (x as i32, y as i32)
+    let axis = |position: i32, origin: i32, extent: i32, size: i32| {
+        let extent = i64::from(extent.max(1));
+        let offset = i64::from(position) - i64::from(origin);
+        if offset >= extent - 1 {
+            return size;
+        }
+        (offset * i64::from(size) / extent).clamp(0, i64::from(size)) as i32
+    };
+    (
+        axis(point.0, view.x, view.width, w),
+        axis(point.1, view.y, view.height, h),
+    )
 }
 /// The screen-space union of old and new shape footprints, clipped to the image.
 /// Text bounds are approximate in the editor; conservatively redraw its image view.
@@ -595,8 +607,29 @@ mod tests {
         };
         assert_eq!(
             to_image(v, (i32::MAX as u32, i32::MAX as u32), (i32::MAX, i32::MAX)),
-            (i32::MAX - 1, i32::MAX - 1)
+            (i32::MAX, i32::MAX)
         );
+    }
+
+    #[test]
+    fn far_edge_and_positions_beyond_it_map_to_the_image_edge() {
+        // 1:1, enlarged and reduced views of a 100x80 image.
+        for (view_width, view_height) in [(100, 80), (400, 320), (25, 20)] {
+            let v = View {
+                x: 10,
+                y: 20,
+                width: view_width,
+                height: view_height,
+            };
+            let image = (100, 80);
+            assert_eq!(to_image(v, image, (10, 20)), (0, 0));
+            assert_eq!(to_image(v, image, (-500, -500)), (0, 0));
+            let last = (10 + view_width - 1, 20 + view_height - 1);
+            assert_eq!(to_image(v, image, last), (100, 80));
+            assert_eq!(to_image(v, image, (last.0 + 300, last.1 + 300)), (100, 80));
+            let before_last = to_image(v, image, (last.0 - 1, last.1 - 1));
+            assert!(before_last.0 < 100 && before_last.1 < 80);
+        }
     }
 
     #[test]

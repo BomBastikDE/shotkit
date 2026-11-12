@@ -1320,6 +1320,47 @@ mod tests {
     }
 
     #[test]
+    fn redaction_dragged_to_the_far_border_covers_the_last_row_and_column() {
+        use crate::shapes::Point;
+        use crate::view::{to_image, View};
+        // Reduced, 1:1 and enlarged views; the pointer ends on the last screen
+        // pixel of the image and, with mouse capture, far outside the window.
+        for (view_width, view_height) in [(4, 3), (8, 6), (32, 24)] {
+            let view = View {
+                x: 5,
+                y: 7,
+                width: view_width,
+                height: view_height,
+            };
+            for overshoot in [0, 200] {
+                let end = to_image(
+                    view,
+                    (8, 6),
+                    (
+                        5 + view_width - 1 + overshoot,
+                        7 + view_height - 1 + overshoot,
+                    ),
+                );
+                let source = Image::new(8, 6, [11, 22, 33, 255].repeat(48)).unwrap();
+                let shape = Shape::new(ShapeKind::Redact {
+                    start: Point::new(0.0, 0.0),
+                    end: Point::new(end.0 as f32, end.1 as f32),
+                });
+                let result = render_document(&source, &[shape]).unwrap();
+                assert!(
+                    result
+                        .pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|pixel| *pixel == [0, 0, 0, 255]),
+                    "view {view_width}x{view_height}, overshoot {overshoot}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn redactions_only_preserve_alpha_outside_their_union() {
         use crate::shapes::Point;
         let source = ImageHandle::from_image(
