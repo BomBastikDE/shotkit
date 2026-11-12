@@ -90,7 +90,7 @@ Den Bereich dann frei aufziehen.
 <details>
 <summary><b>Windows warnt beim Start vor der Datei.</b></summary>
 
-Die EXE ist noch nicht signiert. Prüfsumme vergleichen (siehe [Installation](installation.md#herunterladen)),
+Die EXE ist nicht signiert; eine Signierung ist derzeit nicht geplant. Prüfsumme vergleichen (siehe [Installation](installation.md#herunterladen)),
 dann „Weitere Informationen“ → „Trotzdem ausführen“.
 
 </details>

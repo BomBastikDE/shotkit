@@ -1,12 +1,13 @@
-# ShotKit: Ausblick nach 2.0.0
+# ShotKit: Ausblick nach 2.1.0
 
-ShotKit 2.0.0 ist die erste stabile Version in Rust. Sie ersetzt die C#-Version 1.2.0 (Branch `csharp/1.x`, dort nur noch Sicherheitskorrekturen). Der Funktionsvergleich mit 1.2.0 steht in [PARITY.md](PARITY.md), die Änderungen im [Änderungsprotokoll](CHANGELOG.md).
+ShotKit 2 ist die Rust-Version; aktuell ist 2.1.0 (Rissrand, Bild anheften, bestätigtes Seitenende). Seit 2.0.0 ersetzt sie die C#-Version 1.2.0 (Branch `csharp/1.x`, dort nur noch Sicherheitskorrekturen). Der Funktionsvergleich mit 1.2.0 steht in [PARITY.md](PARITY.md), die Änderungen im [Änderungsprotokoll](CHANGELOG.md).
 
-**Maßgeblich ist der Meilenstein [„nach 2.0.0“](https://github.com/BomBastikDE/shotkit/milestone/2)** im Issue-Tracker. Diese Datei fasst nur die Richtung zusammen; Details, Prioritäten und Abschlusskriterien stehen in den Issues.
+**Maßgeblich sind die Meilensteine [„v2.2.0“](https://github.com/BomBastikDE/shotkit/milestone/5) mit dem Plan in [#108](https://github.com/BomBastikDE/shotkit/issues/108) und [„nach 2.0.0“](https://github.com/BomBastikDE/shotkit/milestone/2)** im Issue-Tracker. Diese Datei fasst nur die Richtung zusammen; Details, Prioritäten und Abschlusskriterien stehen in den Issues.
 
 ## Qualität und Sicherheit
 
 - Rauschen der Verpixelung kryptografisch ableiten ([#85](https://github.com/BomBastikDE/shotkit/issues/85)).
+- Befunde des Code-Reviews vom 12.11.2026 abarbeiten ([#114](https://github.com/BomBastikDE/shotkit/issues/114)).
 - `unsafe`-Fläche verkleinern und das Audit aktuell halten ([#69](https://github.com/BomBastikDE/shotkit/issues/69)).
 - Den globalen `static mut STATE` des Auswahl-Overlays durch fenstergebundenen Zustand (`GWLP_USERDATA`) oder thread-lokalen Zustand ersetzen. Das soll Zuständigkeit und Lebensdauer des Zustands klarer machen und die Prüfung verschachtelter Windows-Nachrichten erleichtern.
 - Horizontales Schwenken ([#42](https://github.com/BomBastikDE/shotkit/issues/42)) und Verträglichkeit älterer Einstellungsdateien ([#26](https://github.com/BomBastikDE/shotkit/issues/26)).
@@ -14,11 +15,12 @@ ShotKit 2.0.0 ist die erste stabile Version in Rust. Sie ersetzt die C#-Version 
 ## Editor
 
 - Bildgröße ändern, also skalieren statt nur die Leinwand ([#32](https://github.com/BomBastikDE/shotkit/issues/32)).
-- Bereich ausschneiden und Rissrand-Effekt ([#33](https://github.com/BomBastikDE/shotkit/issues/33)).
+- Bereich ausschneiden, also einen Streifen entfernen ([#33](https://github.com/BomBastikDE/shotkit/issues/33)). Der Rissrand ist seit 2.1.0 enthalten ([#98](https://github.com/BomBastikDE/shotkit/issues/98)).
 - Schnellstile und Favoriten ([#34](https://github.com/BomBastikDE/shotkit/issues/34)).
 
 ## Aufnahme
 
+- Verzögerte Aufnahme mit sichtbarem Countdown und Abbrechen ([#109](https://github.com/BomBastikDE/shotkit/issues/109)).
 - Mauszeiger optional mit aufnehmen ([#36](https://github.com/BomBastikDE/shotkit/issues/36)): Einbau in PR #103, vor 2.1.0 zurückgestellt, weil der Zeiger im Praxistest fehlte. Die Bausteine (Zeigerbild, Zeigerobjekt im Editor) sind im Code vorhanden; der Weg zurück steht in #36.
 
 ## Konzepte
