@@ -12,6 +12,41 @@ Konfiguration. Automatische Tests ersetzen keinen Praxistest auf einem echten Re
 
 ---
 
+## Release v2.1.1 — `main` @ `93d18b6` — 2026-11-12
+
+Anlass: vollständiges Code-Review von `74b1b4d` (v2.1.0) in sechs Bereichen, Befunde und Umsetzung in [#114](https://github.com/BomBastikDE/shotkit/issues/114). Ausgangslage vor den Änderungen: `cargo fmt --check`, Clippy für Linux und das Windows-Ziel sowie 598 Bibliothekstests grün.
+
+### Automatische Tests (CI, je PR Linux und Windows grün)
+
+| Änderung | PR | Windows-Szenarien | Nachweis |
+|---|---|---|---|
+| Schwärzen und Flächenwerkzeuge bis an den Bildrand | #112 | 70/70 | [Lauf 43212008648](https://github.com/BomBastikDE/shotkit/actions/runs/43212008648). Neuer Test schlägt ohne die Korrektur fehl (lokal belegt) |
+| Rissrand entfernt die Farbe abgerissener Pixel | #113 | 70/70 | [Lauf 43212181741](https://github.com/BomBastikDE/shotkit/actions/runs/43212181741). Neuer Test schlägt ohne die Korrektur fehl (lokal belegt) |
+| `settings.json` mit BOM, leere `APPDATA` | #115 | 70/70 | [Lauf 43212422709](https://github.com/BomBastikDE/shotkit/actions/runs/43212422709). Beide neuen Tests schlagen ohne die Korrektur fehl (lokal belegt) |
+| Dialogtext, Fokus, F9-Meldung, Fenstertitel | #116 | 70/70 | [Lauf 43212667899](https://github.com/BomBastikDE/shotkit/actions/runs/43212667899). Fokus nach abgebrochenem Farbdialog ohne automatischen Test |
+| Overlay-Zustand freigeben | #117 | 70/70 | [Lauf 43212780570](https://github.com/BomBastikDE/shotkit/actions/runs/43212780570). Kein neuer Test (kein beobachtbares Verhalten) |
+| Weichzeichnen großer Flächen kachelweise | #118 | 70/70 | [Lauf 43213242742](https://github.com/BomBastikDE/shotkit/actions/runs/43213242742). Kachelergebnis Byte für Byte gleich dem Einmal-Durchlauf; 4K-Vollbild |
+| Tray-Symbol nach Explorer-Neustart | #119 | 70/70 | [Lauf 43220832281](https://github.com/BomBastikDE/shotkit/actions/runs/43220832281). Startentscheidung getestet; echter Explorer-Neustart nicht automatisch geprüft |
+| Herunterfahren mit ungespeicherten Änderungen | #120 | 70/70 | [Lauf 43223634347](https://github.com/BomBastikDE/shotkit/actions/runs/43223634347). Antwort getestet; echte Abmeldung nicht automatisch geprüft |
+| Symbolleiste: Trennlinien, Hervorhebung, blasses Zurück/Wiederholen | #121 | 70/70 | [Lauf 43223638455](https://github.com/BomBastikDE/shotkit/actions/runs/43223638455). Erster Lauf 69/70: Sichttest erwartete neutrale Fläche unter dem ruhenden Mauszeiger; Test angepasst, danach 70/70 |
+| Doku auf Stand 2.1.0 | #122 | 70/70 | [Lauf 43214756408](https://github.com/BomBastikDE/shotkit/actions/runs/43214756408). Nur Dokumentation |
+| Vorschau-Zwischenspeicher mit Schwärzung | #123 | 70/70 | [Lauf 43215536721](https://github.com/BomBastikDE/shotkit/actions/runs/43215536721). Vorschau Byte für Byte gleich dem vollen Render für jede Teilung; 4K mit 20 Objekten rund 1000 ms → 62 ms (Raspberry Pi 5, Release-Build) |
+| Release-Vorbereitung 2.1.1 | #124 | 70/70 | [Lauf 43223643424](https://github.com/BomBastikDE/shotkit/actions/runs/43223643424). Enthält #120 und #121 als Merge |
+
+Die Szenarienzahl stammt aus `tests/run-all.ps1` (70 Einträge in der CI); einzeln ausgezählt ist sie im Protokoll von #121 („70 scenarios“). Bibliothekstests auf dem Release-Stand: 611 (lokal, Linux).
+
+### Praxistest und Freigabe
+
+**Kein Praxistest vor dem Release.** Der Owner hat am 2026-11-12 entschieden, 2.1.1 direkt nach grüner CI zu veröffentlichen. Auf einem echten Windows-Rechner nicht gesehen sind damit: das Aussehen der Symbolleiste, das Tray-Symbol nach einem Explorer-Neustart, der Windows-Hinweis beim Abmelden mit ungespeichertem Bild und der Fokus nach abgebrochenem Farbdialog. Die Schritte 16–20 in [WINDOWS_PRAXISTEST.md](WINDOWS_PRAXISTEST.md) decken sie ab; das Änderungsprotokoll nennt die Grenze.
+
+### Release
+
+- Release-Lauf [43225994488](https://github.com/BomBastikDE/shotkit/actions/runs/43225994488): Linux und Windows grün, Veröffentlichung erfolgreich.
+- [Release v2.1.1](https://github.com/BomBastikDE/shotkit/releases/tag/v2.1.1): `shotkit-v2.1.1-windows-x64.exe`, SHA256 `778522461fd5c1344f1455f26c2cd498a369c7487e05a6f11e1315672ffcda43`.
+- Abschlussprüfung bestanden: Tag auf `main`, ist „Latest“, kein Entwurf und keine Vorabversion, v1.2.0 weiter vorhanden, heruntergeladene EXE entspricht der Prüfsumme und enthält die Versionsangabe 2.1.1, „Bekannte Grenzen“ im Release-Text. „Prototyp“ kommt in der EXE nur in der internen Fensterklasse und im Namen der Einzelinstanz-Sperre vor (`ShotKitRustPrototype`), nicht in sichtbaren Texten.
+
+---
+
 ## Release v2.1.0 — `main` @ `aa39d8f` — 2026-11-08
 
 ### Automatische Tests (CI, je PR Linux und Windows grün)
