@@ -57,7 +57,7 @@ use shotkit::{
     stitch::{Image, Rotation},
     view,
 };
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 type H = *mut c_void;
@@ -228,6 +228,7 @@ extern "system" {
     ) -> usize;
     fn KillTimer(h: H, id: usize) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
+    fn RegisterWindowMessageW(name: *const u16) -> u32;
     fn SendMessageTimeoutW(
         h: H,
         msg: u32,
@@ -588,6 +589,9 @@ fn abandon_protected_editor_with(
     retry_protected_editor_cleanup_with(destroy)
 }
 static mut PRIMARY: H = null_mut();
+// "TaskbarCreated": Explorer broadcasts it whenever it (re)creates the taskbar.
+// Zero until registered; registered window messages are never zero.
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static mut EDITOR_WINDOWS: Vec<H> = Vec::new();
 static QUITTING: AtomicBool = AtomicBool::new(false);
 // Set only after every document has been approved and its window closed.
@@ -880,6 +884,10 @@ unsafe fn run_application() {
     }
     PRIMARY = h;
     load_settings(h);
+    TASKBAR_CREATED.store(
+        RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+        Ordering::SeqCst,
+    );
     if !tray::install(h, inst) {
         DestroyWindow(h);
         return;

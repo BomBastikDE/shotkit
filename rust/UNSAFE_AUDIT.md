@@ -91,8 +91,10 @@ Audit-Statuswerte werden durch die Titelkorrektur nicht angehoben.
 | `src/app/rendering.rs:203` | `create_bitmap` | Beleg fehlt | Nachzuweisen: Bildpufferlänge entspricht der 32-Bit-DIB-Größe und der DC ist gültig. |
 | `src/app/rendering.rs:243` | `install_bitmap` | bewusst zurückgestellt | Neue Bitmaps stammen aus geprüfter Erstellung; die exklusive alte/native Bitmap-Lebensdauer und alle reentranten Aufrufketten sind nicht vollständig belegt. |
 | `src/app/tray.rs:7` | `tray_menu` | bewusst zurückgestellt | Menüwerte sind eigenständig und ModalGuard ist vorhanden; gezielte Tests für gleichzeitiges Schließen und verschachtelte Folgeaktionen fehlen. |
-| `src/app/tray.rs:166` | `install` | Beleg fehlt | Nachzuweisen: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle. |
-| `src/app/tray.rs:192` | `remove` | Beleg fehlt | Nachzuweisen: h und ID bezeichnen das zuvor registrierte Symbol. |
+| `src/app/tray.rs:180` | `add` | belegt | Einziger Ort für `NIM_ADD`. Aufrufer sind `install` (Start, neu erzeugtes Primärfenster) und `restore` (Primärfenster bei „TaskbarCreated“); die Notify-Daten sind lokal und leben über den Aufruf. Kein Dialog, kein gehaltener Zustand. |
+| `src/app/tray.rs:215` | `install` | Beleg fehlt | Nachzuweisen: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle. Fehlt beim Start die Taskleiste (`Shell_TrayWnd`), gilt der Start als gelungen; das Symbol folgt über `restore`. |
+| `src/app/tray.rs:236` | `restore` | belegt | `proc` ruft nur für `PRIMARY` und nur bei der per `RegisterWindowMessageW` registrierten Nachricht „TaskbarCreated“ auf; das Fenster lebt dabei. Ein Fehlschlag (Symbol existiert noch) bleibt folgenlos. |
+| `src/app/tray.rs:246` | `remove` | Beleg fehlt | Nachzuweisen: h und ID bezeichnen das zuvor registrierte Symbol. |
 | `src/app/window.rs:9` | `proc` | bewusst zurückgestellt | Userdata wird vor Freigabe genullt und ModalGuard schützt ausgewählte Pfade; vollständige Zerstörungsreihenfolge und Panikfreiheit aller Callbackzweige sind nicht belegt. |
 | `src/app/window.rs:83` | `dispatch_window` | bewusst zurückgestellt | Der einzige Aufrufer prüft Userdata; die nachrichtenspezifischen Pointer- und Lebensdauerverträge aller sechs delegierten Handler bleiben gesondert nachzuweisen. |
 | `src/app/window_commands.rs:8` | `dispatch_system` | Beleg fehlt | Nachzuweisen: Der Fensterzustand und die jeweiligen Nachrichtenparameter sind gültig. |

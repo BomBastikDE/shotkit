@@ -175,9 +175,9 @@ pub(super) unsafe fn tray_menu(h: H, active_target: Result<ActiveWindowSnapshot,
 
 // SAFETY CONTRACT:
 // Voraussetzung: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle.
-// Warum erfüllt bzw. offen: run übergibt das neu erzeugte Fenster und GetModuleHandleW; lokale Notify-Daten leben während des Aufrufs.
-// Nachrichten: Shell-Aufruf und Fehlerdialog können Nachrichten auslösen.
-pub(super) unsafe fn install(h: H, inst: H) -> bool {
+// Warum erfüllt: install und restore übergeben das Primärfenster und GetModuleHandleW; lokale Notify-Daten leben während des Aufrufs.
+// Nachrichten: Shell_NotifyIconW kann Nachrichten auslösen; es wird kein Zustand gehalten.
+unsafe fn add(h: H, inst: H) -> bool {
     let mut n: Notify = zeroed();
     n.size = size_of::<Notify>() as u32;
     n.hwnd = h;
@@ -188,16 +188,55 @@ pub(super) unsafe fn install(h: H, inst: H) -> bool {
     n.icon = LoadIconW(inst, std::ptr::without_provenance::<u16>(1));
     let tip = wide("ShotKit: F9 = Bildschirm, Klick = Bereich, Rechtsklick = Menü");
     n.tip[..tip.len()].copy_from_slice(&tip);
-    if Shell_NotifyIconW(0, &n) == 0 {
-        MessageBoxW(
-            h,
-            wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
-            wide("ShotKit").as_ptr(),
-            0x10,
-        );
-        return false;
+    Shell_NotifyIconW(0, &n) != 0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupTray {
+    Ready,
+    /// No taskbar yet, for example when autostart runs before Explorer is up.
+    /// The icon is added when "TaskbarCreated" arrives.
+    WaitForTaskbar,
+    Failed,
+}
+
+fn startup_tray(added: bool, taskbar_exists: bool) -> StartupTray {
+    match (added, taskbar_exists) {
+        (true, _) => StartupTray::Ready,
+        (false, false) => StartupTray::WaitForTaskbar,
+        (false, true) => StartupTray::Failed,
     }
-    true
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h ist ein lebendes eigenes Fenster und inst ein gültiges Modulhandle.
+// Warum erfüllt bzw. offen: run übergibt das neu erzeugte Fenster und GetModuleHandleW.
+// Nachrichten: Shell-Aufruf und Fehlerdialog können Nachrichten auslösen.
+pub(super) unsafe fn install(h: H, inst: H) -> bool {
+    let added = add(h, inst);
+    let taskbar_exists = !FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null()).is_null();
+    match startup_tray(added, taskbar_exists) {
+        StartupTray::Ready | StartupTray::WaitForTaskbar => true,
+        StartupTray::Failed => {
+            MessageBoxW(
+                h,
+                wide("Tray-Symbol konnte nicht erstellt werden.").as_ptr(),
+                wide("ShotKit").as_ptr(),
+                0x10,
+            );
+            false
+        }
+    }
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: h ist das lebende Primärfenster auf seinem Besitzerthread.
+// Warum erfüllt: proc ruft nur für PRIMARY bei der registrierten Nachricht "TaskbarCreated" auf.
+// Nachrichten: Shell_NotifyIconW kann Nachrichten auslösen; kein Dialog, kein Zustand.
+pub(super) unsafe fn restore(h: H) {
+    // Fails harmlessly when the icon still exists (the message is also sent
+    // after a DPI change of the primary display).
+    add(h, GetModuleHandleW(std::ptr::null()));
 }
 
 // SAFETY CONTRACT:
@@ -210,4 +249,17 @@ pub(super) unsafe fn remove(h: H) {
     n.hwnd = h;
     n.id = 1;
     Shell_NotifyIconW(2, &n);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_waits_for_a_missing_taskbar_and_fails_only_with_one_present() {
+        assert_eq!(startup_tray(true, true), StartupTray::Ready);
+        assert_eq!(startup_tray(true, false), StartupTray::Ready);
+        assert_eq!(startup_tray(false, false), StartupTray::WaitForTaskbar);
+        assert_eq!(startup_tray(false, true), StartupTray::Failed);
+    }
 }
