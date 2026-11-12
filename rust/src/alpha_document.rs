@@ -224,13 +224,17 @@ fn render_preview_with_output_lease(
         *cache = None;
         return Err("Ungültiger Vorschau-Präfix.".into());
     };
-    // Pixelation must sample a source sanitized by every redaction, including
-    // those after the cached prefix. Their edits invalidate that dependency.
+    // Pixelation, blur and the magnifier must sample a source sanitized by
+    // every redaction, including those after the cached prefix. Their edits
+    // invalidate that dependency, so a document that both redacts and samples
+    // is never cached. Redactions alone are safe to cache: nothing reads the
+    // source, and they are reapplied to the result below, after every shape.
     // Several spotlights form one combined effect across prefix and suffix,
     // which a cached prefix cannot express either.
-    if shapes
+    if (shapes
         .iter()
         .any(|shape| matches!(shape.kind, ShapeKind::Redact { .. }))
+        && shapes.iter().any(|shape| samples_source(&shape.kind)))
         || shapes
             .iter()
             .filter(|shape| matches!(shape.kind, ShapeKind::Spotlight { .. }))
@@ -1099,6 +1103,94 @@ mod tests {
     }
 
     #[test]
+    fn redacted_preview_is_cached_only_without_sampling_and_always_matches_export() {
+        use crate::shapes::{Point, Rect, Spotlight, StampKind};
+        let source = ImageHandle::from_image(
+            Image::new(
+                60,
+                60,
+                (0..3600)
+                    .flat_map(|i| [(i * 7) as u8, (i * 3) as u8, (i / 5) as u8, 255])
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let stamp = |x: f32, y: f32, alpha: u8| {
+            let mut stamp = Shape::new(ShapeKind::Stamp {
+                center: Point::new(x, y),
+                kind: StampKind::ALL[0],
+            });
+            stamp.style.font_size = 40.0;
+            stamp.style.color.a = alpha;
+            stamp
+        };
+        let redact = |x: f32, y: f32| {
+            Shape::new(ShapeKind::Redact {
+                start: Point::new(x, y),
+                end: Point::new(x + 20.0, y + 14.0),
+            })
+        };
+        let spotlight = Shape::new(ShapeKind::Spotlight {
+            data: Spotlight::new(
+                Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 35.0,
+                    height: 30.0,
+                },
+                0.5,
+            )
+            .unwrap(),
+        });
+        // Redactions before, between and after overlapping annotations.
+        let shapes = vec![
+            redact(5.0, 5.0),
+            stamp(20.0, 15.0, 255),
+            spotlight,
+            redact(25.0, 20.0),
+            stamp(35.0, 30.0, 128),
+            redact(30.0, 40.0),
+            stamp(40.0, 45.0, 200),
+        ];
+        for end in 1..=shapes.len() {
+            let shapes = &shapes[..end];
+            let expected = render_document(&source, shapes).unwrap();
+            let mut cache = None;
+            for split in 0..=shapes.len() {
+                assert_eq!(
+                    render_preview(&source, shapes, split, &mut cache).unwrap(),
+                    expected,
+                    "end {end}, split {split}"
+                );
+                assert_eq!(cache.is_some(), split > 0, "end {end}, split {split}");
+            }
+        }
+        // One sampling effect anywhere switches the cache off again: it has to
+        // read a source sanitized by every redaction, cached or not.
+        let blur = Shape::new(ShapeKind::Blur {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(60.0, 60.0),
+        })
+        .with_pixelation_seed(0x74_5afe_1234_5678);
+        for position in 0..=shapes.len() {
+            let mut sampled = shapes.clone();
+            sampled.insert(position, blur.clone());
+            let expected = render_document(&source, &sampled).unwrap();
+            let mut cache = None;
+            render_preview(&source, &shapes, shapes.len(), &mut cache).unwrap();
+            assert!(cache.is_some());
+            for split in 0..=sampled.len() {
+                assert_eq!(
+                    render_preview(&source, &sampled, split, &mut cache).unwrap(),
+                    expected,
+                    "blur at {position}, split {split}"
+                );
+                assert!(cache.is_none(), "blur at {position}, split {split}");
+            }
+        }
+    }
+
+    #[test]
     fn gaussian_blur_matches_kernel_preserves_outside_and_ignores_style_color() {
         use crate::gaussian_blur::gaussian_blur_region;
         use crate::shapes::{Color, Point};
@@ -1422,7 +1514,8 @@ mod tests {
                 render_preview(&source, &shapes, split, &mut cache).unwrap(),
                 expected
             );
-            assert!(cache.is_none());
+            // Nothing samples the source here, so a non-empty prefix is cached.
+            assert_eq!(cache.is_some(), split > 0);
         }
         for bad in [f32::NAN, f32::INFINITY] {
             let invalid = Shape::new(ShapeKind::Redact {
