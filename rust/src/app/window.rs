@@ -46,6 +46,27 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
         tray::restore(h);
         return 0;
     }
+    if m == 0x0011 {
+        // WM_QUERYENDSESSION: sign-out, restart or shutdown. Without an answer
+        // Windows ends the process and unsaved annotations or captures are
+        // lost without any question. No dialog here: Windows allows only a
+        // few seconds and shows the reason itself, with "cancel" for the user.
+        let unsaved = unsaved_work();
+        if unsaved {
+            ShutdownBlockReasonCreate(
+                h,
+                wide("Ungespeicherte Bilder oder Aufnahmen in ShotKit").as_ptr(),
+            );
+        } else {
+            ShutdownBlockReasonDestroy(h);
+        }
+        return end_session_reply(unsaved);
+    }
+    if m == 0x0016 && w == 0 {
+        // WM_ENDSESSION with FALSE: the session continues after all.
+        ShutdownBlockReasonDestroy(h);
+        return 0;
+    }
     if m == 0x0010
         && window_state(h)
             .initialization_close_blocked
@@ -108,6 +129,7 @@ pub(super) unsafe extern "system" fn proc(h: H, m: u32, w: W, l: L) -> L {
     drop(modal);
     if input && h != PRIMARY && GetWindowLongPtrW(h, -21) != 0 {
         refresh_title(h);
+        sync_history_buttons(h);
     }
     result
 }

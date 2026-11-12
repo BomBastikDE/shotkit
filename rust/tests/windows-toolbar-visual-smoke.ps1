@@ -324,7 +324,8 @@ try {
  if(-not $toolbar -or [ShotKitToolbarVisual.Native]::Owner($toolbar.H) -ne [uint32]$p.Id){throw 'TOOLBAR_MISSING_OR_WRONG_OWNER'}
 
  $dpi=[ShotKitToolbarVisual.Native]::GetDpiForWindow($main.H)
- # Stage 0 uses compact spacing for 33 buttons: 2*4 + 33*(29+1) - 1 = 997 logical
+ # Stage 0 uses compact spacing for 33 buttons and four section separators:
+ # 2*4 + 33*(29+1) - 1 + 4*2 = 1005 logical
  # client pixels. Include measured nonclient borders, and keep the complete
  # window on the primary display so every GetPixel sample is screen-backed.
  $outer=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect])
@@ -333,7 +334,8 @@ try {
  # Scale each layout unit separately, matching toolbar_layout::scale at non-96 DPI.
  $margin=[int][Math]::Floor((4*$dpi+48)/96)
  $size=[int][Math]::Floor((29*$dpi+48)/96);$gap=[int][Math]::Floor(($dpi+48)/96)
- $wide=2*$margin+33*($size+$gap)-$gap+($outer.Right-$outer.Left-$initialClient.Right)
+ $separator=[int][Math]::Floor((2*$dpi+48)/96)
+ $wide=2*$margin+33*($size+$gap)-$gap+4*$separator+($outer.Right-$outer.Left-$initialClient.Right)
  $tall=[int][Math]::Round(600*$dpi/96)
  $screenWidth=[ShotKitToolbarVisual.Native]::GetSystemMetrics(0);$screenHeight=[ShotKitToolbarVisual.Native]::GetSystemMetrics(1)
  if($wide -gt $screenWidth -or $tall -gt $screenHeight){throw "RESPONSIVE_DISPLAY_TOO_SMALL: required outer=${wide}x${tall}; primary display=${screenWidth}x${screenHeight}; dpi=$dpi"}
@@ -573,6 +575,13 @@ try {
  $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$trayStatus=[ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect)
  if($trayStatus -ne 0 -and $trayStatus -ne 1){throw ('TRAY_ICON_RECT_FAILED: Shell_NotifyIconGetRect returned HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
  if($trayStatus -eq 1){Write-Output 'TRAY: icon identity verified by Windows; no visible bounding rectangle (S_FALSE).'}
+ # The pointer still rests on the line button from the mouse selection above;
+ # the toolbar tints the button under the pointer. Move it onto the image and
+ # give the toolbar's 100 ms hover poll time to clear the highlight, so the
+ # screenshot shows the neutral face the smoothing check below expects. A
+ # highlight that failed to clear would fail that check.
+ if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($lp.X,$lr.Bottom+80)){throw 'HOVER_CLEAR_CURSOR_FAILED'}
+ Start-Sleep -Milliseconds 400
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
  if(-not [ShotKitToolbarVisual.Native]::SetWindowTextW($main.H,'ShotKit visual smoke fixture')){throw 'SCREENSHOT_TITLE_SANITIZE_FAILED'}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}

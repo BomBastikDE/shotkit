@@ -1,5 +1,28 @@
 # Änderungsprotokoll der Rust-Version
 
+## Version 2.1.1
+
+Korrekturen aus einem vollständigen Code-Review ([#114](https://github.com/BomBastikDE/shotkit/issues/114)) und eine aufgeräumte Symbolleiste im Editor.
+
+- **Schwärzen bis an den Bildrand:** Ein bis an den rechten oder unteren Rand gezogenes Schwärzen-Rechteck deckt jetzt auch die letzte Pixelspalte und -zeile ab. Bisher blieb dort ein ein Pixel breiter Streifen des Originals im gespeicherten Bild. Das gilt ebenso für Verpixeln, Weichzeichnen und Marker ([#112](https://github.com/BomBastikDE/shotkit/pull/112)).
+- **Rissrand:** Abgerissene Bildteile werden wirklich entfernt. Bisher waren sie in der PNG-Datei nur unsichtbar und ließen sich mit einem Bildprogramm zurückholen ([#113](https://github.com/BomBastikDE/shotkit/pull/113)).
+- **Symbolleiste:** Feine Trennlinien gliedern die Leiste in Werkzeuge, Farben, Stil, Verlauf und Ansicht. Das Symbol unter dem Mauszeiger wird hervorgehoben, das aktive Werkzeug ist eingerahmt, und „Zurück“ und „Wiederholen“ erscheinen blass, solange sie nichts bewirken ([#121](https://github.com/BomBastikDE/shotkit/pull/121)).
+- **Schnellere Vorschau nach dem Schwärzen:** Enthält ein Bild eine Schwärzung, reagierte der Editor beim Zeichnen weiterer Objekte träge. Das ist behoben, solange nicht zugleich verpixelt, weichgezeichnet oder mit der Bildlupe gearbeitet wird ([#123](https://github.com/BomBastikDE/shotkit/pull/123)).
+- **Weichzeichnen großer Flächen:** Eine Weichzeichnung über einen ganzen 4K-Screenshot ließ Vorschau und Speichern scheitern. Große Flächen werden jetzt verarbeitet ([#118](https://github.com/BomBastikDE/shotkit/pull/118)).
+- **Herunterfahren mit ungespeicherten Änderungen:** Beim Abmelden, Neustarten oder Herunterfahren meldet ShotKit Windows ein Editorfenster mit ungespeicherten Änderungen. Windows zeigt den Hinweis an und lässt dich abbrechen; bisher gingen die Änderungen ohne Rückfrage verloren ([#120](https://github.com/BomBastikDE/shotkit/pull/120)).
+- **Tray-Symbol:** Nach einem Neustart des Windows-Explorers erscheint das ShotKit-Symbol wieder im Infobereich. Startet ShotKit per Autostart, bevor die Taskleiste bereit ist, wartet es darauf, statt sich mit einer Fehlermeldung zu beenden ([#119](https://github.com/BomBastikDE/shotkit/pull/119)).
+- **Einstellungen:** Eine von Hand bearbeitete `settings.json` mit Byte-Order-Mark („UTF-8 mit BOM“) wird wieder gelesen ([#115](https://github.com/BomBastikDE/shotkit/pull/115)).
+- **Kleinigkeiten:** Der Dialog zu alten Temp-Dateien zeigt jede Datei in einer eigenen Zeile. Nach einem abgebrochenen Farbdialog der Sprechblase reagieren die Tastenkürzel des Editors sofort wieder. Die Meldung zu einer belegten F9-Taste nennt die richtige Aufnahmeart ([#116](https://github.com/BomBastikDE/shotkit/pull/116), [#117](https://github.com/BomBastikDE/shotkit/pull/117)).
+
+### Bekannte Grenzen
+- **Nicht auf einem echten Windows-Rechner gesehen:** Diese Version wurde ohne Praxistest veröffentlicht. Automatisch geprüft sind alle Korrekturen; das Aussehen der Symbolleiste, das Tray-Symbol nach einem Explorer-Neustart und der Hinweis beim Herunterfahren sind nur durch die Windows-Tests der CI belegt.
+- **Herunterfahren:** Windows zeigt blockierende Programme nur mit sichtbarem Fenster an. Liegt nur eine ungesicherte Aufnahme ohne Editorfenster vor, kann Windows ShotKit trotzdem beenden.
+- **Verpixeln und Weichzeichnen sind keine sichere Schwärzung.** Für vertrauliche Inhalte das Werkzeug **Schwärzen (S)** verwenden.
+- **Automatisches Speichern und Kopieren** passieren vor dem Editor, also vor einer Schwärzung.
+- **Die EXE ist nicht signiert**; Windows SmartScreen kann warnen.
+
+Die vollständige Liste der bekannten Grenzen: [Release 2.0.0](https://github.com/BomBastikDE/shotkit/releases/tag/v2.0.0).
+
 ## Version 2.1.0
 
 Neue Funktionen: Rissrand, Bild anheften und ein bestätigtes Seitenende bei der Scrollaufnahme.

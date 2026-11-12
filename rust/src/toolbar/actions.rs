@@ -270,10 +270,19 @@ pub(super) fn layout_items() -> Vec<shotkit::toolbar_layout::Item> {
                 }
                 _ => Group::Tool,
             },
+            // Separators: tools | colours | style | history | view.
+            section: match a.id {
+                ID_COLOR | ID_SWATCH_RED | ID_SWATCH_BLACK | ID_SWATCH_YELLOW | ID_SWATCH_BLUE => 1,
+                ID_FORM_STYLE | ID_LINE_WIDTH | ID_FONT_SIZE | ID_FRAME => 2,
+                ID_UNDO | ID_REDO => 3,
+                ID_VIEW => 4,
+                _ => 0,
+            },
         })
         .chain([ID_CAPTURE, ID_COPY, ID_SAVE, ID_FILE].map(|id| Item {
             id,
             group: Group::Fixed,
+            section: 0,
         }))
         .collect()
 }
@@ -283,17 +292,20 @@ mod tests {
     use super::*;
     #[test]
     fn stamp_toolbar_preserves_client_width_boundary_and_dpi_geometry() {
-        use shotkit::toolbar_layout::{layout, scale};
+        use shotkit::toolbar_layout::{layout, scale, separator_space};
         let items = layout_items();
         assert_eq!(items.len(), 33);
         for dpi in [96, 120, 144, 192] {
+            // 33 buttons and the four separators between the five sections.
             let full_width = 2 * scale(4, dpi)
                 + items.len() as i32 * (scale(29, dpi) + scale(1, dpi))
-                - scale(1, dpi);
+                - scale(1, dpi)
+                + 4 * separator_space(dpi);
             let full = layout(full_width, dpi, &items);
             assert_eq!(full.stage, 0);
             assert!(full.more.is_none() && full.overflow.is_empty());
             assert_eq!(full.buttons.len(), items.len());
+            assert_eq!(full.separators.len(), 4);
             let compact = layout(full_width - 1, dpi, &items);
             assert!(compact.more.is_some());
             assert!(!compact.overflow.is_empty());
@@ -328,9 +340,20 @@ mod tests {
     fn production_actions_follow_reference_stages_without_losing_commands() {
         use shotkit::toolbar_layout::layout;
         let items = layout_items();
-        for (width, stage) in [(1000, 0), (980, 1), (930, 2), (700, 3), (430, 3), (180, 3)] {
+        // Everything is visible in the 1008 pixel client area of a 1024 pixel
+        // desktop: 997 pixels of buttons plus four separators need 1005.
+        for (width, stage) in [
+            (1008, 0),
+            (1005, 0),
+            (1004, 1),
+            (980, 1),
+            (930, 2),
+            (700, 3),
+            (430, 3),
+            (180, 3),
+        ] {
             let plan = layout(width, 96, &items);
-            assert_eq!(plan.stage, stage);
+            assert_eq!(plan.stage, stage, "width {width}");
             let mut reachable: Vec<_> = plan
                 .buttons
                 .iter()

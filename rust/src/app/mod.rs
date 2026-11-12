@@ -229,6 +229,8 @@ extern "system" {
     fn KillTimer(h: H, id: usize) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
     fn RegisterWindowMessageW(name: *const u16) -> u32;
+    fn ShutdownBlockReasonCreate(h: H, reason: *const u16) -> i32;
+    fn ShutdownBlockReasonDestroy(h: H) -> i32;
     fn SendMessageTimeoutW(
         h: H,
         msg: u32,
@@ -342,6 +344,28 @@ fn scroll_recovery_pending() -> bool {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .is_some()
+}
+
+/// Reply to WM_QUERYENDSESSION: TRUE lets Windows end the session, FALSE asks
+/// it to keep running and show ShotKit with its reason to the user.
+fn end_session_reply(unsaved_work: bool) -> L {
+    L::from(!unsaved_work)
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem UI-Thread; jedes Fenster der Liste trägt einen gültigen WindowState.
+// Warum erfüllt: proc ruft nur aus der Nachrichtenbehandlung auf; die Fensterliste enthält nur eigene, lebende Editorfenster.
+// Nachrichten: Keine. Es werden nur Zustände gelesen, nichts wird verändert oder angezeigt.
+unsafe fn unsaved_work() -> bool {
+    source_recovery_pending()
+        || editor_windows().iter().any(|window| {
+            let state = window_state(*window);
+            !state.bitmap.is_null()
+                && state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.document().is_dirty())
+        })
 }
 
 fn source_recovery_pending() -> bool {
@@ -668,6 +692,25 @@ unsafe fn editor_windows() -> Vec<H> {
 }
 // SAFETY CONTRACT:
 // Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
+// Warum erfüllt: proc ruft nur für eigene Editorfenster mit gültigem Userdata auf.
+// Nachrichten: toolbar::set_history ruft nur InvalidateRect; kein State-Borrow bleibt über den Aufruf bestehen.
+unsafe fn sync_history_buttons(h: H) {
+    let state = window_state(h);
+    // A gesture stages its edit; undo and redo are briefly unavailable then.
+    // Do not flash the two buttons for every stroke.
+    if state.drawing {
+        return;
+    }
+    let Some(history) = state.editor.as_ref().map(|editor| {
+        let document = editor.document();
+        (document.can_undo(), document.can_redo())
+    }) else {
+        return;
+    };
+    toolbar::set_history(h, history.0, history.1);
+}
+// SAFETY CONTRACT:
+// Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
 // Warum erfüllt: Aufruf für eigene Editorfenster; der Titel besitzt seine Daten vor dem Win32-Aufruf.
 // Nachrichten: GetWindowTextW und SetWindowTextW senden synchron WM_GETTEXT bzw. WM_SETTEXT an das eigene Fenster; der aus dem State erzeugte Titel und der Lesepuffer sind besitzend und der Borrow endet vorher.
 unsafe fn refresh_title(h: H) {
@@ -943,6 +986,12 @@ mod quit_completion_tests {
         ready.store(true, Ordering::SeqCst);
         assert!(take_quit_completion(&ready, 0));
         assert!(!take_quit_completion(&ready, 0));
+    }
+
+    #[test]
+    fn session_end_is_refused_only_while_work_is_unsaved() {
+        assert_eq!(end_session_reply(true), 0);
+        assert_eq!(end_session_reply(false), 1);
     }
 
     #[test]

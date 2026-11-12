@@ -54,6 +54,11 @@ vergrößert. Mit <kbd>Umschalt</kbd> zeichnen auch Verpixeln, Weichzeichnen und
 
 Ist das Fenster schmal, rücken weitere Symbole in das Menü **»** am rechten Rand.
 
+Feine Trennlinien gliedern die Leiste in Werkzeuge, Farben, Stil, Verlauf und Ansicht. Das aktive Werkzeug ist
+hinterlegt und eingerahmt, das Symbol unter dem Mauszeiger leicht hinterlegt. **Zurück** und **Wiederholen**
+erscheinen blass, solange es nichts rückgängig zu machen oder zu wiederholen gibt. Jedes Symbol nennt beim
+Überfahren seinen Namen und, wo vorhanden, die Taste.
+
 ### Bild anheften
 
 **Datei → Anheften** oder <kbd>Strg</kbd>+<kbd>T</kbd> zeigt das aktuelle Bild **mit allen Markierungen** als kleines
@@ -130,6 +135,10 @@ Meldung ab; Bild und Verlauf bleiben erhalten.
 > [!NOTE]
 > Vor dem Schließen oder Ersetzen eines ungespeicherten Bildes fragt ShotKit nach. Transparenz bleibt beim
 > Speichern als PNG und beim Kopieren erhalten.
+>
+> Beim Abmelden, Neustarten oder Herunterfahren meldet ShotKit Windows ein offenes Editorfenster mit
+> ungespeicherten Änderungen. Windows zeigt dann „Ungespeicherte Bilder oder Aufnahmen in ShotKit“ und lässt dich
+> abbrechen, um zu speichern. Wählst du dort „Trotzdem herunterfahren“, gehen die Änderungen verloren.
 
 ---
 

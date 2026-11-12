@@ -63,6 +63,21 @@ Zwei in #52 genannte, unbestätigte Hypothesen sind hier nicht enthalten. Sie we
 
 **Ergebnis für v2.1.0:** kein neues hohes oder mittleres Risiko. Die bekannten Grenzen aus v2.0.0 gelten weiter.
 
+## Nachtrag v2.1.1
+
+**Bewerteter Stand:** `main` nach den Pull Requests #112 bis #123 (2026-11-12). Grundlage ist das Code-Review in [#114](https://github.com/BomBastikDE/shotkit/issues/114). Die Zeilen 1–22 gelten unverändert, soweit hier nichts anderes steht.
+
+| # | Angriffsfläche | Mögliche Auswirkung | Risiko | Stand | Nachweis / Issue |
+|---|---|---|---|---|---|
+| 23 | Schwärzen am Bildrand | Ein ein Pixel breiter Streifen des Originals blieb am rechten/unteren Rand im Export, in verkleinerter Ansicht mehr | mittel | **Behoben in 2.1.1.** Die letzte Bildschirmspalte/-zeile und Positionen dahinter bilden auf die Bildkante ab | PR [#112](https://github.com/BomBastikDE/shotkit/pull/112); Test `redaction_dragged_to_the_far_border_covers_the_last_row_and_column` |
+| 24 | Rissrand | Abgerissene Bildteile blieben als Farbe unter Alpha 0 in der PNG-Datei | mittel | **Behoben in 2.1.1.** Vollständig transparente Pixel werden zu `[0,0,0,0]`. Der Rissrand bleibt kein Schwärzungswerkzeug | PR [#113](https://github.com/BomBastikDE/shotkit/pull/113); Test `torn_off_pixels_keep_no_source_colour_with_or_without_shadow` |
+| 25 | Vorschau-Zwischenspeicher mit Schwärzung | Ein Effekt, der die Quelle liest, könnte ungeschwärzte Bildpunkte in die Vorschau bringen | niedrig | Der Zwischenspeicher wird nur genutzt, wenn kein lesender Effekt (Verpixeln, Weichzeichnen, Bildlupe) im Dokument ist; Schwärzungen werden weiter zuletzt angewendet | PR [#123](https://github.com/BomBastikDE/shotkit/pull/123); Test `redacted_preview_is_cached_only_without_sampling_and_always_matches_export` |
+| 26 | Herunterfahren mit ungespeicherten Änderungen | Datenverlust ohne Rückfrage | niedrig | ShotKit antwortet auf `WM_QUERYENDSESSION` mit einem Blockgrund; nur lesender Zugriff auf den eigenen Zustand. Grenze: ohne sichtbares Fenster kann Windows trotzdem beenden | PR [#120](https://github.com/BomBastikDE/shotkit/pull/120) |
+
+**`unsafe`-Fläche (Nr. 15):** Das Review zählte 263 `unsafe fn` im Code gegenüber 170 im Audit; 2.1.1 ergänzt die Zeilen für die geänderten Stellen, der vollständige Abgleich folgt (#69).
+
+**Ergebnis für v2.1.1:** zwei mittlere Risiken behoben, kein neues hohes oder mittleres Risiko. Nicht auf einem echten Windows-Rechner geprüft; siehe „Bekannte Grenzen“ im [Änderungsprotokoll](CHANGELOG.md).
+
 ## Empfehlungen nach 2.0.0
 
 - **Herkunftsnachweis ohne Zertifikat (Nr. 16):** Der Release-Workflow kann mit `actions/attest-build-provenance` eine kostenlose GitHub-Attestierung erzeugen. Nutzer prüfen dann mit `gh attestation verify shotkit-….exe -R BomBastikDE/shotkit`, dass die EXE aus diesem Repository und Workflow stammt. Der Aufwand ist gering; ein Code-Signing-Zertifikat ist dafür nicht nötig.

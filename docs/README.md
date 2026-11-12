@@ -5,7 +5,7 @@ Taskleiste, nimmt Bereiche, Fenster, Bildschirme und lange Seiten auf und bietet
 Markierungen, Text, Sprechblasen, Stempel, Spotlight, Lupe und sicheres Schwärzen.
 
 > [!NOTE]
-> Dieses Handbuch beschreibt **ShotKit 2.1.0**. Fehler bitte als
+> Dieses Handbuch beschreibt **ShotKit 2.1.1**. Fehler bitte als
 > [Issue](https://github.com/BomBastikDE/shotkit/issues) melden (siehe [Häufige Fragen](faq.md#fehler-melden)).
 
 ## Inhalt
@@ -20,7 +20,7 @@ Markierungen, Text, Sprechblasen, Stempel, Spotlight, Lupe und sicheres Schwärz
 
 ## Schnellstart
 
-1. Die neueste Version (`shotkit-v2.1.0-windows-x64.exe`) von den [Releases](https://github.com/BomBastikDE/shotkit/releases) laden und starten.
+1. Die neueste Version (`shotkit-v2.1.1-windows-x64.exe`) von den [Releases](https://github.com/BomBastikDE/shotkit/releases) laden und starten.
 2. <kbd>Druck</kbd> drücken, Bereich aufziehen oder ein Fenster anklicken.
 3. Im Editor markieren, vertrauliche Stellen mit **Schwärzen** (<kbd>S</kbd>) abdecken und mit <kbd>Strg</kbd>+<kbd>C</kbd> kopieren oder <kbd>Strg</kbd>+<kbd>S</kbd> speichern.
 
