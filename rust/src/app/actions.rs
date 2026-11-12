@@ -504,12 +504,15 @@ pub(super) unsafe fn toolbar_action(h: H, id: usize) {
             match id {
                 toolbar::ID_CALLOUT_FILL => {
                     let Some(color) = choose_color(h) else {
+                        // The clicked toolbar button still owns the focus.
+                        SetFocus(h);
                         return;
                     };
                     data.fill_color = color;
                 }
                 toolbar::ID_CALLOUT_TEXT_COLOR => {
                     let Some(color) = choose_color(h) else {
+                        SetFocus(h);
                         return;
                     };
                     data.text_color = color;

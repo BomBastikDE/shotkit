@@ -224,9 +224,15 @@ unsafe extern "system" fn dialog_proc(dialog: H, message: u32, w: usize, l: isiz
     }
 }
 
+/// UTF-16 text for the multiline edit control of the dialog. Such a control
+/// breaks lines only at CR LF; a lone LF shows the whole list as one block.
+fn edit_control_text(content: &str) -> Vec<u16> {
+    wide(&content.replace("\r\n", "\n").replace('\n', "\r\n"))
+}
+
 fn prompt(h: H, content: &str) -> Choice {
     let template = template();
-    let content = wide(content);
+    let content = edit_control_text(content);
     // SAFETY: Vec<u32> supplies DWORD alignment for the validated SDK dialog
     // layout. Both buffers live through the synchronous modal call; its callback
     // only reads content during initialization and retains no Rust references.
@@ -275,4 +281,18 @@ fn date(time: SystemTime) -> String {
         seconds / 60 % 60,
         seconds % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dialog_text_uses_crlf_for_the_multiline_edit_control() {
+        let text = edit_control_text("2 Dateien in C:\\Bilder\n\na.tmp\nb.tmp\r\nEnde");
+        let expected: Vec<u16> = "2 Dateien in C:\\Bilder\r\n\r\na.tmp\r\nb.tmp\r\nEnde\0"
+            .encode_utf16()
+            .collect();
+        assert_eq!(text, expected);
+    }
 }

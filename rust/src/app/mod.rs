@@ -183,6 +183,7 @@ extern "system" {
     fn GetClientRect(h: H, r: *mut Rect) -> i32;
     fn InvalidateRect(h: H, r: *const Rect, erase: i32) -> i32;
     fn SetWindowTextW(h: H, t: *const u16) -> i32;
+    fn GetWindowTextW(h: H, text: *mut u16, max_count: i32) -> i32;
     fn SetCapture(h: H) -> H;
     fn ReleaseCapture() -> i32;
     fn SetForegroundWindow(h: H) -> i32;
@@ -664,7 +665,7 @@ unsafe fn editor_windows() -> Vec<H> {
 // SAFETY CONTRACT:
 // Voraussetzung: h und sein WindowState sind auf dem UI-Thread gültig.
 // Warum erfüllt: Aufruf für eigene Editorfenster; der Titel besitzt seine Daten vor dem Win32-Aufruf.
-// Nachrichten: SetWindowTextW kann synchron WM_SETTEXT auslösen; der aus dem State erzeugte Titel ist besitzend und der Borrow endet vorher.
+// Nachrichten: GetWindowTextW und SetWindowTextW senden synchron WM_GETTEXT bzw. WM_SETTEXT an das eigene Fenster; der aus dem State erzeugte Titel und der Lesepuffer sind besitzend und der Borrow endet vorher.
 unsafe fn refresh_title(h: H) {
     let state = window_state(h);
     let name = state
@@ -697,7 +698,17 @@ unsafe fn refresh_title(h: H) {
         name,
         tool
     );
-    SetWindowTextW(h, wide(&title).as_ptr());
+    // This runs after every input message, including each mouse move. Setting
+    // an unchanged title would still repaint the caption every time.
+    let title = wide(&title);
+    let mut current = vec![0u16; title.len() + 1];
+    let length = GetWindowTextW(h, current.as_mut_ptr(), current.len() as i32);
+    if usize::try_from(length).is_ok_and(|length| length + 1 == title.len())
+        && current[..title.len()] == title[..]
+    {
+        return;
+    }
+    SetWindowTextW(h, title.as_ptr());
 }
 // SAFETY CONTRACT:
 // Voraussetzung: Fensterliste und PRIMARY gehören zum aktiven UI-Thread.
