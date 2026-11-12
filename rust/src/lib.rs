@@ -1,4 +1,4 @@
-//! Shared, platform-independent parts of the Rust ShotKit work in progress.
+//! Shared, platform-independent parts of ShotKit.
 pub mod alpha_composite;
 pub mod alpha_document;
 pub mod alpha_render;

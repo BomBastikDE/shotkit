@@ -83,7 +83,7 @@ Testdateien beziehen sich auf `tests/`, Rust-Unit-Tests auf `src/`. Ein angegebe
 | Letzten Bereich derselben Sitzung wiederholen | fertig | `windows-last-region-smoke.ps1`, `windows-last-region-clipboard-smoke.ps1`; Alpha-6-Lauf | Datei-/Editor- und Clipboard-Weg getestet; echte Monitoränderung bleibt Owner-Praxistest. |
 | Browserbereich unter Maus vorschlagen | fertig | `windows-browser-hover-smoke.ps1`; [Edge-/Chrome-Lauf](https://github.com/BomBastikDE/shotkit/actions/runs/41461190364) | Kontrollierte lokale Testseite; Accessibility-/Browsergrenzen gelten. |
 
-OCR, Bildausschnitt-Lupe im Editor und Bild anheften gehören ausdrücklich nicht zum Umfang von 2.0.0. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
+OCR gehört ausdrücklich nicht zum Umfang. Die Bildlupe im Editor (seit 2.0.0) und „Bild anheften“ (seit 2.1.0) gehen über die C#-Referenz hinaus und sind deshalb keine Zeilen dieser Tabelle. Die Auswahl-Lupe im Aufnahmeoverlay ist eine vorhandene Referenzfunktion und davon zu unterscheiden.
 
 **Bestand:** 30 fertig, 14 implementiert, nicht belegt, 0 fehlt, 3 bewusst anders (47 Zeilen). Die Zählung beschreibt nur die Zeilen dieser Tabelle, keine vollständige Abnahme.
 
