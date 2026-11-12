@@ -229,6 +229,8 @@ extern "system" {
     fn KillTimer(h: H, id: usize) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> H;
     fn RegisterWindowMessageW(name: *const u16) -> u32;
+    fn ShutdownBlockReasonCreate(h: H, reason: *const u16) -> i32;
+    fn ShutdownBlockReasonDestroy(h: H) -> i32;
     fn SendMessageTimeoutW(
         h: H,
         msg: u32,
@@ -342,6 +344,28 @@ fn scroll_recovery_pending() -> bool {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .is_some()
+}
+
+/// Reply to WM_QUERYENDSESSION: TRUE lets Windows end the session, FALSE asks
+/// it to keep running and show ShotKit with its reason to the user.
+fn end_session_reply(unsaved_work: bool) -> L {
+    L::from(!unsaved_work)
+}
+
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem UI-Thread; jedes Fenster der Liste trägt einen gültigen WindowState.
+// Warum erfüllt: proc ruft nur aus der Nachrichtenbehandlung auf; die Fensterliste enthält nur eigene, lebende Editorfenster.
+// Nachrichten: Keine. Es werden nur Zustände gelesen, nichts wird verändert oder angezeigt.
+unsafe fn unsaved_work() -> bool {
+    source_recovery_pending()
+        || editor_windows().iter().any(|window| {
+            let state = window_state(*window);
+            !state.bitmap.is_null()
+                && state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.document().is_dirty())
+        })
 }
 
 fn source_recovery_pending() -> bool {
@@ -943,6 +967,12 @@ mod quit_completion_tests {
         ready.store(true, Ordering::SeqCst);
         assert!(take_quit_completion(&ready, 0));
         assert!(!take_quit_completion(&ready, 0));
+    }
+
+    #[test]
+    fn session_end_is_refused_only_while_work_is_unsaved() {
+        assert_eq!(end_session_reply(true), 0);
+        assert_eq!(end_session_reply(false), 1);
     }
 
     #[test]

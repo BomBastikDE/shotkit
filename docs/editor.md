@@ -130,6 +130,10 @@ Meldung ab; Bild und Verlauf bleiben erhalten.
 > [!NOTE]
 > Vor dem Schließen oder Ersetzen eines ungespeicherten Bildes fragt ShotKit nach. Transparenz bleibt beim
 > Speichern als PNG und beim Kopieren erhalten.
+>
+> Beim Abmelden, Neustarten oder Herunterfahren meldet ShotKit Windows ein offenes Editorfenster mit
+> ungespeicherten Änderungen. Windows zeigt dann „Ungespeicherte Bilder oder Aufnahmen in ShotKit“ und lässt dich
+> abbrechen, um zu speichern. Wählst du dort „Trotzdem herunterfahren“, gehen die Änderungen verloren.
 
 ---
 
