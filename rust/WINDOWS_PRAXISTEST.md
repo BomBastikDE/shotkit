@@ -14,7 +14,7 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | # | Schritt | Erwartung |
 |---|---|---|
 | 1 | Neue EXE starten, **ohne** vorhandene Einstellungen (`%APPDATA%\ShotKitRust` vorher umbenennen) | Einmaliger Hinweis „Willkommen bei ShotKit“, danach Symbol im Infobereich. Zweiter Start: **kein** Hinweis. |
-| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.1.0, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
+| 2 | Tray → „Über ShotKit“ | Versionsnummer 2.1.1, Name, Website-Schaltfläche öffnet den Browser. Kein „Rust“ oder „Prototyp“ in Titeln. |
 | 3 | `Druck` oder `F11`: Bereich aufziehen, dann im Editor ein Fenster per Vorschlag übernehmen | Bildinhalt und Ränder stimmen; Editor öffnet sich. |
 | 4 | Im Editor: Pfeil, Rechteck, Text, Sprechblase, Stempel zeichnen; Werkzeug mehrmals wechseln | Symbole scharf; Fenstertitel zeigt weiter den Dateinamen und **keinen** englischen Werkzeugnamen (#79). |
 | 5 | Verpixeln (`B`) über Text ziehen | Grobe Blöcke (mindestens 48 px), Text nicht lesbar; Hinweis „keine sichere Schwärzung“ im Tooltip. |
@@ -28,6 +28,11 @@ Bitte mit Testbildern und nicht mit vertraulichen Inhalten prüfen. Die EXE komm
 | 13 | Im Editor **Strg+T** (oder Datei → Anheften); das Fenster verschieben, mit dem Mausrad zoomen, per Rechtsklick „Kopieren“ und „Im Editor öffnen“, mit Esc schließen | Bild mit Markierungen schwebt über allen Programmen, ohne Taskleisteneintrag; Zoom ändert die Größe; Kopie in Paint einfügbar; Esc schließt nur das angeheftete Bild (#99). |
 | 14 | Editor → „Rahmen / Schatten / Leinwand…“ → **„Rissrand…“**, Seiten wählen, mit und ohne Schatten; speichern und „Rückgängig“ | Abgerissene, transparente Kante an den gewählten Seiten, Schatten folgt der Kante; „Rückgängig“ stellt das Bild wieder her (#98). |
 | 15 | `F10` in **Edge** auf einer langen Seite bis zum Ende laufen lassen; danach in einem Programm ohne Bedienungshilfen-Scrollposition wiederholen (z. B. ältere Programme) | Edge: Meldung „Seitenende erreicht.“ ohne Hinweis. Sonst: „Möglicherweise unvollständig“ wie in 2.0.x (#88). |
+| 16 | Editor: Maus langsam über die Symbolleiste bewegen, Werkzeug wechseln, Maus aus dem Fenster ziehen; neues Bild ohne Änderung, dann einen Pfeil zeichnen und `Strg+Z` | Trennlinien zwischen Werkzeugen, Farben, Stil, Verlauf und Ansicht; Symbol unter der Maus leicht hinterlegt, beim Verlassen wieder neutral; aktives Werkzeug eingerahmt; „Zurück“/„Wiederholen“ blass, solange nichts ansteht (2.1.1). |
+| 17 | Schwärzen (`S`) von der Bildmitte **über den rechten und unteren Bildrand hinaus** ziehen, als PNG speichern, stark vergrößert ansehen | Auch die letzte Pixelspalte und -zeile sind schwarz (2.1.1). |
+| 18 | Bild öffnen, Pfeil zeichnen, **nicht speichern**, Windows abmelden | Windows zeigt ShotKit mit „Ungespeicherte Bilder oder Aufnahmen in ShotKit“; nach „Abbrechen“ sind Editor und Änderung noch da (2.1.1). |
+| 19 | Task-Manager → „Windows-Explorer“ → „Neu starten“ | Das ShotKit-Symbol erscheint wieder im Infobereich, das Menü öffnet sich (2.1.1). |
+| 20 | Sprechblase markieren → Formstil → „Sprechblase: Füllfarbe…“ → Abbrechen → `Entf` | Die Sprechblase wird gelöscht; die Tastenkürzel reagieren ohne weiteren Klick (2.1.1). |
 
 ## Ausführliche Prüfungen (optional)
 
