@@ -282,6 +282,17 @@ struct PendingClick {
     root_hwnd: isize,
 }
 
+// SAFETY CONTRACT:
+// Voraussetzung: Aufruf auf dem Overlay-Thread, nachdem Fenster, Desktop-DC und
+// UIA-Picker freigegeben sind; keine Referenz auf STATE wird danach weiterverwendet.
+// Warum erfüllt: Beide Aufrufer in select stehen hinter release_desktop und
+// uia.take() und lesen STATE anschließend nicht mehr über alte Referenzen.
+// Nachrichten: Keine. Die Zuweisung gibt den alten Wert frei (Kandidatenliste und
+// WindowPicker-Arc); ptr::write hätte beide ohne Freigabe überschrieben.
+unsafe fn reset_state() {
+    *std::ptr::addr_of_mut!(STATE) = State::default();
+}
+
 static mut STATE: State = State {
     hwnd: null_mut(),
     magnifier_hwnd: null_mut(),
@@ -425,7 +436,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
         release_desktop(std::ptr::addr_of_mut!(STATE));
         let state = &mut *std::ptr::addr_of_mut!(STATE);
         drop(state.uia.take());
-        std::ptr::addr_of_mut!(STATE).write(State::default());
+        reset_state();
         UnregisterClassW(CLASS_NAME.as_ptr(), instance);
         if !previous_dpi.is_null() {
             SetThreadDpiAwarenessContext(previous_dpi);
@@ -482,7 +493,7 @@ pub unsafe fn select() -> Option<(i32, i32, i32, i32)> {
     let picker = state.uia.take();
     drop(picker);
     release_desktop(std::ptr::addr_of_mut!(STATE));
-    std::ptr::addr_of_mut!(STATE).write(State::default());
+    reset_state();
     if !previous_dpi.is_null() {
         SetThreadDpiAwarenessContext(previous_dpi);
     }
