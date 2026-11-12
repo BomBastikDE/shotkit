@@ -575,6 +575,13 @@ try {
  $trayRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);$trayStatus=[ShotKitToolbarVisual.Native]::Shell_NotifyIconGetRect([ref]$nid,[ref]$trayRect)
  if($trayStatus -ne 0 -and $trayStatus -ne 1){throw ('TRAY_ICON_RECT_FAILED: Shell_NotifyIconGetRect returned HRESULT 0x{0:X8}; host={1}; id={2}; identifier-size={3}.' -f ($trayStatus -band 0xFFFFFFFFL),$trayHost.H,$nid.Id,$nid.Size)}
  if($trayStatus -eq 1){Write-Output 'TRAY: icon identity verified by Windows; no visible bounding rectangle (S_FALSE).'}
+ # The pointer still rests on the line button from the mouse selection above;
+ # the toolbar tints the button under the pointer. Move it onto the image and
+ # give the toolbar's 100 ms hover poll time to clear the highlight, so the
+ # screenshot shows the neutral face the smoothing check below expects. A
+ # highlight that failed to clear would fail that check.
+ if(-not [ShotKitToolbarVisual.Native]::SetCursorPos($lp.X,$lr.Bottom+80)){throw 'HOVER_CLEAR_CURSOR_FAILED'}
+ Start-Sleep -Milliseconds 400
  $dir=Split-Path -Parent $ScreenshotPath;if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Path $dir -Force|Out-Null}
  if(-not [ShotKitToolbarVisual.Native]::SetWindowTextW($main.H,'ShotKit visual smoke fixture')){throw 'SCREENSHOT_TITLE_SANITIZE_FAILED'}
  $captureRect=[Activator]::CreateInstance([ShotKitToolbarVisual.Rect]);if(-not [ShotKitToolbarVisual.Native]::GetWindowRect($main.H,[ref]$captureRect)){throw 'SCREENSHOT_RECT_FAILED'}
