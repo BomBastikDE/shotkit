@@ -572,6 +572,10 @@ fn torn_coverage(x: usize, y: usize, width: usize, height: usize, options: TornE
 }
 
 /// One straight-alpha source pixel after the torn mask.
+///
+/// A pixel that ends up fully transparent loses its colour as well. PNG stores
+/// straight alpha, so colour left under alpha 0 would stay in the saved file
+/// and the torn-off content could be restored by raising alpha again.
 fn torn_pixel(source: &Image, x: usize, y: usize, options: TornEdgeOptions) -> [u8; 4] {
     let offset = (y * source.width + x) * 4;
     let mut pixel: [u8; 4] = source.pixels[offset..offset + 4]
@@ -580,6 +584,9 @@ fn torn_pixel(source: &Image, x: usize, y: usize, options: TornEdgeOptions) -> [
     let coverage = torn_coverage(x, y, source.width, source.height, options);
     if coverage < 1.0 {
         pixel[3] = (f32::from(pixel[3]) * coverage).round() as u8;
+    }
+    if pixel[3] == 0 {
+        return [0; 4];
     }
     pixel
 }
@@ -1198,10 +1205,13 @@ mod tests {
         for x in 0..60 {
             assert_eq!(px(&output, x, 49)[3], 0, "bottom row x={x}");
         }
-        // Colour channels are never altered, only alpha.
+        // Visible pixels keep their colour; only alpha changes. Torn-off pixels
+        // are cleared completely (see the test below).
         for y in band_start..50 {
             for x in 0..60 {
-                assert_eq!(&px(&output, x, y)[..3], &px(&source, x, y)[..3]);
+                if px(&output, x, y)[3] != 0 {
+                    assert_eq!(&px(&output, x, y)[..3], &px(&source, x, y)[..3]);
+                }
             }
         }
         // The outline is irregular: opaque and transparent pixels share rows.
@@ -1216,6 +1226,33 @@ mod tests {
             band.iter().any(|a| *a > 0 && *a < 255),
             "anti-aliased outline"
         );
+    }
+
+    #[test]
+    fn torn_off_pixels_keep_no_source_colour_with_or_without_shadow() {
+        // Every source pixel has non-zero colour, so any colour under alpha 0
+        // in the output would be recoverable source content.
+        let source = Image::new(60, 50, [10, 20, 30, 255].repeat(60 * 50)).unwrap();
+        let shadow = ShadowOptions {
+            offset_x: 4,
+            offset_y: 4,
+            blur_radius: 6,
+            opacity: 96,
+        };
+        for options in [
+            torn(TornSides::ALL, None),
+            torn(TornSides::ALL, Some(shadow)),
+        ] {
+            let output = add_torn_edge(&source, options).unwrap();
+            let mut transparent = 0;
+            for pixel in output.pixels.as_chunks::<4>().0 {
+                if pixel[3] == 0 {
+                    transparent += 1;
+                    assert_eq!(*pixel, [0, 0, 0, 0]);
+                }
+            }
+            assert!(transparent > 0, "the tear removes at least one pixel");
+        }
     }
 
     #[test]
