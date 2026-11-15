@@ -313,3 +313,6 @@ pub(super) fn distance_to_ellipse(p: Point, center: Point, rx: f32, ry: f32) -> 
     }
     eval((lo + hi) / 2.0).max(0.0).sqrt()
 }
+
+#[cfg(test)]
+mod tests;
