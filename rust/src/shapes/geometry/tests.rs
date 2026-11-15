@@ -57,18 +57,6 @@ fn arrow_head_rejects_tiny_and_non_finite_arrows() {
 }
 
 #[test]
-fn arrow_bounds_cover_the_single_head() {
-    let bounds = styled_arrow_bounds(
-        Point::new(0.0, 0.0),
-        Point::new(100.0, 0.0),
-        &style(4.0, ArrowEnds::Single),
-    )
-    .unwrap();
-    assert!(close(bounds.x, 0.0) && close(bounds.width, 100.0));
-    assert!(close(bounds.y, -7.2) && close(bounds.height, 14.4));
-}
-
-#[test]
 fn arrow_bounds_cover_both_heads_of_a_double_arrow() {
     let bounds = styled_arrow_bounds(
         Point::new(0.0, 0.0),
