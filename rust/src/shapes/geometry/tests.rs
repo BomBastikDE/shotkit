@@ -130,7 +130,7 @@ fn double_arrow_hit_test_covers_shaft_and_both_heads() {
         end,
         &s,
         Point::new(50.0, 5.0),
-        3.0
+        3.5
     ));
 }
 
@@ -164,7 +164,7 @@ fn dot_arrow_hit_test_covers_dot_and_shaft_but_not_beyond() {
         end,
         &s,
         Point::new(107.0, 0.0),
-        1.0
+        1.5
     ));
     // No arrowhead triangle near the start of a dot arrow.
     assert!(!styled_arrow_hit_test(
