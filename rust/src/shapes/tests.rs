@@ -707,3 +707,26 @@ fn callout_model_enforces_the_renderer_utf8_byte_limit() {
     data.text.push('ä');
     assert!(!data.validate());
 }
+
+#[test]
+fn callout_set_tip_accepts_finite_and_removed_tips() {
+    let mut data = callout(None);
+    assert!(data.set_tip(Some(Point::new(200.0, -50.0))));
+    assert_eq!(data.tip, Some(Point::new(200.0, -50.0)));
+    assert!(data.set_tip(None));
+    assert_eq!(data.tip, None);
+}
+
+#[test]
+fn callout_set_tip_rejects_non_finite_tips_and_keeps_the_previous_one() {
+    let previous = Point::new(70.0, -20.0);
+    let mut data = callout(Some(previous));
+    for bad in [
+        Point::new(f32::NAN, 0.0),
+        Point::new(0.0, f32::INFINITY),
+        Point::new(f32::NEG_INFINITY, 0.0),
+    ] {
+        assert!(!data.set_tip(Some(bad)));
+        assert_eq!(data.tip, Some(previous));
+    }
+}
